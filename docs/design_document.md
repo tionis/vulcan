@@ -8,14 +8,12 @@ Date: 19 March 2026
 
 ## Decision summary
 
-| Area | Recommendation | Reason |
-|---|---|---|
-| Primary language | Rust | Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration. |
-| Core storage | SQLite | Excellent embedded relational store for cache tables, FTS, metadata, and query planning. |
-| Full-text search | SQLite FTS5 | Good hybrid-search partner; external-content mode avoids duplicating large text bodies. |
-| Vector search | sqlite-vec behind an abstraction | Keeps the solution embedded and local while preserving the option to swap backends later. |
-| Property model | Hybrid JSON + relational projections | Preserves loose Obsidian semantics without making query performance or typing unmanageable. |
-| Correctness model | Watcher + periodic reconciliation | File watchers improve freshness but should not be treated as a sufficient source of truth. |
+- **Primary language:** Rust — Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration.
+- **Core storage:** SQLite — Excellent embedded relational store for cache tables, FTS, metadata, and query planning.
+- **Full-text search:** SQLite FTS5 — Good hybrid-search partner; external-content mode avoids duplicating large text bodies.
+- **Vector search:** `sqlite-vec` behind an abstraction — Keeps the solution embedded and local while preserving the option to swap backends later.
+- **Property model:** Hybrid JSON + relational projections — Preserves loose Obsidian semantics without making query performance or typing unmanageable.
+- **Correctness model:** Watcher + periodic reconciliation — File watchers improve freshness but should not be treated as a sufficient source of truth.
 
 ## 1. Project context and problem statement
 
@@ -126,6 +124,27 @@ For every link occurrence, persist at least:
 
 This is necessary because safe rewrites during file moves depend on resolved target identity, not naive string substitution. The implementation must also account for aliases, headings, and block references. Obsidian’s internal link model supports alternative note names through aliases and subtargets such as headings and block references.[5]
 
+### Markdown parsing and live patching strategy
+
+For the Rust implementation, prefer `pulldown-cmark` as the canonical parser for indexing and rewrite operations, with `Options::ENABLE_WIKILINKS` and `Options::ENABLE_GFM` enabled where appropriate. Current `pulldown-cmark` explicitly supports Obsidian-style wikilinks, supports GFM blockquote tags such as `[!NOTE]`, and exposes `into_offset_iter()` so the parser can return source byte ranges together with events.[13]
+
+Those source ranges are the key reason to prefer it as the core parser for a CLI that needs safe rewrites. The rewrite engine should operate on semantic token spans rather than regex replacement or full document re-rendering.
+
+Recommended approach:
+
+- Parse Markdown into events plus source ranges.
+- Run a small Obsidian-specific semantic pass over the parse output to classify callouts, embeds, block references, and any other OFM constructs that matter to indexing or rewriting.
+- Persist both raw token text and resolved target identity.
+- During a move or rename, query inbound references by resolved target document id, re-parse only the affected source files, and rewrite only the destination segment of each affected link.
+- Preserve original style choices such as wikilink vs Markdown-link syntax, embed marker, display text/alias, and heading or block suffix.
+- Apply edits from the end of the file toward the start so offsets remain valid while patching.
+
+For callouts specifically, treat them as blockquotes with Obsidian semantics rather than as a wholly separate document form. Obsidian defines a callout by placing `[!type]` on the first line of a blockquote, and callouts can contain ordinary Markdown and internal links.[14]
+
+`comrak` is the main alternative if a richer AST is preferred over a lighter event stream: it supports source positions, front matter, GitHub-style alerts, and wikilinks.[15] However, it is still a secondary recommendation here because span-based patching is the more important requirement for move-safe edits.
+
+Do not use `tree-sitter-markdown` as the canonical source of truth for vault correctness. Its own README states that it is not recommended where correctness is important and positions it primarily as a source of syntactical information for editors.[16]
+
 ## 8. Property handling strategy
 
 Properties should be treated as soft-schema data with inconsistent types. A pure EAV model will become unpleasant to query, and a pure JSON blob will become unpleasant to index. Use a hybrid model.
@@ -221,7 +240,7 @@ Suggested Rust stack:
 - `clap` for CLI structure
 - `rusqlite` for SQLite access
 - `notify` for file watching
-- `pulldown-cmark` or a dedicated Markdown tokenizer plus custom Obsidian link parsing
+- `pulldown-cmark` with `ENABLE_WIKILINKS` and `ENABLE_GFM`, plus a small Obsidian semantic pass for callouts, embeds, and rewrite-relevant token classification
 - `serde` / `serde_yaml` for structured parsing
 - `sqlite-vec` loaded as an extension behind a local trait or adapter
 
@@ -333,21 +352,19 @@ The implementation agent should treat the following as mandatory:
 
 ## Implementation checklist
 
-| Checklist item | Priority | Notes |
-|---|---|---|
-| Stable internal ids independent of paths | P0 | Required for rename safety and incremental repair. |
-| Lossless raw frontmatter preservation | P0 | Needed for safe rewrites and diagnostic fidelity. |
-| Raw + resolved link storage | P0 | Do not choose one or the other. |
-| Periodic reconciliation scan | P0 | Watcher-only designs are brittle. |
-| Stable `--output json` support across commands | P1 | Required for agent-safe automation and scripting. |
-| Runtime schema/describe command | P1 | Lets agents inspect command contracts without external docs. |
-| Dry-run for mutating operations | P1 | Preview before move, rewrite, delete, repair, or migration actions. |
-| Input hardening for path/id/control-character failures | P1 | Assume hallucinated or adversarial arguments. |
-| Field selection and streamed pagination | P1 | Protects context windows and improves composability. |
-| Property catalog with observed types | P1 | Useful for query planning and diagnostics. |
-| Chunk-level embeddings | P1 | Whole-note vectors are too coarse for many use cases. |
-| Backend abstraction for vector store | P1 | Necessary because `sqlite-vec` is still pre-v1. |
-| Doctor/verify command | P1 | Operational quality feature, not optional tooling. |
+- **Stable internal ids independent of paths** — **P0** — Required for rename safety and incremental repair.
+- **Lossless raw frontmatter preservation** — **P0** — Needed for safe rewrites and diagnostic fidelity.
+- **Raw + resolved link storage** — **P0** — Do not choose one or the other.
+- **Periodic reconciliation scan** — **P0** — Watcher-only designs are brittle.
+- **Stable `--output json` support across commands** — **P1** — Required for agent-safe automation and scripting.
+- **Runtime schema/describe command** — **P1** — Lets agents inspect command contracts without external docs.
+- **Dry-run for mutating operations** — **P1** — Preview before move, rewrite, delete, repair, or migration actions.
+- **Input hardening for path/id/control-character failures** — **P1** — Assume hallucinated or adversarial arguments.
+- **Field selection and streamed pagination** — **P1** — Protects context windows and improves composability.
+- **Property catalog with observed types** — **P1** — Useful for query planning and diagnostics.
+- **Chunk-level embeddings** — **P1** — Whole-note vectors are too coarse for many use cases.
+- **Backend abstraction for vector store** — **P1** — Necessary because `sqlite-vec` is still pre-v1.
+- **Doctor/verify command** — **P1** — Operational quality feature, not optional tooling.
 
 ## References
 
@@ -363,5 +380,9 @@ The implementation agent should treat the following as mandatory:
 [10] SQLite Documentation: generated columns.  
 [11] SQLite Documentation / forum guidance relevant to many-to-one indexing with JSON arrays and table-valued functions.
 [12] Justin Poehnelt: You Need to Rewrite Your CLI for AI Agents — https://justin.poehnelt.com/posts/rewrite-your-cli-for-ai-agents/
+[13] pulldown-cmark documentation — `Options::ENABLE_WIKILINKS`, `Options::ENABLE_GFM`, and `Parser::into_offset_iter`.
+[14] Obsidian Help: Callouts and Internal links.
+[15] comrak documentation — extensions for source positions, front matter, alerts, and wikilinks.
+[16] tree-sitter-markdown README — correctness limitations and editor-oriented positioning.
 
 This document is intentionally opinionated. It is optimized to keep the first implementation correct, rebuildable, and extensible rather than feature-maximal.
