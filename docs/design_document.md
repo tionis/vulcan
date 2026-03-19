@@ -69,6 +69,19 @@ FTS and vector search sit on top of the cache as additional derived indexes, not
 
 This model keeps correctness and recovery simple: if the cache becomes stale or a parser changes, rebuild it.
 
+### Concurrency and write serialization
+
+SQLite in WAL mode supports concurrent readers alongside a single writer. The implementation should adopt an explicit write-serialization strategy rather than relying on SQLite's busy-wait behavior.
+
+Recommended approach:
+
+- Use a single writer connection for all cache mutations. Read-only queries (backlinks, search, property lookups) may use separate connections concurrently.
+- CLI-initiated mutations such as `move` or `reindex` must acquire an application-level write lock before beginning their transaction. If the watcher is mid-update, the CLI command waits; if a CLI command is running, the watcher queues events and replays them after the lock is released.
+- The watcher should batch file system events into coalesced changesets before acquiring the write lock, rather than taking a write lock per event.
+- Vault-mutating operations (move, rename) must be atomic from the user's perspective: update the filesystem first, then update the cache within a single transaction. If the cache update fails, the filesystem change has already happened and the next reconciliation will repair the cache.
+- Long-running operations such as full reindex or batch embedding should use chunked transactions (e.g., commit every N documents) to avoid holding the write lock for minutes. This means partial progress is visible and a crash mid-reindex leaves the cache in a consistent but incomplete state, which reconciliation can repair.
+- Never assume two concurrent CLI invocations coordinate with each other. If a user runs `move` in one terminal while `scan` runs in another, both must serialize through the same write lock. Use SQLite's `busy_timeout` as a backstop, but prefer the application-level lock to give better error messages.
+
 ## 5. Data model overview
 
 The implementation should use stable internal identifiers rather than paths as primary keys. Paths move; identities should survive moves.
@@ -107,7 +120,35 @@ If a file changes:
 4. Re-resolve graph edges that touch this document.
 5. Refresh FTS and embeddings only for changed chunks.
 
-## 7. Link semantics and move-safe rewrites
+## 7. Chunking strategy
+
+Chunks are the unit of granularity for FTS indexing, embedding, and similarity search. The chunking strategy affects retrieval quality, embedding cost, and cache invalidation granularity, so it should be configurable per vault while shipping with sensible defaults.
+
+### Default chunking rules
+
+The default chunker should produce heading-aware, paragraph-respecting chunks:
+
+1. Split at heading boundaries (any level). Each heading starts a new chunk. The heading text is included as the first line of its chunk.
+2. Within a heading section, split at paragraph boundaries if the section exceeds a target size (default: ~1024 tokens, configurable).
+3. Never split mid-paragraph, mid-list-item, mid-blockquote, or mid-code-block. If a single block exceeds the target size, keep it as one oversized chunk rather than breaking semantic units.
+4. Frontmatter is not a chunk. Properties are indexed separately.
+5. Each chunk carries contextual metadata: source document id, heading path (e.g., `["Section 1", "Subsection A"]`), chunk sequence index within the document, byte offset range in the source file, and content hash.
+
+### Configurable chunking
+
+Support vault-level chunking configuration (e.g., in a config file or CLI flags) with at least these knobs:
+
+- **Target chunk size** (in tokens or characters). Default: 1024 tokens.
+- **Overlap** (number of tokens/characters to repeat from the preceding chunk). Default: 0. Overlapping chunks can improve retrieval recall at the cost of increased embedding volume.
+- **Strategy selector**: `heading` (default, heading-aware splitting), `fixed` (fixed-size window with optional overlap, ignoring structure), or `paragraph` (one chunk per paragraph, no merging).
+
+Additional strategies can be added later without schema changes as long as the `chunks` table records which strategy and version produced each chunk.
+
+### Stability and invalidation
+
+Chunking must be deterministic: the same file content with the same chunking config must always produce the same chunks. This is required so that content-hash comparisons can skip re-embedding unchanged chunks. When the chunking strategy or its parameters change, all chunks for affected documents must be invalidated and regenerated.
+
+## 8. Link semantics and move-safe rewrites
 
 Link correctness is one of the highest-risk areas. Store both raw syntax and resolved meaning.
 
@@ -141,11 +182,11 @@ Recommended approach:
 
 For callouts specifically, treat them as blockquotes with Obsidian semantics rather than as a wholly separate document form. Obsidian defines a callout by placing `[!type]` on the first line of a blockquote, and callouts can contain ordinary Markdown and internal links.[14]
 
-`comrak` is the main alternative if a richer AST is preferred over a lighter event stream: it supports source positions, front matter, GitHub-style alerts, and wikilinks.[15] However, it is still a secondary recommendation here because span-based patching is the more important requirement for move-safe edits.
+`comrak` is the main alternative: it also supports source positions, front matter, GitHub-style alerts, and wikilinks.[15] However, `comrak` produces a full AST that must be materialized before patching, whereas `pulldown-cmark`'s event stream allows the rewrite engine to stream through a file, collect only the spans that need editing, and patch them in place without allocating a tree for the entire document. For rewrite-heavy operations across many files, this difference matters. `comrak` remains a reasonable choice if a richer AST is needed for other analysis passes, but it is secondary for the move-safe rewrite path.
 
 Do not use `tree-sitter-markdown` as the canonical source of truth for vault correctness. Its own README states that it is not recommended where correctness is important and positions it primarily as a source of syntactical information for editors.[16]
 
-## 8. Property handling strategy
+## 9. Property handling strategy
 
 Properties should be treated as soft-schema data with inconsistent types. A pure EAV model will become unpleasant to query, and a pure JSON blob will become unpleasant to index. Use a hybrid model.
 
@@ -175,7 +216,7 @@ Obsidian documents several default properties, including `tags`, `cssclasses`, a
 
 This preserves vault fidelity while still enabling performant filtering and sorting.
 
-## 9. Full-text search architecture
+## 10. Full-text search architecture
 
 Use SQLite FTS5 as the exact-search backbone. Prefer an external-content table so the FTS index can reference content stored in ordinary cache tables rather than duplicating it. SQLite documents external-content tables explicitly, but also notes that they require the application to keep the index synchronized with the content table.[7]
 
@@ -189,7 +230,7 @@ Recommended indexed units:
 
 The FTS query surface should remain simple and predictable. Do not attempt to encode every Obsidian search operator in version 1. Focus on reliable term lookup, phrase search, snippets, and ranking that can be composed with relational filters.
 
-## 10. Native vector search and clustering
+## 11. Native vector search and clustering
 
 Vector search should be implemented as a second derived index. Do not embed vectors directly into the graph tables.
 
@@ -204,7 +245,21 @@ Vector search should be implemented as a second derived index. Do not embed vect
 
 Clustering should run in application code, not inside SQLite. Persist results back into the cache only as derived artifacts such as cluster ids, labels, centroids, or neighbor tables.
 
-## 11. Bases support
+### Embedding provider architecture
+
+The embedding pipeline must be pluggable. The primary target is any OpenAI-compatible embedding endpoint, which covers OpenRouter, Ollama, and custom backend proxies. Additional providers can be added later behind the same trait boundary.
+
+Recommended design:
+
+- Define an `EmbeddingProvider` trait with a minimal surface: accept a batch of text chunks, return a batch of vectors (or per-chunk errors). The trait should also expose model metadata (dimensions, normalization, max batch size, max input tokens).
+- Ship a default `OpenAICompatibleProvider` that speaks the `/v1/embeddings` HTTP contract. Configuration requires a base URL, an optional API key, and a model name. This single implementation covers OpenAI, OpenRouter, Ollama (`http://localhost:11434/v1/embeddings`), and any proxy that implements the same contract.
+- Batch requests according to the provider's advertised limits. Use async HTTP with concurrency control (e.g., a semaphore) to avoid overwhelming local or rate-limited remote endpoints.
+- Handle transient failures with exponential backoff and per-chunk error recording. A failed chunk should not block the rest of the batch; record the failure in the diagnostics table and retry on the next indexing pass.
+- Store the provider name, model name, and dimensions alongside each vector row so that vectors from different models are never mixed in similarity queries.
+- Support a `--provider` or config-file field to select the active provider. Default to a no-op or explicit error if no provider is configured, rather than silently skipping embedding.
+- Keep the provider abstraction in its own module so that adding a future native/ONNX-based local provider does not require touching the indexing pipeline.
+
+## 12. Bases support
 
 Treat Bases support as read-mostly and subset-first.
 
@@ -223,7 +278,7 @@ Implementation guidance:
 
 Do not hard-wire the evaluator directly to frontmatter blobs. Bases needs access to both note properties and computed file fields.
 
-## 12. Language and framework recommendations
+## 13. Language and framework recommendations
 
 ### Primary recommendation: Rust
 
@@ -249,7 +304,35 @@ Choose Go only if delivery speed and implementation simplicity matter more than 
 
 Do not start with TypeScript unless sharing code with an Obsidian plugin ecosystem is a hard requirement; native packaging and high-volume text processing are generally better served by Rust or Go for this tool.
 
-## 13. Operational and schema recommendations
+## 14. Vault configuration scope
+
+The tool must read certain `.obsidian` configuration files to correctly replicate Obsidian's behavior. The following files should be parsed; all others should be ignored in version 1.
+
+### Required configuration files
+
+- **`.obsidian/app.json`** — Contains settings that directly affect link resolution and file handling:
+  - `useMarkdownLinks`: whether the vault prefers Markdown-style links over wikilinks (affects rewrite style preservation).
+  - `newLinkFormat`: `"shortest"`, `"relative"`, or `"absolute"` — determines how Obsidian resolves ambiguous link targets and how the tool should generate new link text during rewrites.
+  - `attachmentFolderPath`: where attachments are stored, needed for resolving embed targets.
+  - `strictLineBreaks`: affects Markdown rendering semantics, relevant if the tool ever produces rendered output.
+
+- **`.obsidian/types.json`** — Defines property type assignments (text, number, date, checkbox, etc.) for the vault. Required for the property catalog and typed query layer. Without this file, the tool should infer types from observed values but may produce weaker type diagnostics.
+
+### Optional but useful
+
+- **`.obsidian/bookmarks.json`** — Bookmarked notes, searches, and graphs. Low priority but useful for diagnostics and reporting.
+- **`.obsidian/graph.json`** — Graph view display settings. Not needed for correctness but could inform future graph visualization features.
+
+### Explicitly ignored
+
+- Community plugin configuration directories (`.obsidian/plugins/*/`). Parsing plugin-specific data is a non-goal for v1 (see §3).
+- Theme and appearance files (`.obsidian/themes/`, `appearance.json`).
+- Workspace and layout files (`workspace.json`, `workspaces.json`).
+- Hotkey configuration (`hotkeys.json`).
+
+If a required config file is missing or unparseable, the tool should fall back to Obsidian's documented defaults and emit a diagnostic.
+
+## 15. Operational and schema recommendations
 
 ### Schema guidance
 - Use stable ids internally; never rely on path text as the sole join key.
@@ -257,6 +340,16 @@ Do not start with TypeScript unless sharing code with an Obsidian plugin ecosyst
 - Keep enough diagnostics to explain cache state to the user.
 - Build explicit repair commands such as `scan`, `reindex`, `verify`, and `doctor`.
 - Treat the database as disposable; never require the user to preserve it across incompatible versions.
+
+### Schema migration strategy
+
+Use SQLite's `user_version` pragma to track the database schema version. On startup, read `PRAGMA user_version` and compare it to the application's expected schema version.
+
+- **Additive migrations** (new tables, new columns with defaults, new indexes): apply a forward migration function and increment `user_version`. These are lightweight and preserve existing data, including expensive artifacts like embeddings.
+- **Breaking migrations** (column type changes, table restructuring, semantic changes to existing columns): drop and rebuild the cache from the vault. Since the cache is fully derived from disk, a rebuild is always correct and avoids the complexity of data-transforming migrations.
+- Migration functions should be registered in an ordered list keyed by version number. On startup, apply all migrations between the current `user_version` and the target version sequentially within a transaction.
+- If `user_version` is higher than the application expects (downgrade scenario), refuse to open the database and advise the user to rebuild.
+- Always set `PRAGMA user_version = N` at the end of a successful migration transaction.
 
 ### CLI UX for humans and agents
 The CLI should be designed for both direct human use and reliable agent invocation. These are related but not identical goals: human UX benefits from discoverability and convenience, while agent UX benefits from predictability, machine readability, and strong input validation. This section follows the same core framing argued by Justin Poehnelt: human DX and agent DX are orthogonal enough that the raw, predictable, machine-oriented path must be designed deliberately rather than treated as an afterthought.[12]
@@ -287,7 +380,7 @@ Recommended guidance:
 
 The `doctor` command should be treated as a first-class product feature, not an afterthought. It should report unresolved links, ambiguous aliases, parse failures, stale index rows, type inconsistencies, and unsupported Bases constructs.
 
-## 14. Performance considerations
+## 16. Performance considerations
 
 Important performance principles:
 
@@ -302,7 +395,7 @@ JSONB can be attractive for canonical property storage in SQLite because current
 
 Be conservative with generated columns and expression indexes. They are useful for stable scalar derivations, but they are not a substitute for explicit side tables when dealing with array membership, multivalue properties, or other many-to-one indexing problems. SQLite’s JSON functions include table-valued functions such as `json_each` / `json_tree`, but these are not a good foundation for every hot-path property query.[9][10][11]
 
-## 15. Known limitations and design constraints
+## 17. Known limitations and design constraints
 
 The implementation agent should explicitly accept these constraints:
 
@@ -315,28 +408,87 @@ The implementation agent should explicitly accept these constraints:
 
 The product should fail loud, explain clearly, and repair cheaply.
 
-## 16. Recommended phased delivery plan
+## 18. Recommended phased delivery plan
+
+Phases are listed in recommended order. Dependency edges are noted explicitly so that parallelizable work is visible.
 
 ### Phase 1: Core indexing
 - File discovery, document table, frontmatter parsing, headings, block refs, links, aliases, tags.
-- SQLite cache, rebuild path, diagnostics, and `doctor` command.
+- SQLite cache with `user_version`-based migration, rebuild path, diagnostics, and `doctor` command.
+- `.obsidian/app.json` and `.obsidian/types.json` parsing.
+- **No dependencies.** This is the foundation.
 
 ### Phase 2: Safe graph operations
 - Backlinks, unresolved-link reporting, alias-aware resolution, move-safe rewrites.
+- **Depends on:** Phase 1 (requires document table, link table, and alias resolution).
 
 ### Phase 3: Search
 - FTS5 indexing, snippets, hybrid retrieval scaffolding.
+- **Depends on:** Phase 1 (requires chunks and document table).
+- **Independent of:** Phase 2. Can be developed in parallel with Phase 2.
 
 ### Phase 4: Properties and Bases
 - Canonical property storage, relational projections, typed filtering, read-only subset of Bases evaluation.
+- **Depends on:** Phase 1 (requires document table and frontmatter parsing).
+- **Independent of:** Phases 2 and 3. Can be developed in parallel with either.
 
 ### Phase 5: Vectors
-- Chunking, embedding pipeline, `sqlite-vec` integration, nearest-neighbor search, duplicate detection, clustering.
+- Chunking pipeline, pluggable embedding providers, `sqlite-vec` integration, nearest-neighbor search, duplicate detection, clustering.
+- **Depends on:** Phase 1 (requires chunks table) and Phase 3 (hybrid retrieval combines FTS and vector results).
+- **Independent of:** Phases 2 and 4.
 
 ### Phase 6: Hardening
 - Cross-platform watcher behavior, parser fuzzing, migration testing, performance tuning, CLI polish.
+- **Depends on:** All prior phases. This is integration and stabilization work.
 
-## 17. Hard requirements for the implementation agent
+### Parallelism summary
+After Phase 1 is complete, Phases 2, 3, and 4 can proceed in parallel. Phase 5 requires Phase 3. Phase 6 follows all others.
+
+## 19. Test strategy
+
+Correctness is a core design goal, so the test strategy must be comprehensive and built alongside the implementation, not bolted on afterward.
+
+### Unit tests
+
+Every module should carry unit tests for its core logic:
+
+- **Parser tests**: Frontmatter extraction, heading detection, block ref extraction, link parsing (wikilinks, Markdown links, embeds, aliased links, links with heading/block subpaths), callout recognition, and property type coercion. Test with well-formed input, malformed input, edge cases (empty frontmatter, unclosed wikilinks, nested blockquotes), and Unicode content.
+- **Link resolution tests**: Shortest-path matching, absolute-path matching, ambiguous targets, alias-based resolution, resolution failures. These should test the resolver in isolation against a mock document index.
+- **Chunking tests**: Verify that the same input always produces the same chunks (determinism). Test heading-boundary splitting, oversized blocks, empty documents, documents with only frontmatter, and configurable chunk size.
+- **Property normalization tests**: Type inference, null/missing/empty distinctions, multivalue handling, link-valued property detection.
+
+### Integration tests with test vaults
+
+Maintain a set of test vaults in the repository (e.g., `tests/fixtures/vaults/`) that exercise specific scenarios:
+
+- **`basic/`**: A small vault with a handful of interlinked notes, aliases, tags, and properties. Used as the baseline for graph correctness.
+- **`ambiguous-links/`**: Notes with duplicate names in different folders, testing shortest-path resolution and ambiguity diagnostics.
+- **`mixed-properties/`**: Notes with inconsistent property types for the same key (e.g., `status` as both a string and a list), testing lenient property handling.
+- **`broken-frontmatter/`**: Notes with malformed YAML, unclosed delimiters, and mixed indentation, testing parser resilience and diagnostic output.
+- **`move-rewrite/`**: A vault structured to test move-safe rewrites — after running a `move` operation, assert that all inbound links are rewritten correctly and no links are broken.
+- **`bases/`**: A vault with `.base` files exercising supported filter and formula constructs, plus unsupported constructs that should produce diagnostics.
+
+Integration tests should run the full indexing pipeline against these vaults and assert on the resulting database state: row counts, resolved link targets, diagnostic entries, property types, etc.
+
+### Roundtrip and idempotency tests
+
+- **Reindex idempotency**: Index a vault, then re-index it without changes. Assert that the database state is identical (no spurious updates, no changed content hashes).
+- **Move roundtrip**: Move a file, then move it back. Assert that all links are restored to their original text.
+- **Rebuild equivalence**: Build the cache from scratch, then build it incrementally from a partially-stale state. Assert that the final states are equivalent.
+
+### Regression tests
+
+When a bug is found, add a minimal test vault or test case that reproduces it before fixing. This prevents regressions and documents edge cases that the design did not anticipate.
+
+### CLI output tests
+
+For commands that support `--output json`, add snapshot or assertion-based tests that verify the JSON structure is stable. This is particularly important for agent consumers who depend on the output contract.
+
+### Fuzz testing (Phase 6)
+
+During hardening, apply fuzz testing to the Markdown parser and frontmatter extractor. The goal is to ensure that no input causes a panic, infinite loop, or memory safety violation. Use `cargo-fuzz` or `arbitrary`-based property testing.
+
+## 20. Hard requirements for the implementation agent
 
 The implementation agent should treat the following as mandatory:
 
