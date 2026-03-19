@@ -239,6 +239,21 @@ Do not start with TypeScript unless sharing code with an Obsidian plugin ecosyst
 - Build explicit repair commands such as `scan`, `reindex`, `verify`, and `doctor`.
 - Treat the database as disposable; never require the user to preserve it across incompatible versions.
 
+### CLI UX for humans and agents
+The CLI should be designed for both direct human use and reliable agent invocation. These are related but not identical goals: human UX benefits from discoverability and convenience, while agent UX benefits from predictability, machine readability, and strong input validation. This section follows the same core framing argued by Justin Poehnelt: human DX and agent DX are orthogonal enough that the raw, predictable, machine-oriented path must be designed deliberately rather than treated as an afterthought.[12]
+
+Recommended guidance:
+
+- Keep a raw structured-input path as a first-class interface for every complex operation. Convenience flags are useful for humans, but nested actions such as Bases evaluation, structured moves, batch rewrites, or vector indexing options should also accept a single JSON payload that maps directly to the internal request model.
+- Make machine-readable output a stable product surface, not a debug mode. Support `--output json` on all commands, and prefer line-delimited JSON for streamed or paginated output so agents can process results incrementally.
+- Make the CLI self-describing at runtime. Add a command such as `describe`, `schema`, or `help --json` so an agent can inspect accepted parameters, payload shape, defaults, mutability, and output schema without relying on stale external documentation.
+- Keep human-facing defaults pleasant, but make non-interactive behavior deterministic. Avoid prose-heavy output, spinner-only progress, or prompts that appear unexpectedly when stdout is not a TTY.
+- Expose response-shaping controls for context discipline. Commands that list notes, links, diagnostics, or search hits should support field selection, limits, and streaming pagination so agents do not need to ingest large blobs of irrelevant text.
+- Treat all agent-provided input as untrusted. Validate and reject path traversal, control characters, embedded query fragments in identifiers, malformed percent-encoding, and other inputs that indicate hallucinated or adversarial arguments.
+- Add `--dry-run` anywhere a command mutates the vault or cache. Move, rename, rewrite, delete, repair, and migration-style operations should be previewable before they execute.
+- Separate trusted metadata from untrusted note content in outputs. When returning note bodies, snippets, or search results to an agent, clearly distinguish raw vault content from CLI-generated diagnostics so prompt-like text inside notes is not confused for instructions from the tool itself.
+- Ship agent-oriented context alongside normal `--help`. A `CONTEXT.md`, `AGENTS.md`, or skill files should document invariants such as “prefer field selection,” “use dry-run before mutations,” and “confirm destructive actions.”
+
 ### Recommended commands
 - `scan`
 - `search`
@@ -312,6 +327,7 @@ The implementation agent should treat the following as mandatory:
 - Properties must preserve raw fidelity and typed queryability.
 - Vector search must remain backend-abstracted.
 - The system must provide a clear repair and diagnostics path.
+- The CLI must provide deterministic machine-readable input/output paths in addition to human-friendly ergonomics.
 - Unsupported syntax must surface as diagnostics rather than being silently ignored.
 - Correctness and repairability take priority over cleverness.
 
@@ -323,6 +339,11 @@ The implementation agent should treat the following as mandatory:
 | Lossless raw frontmatter preservation | P0 | Needed for safe rewrites and diagnostic fidelity. |
 | Raw + resolved link storage | P0 | Do not choose one or the other. |
 | Periodic reconciliation scan | P0 | Watcher-only designs are brittle. |
+| Stable `--output json` support across commands | P1 | Required for agent-safe automation and scripting. |
+| Runtime schema/describe command | P1 | Lets agents inspect command contracts without external docs. |
+| Dry-run for mutating operations | P1 | Preview before move, rewrite, delete, repair, or migration actions. |
+| Input hardening for path/id/control-character failures | P1 | Assume hallucinated or adversarial arguments. |
+| Field selection and streamed pagination | P1 | Protects context windows and improves composability. |
 | Property catalog with observed types | P1 | Useful for query planning and diagnostics. |
 | Chunk-level embeddings | P1 | Whole-note vectors are too coarse for many use cases. |
 | Backend abstraction for vector store | P1 | Necessary because `sqlite-vec` is still pre-v1. |
@@ -341,5 +362,6 @@ The implementation agent should treat the following as mandatory:
 [9] SQLite Documentation: JSON functions and JSONB.  
 [10] SQLite Documentation: generated columns.  
 [11] SQLite Documentation / forum guidance relevant to many-to-one indexing with JSON arrays and table-valued functions.
+[12] Justin Poehnelt: You Need to Rewrite Your CLI for AI Agents — https://justin.poehnelt.com/posts/rewrite-your-cli-for-ai-agents/
 
 This document is intentionally opinionated. It is optimized to keep the first implementation correct, rebuildable, and extensible rather than feature-maximal.
