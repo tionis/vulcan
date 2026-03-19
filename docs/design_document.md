@@ -8,12 +8,18 @@ Date: 19 March 2026
 
 ## Decision summary
 
-- **Primary language:** Rust — Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration.
+- **Binary name:** `vulcan`
+- **Primary language:** Rust (edition 2021, MSRV 1.77) — Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration.
+- **Workspace layout:** Cargo workspace with `vulcan-core` (parser, indexer, data model), `vulcan-embed` (embedding provider trait and implementations), and `vulcan-cli` (CLI binary and command handlers). Start with this structure from the beginning to keep module boundaries clean.
+- **Internal identifiers:** ULIDs — sortable by creation time, compact, no hyphens. Use the `ulid` crate.
+- **Local data directory:** `.vulcan/` in the vault root, containing `cache.db` (SQLite cache) and `config.toml` (vault-scoped configuration for chunking, embedding provider, etc.). All commands are vault-scoped; there is no global configuration.
 - **Core storage:** SQLite — Excellent embedded relational store for cache tables, FTS, metadata, and query planning.
 - **Full-text search:** SQLite FTS5 — Good hybrid-search partner; external-content mode avoids duplicating large text bodies.
 - **Vector search:** `sqlite-vec` behind an abstraction — Keeps the solution embedded and local while preserving the option to swap backends later.
 - **Property model:** Hybrid JSON + relational projections — Preserves loose Obsidian semantics without making query performance or typing unmanageable.
 - **Correctness model:** Watcher + periodic reconciliation — File watchers improve freshness but should not be treated as a sufficient source of truth.
+- **Chunk sizing:** Use character count as a proxy for token count (default ~4000 characters ≈ 1024 tokens). A lightweight tokenizer may be added later for model-specific accuracy.
+- **CI:** GitHub Actions (`cargo test` + `clippy` + `fmt --check`), structured for future migration to Forgejo CI.
 
 ## 1. Project context and problem statement
 
@@ -51,7 +57,7 @@ Version 1 should be a local, rebuildable, correctness-oriented indexing and quer
 Use a three-layer architecture.
 
 ### Layer 1: Vault source of truth
-The filesystem is canonical. Markdown notes, attachments, `.obsidian` configuration, and `.base` files remain authoritative.
+The filesystem is canonical. Markdown notes, attachments, and `.base` files remain authoritative. If an `.obsidian` directory is present, its configuration is read to improve link resolution and property typing fidelity; if absent, the tool operates with sensible defaults. This means Vulcan works on any directory of Markdown files, not only Obsidian vaults.
 
 ### Layer 2: SQLite cache
 SQLite stores the derived graph, parsed metadata, chunks, search indexes, property projections, diagnostics, and operational state. This database must be fully rebuildable from disk.
@@ -292,12 +298,15 @@ Why Rust:
 
 Suggested Rust stack:
 
-- `clap` for CLI structure
-- `rusqlite` for SQLite access
-- `notify` for file watching
-- `pulldown-cmark` with `ENABLE_WIKILINKS` and `ENABLE_GFM`, plus a small Obsidian semantic pass for callouts, embeds, and rewrite-relevant token classification
-- `serde` / `serde_yaml` for structured parsing
-- `sqlite-vec` loaded as an extension behind a local trait or adapter
+- `clap` for CLI structure (`vulcan-cli`)
+- `rusqlite` with `bundled` feature for SQLite access (`vulcan-core`)
+- `notify` for file watching (`vulcan-core`)
+- `pulldown-cmark` with `ENABLE_WIKILINKS` and `ENABLE_GFM`, plus a small Obsidian semantic pass for callouts, embeds, and rewrite-relevant token classification (`vulcan-core`)
+- `serde` / `serde_yaml` / `toml` for structured parsing (`vulcan-core`)
+- `ulid` for stable internal identifiers (`vulcan-core`)
+- `reqwest` for HTTP embedding provider (`vulcan-embed`)
+- `sqlite-vec` loaded as an extension behind a local trait or adapter (`vulcan-embed`)
+- `sha2` or `blake3` for content hashing (`vulcan-core`)
 
 ### Secondary recommendation: Go
 Choose Go only if delivery speed and implementation simplicity matter more than maximum parsing control.
@@ -306,31 +315,55 @@ Do not start with TypeScript unless sharing code with an Obsidian plugin ecosyst
 
 ## 14. Vault configuration scope
 
-The tool must read certain `.obsidian` configuration files to correctly replicate Obsidian's behavior. The following files should be parsed; all others should be ignored in version 1.
+Vulcan must work on any directory of Markdown files, whether or not it is an Obsidian vault. The `.obsidian` directory and its configuration files are entirely optional. When present, they improve link resolution fidelity and property typing; when absent, the tool operates with sensible defaults and vault-local configuration in `.vulcan/config.toml`.
 
-### Required configuration files
+### `.vulcan/config.toml` (always authoritative)
 
-- **`.obsidian/app.json`** — Contains settings that directly affect link resolution and file handling:
+This is Vulcan's own configuration file, stored in the `.vulcan/` directory alongside the cache database. It controls all vault-scoped settings:
+
+- Chunking strategy, target size, overlap
+- Embedding provider (base URL, API key reference, model name)
+- Link resolution defaults (shortest-path, relative, or absolute) when no `.obsidian/app.json` is present
+- Whether to prefer wikilink or Markdown-link syntax for generated links
+- Attachment folder path override
+
+When both `.vulcan/config.toml` and `.obsidian/app.json` exist, `.vulcan/config.toml` takes precedence for any settings it explicitly defines. This allows users to override Obsidian defaults without modifying the Obsidian configuration.
+
+### `.obsidian` configuration files (optional, read-only)
+
+If an `.obsidian` directory is present, the following files are read to provide Obsidian-compatible defaults. All others are ignored in version 1.
+
+**Recognized files:**
+
+- **`.obsidian/app.json`** — Settings that affect link resolution and file handling:
   - `useMarkdownLinks`: whether the vault prefers Markdown-style links over wikilinks (affects rewrite style preservation).
   - `newLinkFormat`: `"shortest"`, `"relative"`, or `"absolute"` — determines how Obsidian resolves ambiguous link targets and how the tool should generate new link text during rewrites.
   - `attachmentFolderPath`: where attachments are stored, needed for resolving embed targets.
   - `strictLineBreaks`: affects Markdown rendering semantics, relevant if the tool ever produces rendered output.
 
-- **`.obsidian/types.json`** — Defines property type assignments (text, number, date, checkbox, etc.) for the vault. Required for the property catalog and typed query layer. Without this file, the tool should infer types from observed values but may produce weaker type diagnostics.
+- **`.obsidian/types.json`** — Property type assignments (text, number, date, checkbox, etc.). Used to seed the property catalog. Without this file, the tool infers types from observed values but may produce weaker type diagnostics.
 
-### Optional but useful
+**Low priority but useful:**
 
-- **`.obsidian/bookmarks.json`** — Bookmarked notes, searches, and graphs. Low priority but useful for diagnostics and reporting.
-- **`.obsidian/graph.json`** — Graph view display settings. Not needed for correctness but could inform future graph visualization features.
+- **`.obsidian/bookmarks.json`** — Bookmarked notes, searches, and graphs. Useful for diagnostics and reporting.
+- **`.obsidian/graph.json`** — Graph view display settings. Not needed for correctness.
 
-### Explicitly ignored
+**Explicitly ignored:**
 
 - Community plugin configuration directories (`.obsidian/plugins/*/`). Parsing plugin-specific data is a non-goal for v1 (see §3).
 - Theme and appearance files (`.obsidian/themes/`, `appearance.json`).
 - Workspace and layout files (`workspace.json`, `workspaces.json`).
 - Hotkey configuration (`hotkeys.json`).
 
-If a required config file is missing or unparseable, the tool should fall back to Obsidian's documented defaults and emit a diagnostic.
+### Default behavior without `.obsidian`
+
+When no `.obsidian` directory exists and `.vulcan/config.toml` has no explicit overrides:
+
+- Link resolution: shortest-path matching (Obsidian's default)
+- Link style: wikilinks
+- Attachment folder: vault root
+- Property types: inferred from observed values
+- Strict line breaks: disabled
 
 ## 15. Operational and schema recommendations
 

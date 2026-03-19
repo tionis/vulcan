@@ -1,6 +1,6 @@
 # Vulcan Implementation Roadmap
 
-Tracking document for the phased implementation of the headless Obsidian vault CLI.
+Tracking document for the phased implementation of Vulcan, a headless CLI for Obsidian vaults and plain Markdown directories.
 Derived from `docs/design_document.md`. Update task status as work progresses.
 
 **Status legend:** `[ ]` not started | `[~]` in progress | `[x]` complete | `[-]` cut/deferred
@@ -14,17 +14,21 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 **Design refs:** §4 (architecture), §5 (data model), §6 (incremental indexing), §7 (chunking), §14 (vault config), §15 (schema/migration)
 
 ### 1.1 Project scaffold
-- [ ] Initialize Rust project with `cargo init` (binary crate, name: `vulcan`)
-- [ ] Add core dependencies: `clap`, `rusqlite` (with `bundled` feature), `serde`, `serde_yaml`, `serde_json`, `pulldown-cmark` (with wikilinks + GFM), `notify`, `sha2` or `blake3` for content hashing
-- [ ] Set up workspace layout: `src/main.rs`, `src/cli/`, `src/db/`, `src/parser/`, `src/indexer/`, `src/config/`
-- [ ] Set up `clap` CLI skeleton with global flags: `--vault <path>`, `--db <path>`, `--output <human|json>`, `--verbose`
+- [ ] Initialize Cargo workspace with three crates:
+  - `vulcan-core` (lib): parser, indexer, data model, SQLite cache, file scanning, config
+  - `vulcan-embed` (lib): embedding provider trait and implementations, vector store abstraction
+  - `vulcan-cli` (bin): CLI binary, command handlers, output formatting
+- [ ] Add core dependencies to `vulcan-core`: `rusqlite` (with `bundled`), `serde`, `serde_yaml`, `serde_json`, `toml`, `pulldown-cmark` (with wikilinks + GFM), `notify`, `blake3`, `ulid`
+- [ ] Add dependencies to `vulcan-cli`: `clap`, `vulcan-core`
+- [ ] Set up `clap` CLI skeleton with global flags: `--vault <path>`, `--output <human|json>`, `--verbose`
 - [ ] Create `tests/fixtures/vaults/basic/` test vault with a handful of interlinked notes
+- [ ] Set up GitHub Actions CI: `cargo test` + `cargo clippy` + `cargo fmt --check`
 
 ### 1.2 SQLite cache foundation
-- [ ] Database initialization: create or open `.vulcan.db` in vault root (or user-specified path)
+- [ ] Database initialization: create or open `.vulcan/cache.db` in vault root
 - [ ] Set `PRAGMA journal_mode = WAL`, `PRAGMA foreign_keys = ON`, `PRAGMA busy_timeout`
 - [ ] Implement `user_version`-based migration framework (ordered migration list, apply sequentially in transaction, refuse on downgrade)
-- [ ] Schema v1: `documents` table — `id` (UUID or ULID), `path` (relative to vault root), `filename`, `extension`, `content_hash`, `raw_frontmatter`, `file_size`, `file_mtime`, `parser_version`, `indexed_at`
+- [ ] Schema v1: `documents` table — `id` (ULID), `path` (relative to vault root), `filename`, `extension`, `content_hash`, `raw_frontmatter`, `file_size`, `file_mtime`, `parser_version`, `indexed_at`
 - [ ] Schema v1: `headings` table — `id`, `document_id`, `level`, `text`, `byte_offset`
 - [ ] Schema v1: `block_refs` table — `id`, `document_id`, `block_id_text`, `byte_offset`
 - [ ] Schema v1: `links` table — `id`, `source_document_id`, `raw_text`, `link_kind` (wikilink/markdown/embed), `display_text`, `target_path_candidate`, `target_heading`, `target_block`, `resolved_target_id` (nullable FK), `origin_context` (body/property/frontmatter), `byte_offset`
@@ -38,7 +42,7 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 - [ ] Unit tests for migration framework (apply, skip already-applied, refuse downgrade)
 
 ### 1.3 Vault discovery and file scanning
-- [ ] Recursive vault scan: walk directory, skip `.obsidian/`, `.trash/`, hidden dirs, respect `.gitignore` if present
+- [ ] Recursive vault scan: walk directory, skip `.obsidian/`, `.vulcan/`, `.trash/`, hidden dirs, respect `.gitignore` if present
 - [ ] Detect file types: `.md` (notes), `.base` (Bases files), attachments (images, PDFs, etc.)
 - [ ] Compute content hash for each file
 - [ ] Incremental scan: compare `mtime` + `size` as cheap filter, verify with content hash, skip unchanged files
@@ -49,11 +53,15 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 - [ ] Integration test: scan `basic/` vault, verify document count and paths
 
 ### 1.4 Vault configuration parsing
-- [ ] Parse `.obsidian/app.json`: extract `useMarkdownLinks`, `newLinkFormat`, `attachmentFolderPath`, `strictLineBreaks`
-- [ ] Parse `.obsidian/types.json`: extract property type assignments
-- [ ] Fall back to Obsidian defaults if files are missing; emit diagnostic if unparseable
-- [ ] Store parsed config in an in-memory struct passed to parser and resolver
-- [ ] Unit tests for config parsing with missing/malformed files
+- [ ] Parse `.vulcan/config.toml`: chunking settings, link resolution defaults, link style preference, attachment folder override, embedding provider config
+- [ ] Create default `.vulcan/config.toml` on `vulcan init` with commented-out defaults
+- [ ] If `.obsidian/app.json` exists: read `useMarkdownLinks`, `newLinkFormat`, `attachmentFolderPath`, `strictLineBreaks` as fallback defaults
+- [ ] If `.obsidian/types.json` exists: read property type assignments to seed property catalog
+- [ ] Precedence: `.vulcan/config.toml` > `.obsidian/app.json` > built-in defaults
+- [ ] Fall back gracefully if neither `.vulcan/config.toml` nor `.obsidian/` exists (plain Markdown directory)
+- [ ] Emit diagnostic if a config file exists but is unparseable
+- [ ] Store merged config in an in-memory struct passed to parser and resolver
+- [ ] Unit tests for config merging, missing files, malformed files, precedence
 
 ### 1.5 Markdown parser
 - [ ] `pulldown-cmark` integration with `ENABLE_WIKILINKS` + `ENABLE_GFM` + `into_offset_iter()`
@@ -73,7 +81,7 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 - [ ] Implement `paragraph` strategy: one chunk per paragraph
 - [ ] Respect semantic boundaries: never split mid-paragraph, mid-list-item, mid-blockquote, mid-code-block
 - [ ] Each chunk records: document_id, sequence index, heading path, byte offsets, content hash, strategy name, strategy version
-- [ ] Configuration: target chunk size (default 1024 tokens), overlap (default 0), strategy selector
+- [ ] Configuration: target chunk size (default ~4000 characters as proxy for ~1024 tokens), overlap (default 0), strategy selector
 - [ ] Determinism: same content + same config = same chunks (required for hash-based skip)
 - [ ] Unit tests: heading splits, oversized single blocks, empty docs, frontmatter-only docs, configurable size, determinism assertion
 
