@@ -24,4 +24,4 @@ pub use scan::{detect_document_kind, scan_vault, DocumentKind, ScanError, ScanMo
 
 pub const PARSER_VERSION: u32 = 1;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
