@@ -9,8 +9,9 @@ use std::fmt::{Display, Formatter};
 use std::io;
 use std::path::PathBuf;
 use vulcan_core::{
-    doctor_vault, initialize_vault, scan_vault, DoctorDiagnosticIssue, DoctorLinkIssue,
-    DoctorReport, InitSummary, ScanMode, ScanSummary, VaultPaths,
+    doctor_vault, initialize_vault, query_backlinks, query_links, scan_vault, BacklinkRecord,
+    BacklinksReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary,
+    OutgoingLinkRecord, OutgoingLinksReport, ScanMode, ScanSummary, VaultPaths,
 };
 
 #[derive(Debug)]
@@ -72,6 +73,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
 
     match cli.command {
+        Command::Backlinks { ref note } => {
+            let report = query_backlinks(&paths, note).map_err(CliError::operation)?;
+            print_backlinks_report(cli.output, &report)?;
+            Ok(())
+        }
         Command::Describe => Err(CliError::not_implemented("describe")),
         Command::Doctor => {
             let report = doctor_vault(&paths).map_err(CliError::operation)?;
@@ -81,6 +87,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Init => {
             let summary = initialize_vault(&paths).map_err(CliError::operation)?;
             print_init_summary(cli.output, &summary)?;
+            Ok(())
+        }
+        Command::Links { ref note } => {
+            let report = query_links(&paths, note).map_err(CliError::operation)?;
+            print_links_report(cli.output, &report)?;
             Ok(())
         }
         Command::Scan { full } => {
@@ -96,6 +107,45 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_scan_summary(cli.output, &summary);
             Ok(())
         }
+    }
+}
+
+fn print_links_report(output: OutputFormat, report: &OutgoingLinksReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Links for {} ({:?})", report.note_path, report.matched_by);
+            if report.links.is_empty() {
+                println!("No outgoing links.");
+                return Ok(());
+            }
+
+            for link in &report.links {
+                print_outgoing_link(link);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_backlinks_report(output: OutputFormat, report: &BacklinksReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "Backlinks for {} ({:?})",
+                report.note_path, report.matched_by
+            );
+            if report.backlinks.is_empty() {
+                println!("No backlinks.");
+                return Ok(());
+            }
+
+            for backlink in &report.backlinks {
+                print_backlink(backlink);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
     }
 }
 
@@ -257,6 +307,40 @@ fn print_path_section(title: &str, paths: &[String]) {
     }
 }
 
+fn print_outgoing_link(link: &OutgoingLinkRecord) {
+    let target = link
+        .resolved_target_path
+        .as_deref()
+        .or(link.target_path_candidate.as_deref())
+        .unwrap_or("(self)");
+
+    if let Some(context) = link.context.as_ref() {
+        println!(
+            "- {} [{} {:?}] line {}: {}",
+            target, link.link_kind, link.resolution_status, context.line, link.raw_text
+        );
+    } else {
+        println!(
+            "- {} [{} {:?}]: {}",
+            target, link.link_kind, link.resolution_status, link.raw_text
+        );
+    }
+}
+
+fn print_backlink(backlink: &BacklinkRecord) {
+    if let Some(context) = backlink.context.as_ref() {
+        println!(
+            "- {} [{}] line {}: {}",
+            backlink.source_path, backlink.link_kind, context.line, backlink.raw_text
+        );
+    } else {
+        println!(
+            "- {} [{}]: {}",
+            backlink.source_path, backlink.link_kind, backlink.raw_text
+        );
+    }
+}
+
 fn zero_summary() -> vulcan_core::DoctorSummary {
     vulcan_core::DoctorSummary {
         unresolved_links: 0,
@@ -282,6 +366,26 @@ mod tests {
         assert_eq!(cli.output, OutputFormat::Human);
         assert!(!cli.verbose);
         assert_eq!(cli.command, Command::Doctor);
+    }
+
+    #[test]
+    fn parses_links_and_backlinks_commands() {
+        let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
+        let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            links.command,
+            Command::Links {
+                note: "Home".to_string()
+            }
+        );
+        assert_eq!(
+            backlinks.command,
+            Command::Backlinks {
+                note: "Projects/Alpha".to_string()
+            }
+        );
     }
 
     #[test]

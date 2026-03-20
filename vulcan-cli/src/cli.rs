@@ -14,6 +14,12 @@ pub enum Command {
         #[arg(long)]
         full: bool,
     },
+    Links {
+        note: String,
+    },
+    Backlinks {
+        note: String,
+    },
     Doctor,
     Describe,
 }
