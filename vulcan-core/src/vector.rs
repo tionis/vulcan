@@ -169,6 +169,49 @@ pub struct VectorIndexProgress {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VectorQueueReport {
+    pub provider_name: String,
+    pub model_name: String,
+    pub active_provider_name: Option<String>,
+    pub active_model_name: Option<String>,
+    pub active_dimensions: Option<usize>,
+    pub indexed_chunks: usize,
+    pub expected_chunks: usize,
+    pub pending_chunks: usize,
+    pub stale_vectors: usize,
+    pub model_mismatch: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorRepairQuery {
+    pub provider: Option<String>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VectorRepairReport {
+    pub dry_run: bool,
+    pub provider_name: String,
+    pub model_name: String,
+    pub active_provider_name: Option<String>,
+    pub active_model_name: Option<String>,
+    pub active_dimensions: Option<usize>,
+    pub indexed_chunks: usize,
+    pub expected_chunks: usize,
+    pub pending_chunks: usize,
+    pub stale_vectors: usize,
+    pub model_mismatch: bool,
+    pub repaired: bool,
+    pub index_report: Option<VectorIndexReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorRebuildQuery {
+    pub provider: Option<String>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VectorNeighborsQuery {
     pub provider: Option<String>,
     pub text: Option<String>,
@@ -264,6 +307,31 @@ pub struct ClusterSummary {
 pub struct ClusterDocumentCount {
     pub document_path: String,
     pub chunk_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelatedNotesQuery {
+    pub provider: Option<String>,
+    pub note: String,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RelatedNotesReport {
+    pub provider_name: String,
+    pub model_name: String,
+    pub dimensions: usize,
+    pub note_path: String,
+    pub hits: Vec<RelatedNoteHit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RelatedNoteHit {
+    pub document_path: String,
+    pub heading_path: Vec<String>,
+    pub snippet: String,
+    pub similarity: f32,
+    pub matched_chunks: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -552,6 +620,212 @@ where
     Ok(report)
 }
 
+pub fn inspect_vector_queue(
+    paths: &VaultPaths,
+    provider: Option<&str>,
+) -> Result<VectorQueueReport, VectorError> {
+    let status = load_vector_index_status(paths, provider)?;
+    Ok(VectorQueueReport {
+        provider_name: status.provider_name,
+        model_name: status.model_name,
+        active_provider_name: status
+            .active_model
+            .as_ref()
+            .map(|model| model.provider_name.clone()),
+        active_model_name: status
+            .active_model
+            .as_ref()
+            .map(|model| model.model_name.clone()),
+        active_dimensions: status.active_model.as_ref().map(|model| model.dimensions),
+        indexed_chunks: status.indexed_chunks,
+        expected_chunks: status.expected_chunks,
+        pending_chunks: status.pending_chunks,
+        stale_vectors: status.stale_chunk_ids.len(),
+        model_mismatch: status.model_mismatch,
+    })
+}
+
+pub fn repair_vectors(
+    paths: &VaultPaths,
+    query: &VectorRepairQuery,
+) -> Result<VectorRepairReport, VectorError> {
+    repair_vectors_with_progress(paths, query, |_| {})
+}
+
+pub fn repair_vectors_with_progress<F>(
+    paths: &VaultPaths,
+    query: &VectorRepairQuery,
+    mut on_progress: F,
+) -> Result<VectorRepairReport, VectorError>
+where
+    F: FnMut(VectorIndexProgress),
+{
+    let status = load_vector_index_status(paths, query.provider.as_deref())?;
+    let mut index_report = None;
+    let mut repaired = false;
+
+    if !query.dry_run {
+        if !status.stale_chunk_ids.is_empty() {
+            delete_vector_chunks(paths, &status.stale_chunk_ids)?;
+            repaired = true;
+        }
+
+        if status.model_mismatch {
+            index_report = Some(rebuild_vectors_with_progress(
+                paths,
+                &VectorRebuildQuery {
+                    provider: query.provider.clone(),
+                    dry_run: false,
+                },
+                &mut on_progress,
+            )?);
+            repaired = true;
+        } else if status.pending_chunks > 0 {
+            index_report = Some(index_vectors_with_progress(
+                paths,
+                &VectorIndexQuery {
+                    provider: query.provider.clone(),
+                    dry_run: false,
+                },
+                &mut on_progress,
+            )?);
+            repaired = true;
+        }
+    }
+
+    Ok(VectorRepairReport {
+        dry_run: query.dry_run,
+        provider_name: status.provider_name,
+        model_name: status.model_name,
+        active_provider_name: status
+            .active_model
+            .as_ref()
+            .map(|model| model.provider_name.clone()),
+        active_model_name: status
+            .active_model
+            .as_ref()
+            .map(|model| model.model_name.clone()),
+        active_dimensions: status.active_model.as_ref().map(|model| model.dimensions),
+        indexed_chunks: status.indexed_chunks,
+        expected_chunks: status.expected_chunks,
+        pending_chunks: status.pending_chunks,
+        stale_vectors: status.stale_chunk_ids.len(),
+        model_mismatch: status.model_mismatch,
+        repaired,
+        index_report,
+    })
+}
+
+pub fn rebuild_vectors(
+    paths: &VaultPaths,
+    query: &VectorRebuildQuery,
+) -> Result<VectorIndexReport, VectorError> {
+    rebuild_vectors_with_progress(paths, query, |_| {})
+}
+
+pub fn rebuild_vectors_with_progress<F>(
+    paths: &VaultPaths,
+    query: &VectorRebuildQuery,
+    mut on_progress: F,
+) -> Result<VectorIndexReport, VectorError>
+where
+    F: FnMut(VectorIndexProgress),
+{
+    let status = load_vector_index_status(paths, query.provider.as_deref())?;
+    if query.dry_run {
+        return Ok(VectorIndexReport {
+            dry_run: true,
+            provider_name: status.provider_name,
+            model_name: status.model_name,
+            dimensions: status
+                .active_model
+                .as_ref()
+                .map_or(0, |model| model.dimensions),
+            batch_size: status.batch_size,
+            max_concurrency: status.max_concurrency,
+            indexed: status.expected_chunks,
+            skipped: 0,
+            failed: 0,
+            batches: status.expected_chunks.div_ceil(status.batch_size.max(1)),
+            rebuilt_index: true,
+            elapsed_seconds: 0.0,
+            rate_per_second: 0.0,
+        });
+    }
+
+    clear_vector_index(paths)?;
+    let mut report = index_vectors_with_progress(
+        paths,
+        &VectorIndexQuery {
+            provider: query.provider.clone(),
+            dry_run: false,
+        },
+        &mut on_progress,
+    )?;
+    report.rebuilt_index = true;
+    Ok(report)
+}
+
+pub fn query_related_notes(
+    paths: &VaultPaths,
+    query: &RelatedNotesQuery,
+) -> Result<RelatedNotesReport, VectorError> {
+    let neighbor_report = query_vector_neighbors(
+        paths,
+        &VectorNeighborsQuery {
+            provider: query.provider.clone(),
+            text: None,
+            note: Some(query.note.clone()),
+            limit: query.limit.max(1).saturating_mul(8),
+        },
+    )?;
+
+    let note_path = neighbor_report.note_path.clone().ok_or_else(|| {
+        VectorError::InvalidQuery("related-note queries require --note".to_string())
+    })?;
+    let mut grouped = HashMap::<String, RelatedNoteHit>::new();
+
+    for hit in neighbor_report.hits {
+        let similarity = (1.0 - hit.distance).clamp(-1.0, 1.0);
+        grouped
+            .entry(hit.document_path.clone())
+            .and_modify(|current| {
+                current.matched_chunks += 1;
+                if similarity > current.similarity {
+                    current.similarity = similarity;
+                    current.heading_path.clone_from(&hit.heading_path);
+                    current.snippet.clone_from(&hit.snippet);
+                }
+            })
+            .or_insert_with(|| RelatedNoteHit {
+                document_path: hit.document_path,
+                heading_path: hit.heading_path,
+                snippet: hit.snippet,
+                similarity,
+                matched_chunks: 1,
+            });
+    }
+
+    let mut hits = grouped.into_values().collect::<Vec<_>>();
+    hits.sort_by(|left, right| {
+        right
+            .similarity
+            .partial_cmp(&left.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.matched_chunks.cmp(&left.matched_chunks))
+            .then_with(|| left.document_path.cmp(&right.document_path))
+    });
+    hits.truncate(query.limit.max(1));
+
+    Ok(RelatedNotesReport {
+        provider_name: neighbor_report.provider_name,
+        model_name: neighbor_report.model_name,
+        dimensions: neighbor_report.dimensions,
+        note_path,
+        hits,
+    })
+}
+
 pub fn query_vector_neighbors(
     paths: &VaultPaths,
     query: &VectorNeighborsQuery,
@@ -806,10 +1080,75 @@ pub(crate) fn query_hybrid_candidates(
     .map(|report| report.hits)
 }
 
-fn load_embedding_provider(
+#[derive(Debug, Clone)]
+struct VectorIndexStatus {
+    provider_name: String,
+    model_name: String,
+    batch_size: usize,
+    max_concurrency: usize,
+    active_model: Option<StoredModel>,
+    expected_chunks: usize,
+    indexed_chunks: usize,
+    pending_chunks: usize,
+    stale_chunk_ids: Vec<String>,
+    model_mismatch: bool,
+}
+
+fn load_vector_index_status(
     paths: &VaultPaths,
     requested_provider: Option<&str>,
-) -> Result<OpenAICompatibleProvider, VectorError> {
+) -> Result<VectorIndexStatus, VectorError> {
+    let config = load_embedding_config(paths, requested_provider)?;
+    let requested_model = configured_model_from_config(&config);
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
+    let chunks = load_indexable_chunks(connection)?;
+    let current_chunk_ids = chunks
+        .iter()
+        .map(|chunk| chunk.chunk_id.clone())
+        .collect::<HashSet<_>>();
+    let vectors = store.load_vectors().map_err(VectorError::Store)?;
+    let hashes = vectors
+        .iter()
+        .map(|vector| (vector.chunk_id.clone(), vector.content_hash.clone()))
+        .collect::<HashMap<_, _>>();
+    let stale_chunk_ids = vectors
+        .iter()
+        .filter(|vector| !current_chunk_ids.contains(&vector.chunk_id))
+        .map(|vector| vector.chunk_id.clone())
+        .collect::<Vec<_>>();
+    let active_model = store.current_model().map_err(VectorError::Store)?;
+    let model_mismatch = active_model
+        .as_ref()
+        .is_some_and(|model| !same_model(model, &requested_model));
+    let pending_chunks = if model_mismatch {
+        chunks.len()
+    } else {
+        chunks
+            .iter()
+            .filter(|chunk| hashes.get(&chunk.chunk_id) != Some(&chunk.content_hash))
+            .count()
+    };
+
+    Ok(VectorIndexStatus {
+        provider_name: requested_model.provider_name,
+        model_name: requested_model.model_name,
+        batch_size: config.max_batch_size.unwrap_or(32).max(1),
+        max_concurrency: config.max_concurrency.unwrap_or(4).max(1),
+        active_model,
+        expected_chunks: chunks.len(),
+        indexed_chunks: vectors.len(),
+        pending_chunks,
+        stale_chunk_ids,
+        model_mismatch,
+    })
+}
+
+fn load_embedding_config(
+    paths: &VaultPaths,
+    requested_provider: Option<&str>,
+) -> Result<EmbeddingProviderConfig, VectorError> {
     let config = load_vault_config(paths)
         .config
         .embedding
@@ -826,6 +1165,15 @@ fn load_embedding_provider(
             provider: config.provider_name().to_string(),
         });
     }
+
+    Ok(config)
+}
+
+fn load_embedding_provider(
+    paths: &VaultPaths,
+    requested_provider: Option<&str>,
+) -> Result<OpenAICompatibleProvider, VectorError> {
+    let config = load_embedding_config(paths, requested_provider)?;
 
     let api_key = resolve_api_key(&config)?;
     OpenAICompatibleProvider::new(OpenAICompatibleConfig {
@@ -914,11 +1262,48 @@ fn provider_model_from_metadata(metadata: &vulcan_embed::ModelMetadata) -> Store
     }
 }
 
+fn configured_model_from_config(config: &EmbeddingProviderConfig) -> StoredModel {
+    StoredModel {
+        provider_name: config.provider_name().to_string(),
+        model_name: config.model.clone(),
+        dimensions: 0,
+        normalized: config.normalized.unwrap_or(true),
+    }
+}
+
 fn same_model(left: &StoredModel, right: &StoredModel) -> bool {
     left.provider_name == right.provider_name
         && left.model_name == right.model_name
         && left.normalized == right.normalized
         && (left.dimensions == right.dimensions || right.dimensions == 0)
+}
+
+fn delete_vector_chunks(paths: &VaultPaths, chunk_ids: &[String]) -> Result<(), VectorError> {
+    if chunk_ids.is_empty() {
+        return Ok(());
+    }
+
+    let _lock = acquire_write_lock(paths)?;
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let mut store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
+    store.delete_chunks(chunk_ids).map_err(VectorError::Store)?;
+    clear_cluster_rows(connection, None)?;
+    Ok(())
+}
+
+fn clear_vector_index(paths: &VaultPaths) -> Result<(), VectorError> {
+    let _lock = acquire_write_lock(paths)?;
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    connection.execute_batch(
+        "
+        DROP TABLE IF EXISTS vectors;
+        DELETE FROM vector_index_state;
+        ",
+    )?;
+    clear_cluster_rows(connection, None)?;
+    Ok(())
 }
 
 fn load_indexable_chunks(connection: &Connection) -> Result<Vec<IndexedChunk>, VectorError> {
@@ -1736,6 +2121,143 @@ mod tests {
         .expect("cluster command should use the stored index");
 
         assert_eq!(report.cluster_count, 2);
+        server.shutdown();
+    }
+
+    #[test]
+    fn inspect_vector_queue_reports_pending_chunks_after_model_change() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            format!(
+                "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{}\"\nmodel = \"migrated\"\nmax_batch_size = 8\nmax_concurrency = 1\n",
+                server.base_url()
+            ),
+        )
+        .expect("config should rewrite");
+
+        let report = inspect_vector_queue(&paths, None).expect("queue status should succeed");
+
+        assert!(report.model_mismatch);
+        assert_eq!(report.expected_chunks, 4);
+        assert_eq!(report.pending_chunks, 4);
+        server.shutdown();
+    }
+
+    #[test]
+    fn repair_vectors_recovers_missing_rows() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
+        fs::write(
+            vault_root.join("Home.md"),
+            "---\naliases:\n  - Start\ntags:\n  - dashboard\n---\n\n# Home\n\nUpdated dashboard plans.\n",
+        )
+        .expect("updated note should write");
+        scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+
+        let report = repair_vectors(
+            &paths,
+            &VectorRepairQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector repair should succeed");
+
+        assert!(report.repaired);
+        assert_eq!(report.pending_chunks, 1);
+        let queue = inspect_vector_queue(&paths, None).expect("queue status should succeed");
+        assert_eq!(queue.pending_chunks, 0);
+        server.shutdown();
+    }
+
+    #[test]
+    fn rebuild_vectors_dry_run_reports_full_reindex_scope() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+
+        let report = rebuild_vectors(
+            &paths,
+            &VectorRebuildQuery {
+                provider: None,
+                dry_run: true,
+            },
+        )
+        .expect("dry-run rebuild should succeed");
+
+        assert!(report.dry_run);
+        assert!(report.rebuilt_index);
+        assert_eq!(report.indexed, 4);
+        server.shutdown();
+    }
+
+    #[test]
+    fn query_related_notes_groups_neighbors_by_document() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
+
+        let report = query_related_notes(
+            &paths,
+            &RelatedNotesQuery {
+                provider: None,
+                note: "Home".to_string(),
+                limit: 2,
+            },
+        )
+        .expect("related notes query should succeed");
+
+        assert_eq!(report.note_path, "Home.md");
+        assert!(!report.hits.is_empty());
+        assert!(report.hits.iter().all(|hit| hit.document_path != "Home.md"));
         server.shutdown();
     }
 

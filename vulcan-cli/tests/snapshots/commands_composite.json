@@ -183,6 +183,60 @@
         "subcommands": []
       },
       {
+        "about": "Serve local cache-backed HTTP APIs for repeated queries",
+        "name": "serve",
+        "options": [
+          {
+            "help": "Bind address for the local HTTP server",
+            "id": "bind",
+            "long": "bind",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "BIND"
+            ]
+          },
+          {
+            "help": "Disable the background watcher refresh loop",
+            "id": "no_watch",
+            "long": "no-watch",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_WATCH"
+            ]
+          },
+          {
+            "help": "Watcher debounce window in milliseconds when serve watch mode is enabled",
+            "id": "debounce_ms",
+            "long": "debounce-ms",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DEBOUNCE_MS"
+            ]
+          },
+          {
+            "help": "Optional shared secret required in the X-Vulcan-Token header",
+            "id": "auth_token",
+            "long": "auth-token",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "AUTH_TOKEN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Scan the vault and update the cache",
         "name": "scan",
         "options": [
@@ -953,6 +1007,24 @@
         "subcommands": []
       },
       {
+        "about": "Recommend semantically related notes for one note",
+        "name": "related",
+        "options": [
+          {
+            "help": "Note path, filename, or alias to use as the seed note",
+            "id": "note",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NOTE"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Run vector indexing and similarity commands",
         "name": "vectors",
         "options": [],
@@ -979,6 +1051,82 @@
             "subcommands": []
           },
           {
+            "about": "Repair stale, missing, or mismatched vector rows",
+            "name": "repair",
+            "options": [
+              {
+                "help": "Report the repair scope without mutating the vector index",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Rebuild the vector index from scratch",
+            "name": "rebuild",
+            "options": [
+              {
+                "help": "Report the rebuild scope without mutating the vector index",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Inspect or run the explicit vector indexing queue",
+            "name": "queue",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Report pending vector indexing work",
+                "name": "status",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Run the pending vector indexing queue",
+                "name": "run",
+                "options": [
+                  {
+                    "help": "Report the pending queue without embedding chunks",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
             "about": "Find nearest indexed chunks for text or a note",
             "name": "neighbors",
             "options": [
@@ -999,6 +1147,24 @@
                 "long": "note",
                 "possible_values": [],
                 "required": false,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Recommend semantically related notes for one note",
+            "name": "related",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to use as the seed note",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
                 "short": null,
                 "value_names": [
                   "NOTE"

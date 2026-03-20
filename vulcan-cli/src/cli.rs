@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 const COMMAND_GROUPS_HELP: &str = "\
 Command Groups:
-  Indexing: init, scan, rebuild, repair, watch
+  Indexing: init, scan, rebuild, repair, watch, serve
   Graph and Query: links, backlinks, graph, search, notes, bases
-  Semantic: vectors, cluster
+  Semantic: vectors, cluster, related
   Reports and Automation: saved, batch
   Maintenance: move, doctor, cache, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
 
@@ -63,11 +63,43 @@ pub enum SearchMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
+pub enum VectorQueueCommand {
+    #[command(about = "Report pending vector indexing work")]
+    Status,
+    #[command(about = "Run the pending vector indexing queue")]
+    Run {
+        #[arg(long, help = "Report the pending queue without embedding chunks")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum VectorsCommand {
     #[command(about = "Embed pending chunks and update the vector index")]
     Index {
         #[arg(long, help = "Report pending vector work without writing embeddings")]
         dry_run: bool,
+    },
+    #[command(about = "Repair stale, missing, or mismatched vector rows")]
+    Repair {
+        #[arg(
+            long,
+            help = "Report the repair scope without mutating the vector index"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Rebuild the vector index from scratch")]
+    Rebuild {
+        #[arg(
+            long,
+            help = "Report the rebuild scope without mutating the vector index"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Inspect or run the explicit vector indexing queue")]
+    Queue {
+        #[command(subcommand)]
+        command: VectorQueueCommand,
     },
     #[command(about = "Find nearest indexed chunks for text or a note")]
     Neighbors {
@@ -75,6 +107,11 @@ pub enum VectorsCommand {
         query: Option<String>,
         #[arg(long, help = "Existing note identifier to use as the similarity query")]
         note: Option<String>,
+    },
+    #[command(about = "Recommend semantically related notes for one note")]
+    Related {
+        #[arg(help = "Note path, filename, or alias to use as the seed note")]
+        note: String,
     },
     #[command(about = "Report highly similar chunk pairs from the vector index")]
     Duplicates {
@@ -228,6 +265,28 @@ pub enum Command {
         )]
         debounce_ms: u64,
     },
+    #[command(about = "Serve local cache-backed HTTP APIs for repeated queries")]
+    Serve {
+        #[arg(
+            long,
+            default_value = "127.0.0.1:3210",
+            help = "Bind address for the local HTTP server"
+        )]
+        bind: String,
+        #[arg(long, help = "Disable the background watcher refresh loop")]
+        no_watch: bool,
+        #[arg(
+            long,
+            default_value_t = 250,
+            help = "Watcher debounce window in milliseconds when serve watch mode is enabled"
+        )]
+        debounce_ms: u64,
+        #[arg(
+            long,
+            help = "Optional shared secret required in the X-Vulcan-Token header"
+        )]
+        auth_token: Option<String>,
+    },
     #[command(about = "Scan the vault and update the cache")]
     Scan {
         #[arg(long, help = "Force a full scan instead of incremental reconciliation")]
@@ -311,6 +370,11 @@ pub enum Command {
         clusters: usize,
         #[arg(long, help = "Report cluster assignments without persisting them")]
         dry_run: bool,
+    },
+    #[command(about = "Recommend semantically related notes for one note")]
+    Related {
+        #[arg(help = "Note path, filename, or alias to use as the seed note")]
+        note: String,
     },
     #[command(about = "Run vector indexing and similarity commands")]
     Vectors {

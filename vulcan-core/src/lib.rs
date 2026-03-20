@@ -80,14 +80,17 @@ pub use scan::{
 };
 pub use search::{search_vault, SearchError, SearchHit, SearchQuery, SearchReport};
 pub use vector::{
-    cluster_vectors, index_vectors, index_vectors_with_progress, query_vector_neighbors,
-    vector_duplicates, ClusterAssignment, ClusterDocumentCount, ClusterError, ClusterQuery,
-    ClusterReport, ClusterSummary, VectorDuplicatePair, VectorDuplicatesError,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorError, VectorIndexError, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsQuery, VectorNeighborsReport,
+    cluster_vectors, index_vectors, index_vectors_with_progress, inspect_vector_queue,
+    query_related_notes, query_vector_neighbors, rebuild_vectors, rebuild_vectors_with_progress,
+    repair_vectors, repair_vectors_with_progress, vector_duplicates, ClusterAssignment,
+    ClusterDocumentCount, ClusterError, ClusterQuery, ClusterReport, ClusterSummary,
+    RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, VectorDuplicatePair,
+    VectorDuplicatesError, VectorDuplicatesQuery, VectorDuplicatesReport, VectorError,
+    VectorIndexError, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport,
+    VectorRebuildQuery, VectorRepairQuery, VectorRepairReport,
 };
-pub use watch::{watch_vault, WatchError, WatchOptions, WatchReport};
+pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchReport};
 
 pub const PARSER_VERSION: u32 = 4;
 pub const EXTRACTION_VERSION: u32 = 1;
