@@ -1,5 +1,6 @@
 use crate::cache::CacheError;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
+use crate::resolver::{resolve_link, LinkResolutionProblem, ResolverDocument, ResolverLink};
 use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
 use ignore::WalkBuilder;
 use rusqlite::{params, Connection, Transaction};
@@ -168,6 +169,7 @@ pub fn scan_vault(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, Sca
                         index_note_document(transaction, &config, &id, file, &hash)?;
                     }
                 }
+                resolve_all_links(transaction, config.link_resolution)?;
 
                 Ok(ScanSummary {
                     mode,
@@ -181,14 +183,16 @@ pub fn scan_vault(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, Sca
         }
         ScanMode::Incremental => {
             database.with_transaction(|transaction| -> Result<ScanSummary, ScanError> {
-                apply_incremental_scan(
+                let summary = apply_incremental_scan(
                     transaction,
                     &config,
                     &discovered,
                     &existing,
                     &deleted_paths,
                     mode,
-                )
+                )?;
+                resolve_all_links(transaction, config.link_resolution)?;
+                Ok(summary)
             })
         }
     }
@@ -741,6 +745,146 @@ fn clear_derived_rows(
     Ok(())
 }
 
+fn resolve_all_links(
+    transaction: &Transaction<'_>,
+    mode: crate::LinkResolutionMode,
+) -> Result<(), ScanError> {
+    transaction.execute("DELETE FROM diagnostics WHERE kind = 'unresolved_link'", [])?;
+
+    let documents = load_resolver_documents(transaction)?;
+    let links = load_resolver_links(transaction)?;
+
+    for link in links {
+        let resolution = resolve_link(&documents, &link.resolver_link, mode);
+        transaction.execute(
+            "UPDATE links SET resolved_target_id = ?2 WHERE id = ?1",
+            params![link.id, resolution.resolved_target_id],
+        )?;
+
+        if let Some(problem) = resolution.problem {
+            transaction.execute(
+                "
+                INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+                VALUES (?1, ?2, 'unresolved_link', ?3, ?4, ?5)
+                ",
+                params![
+                    Ulid::new().to_string(),
+                    link.resolver_link.source_document_id,
+                    resolution_problem_message(&problem, &link.resolver_link),
+                    serde_json::to_string(&resolution_problem_detail(
+                        &problem,
+                        &link.resolver_link
+                    ))
+                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                    current_timestamp()?,
+                ],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn load_resolver_documents(
+    transaction: &Transaction<'_>,
+) -> Result<Vec<ResolverDocument>, ScanError> {
+    let mut alias_statement = transaction
+        .prepare("SELECT document_id, alias_text FROM aliases ORDER BY document_id, alias_text")?;
+    let alias_rows = alias_statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut aliases_by_document = HashMap::new();
+    for row in alias_rows {
+        let (document_id, alias_text) = row?;
+        aliases_by_document
+            .entry(document_id)
+            .or_insert_with(Vec::new)
+            .push(alias_text);
+    }
+
+    let mut statement =
+        transaction.prepare("SELECT id, path, filename FROM documents ORDER BY path")?;
+    let rows = statement.query_map([], |row| {
+        let id: String = row.get(0)?;
+        Ok(ResolverDocument {
+            aliases: aliases_by_document.remove(&id).unwrap_or_default(),
+            path: row.get(1)?,
+            filename: row.get(2)?,
+            id,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(ScanError::from)
+}
+
+fn load_resolver_links(transaction: &Transaction<'_>) -> Result<Vec<ResolverLinkRow>, ScanError> {
+    let mut statement = transaction.prepare(
+        "
+        SELECT
+            l.id,
+            l.source_document_id,
+            s.path,
+            l.target_path_candidate,
+            l.link_kind
+        FROM links l
+        JOIN documents s ON s.id = l.source_document_id
+        ORDER BY l.byte_offset
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(ResolverLinkRow {
+            id: row.get(0)?,
+            resolver_link: ResolverLink {
+                source_document_id: row.get(1)?,
+                source_path: row.get(2)?,
+                target_path_candidate: row.get(3)?,
+                link_kind: parse_link_kind(&row.get::<_, String>(4)?),
+            },
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(ScanError::from)
+}
+
+fn resolution_problem_message(problem: &LinkResolutionProblem, link: &ResolverLink) -> String {
+    let target = link.target_path_candidate.as_deref().unwrap_or("(self)");
+    match problem {
+        LinkResolutionProblem::Unresolved => format!("Unresolved link target: {target}"),
+        LinkResolutionProblem::Ambiguous(_) => format!("Ambiguous link target: {target}"),
+    }
+}
+
+fn resolution_problem_detail(
+    problem: &LinkResolutionProblem,
+    link: &ResolverLink,
+) -> serde_json::Value {
+    match problem {
+        LinkResolutionProblem::Unresolved => json!({
+            "reason": "unresolved",
+            "target": link.target_path_candidate,
+        }),
+        LinkResolutionProblem::Ambiguous(matches) => json!({
+            "reason": "ambiguous",
+            "target": link.target_path_candidate,
+            "matches": matches,
+        }),
+    }
+}
+
+fn parse_link_kind(link_kind: &str) -> LinkKind {
+    match link_kind {
+        "wikilink" => LinkKind::Wikilink,
+        "embed" => LinkKind::Embed,
+        "external" => LinkKind::External,
+        _ => LinkKind::Markdown,
+    }
+}
+
+struct ResolverLinkRow {
+    id: String,
+    resolver_link: ResolverLink,
+}
+
 fn link_kind_name(link_kind: LinkKind) -> &'static str {
     match link_kind {
         LinkKind::Wikilink => "wikilink",
@@ -935,12 +1079,65 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ambiguous_links_fixture_resolves_and_emits_diagnostics() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("ambiguous-links", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let resolved = resolved_links(database.connection());
+
+        assert_eq!(
+            resolved,
+            vec![
+                (
+                    "Projects/Source.md".to_string(),
+                    "[[Topic]]".to_string(),
+                    Some("Projects/Topic.md".to_string())
+                ),
+                (
+                    "Projects/Source.md".to_string(),
+                    "[[Archived Topic]]".to_string(),
+                    Some("Archive/Topic.md".to_string())
+                ),
+                ("Root.md".to_string(), "[[Topic]]".to_string(), None),
+            ]
+        );
+        assert_eq!(
+            diagnostic_kinds(database.connection()),
+            vec!["unresolved_link".to_string()]
+        );
+    }
+
     fn document_paths(connection: &Connection) -> Vec<String> {
         let mut statement = connection
             .prepare("SELECT path FROM documents ORDER BY path")
             .expect("statement should prepare");
         let rows = statement
             .query_map([], |row| row.get(0))
+            .expect("query should succeed");
+
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn resolved_links(connection: &Connection) -> Vec<(String, String, Option<String>)> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT source.path, links.raw_text, target.path
+                FROM links
+                JOIN documents AS source ON source.id = links.source_document_id
+                LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+                ORDER BY source.path, links.byte_offset
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .expect("query should succeed");
 
         rows.map(|row| row.expect("row should deserialize"))

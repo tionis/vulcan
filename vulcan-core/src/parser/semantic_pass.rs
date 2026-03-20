@@ -289,7 +289,7 @@ impl<'a> SemanticProcessor<'a> {
             return;
         };
 
-        let raw_text = self.source[link.byte_offset..byte_offset_end].to_string();
+        let raw_text = complete_raw_link_text(self.source, link.byte_offset, byte_offset_end);
         let parsed_link = classify_link(
             link.link_type,
             link.is_image,
@@ -391,6 +391,28 @@ fn contains_html_link(text: &str) -> bool {
     let lowercase = text.to_ascii_lowercase();
     (lowercase.contains("<a ") && lowercase.contains("href="))
         || (lowercase.contains("<img ") && lowercase.contains("src="))
+}
+
+fn complete_raw_link_text(source: &str, start: usize, end: usize) -> String {
+    let mut current_end = end.min(source.len());
+    let mut raw = &source[start..current_end];
+    let expected_suffix = if raw.starts_with("[[") || raw.starts_with("![[") {
+        "]]"
+    } else if raw.starts_with('[') || raw.starts_with("![") {
+        ")"
+    } else {
+        ""
+    };
+
+    while !expected_suffix.is_empty()
+        && !raw.ends_with(expected_suffix)
+        && current_end < source.len()
+    {
+        current_end += 1;
+        raw = &source[start..current_end];
+    }
+
+    raw.to_string()
 }
 
 fn extract_aliases(frontmatter: &serde_yaml::Value) -> Vec<String> {

@@ -4,6 +4,7 @@ pub mod config;
 pub mod init;
 pub mod parser;
 pub mod paths;
+pub mod resolver;
 pub mod scan;
 
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
@@ -19,6 +20,9 @@ pub use parser::{
 };
 pub use paths::{
     VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, VULCAN_DIR_NAME,
+};
+pub use resolver::{
+    resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverLink,
 };
 pub use scan::{detect_document_kind, scan_vault, DocumentKind, ScanError, ScanMode, ScanSummary};
 

@@ -136,16 +136,16 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Integration test: index `broken-frontmatter/` vault, assert diagnostics emitted
 
 ### 1.8 Link resolution
-- [ ] Implement Obsidian's link resolution algorithm:
+- [x] Implement Obsidian's link resolution algorithm:
   - Shortest-path matching (default): match by filename, prefer notes in same folder, then nearest
   - Absolute-path matching: match by full vault-relative path
   - Relative-path matching: resolve relative to source note
-- [ ] Respect `newLinkFormat` from vault config to select resolution strategy
-- [ ] Alias-aware resolution: if a link target matches an alias, resolve to that document
-- [ ] Populate `resolved_target_id` on `links` rows; leave null if resolution fails
-- [ ] Emit diagnostic for unresolved links and ambiguous targets (multiple candidates)
-- [ ] Unit tests: shortest-path, absolute, relative, alias, ambiguous, missing target
-- [ ] Integration test: `ambiguous-links/` vault, assert correct resolutions and diagnostics
+- [x] Respect `newLinkFormat` from vault config to select resolution strategy
+- [x] Alias-aware resolution: if a link target matches an alias, resolve to that document
+- [x] Populate `resolved_target_id` on `links` rows; leave null if resolution fails
+- [x] Emit diagnostic for unresolved links and ambiguous targets (multiple candidates)
+- [x] Unit tests: shortest-path, absolute, relative, alias, ambiguous, missing target
+- [x] Integration test: `ambiguous-links/` vault, assert correct resolutions and diagnostics
 
 ### 1.9 Doctor command
 - [ ] `doctor` CLI command reporting:
