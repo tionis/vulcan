@@ -37,8 +37,8 @@ pub use graph::{
 };
 pub use init::{initialize_vault, InitError, InitSummary};
 pub use maintenance::{
-    rebuild_vault, repair_fts, MaintenanceError, RebuildQuery, RebuildReport, RepairFtsQuery,
-    RepairFtsReport,
+    rebuild_vault, rebuild_vault_with_progress, repair_fts, MaintenanceError, RebuildQuery,
+    RebuildReport, RepairFtsQuery, RepairFtsReport,
 };
 pub use move_rewrite::{move_note, LinkChange, MoveError, MoveSummary, RewrittenFile};
 pub use parser::{
@@ -56,12 +56,16 @@ pub use properties::{
 pub use resolver::{
     resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverLink,
 };
-pub use scan::{detect_document_kind, scan_vault, DocumentKind, ScanError, ScanMode, ScanSummary};
+pub use scan::{
+    detect_document_kind, scan_vault, scan_vault_with_progress, DocumentKind, ScanError, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary,
+};
 pub use search::{search_vault, SearchError, SearchHit, SearchQuery, SearchReport};
 pub use vector::{
-    cluster_vectors, index_vectors, query_vector_neighbors, vector_duplicates, ClusterAssignment,
-    ClusterError, ClusterQuery, ClusterReport, VectorDuplicatePair, VectorDuplicatesError,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorError, VectorIndexError, VectorIndexQuery,
+    cluster_vectors, index_vectors, index_vectors_with_progress, query_vector_neighbors,
+    vector_duplicates, ClusterAssignment, ClusterError, ClusterQuery, ClusterReport,
+    VectorDuplicatePair, VectorDuplicatesError, VectorDuplicatesQuery, VectorDuplicatesReport,
+    VectorError, VectorIndexError, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
     VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
 };
 pub use watch::{watch_vault, WatchError, WatchOptions, WatchReport};

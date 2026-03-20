@@ -8,6 +8,7 @@ pub struct ModelMetadata {
     pub dimensions: usize,
     pub normalized: bool,
     pub max_batch_size: usize,
+    pub max_concurrency: usize,
     pub max_input_tokens: usize,
 }
 
