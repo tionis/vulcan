@@ -7,7 +7,7 @@ Command Groups:
   Indexing: init, scan, rebuild, repair, watch
   Graph and Query: links, backlinks, search, notes, bases
   Semantic: vectors, cluster
-  Maintenance: move, doctor, describe, completions";
+  Maintenance: move, doctor, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -165,7 +165,66 @@ pub enum Command {
         dry_run: bool,
     },
     #[command(about = "Inspect the vault for broken or suspicious state")]
-    Doctor,
+    Doctor {
+        #[arg(long, help = "Apply deterministic local repairs")]
+        fix: bool,
+        #[arg(
+            long,
+            help = "Report planned repairs without mutating the vault or cache"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Rename a frontmatter property key across notes")]
+    RenameProperty {
+        #[arg(help = "Existing property key")]
+        old: String,
+        #[arg(help = "Replacement property key")]
+        new: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+    },
+    #[command(about = "Merge one tag into another across frontmatter and note bodies")]
+    MergeTags {
+        #[arg(help = "Source tag to replace")]
+        source: String,
+        #[arg(help = "Destination tag to write")]
+        dest: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+    },
+    #[command(about = "Rename an alias inside one note's frontmatter")]
+    RenameAlias {
+        #[arg(help = "Note path, filename, or alias to update")]
+        note: String,
+        #[arg(help = "Existing alias text")]
+        old: String,
+        #[arg(help = "Replacement alias text")]
+        new: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+    },
+    #[command(about = "Rename a heading and rewrite inbound heading links")]
+    RenameHeading {
+        #[arg(help = "Note path, filename, or alias containing the heading")]
+        note: String,
+        #[arg(help = "Existing heading text")]
+        old: String,
+        #[arg(help = "Replacement heading text")]
+        new: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+    },
+    #[command(about = "Rename a block reference and rewrite inbound block links")]
+    RenameBlockRef {
+        #[arg(help = "Note path, filename, or alias containing the block reference")]
+        note: String,
+        #[arg(help = "Existing block reference id without the ^ prefix")]
+        old: String,
+        #[arg(help = "Replacement block reference id without the ^ prefix")]
+        new: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+    },
     #[command(about = "Describe the CLI schema and command surface")]
     Describe,
     #[command(about = "Generate shell completion scripts")]

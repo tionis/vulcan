@@ -31,6 +31,11 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("cluster"))
             .and(predicate::str::contains("move"))
             .and(predicate::str::contains("doctor"))
+            .and(predicate::str::contains("rename-property"))
+            .and(predicate::str::contains("merge-tags"))
+            .and(predicate::str::contains("rename-alias"))
+            .and(predicate::str::contains("rename-heading"))
+            .and(predicate::str::contains("rename-block-ref"))
             .and(predicate::str::contains("describe"))
             .and(predicate::str::contains("completions"))
             .and(predicate::str::contains(
@@ -43,6 +48,9 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("Command Groups:"))
             .and(predicate::str::contains(
                 "Indexing: init, scan, rebuild, repair, watch",
+            ))
+            .and(predicate::str::contains(
+                "Maintenance: move, doctor, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions",
             )),
     );
 }
@@ -169,6 +177,66 @@ fn doctor_json_output_reports_broken_frontmatter_vault() {
 
     assert_eq!(json["summary"]["parse_failures"], 1);
     assert_eq!(json["parse_failures"][0]["document_path"], "Broken.md");
+}
+
+#[test]
+fn doctor_fix_json_output_plans_repairs_for_uninitialized_vault() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "doctor",
+            "--fix",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let fixes = json["fixes"].as_array().expect("fixes should be an array");
+
+    assert_eq!(json["dry_run"], true);
+    assert!(fixes.iter().any(|fix| fix["kind"] == "initialize"));
+    assert!(fixes.iter().any(|fix| fix["kind"] == "scan"));
+}
+
+#[test]
+fn rename_property_json_output_reports_planned_file_changes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("refactors", &vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "rename-property",
+            "status",
+            "phase",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["action"], "rename_property");
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["files"][0]["path"], "Home.md");
+    assert_eq!(json["files"][0]["changes"][0]["before"], "status");
+    assert_eq!(json["files"][0]["changes"][0]["after"], "phase");
 }
 
 #[test]

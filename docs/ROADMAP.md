@@ -394,20 +394,20 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 **Depends on:** Phase 6 complete. Individual tracks can ship independently once the cache, rewrite engine, and diagnostics surface are stable.
 
 ### 7.1 Metadata and taxonomy refactors
-- [ ] `rename-property <old> <new>` command with `--dry-run`
-- [ ] `merge-tags <source> <dest>` command with safe frontmatter and body rewrites
-- [ ] `rename-alias <note> <old> <new>` command or alias-normalization helper
-- [ ] `rename-heading <note> <old> <new>` with safe inbound `#heading` link rewrites
-- [ ] `rename-block-ref <note> <old> <new>` with safe inbound `#^block` link rewrites
-- [ ] Preserve roundtrip-safe formatting when rewriting frontmatter properties and note bodies
-- [ ] Integration tests for property, tag, and alias refactors
+- [x] `rename-property <old> <new>` command with `--dry-run`
+- [x] `merge-tags <source> <dest>` command with safe frontmatter and body rewrites
+- [x] `rename-alias <note> <old> <new>` command or alias-normalization helper
+- [x] `rename-heading <note> <old> <new>` with safe inbound `#heading` link rewrites
+- [x] `rename-block-ref <note> <old> <new>` with safe inbound `#^block` link rewrites
+- [~] Preserve roundtrip-safe formatting when rewriting frontmatter properties and note bodies
+- [x] Integration tests for property, tag, and alias refactors
 
 ### 7.2 Doctor auto-fix
-- [ ] `doctor --fix` mode for deterministic, safe repairs
-- [ ] Repair stale cache/index mismatches via targeted rebuild or repair flows
-- [ ] Repair missing `.vulcan/` scaffolding and other recoverable local state
-- [ ] Optional link-style normalization and safe unresolved-link remediation suggestions
-- [ ] `--dry-run` and `--output json` support for planned fixes
+- [x] `doctor --fix` mode for deterministic, safe repairs
+- [x] Repair stale cache/index mismatches via targeted rebuild or repair flows
+- [x] Repair missing `.vulcan/` scaffolding and other recoverable local state
+- [x] Optional link-style normalization and safe unresolved-link remediation suggestions
+- [x] `--dry-run` and `--output json` support for planned fixes
 
 ### 7.3 Attachment graph and asset maintenance
 - [ ] Index attachments as first-class assets in the cache

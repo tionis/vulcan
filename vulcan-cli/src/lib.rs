@@ -15,17 +15,18 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use vulcan_core::{
-    cluster_vectors, doctor_vault, evaluate_base_file, index_vectors_with_progress,
-    initialize_vault, move_note, query_backlinks, query_links, query_notes, query_vector_neighbors,
-    rebuild_vault_with_progress, repair_fts, scan_vault_with_progress, search_vault,
+    cluster_vectors, doctor_fix, doctor_vault, evaluate_base_file, index_vectors_with_progress,
+    initialize_vault, merge_tags, move_note, query_backlinks, query_links, query_notes,
+    query_vector_neighbors, rebuild_vault_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, repair_fts, scan_vault_with_progress, search_vault,
     vector_duplicates, watch_vault, BacklinkRecord, BacklinksReport, BasesEvalReport, ClusterQuery,
-    ClusterReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary, MoveSummary,
-    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, RebuildQuery,
-    RebuildReport, RepairFtsQuery, RepairFtsReport, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
-    WatchOptions, WatchReport,
+    ClusterReport, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    InitSummary, MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, RebuildQuery, RebuildReport, RefactorReport, RepairFtsQuery,
+    RepairFtsReport, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsQuery, VectorNeighborsReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -395,9 +396,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Describe => print_describe_report(cli.output),
-        Command::Doctor => {
-            let report = doctor_vault(&paths).map_err(CliError::operation)?;
-            print_doctor_report(cli.output, &paths, &report)?;
+        Command::Doctor { fix, dry_run } => {
+            if fix {
+                let report = doctor_fix(&paths, dry_run).map_err(CliError::operation)?;
+                print_doctor_fix_report(cli.output, &paths, &report)?;
+            } else {
+                let report = doctor_vault(&paths).map_err(CliError::operation)?;
+                print_doctor_report(cli.output, &paths, &report)?;
+            }
             Ok(())
         }
         Command::Init => {
@@ -423,6 +429,57 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         } => {
             let summary = move_note(&paths, source, dest, dry_run).map_err(CliError::operation)?;
             print_move_summary(cli.output, &summary)?;
+            Ok(())
+        }
+        Command::RenameProperty {
+            ref old,
+            ref new,
+            dry_run,
+        } => {
+            let report = rename_property(&paths, old, new, dry_run).map_err(CliError::operation)?;
+            print_refactor_report(cli.output, &report)?;
+            Ok(())
+        }
+        Command::MergeTags {
+            ref source,
+            ref dest,
+            dry_run,
+        } => {
+            let report = merge_tags(&paths, source, dest, dry_run).map_err(CliError::operation)?;
+            print_refactor_report(cli.output, &report)?;
+            Ok(())
+        }
+        Command::RenameAlias {
+            ref note,
+            ref old,
+            ref new,
+            dry_run,
+        } => {
+            let report =
+                rename_alias(&paths, note, old, new, dry_run).map_err(CliError::operation)?;
+            print_refactor_report(cli.output, &report)?;
+            Ok(())
+        }
+        Command::RenameHeading {
+            ref note,
+            ref old,
+            ref new,
+            dry_run,
+        } => {
+            let report =
+                rename_heading(&paths, note, old, new, dry_run).map_err(CliError::operation)?;
+            print_refactor_report(cli.output, &report)?;
+            Ok(())
+        }
+        Command::RenameBlockRef {
+            ref note,
+            ref old,
+            ref new,
+            dry_run,
+        } => {
+            let report =
+                rename_block_ref(&paths, note, old, new, dry_run).map_err(CliError::operation)?;
+            print_refactor_report(cli.output, &report)?;
             Ok(())
         }
         Command::Repair { ref command } => match command {
@@ -1142,6 +1199,33 @@ fn print_move_summary(output: OutputFormat, summary: &MoveSummary) -> Result<(),
     }
 }
 
+fn print_refactor_report(output: OutputFormat, report: &RefactorReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!("Dry run for {}", report.action);
+            } else {
+                println!("Applied {}", report.action);
+            }
+
+            if report.files.is_empty() {
+                println!("No files changed.");
+                return Ok(());
+            }
+
+            for file in &report.files {
+                println!("- {}", file.path);
+                for change in &file.changes {
+                    println!("  {} -> {}", change.before, change.after);
+                }
+            }
+
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_doctor_report(
     output: OutputFormat,
     paths: &VaultPaths,
@@ -1176,6 +1260,39 @@ fn print_doctor_report(
             print_path_section("Missing index rows", &report.missing_index_rows);
             print_path_section("Orphan notes", &report.orphan_notes);
             print_diagnostic_section("HTML links", &report.html_links);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_doctor_fix_report(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    report: &DoctorFixReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!("Doctor fix plan for {}", paths.vault_root().display());
+            } else {
+                println!("Doctor fix run for {}", paths.vault_root().display());
+            }
+            if report.fixes.is_empty() {
+                println!("No deterministic fixes needed.");
+            } else {
+                for fix in &report.fixes {
+                    println!("- {}: {}", fix.kind, fix.description);
+                }
+            }
+
+            if !report.suggestions.is_empty() {
+                println!("Suggestions:");
+                for suggestion in &report.suggestions {
+                    println!("- {suggestion}");
+                }
+            }
+
             Ok(())
         }
         OutputFormat::Json => print_json(report),
@@ -1738,7 +1855,13 @@ mod tests {
         assert_eq!(cli.limit, None);
         assert_eq!(cli.offset, 0);
         assert!(!cli.verbose);
-        assert_eq!(cli.command, Command::Doctor);
+        assert_eq!(
+            cli.command,
+            Command::Doctor {
+                fix: false,
+                dry_run: false
+            }
+        );
     }
 
     #[test]
@@ -1749,6 +1872,8 @@ mod tests {
         let repair = Cli::try_parse_from(["vulcan", "repair", "fts", "--dry-run"])
             .expect("cli should parse");
         let watch = Cli::try_parse_from(["vulcan", "watch", "--debounce-ms", "125"])
+            .expect("cli should parse");
+        let doctor = Cli::try_parse_from(["vulcan", "doctor", "--fix", "--dry-run"])
             .expect("cli should parse");
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
@@ -1806,6 +1931,13 @@ mod tests {
             }
         );
         assert_eq!(watch.command, Command::Watch { debounce_ms: 125 });
+        assert_eq!(
+            doctor.command,
+            Command::Doctor {
+                fix: true,
+                dry_run: true
+            }
+        );
 
         assert_eq!(
             links.command,
@@ -1871,6 +2003,80 @@ mod tests {
                 source: "Projects/Alpha.md".to_string(),
                 dest: "Archive/Alpha.md".to_string(),
                 dry_run: true
+            }
+        );
+        assert_eq!(
+            Cli::try_parse_from(["vulcan", "rename-property", "status", "phase", "--dry-run"])
+                .expect("cli should parse")
+                .command,
+            Command::RenameProperty {
+                old: "status".to_string(),
+                new: "phase".to_string(),
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            Cli::try_parse_from(["vulcan", "merge-tags", "project", "initiative", "--dry-run"])
+                .expect("cli should parse")
+                .command,
+            Command::MergeTags {
+                source: "project".to_string(),
+                dest: "initiative".to_string(),
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            Cli::try_parse_from([
+                "vulcan",
+                "rename-alias",
+                "Home",
+                "Start",
+                "Landing",
+                "--dry-run"
+            ])
+            .expect("cli should parse")
+            .command,
+            Command::RenameAlias {
+                note: "Home".to_string(),
+                old: "Start".to_string(),
+                new: "Landing".to_string(),
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            Cli::try_parse_from([
+                "vulcan",
+                "rename-heading",
+                "Projects/Alpha",
+                "Status",
+                "Progress",
+                "--dry-run"
+            ])
+            .expect("cli should parse")
+            .command,
+            Command::RenameHeading {
+                note: "Projects/Alpha".to_string(),
+                old: "Status".to_string(),
+                new: "Progress".to_string(),
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            Cli::try_parse_from([
+                "vulcan",
+                "rename-block-ref",
+                "Projects/Alpha",
+                "alpha-status",
+                "alpha-progress",
+                "--dry-run"
+            ])
+            .expect("cli should parse")
+            .command,
+            Command::RenameBlockRef {
+                note: "Projects/Alpha".to_string(),
+                old: "alpha-status".to_string(),
+                new: "alpha-progress".to_string(),
+                dry_run: true,
             }
         );
         assert_eq!(
@@ -1953,5 +2159,9 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "watch"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "rename-property"));
     }
 }
