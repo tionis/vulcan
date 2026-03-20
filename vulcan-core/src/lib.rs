@@ -9,6 +9,7 @@ pub mod parser;
 pub mod paths;
 pub mod resolver;
 pub mod scan;
+pub mod write_lock;
 
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{

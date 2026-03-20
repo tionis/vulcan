@@ -1,8 +1,9 @@
 use crate::graph::resolve_note_reference;
 use crate::parser::{parse_document, RawLink};
+use crate::scan::scan_vault_unlocked;
+use crate::write_lock::acquire_write_lock;
 use crate::{
-    load_vault_config, scan_vault, GraphQueryError, LinkResolutionMode, ScanError, ScanMode,
-    VaultPaths,
+    load_vault_config, GraphQueryError, LinkResolutionMode, ScanError, ScanMode, VaultPaths,
 };
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -130,6 +131,7 @@ pub fn move_note(
     destination: &str,
     dry_run: bool,
 ) -> Result<MoveSummary, MoveError> {
+    let _lock = acquire_write_lock(paths)?;
     let source = resolve_note_reference(paths, source_identifier)?;
     let destination_path = normalize_destination_path(destination)?;
     if source.path == destination_path {
@@ -204,7 +206,7 @@ pub fn move_note(
         )?;
     }
 
-    scan_vault(paths, ScanMode::Incremental)?;
+    scan_vault_unlocked(paths, ScanMode::Incremental)?;
 
     Ok(MoveSummary {
         dry_run: false,
@@ -530,8 +532,10 @@ fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doctor_vault;
+    use crate::{doctor_vault, scan_vault};
     use std::path::Path;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     use tempfile::TempDir;
 
     #[test]
@@ -638,6 +642,43 @@ mod tests {
                     .join("../tests/fixtures/vaults/move-rewrite/Home.md")
             )
             .expect("fixture should be readable")
+        );
+    }
+
+    #[test]
+    fn concurrent_scan_and_move_produce_consistent_state() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("move-rewrite", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let barrier = Arc::new(Barrier::new(2));
+        let move_paths = paths.clone();
+        let scan_paths = paths.clone();
+        let move_barrier = Arc::clone(&barrier);
+        let scan_barrier = Arc::clone(&barrier);
+
+        let move_thread = thread::spawn(move || {
+            move_barrier.wait();
+            move_note(&move_paths, "Projects/Alpha.md", "Archive/Alpha.md", false)
+                .expect("move should succeed");
+        });
+        let scan_thread = thread::spawn(move || {
+            scan_barrier.wait();
+            scan_vault(&scan_paths, ScanMode::Incremental).expect("scan should succeed");
+        });
+
+        move_thread.join().expect("move thread should join");
+        scan_thread.join().expect("scan thread should join");
+
+        assert!(vault_root.join("Archive/Alpha.md").exists());
+        assert_eq!(
+            doctor_vault(&paths)
+                .expect("doctor should succeed")
+                .summary
+                .unresolved_links,
+            0
         );
     }
 

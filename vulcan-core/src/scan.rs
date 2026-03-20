@@ -1,6 +1,7 @@
 use crate::cache::CacheError;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
 use crate::resolver::{resolve_link, LinkResolutionProblem, ResolverDocument, ResolverLink};
+use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
 use ignore::WalkBuilder;
 use rusqlite::{params, Connection, Transaction};
@@ -142,6 +143,14 @@ pub fn detect_document_kind(path: &Path) -> DocumentKind {
 }
 
 pub fn scan_vault(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, ScanError> {
+    let _lock = acquire_write_lock(paths)?;
+    scan_vault_unlocked(paths, mode)
+}
+
+pub(crate) fn scan_vault_unlocked(
+    paths: &VaultPaths,
+    mode: ScanMode,
+) -> Result<ScanSummary, ScanError> {
     let config = load_vault_config(paths).config;
     let discovered = discover_files(paths.vault_root())?;
     let current_paths = discovered
