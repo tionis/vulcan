@@ -1,0 +1,621 @@
+use crate::cache::CacheError;
+use crate::{CacheDatabase, VaultPaths, PARSER_VERSION};
+use ignore::WalkBuilder;
+use rusqlite::{params, Connection, Transaction};
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fmt::{Display, Formatter};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
+use ulid::Ulid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanMode {
+    Full,
+    Incremental,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentKind {
+    Note,
+    Base,
+    Attachment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScanSummary {
+    pub mode: ScanMode,
+    pub discovered: usize,
+    pub added: usize,
+    pub updated: usize,
+    pub unchanged: usize,
+    pub deleted: usize,
+}
+
+#[derive(Debug)]
+pub enum ScanError {
+    Cache(CacheError),
+    Ignore(ignore::Error),
+    Io(std::io::Error),
+    MetadataOverflow { field: &'static str, path: PathBuf },
+    Sqlite(rusqlite::Error),
+    Time(SystemTimeError),
+}
+
+impl Display for ScanError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cache(error) => write!(formatter, "{error}"),
+            Self::Ignore(error) => write!(formatter, "{error}"),
+            Self::Io(error) => write!(formatter, "{error}"),
+            Self::MetadataOverflow { field, path } => {
+                write!(formatter, "{field} overflowed for {}", path.display())
+            }
+            Self::Sqlite(error) => write!(formatter, "{error}"),
+            Self::Time(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl Error for ScanError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Cache(error) => Some(error),
+            Self::Ignore(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::MetadataOverflow { .. } => None,
+            Self::Sqlite(error) => Some(error),
+            Self::Time(error) => Some(error),
+        }
+    }
+}
+
+impl From<CacheError> for ScanError {
+    fn from(error: CacheError) -> Self {
+        Self::Cache(error)
+    }
+}
+
+impl From<ignore::Error> for ScanError {
+    fn from(error: ignore::Error) -> Self {
+        Self::Ignore(error)
+    }
+}
+
+impl From<std::io::Error> for ScanError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<rusqlite::Error> for ScanError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error)
+    }
+}
+
+impl From<SystemTimeError> for ScanError {
+    fn from(error: SystemTimeError) -> Self {
+        Self::Time(error)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscoveredFile {
+    absolute_path: PathBuf,
+    relative_path: String,
+    filename: String,
+    extension: String,
+    file_size: i64,
+    file_mtime: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedDocument {
+    id: String,
+    file_size: i64,
+    file_mtime: i64,
+    content_hash: Vec<u8>,
+}
+
+#[must_use]
+pub fn detect_document_kind(path: &Path) -> DocumentKind {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("md") => DocumentKind::Note,
+        Some("base") => DocumentKind::Base,
+        _ => DocumentKind::Attachment,
+    }
+}
+
+pub fn scan_vault(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, ScanError> {
+    let discovered = discover_files(paths.vault_root())?;
+    let current_paths = discovered
+        .iter()
+        .map(|file| file.relative_path.clone())
+        .collect::<HashSet<_>>();
+    let mut database = CacheDatabase::open(paths)?;
+    let existing = load_cached_documents(database.connection())?;
+    let deleted_paths = existing
+        .keys()
+        .filter(|path| !current_paths.contains(*path))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    match mode {
+        ScanMode::Full => {
+            let discovered_count = discovered.len();
+            let deleted_count = deleted_paths.len();
+            database.rebuild_with(|transaction| -> Result<ScanSummary, ScanError> {
+                for file in &discovered {
+                    let hash = compute_content_hash(&file.absolute_path)?;
+                    insert_document(transaction, &Ulid::new().to_string(), file, &hash)?;
+                }
+
+                Ok(ScanSummary {
+                    mode,
+                    discovered: discovered_count,
+                    added: discovered_count,
+                    updated: 0,
+                    unchanged: 0,
+                    deleted: deleted_count,
+                })
+            })
+        }
+        ScanMode::Incremental => {
+            database.with_transaction(|transaction| -> Result<ScanSummary, ScanError> {
+                apply_incremental_scan(transaction, &discovered, &existing, &deleted_paths, mode)
+            })
+        }
+    }
+}
+
+fn apply_incremental_scan(
+    transaction: &Transaction<'_>,
+    discovered: &[DiscoveredFile],
+    existing: &HashMap<String, CachedDocument>,
+    deleted_paths: &[String],
+    mode: ScanMode,
+) -> Result<ScanSummary, ScanError> {
+    let mut summary = ScanSummary {
+        mode,
+        discovered: discovered.len(),
+        added: 0,
+        updated: 0,
+        unchanged: 0,
+        deleted: 0,
+    };
+    let mut seen_paths = HashSet::with_capacity(discovered.len());
+
+    for file in discovered {
+        seen_paths.insert(file.relative_path.clone());
+
+        match existing.get(&file.relative_path) {
+            Some(cached)
+                if cached.file_size == file.file_size && cached.file_mtime == file.file_mtime =>
+            {
+                summary.unchanged += 1;
+            }
+            Some(cached) => {
+                let hash = compute_content_hash(&file.absolute_path)?;
+
+                if hash == cached.content_hash {
+                    update_document_metadata(transaction, &cached.id, file)?;
+                    summary.unchanged += 1;
+                } else {
+                    update_document(transaction, &cached.id, file, &hash)?;
+                    summary.updated += 1;
+                }
+            }
+            None => {
+                let hash = compute_content_hash(&file.absolute_path)?;
+                insert_document(transaction, &Ulid::new().to_string(), file, &hash)?;
+                summary.added += 1;
+            }
+        }
+    }
+
+    for path in deleted_paths {
+        if let Some(cached) = existing.get(path) {
+            delete_document(transaction, &cached.id)?;
+            summary.deleted += 1;
+        }
+    }
+
+    debug_assert_eq!(seen_paths.len(), discovered.len());
+    Ok(summary)
+}
+
+fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
+    let mut builder = WalkBuilder::new(vault_root);
+    builder.hidden(true);
+    builder.git_ignore(true);
+    builder.require_git(false);
+
+    let mut files = Vec::new();
+    for entry in builder.build() {
+        let entry = entry?;
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let path = entry.path();
+        let metadata = fs::metadata(path)?;
+        let relative_path = normalize_relative_path(
+            path.strip_prefix(vault_root)
+                .expect("walked paths should always be inside the vault root"),
+        );
+        let filename = path
+            .file_stem()
+            .or_else(|| path.file_name())
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| ScanError::MetadataOverflow {
+                field: "filename",
+                path: path.to_path_buf(),
+            })?
+            .to_string();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+
+        files.push(DiscoveredFile {
+            absolute_path: path.to_path_buf(),
+            relative_path,
+            filename,
+            extension,
+            file_size: i64::try_from(metadata.len()).map_err(|_| ScanError::MetadataOverflow {
+                field: "file_size",
+                path: path.to_path_buf(),
+            })?,
+            file_mtime: system_time_to_millis(metadata.modified()?, path)?,
+        });
+    }
+
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(files)
+}
+
+fn normalize_relative_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::CurDir => None,
+            other => Some(other.as_os_str().to_string_lossy().into_owned()),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn compute_content_hash(path: &Path) -> Result<Vec<u8>, ScanError> {
+    Ok(blake3::hash(&fs::read(path)?).as_bytes().to_vec())
+}
+
+fn system_time_to_millis(time: SystemTime, path: &Path) -> Result<i64, ScanError> {
+    let millis = time.duration_since(UNIX_EPOCH)?.as_millis();
+    i64::try_from(millis).map_err(|_| ScanError::MetadataOverflow {
+        field: "file_mtime",
+        path: path.to_path_buf(),
+    })
+}
+
+fn load_cached_documents(
+    connection: &Connection,
+) -> Result<HashMap<String, CachedDocument>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "
+        SELECT id, path, file_size, file_mtime, content_hash
+        FROM documents
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(1)?,
+            CachedDocument {
+                id: row.get(0)?,
+                file_size: row.get(2)?,
+                file_mtime: row.get(3)?,
+                content_hash: row.get(4)?,
+            },
+        ))
+    })?;
+
+    rows.collect::<Result<HashMap<_, _>, _>>()
+}
+
+fn insert_document(
+    transaction: &Transaction<'_>,
+    id: &str,
+    file: &DiscoveredFile,
+    content_hash: &[u8],
+) -> Result<(), ScanError> {
+    transaction.execute(
+        "
+        INSERT INTO documents (
+            id,
+            path,
+            filename,
+            extension,
+            content_hash,
+            raw_frontmatter,
+            file_size,
+            file_mtime,
+            parser_version,
+            indexed_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9)
+        ",
+        params![
+            id,
+            file.relative_path,
+            file.filename,
+            file.extension,
+            content_hash,
+            file.file_size,
+            file.file_mtime,
+            PARSER_VERSION,
+            current_timestamp()?,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn update_document(
+    transaction: &Transaction<'_>,
+    id: &str,
+    file: &DiscoveredFile,
+    content_hash: &[u8],
+) -> Result<(), ScanError> {
+    transaction.execute(
+        "
+        UPDATE documents
+        SET filename = ?2,
+            extension = ?3,
+            content_hash = ?4,
+            file_size = ?5,
+            file_mtime = ?6,
+            parser_version = ?7,
+            indexed_at = ?8
+        WHERE id = ?1
+        ",
+        params![
+            id,
+            file.filename,
+            file.extension,
+            content_hash,
+            file.file_size,
+            file.file_mtime,
+            PARSER_VERSION,
+            current_timestamp()?,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn update_document_metadata(
+    transaction: &Transaction<'_>,
+    id: &str,
+    file: &DiscoveredFile,
+) -> Result<(), ScanError> {
+    transaction.execute(
+        "
+        UPDATE documents
+        SET filename = ?2,
+            extension = ?3,
+            file_size = ?4,
+            file_mtime = ?5
+        WHERE id = ?1
+        ",
+        params![
+            id,
+            file.filename,
+            file.extension,
+            file.file_size,
+            file.file_mtime
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn delete_document(transaction: &Transaction<'_>, id: &str) -> Result<(), rusqlite::Error> {
+    transaction.execute("DELETE FROM documents WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+fn current_timestamp() -> Result<String, ScanError> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_secs()
+        .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{load_vault_config, LinkResolutionMode, LinkStylePreference};
+    use tempfile::TempDir;
+
+    #[test]
+    fn normalize_relative_path_uses_forward_slashes() {
+        let path = PathBuf::from_iter(["people", "bob.md"]);
+
+        assert_eq!(normalize_relative_path(&path), "people/bob.md");
+    }
+
+    #[test]
+    fn document_kind_detection_matches_extensions() {
+        assert_eq!(
+            detect_document_kind(Path::new("note.md")),
+            DocumentKind::Note
+        );
+        assert_eq!(
+            detect_document_kind(Path::new("view.base")),
+            DocumentKind::Base
+        );
+        assert_eq!(
+            detect_document_kind(Path::new("image.png")),
+            DocumentKind::Attachment
+        );
+    }
+
+    #[test]
+    fn content_hash_matches_blake3_output() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let file = temp_dir.path().join("note.md");
+        fs::write(&file, "hello world").expect("fixture file should be written");
+
+        let hash = compute_content_hash(&file).expect("hash should be computed");
+
+        assert_eq!(hash, blake3::hash(b"hello world").as_bytes().to_vec());
+    }
+
+    #[test]
+    fn full_scan_indexes_fixture_vault() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        let summary = scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+
+        assert_eq!(
+            summary,
+            ScanSummary {
+                mode: ScanMode::Full,
+                discovered: 3,
+                added: 3,
+                updated: 0,
+                unchanged: 0,
+                deleted: 0,
+            }
+        );
+
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        assert_eq!(
+            document_paths(database.connection()),
+            vec![
+                "Home.md".to_string(),
+                "People/Bob.md".to_string(),
+                "Projects/Alpha.md".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn incremental_scan_skips_unchanged_files() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+
+        assert_eq!(
+            summary,
+            ScanSummary {
+                mode: ScanMode::Incremental,
+                discovered: 3,
+                added: 0,
+                updated: 0,
+                unchanged: 3,
+                deleted: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn scan_respects_gitignore_and_hidden_directories() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("notes")).expect("notes dir should be created");
+        fs::create_dir_all(vault_root.join(".hidden")).expect("hidden dir should be created");
+        fs::write(vault_root.join(".gitignore"), "ignored.md\n").expect("gitignore should exist");
+        fs::write(vault_root.join("notes/keep.md"), "# keep").expect("keep note should exist");
+        fs::write(vault_root.join("ignored.md"), "# ignored").expect("ignored note should exist");
+        fs::write(vault_root.join(".hidden/secret.md"), "# secret")
+            .expect("hidden note should exist");
+        let paths = VaultPaths::new(&vault_root);
+
+        let summary = scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(summary.discovered, 1);
+        assert_eq!(
+            document_paths(database.connection()),
+            vec!["notes/keep.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn fixture_config_is_loaded_with_obsidian_defaults() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        let loaded = load_vault_config(&paths);
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(loaded.config.link_resolution, LinkResolutionMode::Shortest);
+        assert_eq!(loaded.config.link_style, LinkStylePreference::Wikilink);
+        assert_eq!(
+            loaded.config.property_types.get("status"),
+            Some(&"text".to_string())
+        );
+    }
+
+    fn document_paths(connection: &Connection) -> Vec<String> {
+        let mut statement = connection
+            .prepare("SELECT path FROM documents ORDER BY path")
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| row.get(0))
+            .expect("query should succeed");
+
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn copy_fixture_vault(name: &str, destination: &Path) {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/vaults")
+            .join(name);
+
+        copy_dir_recursive(&source, destination);
+    }
+
+    fn copy_dir_recursive(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("destination directory should be created");
+
+        for entry in fs::read_dir(source).expect("source directory should be readable") {
+            let entry = entry.expect("directory entry should be readable");
+            let file_type = entry.file_type().expect("file type should be readable");
+            let target = destination.join(entry.file_name());
+
+            if file_type.is_dir() {
+                copy_dir_recursive(&entry.path(), &target);
+            } else if file_type.is_file() {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).expect("parent directory should exist");
+                }
+                fs::copy(entry.path(), target).expect("file should be copied");
+            }
+        }
+    }
+}

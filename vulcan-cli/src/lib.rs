@@ -3,11 +3,12 @@ mod cli;
 pub use cli::{Cli, Command, OutputFormat};
 
 use clap::Parser;
+use serde::Serialize;
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::path::PathBuf;
-use vulcan_core::VaultPaths;
+use vulcan_core::{initialize_vault, scan_vault, InitSummary, ScanMode, ScanSummary, VaultPaths};
 
 #[derive(Debug)]
 pub struct CliError {
@@ -27,6 +28,13 @@ impl CliError {
         Self {
             exit_code: 1,
             message: format!("failed to read current working directory: {error}"),
+        }
+    }
+
+    fn operation(error: impl Display) -> Self {
+        Self {
+            exit_code: 1,
+            message: error.to_string(),
         }
     }
 
@@ -58,14 +66,79 @@ where
 }
 
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
-    let _paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
+    let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
 
     match cli.command {
         Command::Describe => Err(CliError::not_implemented("describe")),
         Command::Doctor => Err(CliError::not_implemented("doctor")),
-        Command::Init => Err(CliError::not_implemented("init")),
-        Command::Scan { .. } => Err(CliError::not_implemented("scan")),
+        Command::Init => {
+            let summary = initialize_vault(&paths).map_err(CliError::operation)?;
+            print_init_summary(cli.output, &summary)?;
+            Ok(())
+        }
+        Command::Scan { full } => {
+            let summary = scan_vault(
+                &paths,
+                if full {
+                    ScanMode::Full
+                } else {
+                    ScanMode::Incremental
+                },
+            )
+            .map_err(CliError::operation)?;
+            print_scan_summary(cli.output, &summary);
+            Ok(())
+        }
     }
+}
+
+fn print_init_summary(output: OutputFormat, summary: &InitSummary) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "Initialized {} (config {}, cache {})",
+                summary.vault_root.display(),
+                if summary.created_config {
+                    "created"
+                } else {
+                    "existing"
+                },
+                if summary.created_cache {
+                    "created"
+                } else {
+                    "existing"
+                },
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(summary),
+    }
+}
+
+fn print_scan_summary(output: OutputFormat, summary: &ScanSummary) {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "Scanned {} files: {} added, {} updated, {} unchanged, {} deleted",
+                summary.discovered,
+                summary.added,
+                summary.updated,
+                summary.unchanged,
+                summary.deleted
+            );
+        }
+        OutputFormat::Json => {
+            print_json(summary).expect("scan summary JSON serialization should succeed");
+        }
+    }
+}
+
+fn print_json<T: Serialize>(value: &T) -> Result<(), CliError> {
+    println!(
+        "{}",
+        serde_json::to_string(value).map_err(CliError::operation)?
+    );
+    Ok(())
 }
 
 fn resolve_vault_root(vault: &PathBuf) -> Result<PathBuf, CliError> {
