@@ -70,6 +70,7 @@ impl Display for CliError {
 impl std::error::Error for CliError {}
 
 const SCAN_PROGRESS_STEP: usize = 250;
+const BASES_MAX_COLUMN_WIDTH: usize = 28;
 
 #[derive(Clone, Copy)]
 struct AnsiPalette {
@@ -423,7 +424,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Bases { ref command } => match command {
             BasesCommand::Eval { file } => {
                 let report = evaluate_base_file(&paths, file).map_err(CliError::operation)?;
-                print_bases_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+                print_bases_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )?;
                 Ok(())
             }
         },
@@ -437,7 +444,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 },
             )
             .map_err(CliError::operation)?;
-            print_cluster_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+            print_cluster_report(
+                cli.output,
+                &report,
+                &list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+            )?;
             Ok(())
         }
         Command::Describe => print_describe_report(cli.output),
@@ -1018,8 +1031,10 @@ fn print_cluster_report(
     report: &ClusterReport,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
-    let visible_assignments = paginated_items(&report.assignments, list_controls);
+    let visible_clusters = paginated_items(&report.clusters, list_controls);
+    let palette = AnsiPalette::new(use_color);
 
     match output {
         OutputFormat::Human => {
@@ -1030,25 +1045,25 @@ fn print_cluster_report(
                     println!("Vector clusters");
                 }
             }
-            if visible_assignments.is_empty() {
-                println!("No cluster assignments.");
+            if visible_clusters.is_empty() {
+                println!("No vector clusters.");
                 return Ok(());
             }
 
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in cluster_rows(report, visible_assignments) {
+                for row in cluster_rows(report, visible_clusters) {
                     print_selected_human_fields(&row, fields);
                 }
             } else {
-                for assignment in visible_assignments {
-                    print_cluster_assignment(assignment);
+                for (index, cluster) in visible_clusters.iter().enumerate() {
+                    print_cluster_summary(index, cluster, palette);
                 }
             }
 
             Ok(())
         }
         OutputFormat::Json => print_json_lines(
-            cluster_rows(report, visible_assignments),
+            cluster_rows(report, visible_clusters),
             list_controls.fields.as_deref(),
         ),
     }
@@ -1059,29 +1074,33 @@ fn print_bases_report(
     report: &BasesEvalReport,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     let rows = bases_rows(report);
     let visible_rows = paginated_items(&rows, list_controls);
+    let palette = AnsiPalette::new(use_color);
 
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
-                println!("Bases eval {}", report.file);
+                println!(
+                    "{} {}",
+                    palette.cyan("Bases eval"),
+                    palette.bold(&report.file)
+                );
             }
-            if visible_rows.is_empty() {
+            if rows.is_empty() {
                 println!("No bases rows.");
             } else if let Some(fields) = list_controls.fields.as_deref() {
                 for row in visible_rows {
                     print_selected_human_fields(row, fields);
                 }
             } else {
-                for row in visible_rows {
-                    print_bases_row(row);
-                }
+                print_bases_human(report, list_controls, palette);
             }
 
             if !report.diagnostics.is_empty() {
-                println!("Diagnostics:");
+                println!("{}:", palette.yellow("Diagnostics"));
                 for diagnostic in &report.diagnostics {
                     if let Some(path) = diagnostic.path.as_deref() {
                         println!("- {path}: {}", diagnostic.message);
@@ -1093,7 +1112,13 @@ fn print_bases_report(
 
             Ok(())
         }
-        OutputFormat::Json => print_json(report),
+        OutputFormat::Json => {
+            if list_controls.fields.is_some() {
+                print_json_lines(visible_rows.to_vec(), list_controls.fields.as_deref())
+            } else {
+                print_json(report)
+            }
+        }
     }
 }
 
@@ -1840,23 +1865,26 @@ fn vector_duplicate_rows(
         .collect()
 }
 
-fn cluster_rows(
-    report: &ClusterReport,
-    assignments: &[vulcan_core::ClusterAssignment],
-) -> Vec<Value> {
-    assignments
+fn cluster_rows(report: &ClusterReport, clusters: &[vulcan_core::ClusterSummary]) -> Vec<Value> {
+    clusters
         .iter()
-        .map(|assignment| {
+        .map(|cluster| {
             serde_json::json!({
                 "provider_name": report.provider_name,
                 "model_name": report.model_name,
                 "dimensions": report.dimensions,
                 "cluster_count": report.cluster_count,
-                "cluster_id": assignment.cluster_id,
-                "cluster_label": assignment.cluster_label,
-                "document_path": assignment.document_path,
-                "chunk_id": assignment.chunk_id,
-                "heading_path": assignment.heading_path,
+                "cluster_id": cluster.cluster_id,
+                "cluster_label": cluster.cluster_label,
+                "keywords": cluster.keywords,
+                "chunk_count": cluster.chunk_count,
+                "document_count": cluster.document_count,
+                "document_path": cluster.exemplar_document_path,
+                "heading_path": cluster.exemplar_heading_path,
+                "exemplar_document_path": cluster.exemplar_document_path,
+                "exemplar_heading_path": cluster.exemplar_heading_path,
+                "exemplar_snippet": cluster.exemplar_snippet,
+                "top_documents": cluster.top_documents,
             })
         })
         .collect()
@@ -1893,9 +1921,16 @@ fn bases_rows(report: &BasesEvalReport) -> Vec<Value> {
                     "filters": view.filters,
                     "sort_by": view.sort_by,
                     "sort_descending": view.sort_descending,
+                    "columns": view.columns,
+                    "group_by": view.group_by,
+                    "group_value": row.group_value,
                     "document_path": row.document_path,
+                    "file_name": row.file_name,
+                    "file_ext": row.file_ext,
+                    "file_mtime": row.file_mtime,
                     "properties": row.properties,
                     "formulas": row.formulas,
+                    "cells": row.cells,
                 })
             })
         })
@@ -2009,13 +2044,57 @@ fn print_vector_duplicate(pair: &VectorDuplicatePair) {
     );
 }
 
-fn print_cluster_assignment(assignment: &vulcan_core::ClusterAssignment) {
+fn print_cluster_summary(
+    index: usize,
+    cluster: &vulcan_core::ClusterSummary,
+    palette: AnsiPalette,
+) {
     println!(
-        "- [{}] {}: {}",
-        assignment.cluster_id + 1,
-        assignment.cluster_label,
-        assignment.document_path
+        "{}. {}",
+        index + 1,
+        palette.bold(&format!(
+            "[{}] {}",
+            cluster.cluster_id + 1,
+            cluster.cluster_label
+        ))
     );
+    println!(
+        "   {}: {} chunks across {} notes",
+        palette.cyan("Size"),
+        cluster.chunk_count,
+        cluster.document_count
+    );
+    println!(
+        "   {}: {}",
+        palette.cyan("Exemplar"),
+        if cluster.exemplar_heading_path.is_empty() {
+            cluster.exemplar_document_path.clone()
+        } else {
+            format!(
+                "{} > {}",
+                cluster.exemplar_document_path,
+                cluster.exemplar_heading_path.join(" > ")
+            )
+        }
+    );
+    let snippet_lines = cluster.exemplar_snippet.lines().collect::<Vec<&str>>();
+    if let Some((first, rest)) = snippet_lines.split_first() {
+        println!("   {}: {}", palette.cyan("Snippet"), first.trim());
+        for line in rest
+            .iter()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+        {
+            println!("            {line}");
+        }
+    }
+    if !cluster.top_documents.is_empty() {
+        println!("   {}:", palette.cyan("Top notes"));
+        for document in &cluster.top_documents {
+            println!("   - {} ({})", document.document_path, document.chunk_count);
+        }
+    }
+    println!();
 }
 
 fn print_ranked_snippet_hit(
@@ -2057,17 +2136,219 @@ fn print_note(note: &NoteRecord) {
     println!("- {}", note.document_path);
 }
 
-fn print_bases_row(row: &Value) {
-    let document_path = row
-        .get("document_path")
-        .and_then(Value::as_str)
-        .unwrap_or("<unknown>");
-    let view_name = row
-        .get("view_name")
-        .and_then(Value::as_str)
-        .unwrap_or("view");
+fn print_bases_human(
+    report: &BasesEvalReport,
+    list_controls: &ListOutputControls,
+    palette: AnsiPalette,
+) {
+    let mut row_index = 0_usize;
+    let mut printed_any = false;
+    let end = list_controls.limit.map_or(usize::MAX, |limit| {
+        list_controls.offset.saturating_add(limit)
+    });
 
-    println!("- {document_path} ({view_name})");
+    for view in &report.views {
+        let mut visible_rows = Vec::new();
+        for row in &view.rows {
+            if row_index < list_controls.offset {
+                row_index += 1;
+                continue;
+            }
+            if row_index >= end {
+                break;
+            }
+            visible_rows.push(row);
+            row_index += 1;
+        }
+
+        if !visible_rows.is_empty() {
+            print_bases_view_header(view, visible_rows.len(), palette);
+            print_bases_table(view, &visible_rows, palette);
+            printed_any = true;
+        }
+
+        if row_index >= end {
+            break;
+        }
+    }
+
+    if !printed_any {
+        println!("No bases rows.");
+    }
+}
+
+fn print_bases_view_header(
+    view: &vulcan_core::BasesEvaluatedView,
+    visible_rows: usize,
+    palette: AnsiPalette,
+) {
+    let name = view.name.as_deref().unwrap_or("view");
+    let row_summary = if visible_rows == view.rows.len() {
+        format!("{} rows", view.rows.len())
+    } else {
+        format!("{visible_rows} of {} rows", view.rows.len())
+    };
+    println!(
+        "{} {}",
+        palette.bold(name),
+        palette.dim(&format!("({row_summary})"))
+    );
+    if !view.columns.is_empty() {
+        let columns = view
+            .columns
+            .iter()
+            .map(|column| column.display_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("{}: {columns}", palette.cyan("Columns"));
+    }
+    if let Some(group_by) = view.group_by.as_ref() {
+        println!(
+            "{}: {}{}",
+            palette.cyan("Grouped by"),
+            group_by.display_name,
+            if group_by.descending { " (desc)" } else { "" }
+        );
+    }
+    println!();
+}
+
+fn print_bases_table(
+    view: &vulcan_core::BasesEvaluatedView,
+    rows: &[&vulcan_core::BasesRow],
+    palette: AnsiPalette,
+) {
+    let group_key = view
+        .group_by
+        .as_ref()
+        .map(|group_by| group_by.property.as_str());
+    let mut columns = view
+        .columns
+        .iter()
+        .filter(|column| Some(column.key.as_str()) != group_key)
+        .collect::<Vec<_>>();
+    if columns.is_empty() {
+        columns = view.columns.iter().collect();
+    }
+    let widths = columns
+        .iter()
+        .map(|column| {
+            rows.iter()
+                .map(|row| bases_cell_text(row, &column.key).chars().count())
+                .fold(column.display_name.chars().count(), usize::max)
+                .min(BASES_MAX_COLUMN_WIDTH)
+        })
+        .collect::<Vec<_>>();
+
+    if view.group_by.is_some() {
+        let mut start = 0_usize;
+        while start < rows.len() {
+            let group_name = bases_group_name(rows[start]);
+            let mut end = start + 1;
+            while end < rows.len() && bases_group_name(rows[end]) == group_name {
+                end += 1;
+            }
+
+            println!(
+                "{} {} {}",
+                palette.green("Group:"),
+                palette.bold(&group_name),
+                palette.dim(&format!("({} rows)", end - start))
+            );
+            print_bases_table_header(&columns, &widths, palette);
+            for row in &rows[start..end] {
+                print_bases_table_row(row, &columns, &widths);
+            }
+            println!();
+            start = end;
+        }
+    } else {
+        print_bases_table_header(&columns, &widths, palette);
+        for row in rows {
+            print_bases_table_row(row, &columns, &widths);
+        }
+        println!();
+    }
+}
+
+fn print_bases_table_header(
+    columns: &[&vulcan_core::BasesColumn],
+    widths: &[usize],
+    palette: AnsiPalette,
+) {
+    let header = columns
+        .iter()
+        .zip(widths.iter().copied())
+        .map(|(column, width)| fit_bases_cell(&column.display_name, width))
+        .collect::<Vec<_>>()
+        .join("  ");
+    let separator = widths
+        .iter()
+        .map(|width| "-".repeat(*width))
+        .collect::<Vec<_>>()
+        .join("  ");
+    println!("{}", palette.bold(&header));
+    println!("{}", palette.dim(&separator));
+}
+
+fn print_bases_table_row(
+    row: &vulcan_core::BasesRow,
+    columns: &[&vulcan_core::BasesColumn],
+    widths: &[usize],
+) {
+    let rendered = columns
+        .iter()
+        .zip(widths.iter().copied())
+        .map(|(column, width)| fit_bases_cell(&bases_cell_text(row, &column.key), width))
+        .collect::<Vec<_>>()
+        .join("  ");
+    println!("{rendered}");
+}
+
+fn bases_group_name(row: &vulcan_core::BasesRow) -> String {
+    row.group_value
+        .as_ref()
+        .map(render_human_value)
+        .filter(|value| !value.is_empty() && value != "null")
+        .unwrap_or_else(|| "Ungrouped".to_string())
+}
+
+fn bases_cell_text(row: &vulcan_core::BasesRow, key: &str) -> String {
+    bases_value_for_key(row, key)
+        .filter(|value| !value.is_null())
+        .map(|value| render_human_value(&value))
+        .filter(|value| !value.is_empty() && value != "null")
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn fit_bases_cell(value: &str, width: usize) -> String {
+    let truncated = if value.chars().count() > width {
+        if width <= 3 {
+            ".".repeat(width)
+        } else {
+            value.chars().take(width - 3).collect::<String>() + "..."
+        }
+    } else {
+        value.to_string()
+    };
+    format!("{truncated:<width$}")
+}
+
+fn bases_value_for_key(row: &vulcan_core::BasesRow, key: &str) -> Option<Value> {
+    if let Some(value) = row.cells.get(key) {
+        return Some(value.clone());
+    }
+    if let Some(value) = row.formulas.get(key) {
+        return Some(value.clone());
+    }
+
+    match key {
+        "file.path" => Some(Value::String(row.document_path.clone())),
+        "file.name" => Some(Value::String(row.file_name.clone())),
+        "file.ext" => Some(Value::String(row.file_ext.clone())),
+        "file.mtime" => Some(Value::Number(row.file_mtime.into())),
+        property => row.properties.get(property).cloned(),
+    }
 }
 
 fn print_named_count_section(title: &str, counts: &[NamedCount]) {

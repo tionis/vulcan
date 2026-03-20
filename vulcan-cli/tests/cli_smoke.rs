@@ -536,7 +536,18 @@ fn bases_eval_json_output_returns_rows_and_diagnostics() {
     let json = parse_stdout_json(&assert);
 
     assert_eq!(json["views"][0]["name"], "Release Table");
+    assert_eq!(
+        json["views"][0]["filters"],
+        serde_json::json!([
+            "file.ext = \"md\"",
+            "status starts_with \"b\"",
+            "estimate > 2"
+        ])
+    );
+    assert_eq!(json["views"][0]["group_by"]["property"], "status");
+    assert_eq!(json["views"][0]["columns"][1]["display_name"], "Due");
     assert_eq!(json["views"][0]["rows"][0]["document_path"], "Backlog.md");
+    assert_eq!(json["views"][0]["rows"][0]["group_value"], "backlog");
     assert_eq!(
         json["views"][0]["rows"][0]["formulas"]["note_name"],
         "Backlog"
@@ -546,6 +557,68 @@ fn bases_eval_json_output_returns_rows_and_diagnostics() {
         .expect("diagnostics should be an array")
         .iter()
         .any(|diagnostic| diagnostic["message"] == "unsupported view type `board`"));
+}
+
+#[test]
+fn bases_eval_json_fields_stream_rows() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("bases", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,group_value,cells",
+            "bases",
+            "eval",
+            "release.base",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["document_path"], "Backlog.md");
+    assert_eq!(rows[0]["group_value"], "backlog");
+    assert_eq!(rows[0]["cells"]["note_name"], "Backlog");
+}
+
+#[test]
+fn bases_human_output_is_compact_and_grouped() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("bases", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "bases",
+            "eval",
+            "release.base",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Release Table")
+                .and(predicate::str::contains("Grouped by: Status"))
+                .and(predicate::str::contains("Group: backlog"))
+                .and(predicate::str::contains("Name"))
+                .and(predicate::str::contains("Due"))
+                .and(predicate::str::contains("Backlog")),
+        );
 }
 
 #[test]
@@ -808,7 +881,7 @@ fn vectors_duplicates_and_cluster_json_output_work() {
             "--output",
             "json",
             "--fields",
-            "cluster_id,document_path",
+            "cluster_id,cluster_label,keywords,chunk_count,document_count",
             "cluster",
             "--clusters",
             "2",
@@ -817,7 +890,16 @@ fn vectors_duplicates_and_cluster_json_output_work() {
         .success();
     let cluster_rows = parse_stdout_json_lines(&cluster_assert);
 
-    assert_eq!(cluster_rows.len(), 4);
+    assert_eq!(cluster_rows.len(), 2);
+    assert!(cluster_rows[0]["chunk_count"].as_u64().unwrap_or_default() >= 1);
+    assert!(!cluster_rows[0]["cluster_label"]
+        .as_str()
+        .expect("cluster label should be a string")
+        .is_empty());
+    assert!(!cluster_rows[0]["keywords"]
+        .as_array()
+        .expect("keywords should be an array")
+        .is_empty());
     server.shutdown();
 }
 
@@ -1118,6 +1200,25 @@ fn run_scan(vault_root: &Path) {
         .success();
 }
 
+fn replace_field_recursively(value: &mut Value, field: &str, replacement: &Value) {
+    match value {
+        Value::Object(object) => {
+            if let Some(slot) = object.get_mut(field) {
+                *slot = replacement.clone();
+            }
+            for nested in object.values_mut() {
+                replace_field_recursively(nested, field, replacement);
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                replace_field_recursively(nested, field, replacement);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
 fn assert_json_snapshot(name: &str, value: &Value) {
     let snapshot_path = snapshot_path(name);
     let expected = fs::read_to_string(snapshot_path).expect("snapshot should be readable");
@@ -1340,7 +1441,9 @@ fn build_command_snapshot() -> Value {
             ])
             .assert()
             .success();
-        parse_stdout_json(&assert)
+        let mut json = parse_stdout_json(&assert);
+        replace_field_recursively(&mut json, "file_mtime", &serde_json::json!(0));
+        json
     };
 
     let move_root = temp_dir.path().join("move");
@@ -1459,7 +1562,7 @@ fn build_command_snapshot() -> Value {
                 "--output",
                 "json",
                 "--fields",
-                "cluster_id,document_path",
+                "cluster_id,cluster_label,keywords,chunk_count,document_count",
                 "cluster",
                 "--clusters",
                 "2",

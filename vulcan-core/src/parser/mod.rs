@@ -209,6 +209,50 @@ mod tests {
     }
 
     #[test]
+    fn thematic_break_sections_after_frontmatter_do_not_emit_parse_failures() {
+        let source = concat!(
+            "---\n",
+            "title: Elara\n",
+            "status: inbox\n",
+            "---\n",
+            "\n",
+            "# Elara Card\n",
+            "\n",
+            "### Personality\n",
+            "\n",
+            "**Elara**\n",
+            "---\n",
+            "---\n",
+            "*It was one cool evening.*\n",
+            "---\n",
+            "---\n",
+            "***Part 3/4 of the elf slave series.***\n",
+            "---\n",
+            "---\n",
+            "[Av.Rose](https://example.com)\n",
+            "\n",
+            "### Description\n",
+            "\n",
+            "Body text.\n",
+        );
+        let parsed = parse_document(source, &VaultConfig::default());
+
+        assert!(parsed.frontmatter.is_some());
+        assert!(parsed
+            .headings
+            .iter()
+            .any(|heading| heading.text == "Elara Card"));
+        assert!(parsed
+            .links
+            .iter()
+            .any(|link| link.raw_text.contains("https://example.com")));
+        assert!(!parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == ParseDiagnosticKind::MalformedFrontmatter));
+    }
+
+    #[test]
     fn comments_are_stripped_from_chunks_but_links_inside_are_reported() {
         let parsed = parse_document(
             "Visible %% hidden [[Secret]] %% still visible\n\n[[Open]]",

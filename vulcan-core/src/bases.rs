@@ -2,6 +2,7 @@ use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePat
 use crate::{query_notes, NoteQuery, NoteRecord, PropertyError, VaultPaths};
 use serde::Serialize;
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -68,6 +69,19 @@ pub struct BasesEvalReport {
     pub diagnostics: Vec<BasesDiagnostic>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BasesColumn {
+    pub key: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BasesGroupBy {
+    pub property: String,
+    pub display_name: String,
+    pub descending: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BasesEvaluatedView {
     pub name: Option<String>,
@@ -75,14 +89,21 @@ pub struct BasesEvaluatedView {
     pub filters: Vec<String>,
     pub sort_by: Option<String>,
     pub sort_descending: bool,
+    pub columns: Vec<BasesColumn>,
+    pub group_by: Option<BasesGroupBy>,
     pub rows: Vec<BasesRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BasesRow {
     pub document_path: String,
+    pub file_name: String,
+    pub file_ext: String,
+    pub file_mtime: i64,
     pub properties: Value,
     pub formulas: BTreeMap<String, Value>,
+    pub cells: BTreeMap<String, Value>,
+    pub group_value: Option<Value>,
 }
 
 pub fn evaluate_base_file(
@@ -92,70 +113,33 @@ pub fn evaluate_base_file(
     let normalized = normalize_base_path(relative_path)?;
     let source = fs::read_to_string(paths.vault_root().join(&normalized))?;
     let parsed = parse_base_file(&source)?;
-    let mut diagnostics = parsed.diagnostics;
+    let ParsedBaseFile {
+        source: parsed_source,
+        filters: base_filters,
+        property_display_names,
+        views: parsed_views,
+        diagnostics: parsed_diagnostics,
+    } = parsed;
+    let mut diagnostics = parsed_diagnostics;
     let mut views = Vec::new();
 
-    if parsed.source.as_deref() != Some("notes") {
+    if parsed_source != "notes" {
         diagnostics.push(BasesDiagnostic {
             path: Some("source".to_string()),
             message: "unsupported base source; only `notes` is implemented".to_string(),
         });
     }
 
-    for view in parsed.views {
-        if view.view_type != "table" {
-            diagnostics.push(BasesDiagnostic {
-                path: view.name.as_ref().map(|name| format!("views.{name}.type")),
-                message: format!("unsupported view type `{}`", view.view_type),
-            });
-            continue;
-        }
-
-        let notes = match query_notes(
+    for view in parsed_views {
+        if let Some(evaluated_view) = evaluate_base_view(
             paths,
-            &NoteQuery {
-                filters: view.filters.clone(),
-                sort_by: view.sort_by.clone(),
-                sort_descending: view.sort_descending,
-            },
-        ) {
-            Ok(report) => report.notes,
-            Err(PropertyError::InvalidFilter(filter)) => {
-                diagnostics.push(BasesDiagnostic {
-                    path: view
-                        .name
-                        .as_ref()
-                        .map(|name| format!("views.{name}.filters")),
-                    message: format!("unsupported filter in base view: {filter}"),
-                });
-                continue;
-            }
-            Err(error) => return Err(BasesError::Property(error)),
-        };
-
-        let mut rows = Vec::new();
-        for note in notes {
-            let formulas = evaluate_formulas(
-                &note,
-                &view.formulas,
-                &mut diagnostics,
-                view.name.as_deref(),
-            );
-            rows.push(BasesRow {
-                document_path: note.document_path.clone(),
-                properties: note.properties.clone(),
-                formulas,
-            });
+            &base_filters,
+            &property_display_names,
+            view,
+            &mut diagnostics,
+        )? {
+            views.push(evaluated_view);
         }
-
-        views.push(BasesEvaluatedView {
-            name: view.name,
-            view_type: view.view_type,
-            filters: view.filters,
-            sort_by: view.sort_by,
-            sort_descending: view.sort_descending,
-            rows,
-        });
     }
 
     Ok(BasesEvalReport {
@@ -165,9 +149,105 @@ pub fn evaluate_base_file(
     })
 }
 
+fn evaluate_base_view(
+    paths: &VaultPaths,
+    base_filters: &[String],
+    property_display_names: &BTreeMap<String, String>,
+    view: ParsedBaseView,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> Result<Option<BasesEvaluatedView>, BasesError> {
+    let view_filters = combined_filters(base_filters, &view.filters);
+    if view.view_type != "table" {
+        diagnostics.push(BasesDiagnostic {
+            path: view.name.as_ref().map(|name| format!("views.{name}.type")),
+            message: format!("unsupported view type `{}`", view.view_type),
+        });
+        return Ok(None);
+    }
+
+    let notes = match query_notes(
+        paths,
+        &NoteQuery {
+            filters: view_filters.clone(),
+            sort_by: view.sort_by.clone(),
+            sort_descending: view.sort_descending,
+        },
+    ) {
+        Ok(report) => report.notes,
+        Err(PropertyError::InvalidFilter(filter)) => {
+            diagnostics.push(BasesDiagnostic {
+                path: view
+                    .name
+                    .as_ref()
+                    .map(|name| format!("views.{name}.filters")),
+                message: format!("unsupported filter in base view: {filter}"),
+            });
+            return Ok(None);
+        }
+        Err(error) => return Err(BasesError::Property(error)),
+    };
+
+    let columns = build_view_columns(property_display_names, &view);
+    let mut rows = Vec::new();
+    for note in notes {
+        let formulas = evaluate_formulas(&note, &view.formulas, diagnostics, view.name.as_deref());
+        let cells = columns
+            .iter()
+            .map(|column| {
+                (
+                    column.key.clone(),
+                    evaluate_base_cell(&note, &formulas, &column.key),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let group_value = view
+            .group_by
+            .as_ref()
+            .map(|group_by| evaluate_base_cell(&note, &formulas, &group_by.property));
+        rows.push(BasesRow {
+            document_path: note.document_path.clone(),
+            file_name: note.file_name.clone(),
+            file_ext: note.file_ext.clone(),
+            file_mtime: note.file_mtime,
+            properties: note.properties.clone(),
+            formulas,
+            cells,
+            group_value,
+        });
+    }
+    sort_base_rows(&mut rows, &view);
+    let ParsedBaseView {
+        name,
+        view_type,
+        filters: _,
+        sort_by,
+        sort_descending,
+        columns: _,
+        group_by,
+        formulas: _,
+    } = view;
+
+    Ok(Some(BasesEvaluatedView {
+        name,
+        view_type,
+        filters: view_filters,
+        sort_by,
+        sort_descending,
+        columns,
+        group_by: group_by.map(|group_by| BasesGroupBy {
+            display_name: column_display_name(&group_by.property, property_display_names),
+            property: group_by.property,
+            descending: group_by.descending,
+        }),
+        rows,
+    }))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedBaseFile {
-    source: Option<String>,
+    source: String,
+    filters: Vec<String>,
+    property_display_names: BTreeMap<String, String>,
     views: Vec<ParsedBaseView>,
     diagnostics: Vec<BasesDiagnostic>,
 }
@@ -179,7 +259,15 @@ struct ParsedBaseView {
     filters: Vec<String>,
     sort_by: Option<String>,
     sort_descending: bool,
+    columns: Vec<String>,
+    group_by: Option<ParsedBaseGroupBy>,
     formulas: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedBaseGroupBy {
+    property: String,
+    descending: bool,
 }
 
 fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
@@ -187,7 +275,9 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
     let mut diagnostics = Vec::new();
     let Some(root) = value.as_mapping() else {
         return Ok(ParsedBaseFile {
-            source: None,
+            source: "notes".to_string(),
+            filters: Vec::new(),
+            property_display_names: BTreeMap::new(),
             views: Vec::new(),
             diagnostics: vec![BasesDiagnostic {
                 path: None,
@@ -199,7 +289,18 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
     let source = root
         .get(serde_yaml::Value::String("source".to_string()))
         .and_then(serde_yaml::Value::as_str)
-        .map(ToOwned::to_owned);
+        .unwrap_or("notes")
+        .to_string();
+    let filters = root
+        .get(serde_yaml::Value::String("filters".to_string()))
+        .map_or_else(Vec::new, |value| {
+            parse_base_filters("filters", value, &mut diagnostics)
+        });
+    let property_display_names = root
+        .get(serde_yaml::Value::String("properties".to_string()))
+        .map_or_else(BTreeMap::new, |value| {
+            parse_property_display_names(value, &mut diagnostics)
+        });
     let views = root
         .get(serde_yaml::Value::String("views".to_string()))
         .and_then(serde_yaml::Value::as_sequence)
@@ -212,7 +313,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
         });
 
     for key in root.keys().filter_map(serde_yaml::Value::as_str) {
-        if !matches!(key, "source" | "views") {
+        if !matches!(key, "source" | "views" | "filters" | "properties") {
             diagnostics.push(BasesDiagnostic {
                 path: Some(key.to_string()),
                 message: format!("unsupported top-level base field `{key}`"),
@@ -222,6 +323,8 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
 
     Ok(ParsedBaseFile {
         source,
+        filters,
+        property_display_names,
         views,
         diagnostics,
     })
@@ -251,10 +354,15 @@ fn parse_view(
         .to_string();
     let filters = parse_view_filters(index, mapping, diagnostics);
     let (sort_by, sort_descending) = parse_view_sort(index, mapping, diagnostics);
+    let columns = parse_view_columns(index, mapping, diagnostics);
+    let group_by = parse_view_group_by(index, mapping, diagnostics);
     let formulas = parse_view_formulas(index, mapping, diagnostics);
 
     for key in mapping.keys().filter_map(serde_yaml::Value::as_str) {
-        if !matches!(key, "name" | "type" | "filters" | "sort" | "formulas") {
+        if !matches!(
+            key,
+            "name" | "type" | "filters" | "sort" | "formulas" | "order" | "groupBy"
+        ) {
             diagnostics.push(BasesDiagnostic {
                 path: Some(format!("views[{index}].{key}")),
                 message: format!("unsupported view field `{key}`"),
@@ -268,8 +376,146 @@ fn parse_view(
         filters,
         sort_by,
         sort_descending,
+        columns,
+        group_by,
         formulas,
     })
+}
+
+fn parse_base_filters(
+    path: &str,
+    value: &serde_yaml::Value,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> Vec<String> {
+    if let Some(sequence) = value.as_sequence() {
+        return sequence
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                parse_base_filter_entry(&format!("{path}[{index}]"), entry, diagnostics)
+            })
+            .collect();
+    }
+
+    if let Some(mapping) = value.as_mapping() {
+        if let Some(and_filters) = mapping.get(serde_yaml::Value::String("and".to_string())) {
+            return parse_base_filters(&format!("{path}.and"), and_filters, diagnostics);
+        }
+    }
+
+    diagnostics.push(BasesDiagnostic {
+        path: Some(path.to_string()),
+        message: "filters must be a list or an `and:` group".to_string(),
+    });
+    Vec::new()
+}
+
+fn parse_base_filter_entry(
+    path: &str,
+    value: &serde_yaml::Value,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> Option<String> {
+    let expression = value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    translate_base_filter_expression(expression).or_else(|| {
+        diagnostics.push(BasesDiagnostic {
+            path: Some(path.to_string()),
+            message: format!("unsupported base filter expression `{expression}`"),
+        });
+        None
+    })
+}
+
+fn translate_base_filter_expression(expression: &str) -> Option<String> {
+    if let Some(folder) = parse_in_folder_expression(expression) {
+        let prefix = folder.trim_end_matches('/');
+        return Some(format!("file.path starts_with \"{prefix}/\""));
+    }
+
+    if let Some((field, value)) = expression.split_once("==") {
+        return Some(format!("{} = {}", field.trim(), value.trim()));
+    }
+
+    if expression.contains(" starts_with ")
+        || expression.contains(" contains ")
+        || expression.contains(" >= ")
+        || expression.contains(" <= ")
+        || expression.contains(" = ")
+        || expression.contains(" > ")
+        || expression.contains(" < ")
+    {
+        return Some(expression.to_string());
+    }
+
+    None
+}
+
+fn parse_in_folder_expression(expression: &str) -> Option<String> {
+    let trimmed = expression.trim();
+    let argument = trimmed
+        .strip_prefix("file.inFolder(")?
+        .strip_suffix(')')?
+        .trim();
+    strip_matching_quotes(argument).map(ToOwned::to_owned)
+}
+
+fn strip_matching_quotes(value: &str) -> Option<&str> {
+    if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        Some(&value[1..value.len() - 1])
+    } else {
+        None
+    }
+}
+
+fn parse_property_display_names(
+    value: &serde_yaml::Value,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> BTreeMap<String, String> {
+    let Some(mapping) = value.as_mapping() else {
+        diagnostics.push(BasesDiagnostic {
+            path: Some("properties".to_string()),
+            message: "properties must be a mapping".to_string(),
+        });
+        return BTreeMap::new();
+    };
+
+    let mut names = BTreeMap::new();
+    for (key, value) in mapping {
+        let Some(key) = key.as_str() else {
+            diagnostics.push(BasesDiagnostic {
+                path: Some("properties".to_string()),
+                message: "property keys must be strings".to_string(),
+            });
+            continue;
+        };
+        let Some(definition) = value.as_mapping() else {
+            diagnostics.push(BasesDiagnostic {
+                path: Some(format!("properties.{key}")),
+                message: "property definitions must be objects".to_string(),
+            });
+            continue;
+        };
+        let display_name = definition
+            .get(serde_yaml::Value::String("displayName".to_string()))
+            .and_then(serde_yaml::Value::as_str)
+            .map_or_else(|| key.to_string(), ToOwned::to_owned);
+        names.insert(key.to_string(), display_name);
+        for field in definition.keys().filter_map(serde_yaml::Value::as_str) {
+            if field != "displayName" {
+                diagnostics.push(BasesDiagnostic {
+                    path: Some(format!("properties.{key}.{field}")),
+                    message: format!("unsupported property field `{field}`"),
+                });
+            }
+        }
+    }
+
+    names
 }
 
 fn parse_view_filters(
@@ -340,6 +586,73 @@ fn parse_view_sort(
     }
 
     (sort_by, sort_descending)
+}
+
+fn parse_view_columns(
+    index: usize,
+    mapping: &serde_yaml::Mapping,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> Vec<String> {
+    let Some(order) = mapping.get(serde_yaml::Value::String("order".to_string())) else {
+        return Vec::new();
+    };
+    let Some(order) = order.as_sequence() else {
+        diagnostics.push(BasesDiagnostic {
+            path: Some(format!("views[{index}].order")),
+            message: "order must be a list of field keys".to_string(),
+        });
+        return Vec::new();
+    };
+
+    order
+        .iter()
+        .enumerate()
+        .filter_map(|(column_index, column)| {
+            column.as_str().map(ToOwned::to_owned).or_else(|| {
+                diagnostics.push(BasesDiagnostic {
+                    path: Some(format!("views[{index}].order[{column_index}]")),
+                    message: "order entries must be strings".to_string(),
+                });
+                None
+            })
+        })
+        .collect()
+}
+
+fn parse_view_group_by(
+    index: usize,
+    mapping: &serde_yaml::Mapping,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> Option<ParsedBaseGroupBy> {
+    let group_by = mapping.get(serde_yaml::Value::String("groupBy".to_string()))?;
+    let Some(group_by) = group_by.as_mapping() else {
+        diagnostics.push(BasesDiagnostic {
+            path: Some(format!("views[{index}].groupBy")),
+            message: "groupBy must be an object with `property` and optional `direction`"
+                .to_string(),
+        });
+        return None;
+    };
+
+    let property = group_by
+        .get(serde_yaml::Value::String("property".to_string()))
+        .and_then(serde_yaml::Value::as_str)
+        .map(ToOwned::to_owned);
+    let descending = group_by
+        .get(serde_yaml::Value::String("direction".to_string()))
+        .and_then(serde_yaml::Value::as_str)
+        .is_some_and(|direction| direction.eq_ignore_ascii_case("desc"));
+    if property.is_none() {
+        diagnostics.push(BasesDiagnostic {
+            path: Some(format!("views[{index}].groupBy.property")),
+            message: "groupBy.property must be a string".to_string(),
+        });
+    }
+
+    property.map(|property| ParsedBaseGroupBy {
+        property,
+        descending,
+    })
 }
 
 fn parse_view_formulas(
@@ -424,6 +737,179 @@ fn evaluate_formula(note: &NoteRecord, expression: &str) -> Option<Value> {
     }
 }
 
+fn combined_filters(base_filters: &[String], view_filters: &[String]) -> Vec<String> {
+    base_filters
+        .iter()
+        .chain(view_filters.iter())
+        .cloned()
+        .collect()
+}
+
+fn build_view_columns(
+    property_display_names: &BTreeMap<String, String>,
+    view: &ParsedBaseView,
+) -> Vec<BasesColumn> {
+    let column_keys = if view.columns.is_empty() {
+        let mut keys = vec!["file.name".to_string()];
+        if let Some(group_by) = view.group_by.as_ref() {
+            if !keys.contains(&group_by.property) {
+                keys.push(group_by.property.clone());
+            }
+        }
+        if let Some(sort_by) = view.sort_by.as_ref() {
+            if !keys.contains(sort_by) {
+                keys.push(sort_by.clone());
+            }
+        }
+        for key in view.formulas.keys() {
+            if !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+        keys
+    } else {
+        view.columns.clone()
+    };
+
+    column_keys
+        .into_iter()
+        .map(|key| BasesColumn {
+            display_name: column_display_name(&key, property_display_names),
+            key,
+        })
+        .collect()
+}
+
+fn column_display_name(key: &str, property_display_names: &BTreeMap<String, String>) -> String {
+    if let Some(display_name) = property_display_names.get(key) {
+        return display_name.clone();
+    }
+
+    match key {
+        "file.name" => "Name".to_string(),
+        "file.path" => "Path".to_string(),
+        "file.ext" => "Extension".to_string(),
+        "file.mtime" => "Modified".to_string(),
+        _ => key.to_string(),
+    }
+}
+
+fn evaluate_base_cell(note: &NoteRecord, formulas: &BTreeMap<String, Value>, key: &str) -> Value {
+    if let Some(value) = formulas.get(key) {
+        return value.clone();
+    }
+
+    match key {
+        "file.path" => Value::String(note.document_path.clone()),
+        "file.name" => Value::String(note.file_name.clone()),
+        "file.ext" => Value::String(note.file_ext.clone()),
+        "file.mtime" => Value::Number(note.file_mtime.into()),
+        property if is_simple_property_expression(property) => note
+            .properties
+            .get(property)
+            .cloned()
+            .unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+fn sort_base_rows(rows: &mut [BasesRow], view: &ParsedBaseView) {
+    let default_sort = view.columns.first().map(String::as_str);
+    rows.sort_by(|left, right| {
+        let group_ordering = view.group_by.as_ref().map_or(Ordering::Equal, |group_by| {
+            let ordering = compare_json_values(
+                left.group_value.as_ref().unwrap_or(&Value::Null),
+                right.group_value.as_ref().unwrap_or(&Value::Null),
+            );
+            if group_by.descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        });
+        if group_ordering != Ordering::Equal {
+            return group_ordering.then_with(|| left.document_path.cmp(&right.document_path));
+        }
+
+        let sort_ordering =
+            view.sort_by
+                .as_deref()
+                .or(default_sort)
+                .map_or(Ordering::Equal, |sort_by| {
+                    compare_json_values(
+                        &lookup_row_value(left, sort_by),
+                        &lookup_row_value(right, sort_by),
+                    )
+                });
+        let sort_ordering = if view.sort_descending {
+            sort_ordering.reverse()
+        } else {
+            sort_ordering
+        };
+
+        sort_ordering.then_with(|| left.document_path.cmp(&right.document_path))
+    });
+}
+
+fn lookup_row_value(row: &BasesRow, key: &str) -> Value {
+    if let Some(value) = row.cells.get(key) {
+        return value.clone();
+    }
+    if let Some(value) = row.formulas.get(key) {
+        return value.clone();
+    }
+
+    match key {
+        "file.path" => Value::String(row.document_path.clone()),
+        "file.name" => Value::String(row.file_name.clone()),
+        "file.ext" => Value::String(row.file_ext.clone()),
+        "file.mtime" => Value::Number(row.file_mtime.into()),
+        property => row.properties.get(property).cloned().unwrap_or(Value::Null),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum JsonSortKey {
+    Null,
+    Bool(bool),
+    Number(f64),
+    Text(String),
+}
+
+fn compare_json_values(left: &Value, right: &Value) -> Ordering {
+    let left_key = json_sort_key(left);
+    let right_key = json_sort_key(right);
+    json_sort_rank(&left_key)
+        .cmp(&json_sort_rank(&right_key))
+        .then_with(|| match (&left_key, &right_key) {
+            (JsonSortKey::Bool(left), JsonSortKey::Bool(right)) => left.cmp(right),
+            (JsonSortKey::Number(left), JsonSortKey::Number(right)) => {
+                left.partial_cmp(right).unwrap_or(Ordering::Equal)
+            }
+            (JsonSortKey::Text(left), JsonSortKey::Text(right)) => left.cmp(right),
+            _ => Ordering::Equal,
+        })
+}
+
+fn json_sort_key(value: &Value) -> JsonSortKey {
+    match value {
+        Value::Null => JsonSortKey::Null,
+        Value::Bool(value_bool) => JsonSortKey::Bool(*value_bool),
+        Value::Number(value_number) => JsonSortKey::Number(value_number.as_f64().unwrap_or(0.0)),
+        Value::String(value_text) => JsonSortKey::Text(value_text.clone()),
+        Value::Array(_) | Value::Object(_) => JsonSortKey::Text(value.to_string()),
+    }
+}
+
+fn json_sort_rank(value: &JsonSortKey) -> u8 {
+    match value {
+        JsonSortKey::Null => 0,
+        JsonSortKey::Bool(_) => 1,
+        JsonSortKey::Number(_) => 2,
+        JsonSortKey::Text(_) => 3,
+    }
+}
+
 fn is_simple_property_expression(expression: &str) -> bool {
     !expression.is_empty()
         && expression
@@ -450,31 +936,53 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn parser_accepts_supported_views_and_flags_unsupported_fields() {
+    fn parser_accepts_real_world_base_fields() {
         let report = parse_base_file(
             "
-            source: notes
+            filters:
+              and:
+                - file.inFolder(\"Rules/Gear\")
+                - 'file.ext == \"md\"'
+            properties:
+              category:
+                displayName: Category
             views:
-              - name: Release
+              - name: Gear Table
                 type: table
-                filters:
-                  - status = backlog
-                sort:
-                  by: due
-                formulas:
-                  note_name: file.name
-                  unsupported: concat(file.name, due)
-              - name: Board
-                type: board
-                group_by: status
+                order:
+                  - file.name
+                  - category
+                groupBy:
+                  property: category
+                  direction: ASC
             ",
         )
         .expect("base parse should succeed");
 
-        assert_eq!(report.views.len(), 2);
-        assert!(report.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("unsupported view field `group_by`")));
+        assert_eq!(
+            report.filters,
+            vec![
+                "file.path starts_with \"Rules/Gear/\"".to_string(),
+                "file.ext = \"md\"".to_string()
+            ]
+        );
+        assert_eq!(
+            report.property_display_names.get("category"),
+            Some(&"Category".to_string())
+        );
+        assert_eq!(report.views.len(), 1);
+        assert_eq!(
+            report.views[0].columns,
+            vec!["file.name".to_string(), "category".to_string()]
+        );
+        assert_eq!(
+            report.views[0].group_by,
+            Some(ParsedBaseGroupBy {
+                property: "category".to_string(),
+                descending: false,
+            })
+        );
+        assert!(report.diagnostics.is_empty());
     }
 
     #[test]
@@ -489,10 +997,42 @@ mod tests {
 
         assert_eq!(report.views.len(), 1);
         assert_eq!(report.views[0].rows.len(), 1);
+        assert_eq!(
+            report.views[0].filters,
+            vec![
+                "file.ext = \"md\"".to_string(),
+                "status starts_with \"b\"".to_string(),
+                "estimate > 2".to_string()
+            ]
+        );
+        assert_eq!(
+            report.views[0]
+                .columns
+                .iter()
+                .map(|column| column.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["file.name", "due", "note_name"]
+        );
+        assert_eq!(
+            report.views[0].group_by,
+            Some(BasesGroupBy {
+                property: "status".to_string(),
+                display_name: "Status".to_string(),
+                descending: false,
+            })
+        );
         assert_eq!(report.views[0].rows[0].document_path, "Backlog.md");
+        assert_eq!(
+            report.views[0].rows[0].group_value,
+            Some(Value::String("backlog".to_string()))
+        );
         assert_eq!(
             report.views[0].rows[0].formulas.get("note_name"),
             Some(&Value::String("Backlog".to_string()))
+        );
+        assert_eq!(
+            report.views[0].rows[0].cells.get("due"),
+            Some(&Value::String("2026-04-01".to_string()))
         );
         assert!(report.diagnostics.iter().any(|diagnostic| diagnostic
             .message

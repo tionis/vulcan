@@ -234,6 +234,7 @@ pub struct ClusterReport {
     pub model_name: String,
     pub dimensions: usize,
     pub cluster_count: usize,
+    pub clusters: Vec<ClusterSummary>,
     pub assignments: Vec<ClusterAssignment>,
 }
 
@@ -244,6 +245,25 @@ pub struct ClusterAssignment {
     pub document_path: String,
     pub chunk_id: String,
     pub heading_path: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ClusterSummary {
+    pub cluster_id: usize,
+    pub cluster_label: String,
+    pub keywords: Vec<String>,
+    pub chunk_count: usize,
+    pub document_count: usize,
+    pub exemplar_document_path: String,
+    pub exemplar_heading_path: Vec<String>,
+    pub exemplar_snippet: String,
+    pub top_documents: Vec<ClusterDocumentCount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClusterDocumentCount {
+    pub document_path: String,
+    pub chunk_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -699,7 +719,6 @@ pub fn cluster_vectors(
         ));
     }
 
-    let provider = load_embedding_provider(paths, query.provider.as_deref())?;
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
@@ -707,7 +726,7 @@ pub fn cluster_vectors(
         .current_model()
         .map_err(VectorError::Store)?
         .ok_or(VectorError::MissingVectorIndex)?;
-    validate_active_model(&active_model, &provider)?;
+    validate_requested_provider(&active_model, query.provider.as_deref())?;
 
     let vectors = store.load_vectors().map_err(VectorError::Store)?;
     if vectors.is_empty() {
@@ -715,7 +734,7 @@ pub fn cluster_vectors(
     }
 
     let cluster_count = query.clusters.min(vectors.len());
-    let assignments = kmeans_assignments(&vectors, cluster_count);
+    let clustering = kmeans(&vectors, cluster_count);
     let chunks = load_chunks_by_ids(
         connection,
         &vectors
@@ -723,10 +742,20 @@ pub fn cluster_vectors(
             .map(|vector| vector.chunk_id.clone())
             .collect::<Vec<_>>(),
     )?;
-    let labels = cluster_labels(&vectors, &assignments, cluster_count, &chunks);
+    let clusters = cluster_summaries(
+        &vectors,
+        &clustering.assignments,
+        &clustering.centroids,
+        cluster_count,
+        &chunks,
+    );
+    let labels = clusters
+        .iter()
+        .map(|cluster| (cluster.cluster_id, cluster.cluster_label.clone()))
+        .collect::<HashMap<_, _>>();
     let report_assignments = vectors
         .iter()
-        .zip(assignments.iter().copied())
+        .zip(clustering.assignments.iter().copied())
         .filter_map(|(vector, cluster_id)| {
             let chunk = chunks.get(&vector.chunk_id)?;
             Some(ClusterAssignment {
@@ -754,6 +783,7 @@ pub fn cluster_vectors(
         model_name: active_model.model_name,
         dimensions: active_model.dimensions,
         cluster_count,
+        clusters,
         assignments: report_assignments,
     })
 }
@@ -837,6 +867,21 @@ fn validate_active_model(
                 requested_model.provider_name, requested_model.model_name
             ),
         });
+    }
+
+    Ok(())
+}
+
+fn validate_requested_provider(
+    active_model: &StoredModel,
+    requested_provider: Option<&str>,
+) -> Result<(), VectorError> {
+    if let Some(requested_provider) = requested_provider {
+        if requested_provider != active_model.provider_name {
+            return Err(VectorError::UnsupportedProvider {
+                provider: requested_provider.to_string(),
+            });
+        }
     }
 
     Ok(())
@@ -958,7 +1003,12 @@ fn hydrate_vector_hits(
         .collect())
 }
 
-fn kmeans_assignments(vectors: &[StoredVector], cluster_count: usize) -> Vec<usize> {
+struct KMeansResult {
+    assignments: Vec<usize>,
+    centroids: Vec<Vec<f32>>,
+}
+
+fn kmeans(vectors: &[StoredVector], cluster_count: usize) -> KMeansResult {
     let mut centroids = vectors
         .iter()
         .take(cluster_count)
@@ -1012,42 +1062,185 @@ fn kmeans_assignments(vectors: &[StoredVector], cluster_count: usize) -> Vec<usi
         }
     }
 
-    assignments
+    KMeansResult {
+        assignments,
+        centroids,
+    }
 }
 
-fn cluster_labels(
+fn cluster_summaries(
     vectors: &[StoredVector],
     assignments: &[usize],
+    centroids: &[Vec<f32>],
     cluster_count: usize,
     chunks: &HashMap<String, IndexedChunk>,
-) -> HashMap<usize, String> {
-    let mut labels = HashMap::new();
+) -> Vec<ClusterSummary> {
+    let mut summaries = Vec::new();
 
-    for cluster_id in 0..cluster_count {
-        let label = vectors
+    for (cluster_id, centroid) in centroids.iter().enumerate().take(cluster_count) {
+        let mut members = vectors
             .iter()
             .zip(assignments.iter().copied())
-            .find_map(|(vector, assigned_cluster)| {
+            .filter_map(|(vector, assigned_cluster)| {
                 if assigned_cluster != cluster_id {
                     return None;
                 }
-                chunks.get(&vector.chunk_id).map(|chunk| {
-                    if chunk.heading_path.is_empty() {
-                        chunk.document_path.clone()
-                    } else {
-                        format!(
-                            "{} > {}",
-                            chunk.document_path,
-                            chunk.heading_path.join(" > ")
-                        )
-                    }
-                })
+                let chunk = chunks.get(&vector.chunk_id)?;
+                Some((chunk, cosine_distance(&vector.embedding, centroid)))
             })
-            .unwrap_or_else(|| format!("Cluster {}", cluster_id + 1));
-        labels.insert(cluster_id, label);
+            .collect::<Vec<_>>();
+        members.sort_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(left.0.document_path.cmp(&right.0.document_path))
+                .then(left.0.heading_path.cmp(&right.0.heading_path))
+        });
+        let Some((exemplar, _)) = members.first() else {
+            continue;
+        };
+        let keywords = cluster_keywords(&members);
+
+        let mut top_documents = members
+            .iter()
+            .fold(HashMap::<String, usize>::new(), |mut counts, (chunk, _)| {
+                *counts.entry(chunk.document_path.clone()).or_insert(0) += 1;
+                counts
+            })
+            .into_iter()
+            .map(|(document_path, chunk_count)| ClusterDocumentCount {
+                document_path,
+                chunk_count,
+            })
+            .collect::<Vec<_>>();
+        top_documents.sort_by(|left, right| {
+            right
+                .chunk_count
+                .cmp(&left.chunk_count)
+                .then(left.document_path.cmp(&right.document_path))
+        });
+        top_documents.truncate(5);
+
+        summaries.push(ClusterSummary {
+            cluster_id,
+            cluster_label: if keywords.is_empty() {
+                cluster_location_label(exemplar)
+            } else {
+                keywords.join(", ")
+            },
+            keywords,
+            chunk_count: members.len(),
+            document_count: members
+                .iter()
+                .map(|(chunk, _)| chunk.document_path.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            exemplar_document_path: exemplar.document_path.clone(),
+            exemplar_heading_path: exemplar.heading_path.clone(),
+            exemplar_snippet: snippet_from_content(&exemplar.content),
+            top_documents,
+        });
     }
 
-    labels
+    summaries
+}
+
+fn cluster_keywords(members: &[(&IndexedChunk, f32)]) -> Vec<String> {
+    let mut counts = HashMap::<String, usize>::new();
+
+    for (chunk, _) in members {
+        let mut seen = HashSet::new();
+        for token in chunk
+            .heading_path
+            .iter()
+            .flat_map(|heading| heading.split(|character: char| !character.is_alphanumeric()))
+            .chain(
+                chunk
+                    .content
+                    .split(|character: char| !character.is_alphanumeric()),
+            )
+        {
+            if let Some(token) = normalize_cluster_keyword(token) {
+                seen.insert(token);
+            }
+        }
+        for token in seen {
+            *counts.entry(token).or_insert(0) += 1;
+        }
+    }
+
+    let mut ranked = counts.into_iter().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.0.len().cmp(&left.0.len()))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    ranked.into_iter().map(|(token, _)| token).take(4).collect()
+}
+
+fn normalize_cluster_keyword(token: &str) -> Option<String> {
+    let normalized = token.trim_matches('_').to_lowercase();
+    if normalized.chars().count() < 4
+        || normalized
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        || matches!(
+            normalized.as_str(),
+            "about"
+                | "also"
+                | "because"
+                | "been"
+                | "being"
+                | "between"
+                | "could"
+                | "file"
+                | "files"
+                | "from"
+                | "have"
+                | "into"
+                | "just"
+                | "more"
+                | "note"
+                | "notes"
+                | "section"
+                | "should"
+                | "than"
+                | "that"
+                | "their"
+                | "them"
+                | "there"
+                | "these"
+                | "this"
+                | "used"
+                | "using"
+                | "vault"
+                | "what"
+                | "when"
+                | "where"
+                | "which"
+                | "will"
+                | "with"
+                | "your"
+        )
+    {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn cluster_location_label(chunk: &IndexedChunk) -> String {
+    if chunk.heading_path.is_empty() {
+        chunk.document_path.clone()
+    } else {
+        format!(
+            "{} > {}",
+            chunk.document_path,
+            chunk.heading_path.join(" > ")
+        )
+    }
 }
 
 fn persist_cluster_assignments(
@@ -1371,7 +1564,14 @@ mod tests {
         let database = CacheDatabase::open(&paths).expect("database should open");
 
         assert_eq!(report.cluster_count, 2);
+        assert_eq!(report.clusters.len(), 2);
         assert_eq!(report.assignments.len(), 4);
+        assert!(report.clusters.iter().all(|cluster| {
+            cluster.chunk_count >= 1
+                && !cluster.top_documents.is_empty()
+                && !cluster.cluster_label.is_empty()
+                && !cluster.keywords.is_empty()
+        }));
         assert_eq!(
             database
                 .connection()
@@ -1482,6 +1682,11 @@ mod tests {
 
         assert!(report.dry_run);
         assert_eq!(report.cluster_count, 2);
+        assert_eq!(report.clusters.len(), 2);
+        assert!(report
+            .clusters
+            .iter()
+            .all(|cluster| !cluster.keywords.is_empty()));
         assert_eq!(
             database
                 .connection()
@@ -1490,6 +1695,47 @@ mod tests {
                 .expect("cluster row count should be readable"),
             0
         );
+        server.shutdown();
+    }
+
+    #[test]
+    fn cluster_vectors_uses_stored_index_without_api_key_env() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            format!(
+                "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{}\"\nmodel = \"fixture\"\napi_key_env = \"EMBEDDING_API_KEY\"\nmax_batch_size = 8\nmax_concurrency = 1\n",
+                server.base_url()
+            ),
+        )
+        .expect("config should rewrite");
+
+        let report = cluster_vectors(
+            &paths,
+            &ClusterQuery {
+                provider: None,
+                clusters: 2,
+                dry_run: true,
+            },
+        )
+        .expect("cluster command should use the stored index");
+
+        assert_eq!(report.cluster_count, 2);
         server.shutdown();
     }
 
