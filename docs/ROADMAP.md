@@ -267,19 +267,19 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Integration tests for filter/sort operations
 
 ### 4.3 Bases parser
-- [ ] Parse `.base` YAML files into a validated internal model
-- [ ] Extract: view type, filter definitions, sort definitions, formula definitions
-- [ ] Separate parser from evaluator (parser is stable, evaluator matures over time)
-- [ ] Emit diagnostics for unsupported constructs
-- [ ] Unit tests with sample `.base` files
+- [x] Parse `.base` YAML files into a validated internal model
+- [x] Extract: view type, filter definitions, sort definitions, formula definitions
+- [x] Separate parser from evaluator (parser is stable, evaluator matures over time)
+- [x] Emit diagnostics for unsupported constructs
+- [x] Unit tests with sample `.base` files
 
 ### 4.4 Bases evaluator (read-only subset)
-- [ ] `bases eval <file.base>` command
-- [ ] Evaluate supported filters against the property query layer
-- [ ] Evaluate supported formulas (file properties, simple property access)
-- [ ] Surface unsupported features as diagnostics in output, not silent omissions
-- [ ] `--output json` for structured results
-- [ ] Integration test: `bases/` vault with supported and unsupported constructs
+- [x] `bases eval <file.base>` command
+- [x] Evaluate supported filters against the property query layer
+- [x] Evaluate supported formulas (file properties, simple property access)
+- [x] Surface unsupported features as diagnostics in output, not silent omissions
+- [x] `--output json` for structured results
+- [x] Integration test: `bases/` vault with supported and unsupported constructs
 
 ---
 

@@ -19,6 +19,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("links"))
             .and(predicate::str::contains("backlinks"))
             .and(predicate::str::contains("notes"))
+            .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("search"))
             .and(predicate::str::contains("move"))
             .and(predicate::str::contains("doctor")),
@@ -352,6 +353,43 @@ fn search_json_output_supports_has_property_filter() {
 
     assert_eq!(json_lines.len(), 1);
     assert_eq!(json_lines[0]["document_path"], "Done.md");
+}
+
+#[test]
+fn bases_eval_json_output_returns_rows_and_diagnostics() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("bases", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "bases",
+            "eval",
+            "release.base",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["views"][0]["name"], "Release Table");
+    assert_eq!(json["views"][0]["rows"][0]["document_path"], "Backlog.md");
+    assert_eq!(
+        json["views"][0]["rows"][0]["formulas"]["note_name"],
+        "Backlog"
+    );
+    assert!(json["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be an array")
+        .iter()
+        .any(|diagnostic| diagnostic["message"] == "unsupported view type `board`"));
 }
 
 #[test]
