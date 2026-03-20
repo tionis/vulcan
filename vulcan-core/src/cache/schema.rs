@@ -233,6 +233,46 @@ pub fn apply_schema_v6(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
     Ok(())
 }
 
+pub fn apply_schema_v7(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            source TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            note_count INTEGER NOT NULL,
+            orphan_notes INTEGER NOT NULL,
+            stale_notes INTEGER NOT NULL,
+            resolved_links INTEGER NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_checkpoints_name
+            ON checkpoints(name);
+        CREATE INDEX IF NOT EXISTS idx_checkpoints_source_created_at
+            ON checkpoints(source, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS checkpoint_documents (
+            checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            document_kind TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            link_hash TEXT NOT NULL,
+            property_hash TEXT NOT NULL,
+            embedding_hash TEXT NOT NULL,
+            orphan INTEGER NOT NULL,
+            stale INTEGER NOT NULL,
+            PRIMARY KEY (checkpoint_id, path)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_checkpoint_documents_checkpoint
+            ON checkpoint_documents(checkpoint_id);
+        ",
+    )?;
+
+    Ok(())
+}
+
 pub(crate) fn rebuild_search_index(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     transaction.execute_batch(
         "

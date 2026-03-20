@@ -169,6 +169,20 @@ pub struct GraphHubsReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphMocCandidate {
+    pub document_path: String,
+    pub inbound: usize,
+    pub outbound: usize,
+    pub score: usize,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphMocReport {
+    pub notes: Vec<GraphMocCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GraphDeadEndsReport {
     pub notes: Vec<String>,
 }
@@ -385,6 +399,58 @@ pub fn query_graph_hubs(paths: &VaultPaths) -> Result<GraphHubsReport, GraphQuer
     });
 
     Ok(GraphHubsReport { notes: scored })
+}
+
+pub fn query_graph_moc_candidates(paths: &VaultPaths) -> Result<GraphMocReport, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+    let counts = note_link_counts(&connection)?;
+    let mut candidates = notes
+        .into_iter()
+        .filter_map(|note| {
+            let (inbound, outbound) = counts.get(&note.id).copied().unwrap_or((0, 0));
+            let mut reasons = Vec::new();
+            let lower_path = note.path.to_ascii_lowercase();
+            if outbound >= 3 {
+                reasons.push(format!("{outbound} outbound links"));
+            }
+            if inbound >= 2 {
+                reasons.push(format!("{inbound} inbound links"));
+            }
+            if ["index", "home", "overview", "hub", "map", "moc"]
+                .iter()
+                .any(|keyword| lower_path.contains(keyword))
+            {
+                reasons.push("title hints at an index note".to_string());
+            }
+            if reasons.is_empty() {
+                return None;
+            }
+
+            let title_bonus = usize::from(
+                ["index", "home", "overview", "hub", "map", "moc"]
+                    .iter()
+                    .any(|keyword| lower_path.contains(keyword)),
+            ) * 5;
+            Some(GraphMocCandidate {
+                document_path: note.path,
+                inbound,
+                outbound,
+                score: outbound.saturating_mul(3) + inbound + title_bonus,
+                reasons,
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then(right.outbound.cmp(&left.outbound))
+            .then(right.inbound.cmp(&left.inbound))
+            .then(left.document_path.cmp(&right.document_path))
+    });
+
+    Ok(GraphMocReport { notes: candidates })
 }
 
 pub fn query_graph_dead_ends(paths: &VaultPaths) -> Result<GraphDeadEndsReport, GraphQueryError> {
@@ -952,6 +1018,13 @@ mod tests {
         let hubs = query_graph_hubs(&paths).expect("hub query should succeed");
         assert_eq!(hubs.notes[0].document_path, "Projects/Alpha.md");
         assert_eq!(hubs.notes[0].total, 4);
+
+        let moc = query_graph_moc_candidates(&paths).expect("moc query should succeed");
+        assert_eq!(moc.notes[0].document_path, "Home.md");
+        assert!(moc.notes[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("index note")));
 
         let dead_ends = query_graph_dead_ends(&paths).expect("dead-end query should succeed");
         assert!(dead_ends.notes.is_empty());
