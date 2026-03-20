@@ -284,6 +284,9 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
     let mut builder = WalkBuilder::new(vault_root);
     builder.hidden(true);
     builder.git_ignore(true);
+    builder.git_global(false);
+    builder.git_exclude(false);
+    builder.parents(false);
     builder.require_git(false);
 
     let mut files = Vec::new();
@@ -1055,6 +1058,28 @@ mod tests {
         assert_eq!(
             document_paths(database.connection()),
             vec!["notes/keep.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn scan_ignores_parent_gitignore_outside_the_vault() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let parent_root = temp_dir.path().join("parent");
+        let vault_root = parent_root.join("vault");
+        fs::create_dir_all(vault_root.join("notes")).expect("notes dir should be created");
+        fs::write(parent_root.join(".gitignore"), "**/*.md\n")
+            .expect("parent gitignore should exist");
+        fs::write(vault_root.join("a.md"), "# a").expect("root note should exist");
+        fs::write(vault_root.join("notes/b.md"), "# b").expect("nested note should exist");
+        let paths = VaultPaths::new(&vault_root);
+
+        let summary = scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(summary.discovered, 2);
+        assert_eq!(
+            document_paths(database.connection()),
+            vec!["a.md".to_string(), "notes/b.md".to_string()]
         );
     }
 
