@@ -57,16 +57,36 @@ impl CacheDatabase {
         self.rebuild_with(|_| Ok(()))
     }
 
-    pub fn rebuild_with<F, T>(&mut self, rebuild: F) -> Result<T, CacheError>
+    pub fn with_transaction<F, T, E>(&mut self, work: F) -> Result<T, E>
     where
-        F: FnOnce(&Transaction<'_>) -> Result<T, CacheError>,
+        F: FnOnce(&Transaction<'_>) -> Result<T, E>,
+        E: From<CacheError>,
     {
-        let transaction = self.connection.transaction()?;
-        schema::clear_cache_tables(&transaction)?;
-        sync_runtime_metadata_tx(&transaction)?;
-        let result = rebuild(&transaction)?;
-        transaction.commit()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(CacheError::from)
+            .map_err(E::from)?;
+        let result = work(&transaction)?;
+        transaction
+            .commit()
+            .map_err(CacheError::from)
+            .map_err(E::from)?;
         Ok(result)
+    }
+
+    pub fn rebuild_with<F, T, E>(&mut self, rebuild: F) -> Result<T, E>
+    where
+        F: FnOnce(&Transaction<'_>) -> Result<T, E>,
+        E: From<CacheError>,
+    {
+        self.with_transaction(|transaction| {
+            schema::clear_cache_tables(transaction)
+                .map_err(CacheError::from)
+                .map_err(E::from)?;
+            sync_runtime_metadata_tx(transaction).map_err(E::from)?;
+            rebuild(transaction)
+        })
     }
 }
 

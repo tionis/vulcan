@@ -1,5 +1,10 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serde_json::Value;
+use std::fs;
+use std::path::Path;
+use tempfile::TempDir;
+use vulcan_core::{CacheDatabase, VaultPaths};
 
 #[test]
 fn help_mentions_global_flags_and_core_commands() {
@@ -9,18 +14,126 @@ fn help_mentions_global_flags_and_core_commands() {
         predicate::str::contains("--vault <VAULT>")
             .and(predicate::str::contains("--output <OUTPUT>"))
             .and(predicate::str::contains("--verbose"))
+            .and(predicate::str::contains("init"))
             .and(predicate::str::contains("scan"))
             .and(predicate::str::contains("doctor")),
     );
 }
 
 #[test]
-fn scan_stub_returns_clear_error_message() {
+fn doctor_stub_returns_clear_error_message() {
     let mut command = Command::cargo_bin("vulcan").expect("binary should build");
 
     command
-        .arg("scan")
+        .arg("doctor")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("scan is not implemented yet"));
+        .stderr(predicate::str::contains("doctor is not implemented yet"));
+}
+
+#[test]
+fn init_json_output_creates_default_config() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "init",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["created_config"], true);
+    assert_eq!(json["created_cache"], true);
+    assert!(vault_root.join(".vulcan/config.toml").exists());
+    assert!(vault_root.join(".vulcan/cache.db").exists());
+}
+
+#[test]
+fn scan_json_output_indexes_fixture_vault() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "scan",
+            "--full",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let database = CacheDatabase::open(&VaultPaths::new(&vault_root)).expect("db should open");
+
+    assert_eq!(json["mode"], "full");
+    assert_eq!(json["discovered"], 3);
+    assert_eq!(json["added"], 3);
+    assert_eq!(
+        document_paths(&database),
+        vec![
+            "Home.md".to_string(),
+            "People/Bob.md".to_string(),
+            "Projects/Alpha.md".to_string(),
+        ]
+    );
+}
+
+fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {
+    serde_json::from_slice(&assert.get_output().stdout).expect("stdout should contain valid json")
+}
+
+fn document_paths(database: &CacheDatabase) -> Vec<String> {
+    let mut statement = database
+        .connection()
+        .prepare("SELECT path FROM documents ORDER BY path")
+        .expect("statement should prepare");
+    let rows = statement
+        .query_map([], |row| row.get(0))
+        .expect("query should succeed");
+
+    rows.map(|row| row.expect("row should deserialize"))
+        .collect()
+}
+
+fn copy_fixture_vault(name: &str, destination: &Path) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/fixtures/vaults")
+        .join(name);
+
+    copy_dir_recursive(&source, destination);
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).expect("destination directory should be created");
+
+    for entry in fs::read_dir(source).expect("source directory should be readable") {
+        let entry = entry.expect("directory entry should be readable");
+        let file_type = entry.file_type().expect("file type should be readable");
+        let target = destination.join(entry.file_name());
+
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &target);
+        } else if file_type.is_file() {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).expect("parent directory should exist");
+            }
+            fs::copy(entry.path(), target).expect("file should be copied");
+        }
+    }
 }

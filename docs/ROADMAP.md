@@ -42,26 +42,26 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 - [x] Unit tests for migration framework (apply, skip already-applied, refuse downgrade)
 
 ### 1.3 Vault discovery and file scanning
-- [ ] Recursive vault scan: walk directory, skip `.obsidian/`, `.vulcan/`, `.trash/`, hidden dirs, respect `.gitignore` if present
-- [ ] Detect file types: `.md` (notes), `.base` (Bases files), attachments (images, PDFs, etc.)
-- [ ] Compute content hash for each file
-- [ ] Incremental scan: compare `mtime` + `size` as cheap filter, verify with content hash, skip unchanged files
-- [ ] Insert/update `documents` rows; remove rows for deleted files
-- [ ] Reconciliation: on startup, diff cached document set against actual filesystem, surface deletions and additions
-- [ ] `scan` CLI command: trigger full or incremental scan, report counts
-- [ ] Unit tests for path normalization, hash computation
-- [ ] Integration test: scan `basic/` vault, verify document count and paths
+- [x] Recursive vault scan: walk directory, skip `.obsidian/`, `.vulcan/`, `.trash/`, hidden dirs, respect `.gitignore` if present
+- [x] Detect file types: `.md` (notes), `.base` (Bases files), attachments (images, PDFs, etc.)
+- [x] Compute content hash for each file
+- [x] Incremental scan: compare `mtime` + `size` as cheap filter, verify with content hash, skip unchanged files
+- [x] Insert/update `documents` rows; remove rows for deleted files
+- [x] Reconciliation: on startup, diff cached document set against actual filesystem, surface deletions and additions
+- [x] `scan` CLI command: trigger full or incremental scan, report counts
+- [x] Unit tests for path normalization, hash computation
+- [x] Integration test: scan `basic/` vault, verify document count and paths
 
 ### 1.4 Vault configuration parsing
-- [ ] Parse `.vulcan/config.toml`: chunking settings, link resolution defaults, link style preference, attachment folder override, embedding provider config
-- [ ] Create default `.vulcan/config.toml` on `vulcan init` with commented-out defaults
-- [ ] If `.obsidian/app.json` exists: read `useMarkdownLinks`, `newLinkFormat`, `attachmentFolderPath`, `strictLineBreaks` as fallback defaults
-- [ ] If `.obsidian/types.json` exists: read property type assignments to seed property catalog
-- [ ] Precedence: `.vulcan/config.toml` > `.obsidian/app.json` > built-in defaults
-- [ ] Fall back gracefully if neither `.vulcan/config.toml` nor `.obsidian/` exists (plain Markdown directory)
-- [ ] Emit diagnostic if a config file exists but is unparseable
-- [ ] Store merged config in an in-memory struct passed to parser and resolver
-- [ ] Unit tests for config merging, missing files, malformed files, precedence
+- [x] Parse `.vulcan/config.toml`: chunking settings, link resolution defaults, link style preference, attachment folder override, embedding provider config
+- [x] Create default `.vulcan/config.toml` on `vulcan init` with commented-out defaults
+- [x] If `.obsidian/app.json` exists: read `useMarkdownLinks`, `newLinkFormat`, `attachmentFolderPath`, `strictLineBreaks` as fallback defaults
+- [x] If `.obsidian/types.json` exists: read property type assignments to seed property catalog
+- [x] Precedence: `.vulcan/config.toml` > `.obsidian/app.json` > built-in defaults
+- [x] Fall back gracefully if neither `.vulcan/config.toml` nor `.obsidian/` exists (plain Markdown directory)
+- [x] Emit diagnostic if a config file exists but is unparseable
+- [x] Store merged config in an in-memory struct passed to parser and resolver
+- [x] Unit tests for config merging, missing files, malformed files, precedence
 
 ### 1.5 Markdown parser pipeline
 
