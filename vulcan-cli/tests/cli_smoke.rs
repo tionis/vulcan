@@ -18,6 +18,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("scan"))
             .and(predicate::str::contains("links"))
             .and(predicate::str::contains("backlinks"))
+            .and(predicate::str::contains("notes"))
             .and(predicate::str::contains("search"))
             .and(predicate::str::contains("move"))
             .and(predicate::str::contains("doctor")),
@@ -286,6 +287,71 @@ fn search_json_output_returns_ranked_hits_and_supports_filters() {
         .as_str()
         .expect("snippet should be a string")
         .contains("Bob"));
+}
+
+#[test]
+fn notes_json_output_filters_and_sorts_property_queries() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,properties",
+            "notes",
+            "--where",
+            "estimate > 2",
+            "--sort",
+            "due",
+        ])
+        .assert()
+        .success();
+    let json_lines = parse_stdout_json_lines(&assert);
+
+    assert_eq!(json_lines.len(), 2);
+    assert_eq!(json_lines[0]["document_path"], "Done.md");
+    assert_eq!(json_lines[1]["document_path"], "Backlog.md");
+    assert_eq!(json_lines[0]["properties"]["status"], "done");
+}
+
+#[test]
+fn search_json_output_supports_has_property_filter() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "search",
+            "release",
+            "--has-property",
+            "empty_text",
+        ])
+        .assert()
+        .success();
+    let json_lines = parse_stdout_json_lines(&assert);
+
+    assert_eq!(json_lines.len(), 1);
+    assert_eq!(json_lines[0]["document_path"], "Done.md");
 }
 
 #[test]

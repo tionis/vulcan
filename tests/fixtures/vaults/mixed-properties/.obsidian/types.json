@@ -1,0 +1,7 @@
+{
+  "status": "text",
+  "estimate": "number",
+  "reviewed": "checkbox",
+  "due": "date",
+  "related": "list"
+}

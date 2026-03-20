@@ -59,6 +59,7 @@ pub struct SearchQuery {
     pub text: String,
     pub tag: Option<String>,
     pub path_prefix: Option<String>,
+    pub has_property: Option<String>,
     pub limit: Option<usize>,
     pub context_size: usize,
 }
@@ -69,6 +70,7 @@ impl Default for SearchQuery {
             text: String::new(),
             tag: None,
             path_prefix: None,
+            has_property: None,
             limit: None,
             context_size: 18,
         }
@@ -80,6 +82,7 @@ pub struct SearchReport {
     pub query: String,
     pub tag: Option<String>,
     pub path_prefix: Option<String>,
+    pub has_property: Option<String>,
     pub hits: Vec<SearchHit>,
 }
 
@@ -100,6 +103,7 @@ pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchRep
         .map_or(i64::MAX, |value| i64::try_from(value).unwrap_or(i64::MAX));
     let tag = query.tag.as_deref();
     let path_prefix = query.path_prefix.as_deref();
+    let has_property = query.has_property.as_deref();
     let path_filter = path_prefix.map(|prefix| format!("{prefix}%"));
     let mut statement = connection.prepare(
         "
@@ -107,7 +111,7 @@ pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchRep
             documents.path,
             chunks.id,
             chunks.heading_path,
-            snippet(search_chunks_fts, 0, '[', ']', '…', ?5),
+            snippet(search_chunks_fts, 0, '[', ']', '…', ?6),
             bm25(search_chunks_fts, 10.0, 5.0, 3.0, 2.0)
         FROM search_chunks_fts
         JOIN search_chunk_content ON search_chunks_fts.rowid = search_chunk_content.id
@@ -124,8 +128,17 @@ pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchRep
                       AND tags.tag_text = ?3
                 )
           )
+          AND (
+                ?4 IS NULL
+                OR EXISTS (
+                    SELECT 1
+                    FROM property_values
+                    WHERE property_values.document_id = documents.id
+                      AND property_values.key = ?4
+                )
+          )
         ORDER BY 5 ASC, documents.path ASC, chunks.sequence_index ASC
-        LIMIT ?4
+        LIMIT ?5
         ",
     )?;
     let rows = statement.query_map(
@@ -133,6 +146,7 @@ pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchRep
             query.text,
             path_filter,
             tag,
+            has_property,
             limit,
             i64::try_from(query.context_size).unwrap_or(i64::MAX),
         ],
@@ -159,6 +173,7 @@ pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchRep
         query: query.text.clone(),
         tag: query.tag.clone(),
         path_prefix: query.path_prefix.clone(),
+        has_property: query.has_property.clone(),
         hits,
     })
 }
@@ -261,6 +276,34 @@ mod tests {
                 .map(|hit| hit.document_path.clone())
                 .collect::<Vec<_>>(),
             vec!["People/Bob.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn search_filters_by_property_presence() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "release".to_string(),
+                has_property: Some("empty_text".to_string()),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("property-filtered search should succeed");
+        assert_eq!(
+            report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Done.md".to_string()]
         );
     }
 

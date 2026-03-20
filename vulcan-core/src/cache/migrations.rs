@@ -48,6 +48,7 @@ impl MigrationRegistry {
                 "repair chunk search schema naming",
                 schema::apply_schema_v4,
             ),
+            Migration::new(5, "add property storage tables", schema::apply_schema_v5),
         ])
     }
 
