@@ -49,6 +49,7 @@ impl MigrationRegistry {
                 schema::apply_schema_v4,
             ),
             Migration::new(5, "add property storage tables", schema::apply_schema_v5),
+            Migration::new(6, "add vector cache state tables", schema::apply_schema_v6),
         ])
     }
 

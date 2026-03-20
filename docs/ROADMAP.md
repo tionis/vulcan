@@ -291,45 +291,45 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 **Design refs:** §7 (chunking), §11 (vectors + embedding providers)
 
 ### 5.1 Embedding provider trait
-- [ ] Define `EmbeddingProvider` trait: `embed_batch(chunks) -> Vec<Result<Vec<f32>, Error>>`, `metadata() -> ModelMetadata`
-- [ ] `ModelMetadata`: provider name, model name, dimensions, normalization, max batch size, max input tokens
-- [ ] `OpenAICompatibleProvider`: HTTP client for `/v1/embeddings` endpoint
+- [x] Define `EmbeddingProvider` trait: `embed_batch(chunks) -> Vec<Result<Vec<f32>, Error>>`, `metadata() -> ModelMetadata`
+- [x] `ModelMetadata`: provider name, model name, dimensions, normalization, max batch size, max input tokens
+- [x] `OpenAICompatibleProvider`: HTTP client for `/v1/embeddings` endpoint
   - Config: base URL, API key (optional), model name
   - Batch according to provider limits
-  - Async with concurrency semaphore
+  - Bounded concurrency across request batches
   - Exponential backoff on transient failures
-- [ ] Provider selection via config file or `--provider` flag
-- [ ] Error if no provider configured and embedding is requested
-- [ ] Unit tests with mock HTTP server
+- [x] Provider selection via config file or `--provider` flag
+- [x] Error if no provider configured and embedding is requested
+- [x] Unit tests with mock HTTP server
 
 ### 5.2 Vector storage
-- [ ] Schema migration: `vectors` table via `sqlite-vec` `vec0` virtual table — `chunk_id`, `provider_name`, `model_name`, `dimensions`, `embedding` (float vector)
-- [ ] Abstract behind `VectorStore` trait so `sqlite-vec` can be swapped later
-- [ ] Store provider/model metadata per row
-- [ ] Never mix vectors from different models in the same query
-- [ ] Unit tests for insert/query operations
+- [x] Schema migration: `vectors` table via `sqlite-vec` `vec0` virtual table — `chunk_id`, `provider_name`, `model_name`, `dimensions`, `embedding` (float vector)
+- [x] Abstract behind `VectorStore` trait so `sqlite-vec` can be swapped later
+- [x] Store provider/model metadata per row
+- [x] Never mix vectors from different models in the same query
+- [x] Unit tests for insert/query operations
 
 ### 5.3 Embedding pipeline
-- [ ] `vectors index` command: embed all un-embedded chunks, or re-embed changed chunks
-- [ ] Content-hash gating: skip chunks whose hash matches existing vector row
-- [ ] Chunked transactions: commit every N embeddings to avoid long write locks
-- [ ] Record failed chunks in diagnostics table; retry on next run
-- [ ] Progress reporting (count, rate, errors)
-- [ ] `--output json` for status reporting
-- [ ] Integration test: embed chunks from `basic/` vault against a mock provider
+- [x] `vectors index` command: embed all un-embedded chunks, or re-embed changed chunks
+- [x] Content-hash gating: skip chunks whose hash matches existing vector row
+- [x] Chunked transactions: commit every N embeddings to avoid long write locks
+- [x] Record failed chunks in diagnostics table; retry on next run
+- [x] Progress reporting (count, rate, errors)
+- [x] `--output json` for status reporting
+- [x] Integration test: embed chunks from `basic/` vault against a mock provider
 
 ### 5.4 Nearest-neighbor search
-- [ ] `vectors neighbors <query-text>` command: embed query, find nearest chunks
-- [ ] `vectors neighbors --note <path>` command: find notes similar to a given note (average or per-chunk)
-- [ ] Return: document path, chunk id, heading path, similarity score, snippet
-- [ ] `--limit`, `--output json`, `--fields`
-- [ ] Integration test with mock provider
+- [x] `vectors neighbors <query-text>` command: embed query, find nearest chunks
+- [x] `vectors neighbors --note <path>` command: find notes similar to a given note (average or per-chunk)
+- [x] Return: document path, chunk id, heading path, similarity score, snippet
+- [x] `--limit`, `--output json`, `--fields`
+- [x] Integration test with mock provider
 
 ### 5.5 Hybrid retrieval
-- [ ] Combine FTS results (Phase 3) with vector similarity results
-- [ ] `search` command gains `--mode hybrid` flag
-- [ ] Reciprocal rank fusion or simple score combination for ranking
-- [ ] Integration test: hybrid search returns results from both FTS and vector paths
+- [x] Combine FTS results (Phase 3) with vector similarity results
+- [x] `search` command gains `--mode hybrid` flag
+- [x] Reciprocal rank fusion or simple score combination for ranking
+- [x] Integration test: hybrid search returns results from both FTS and vector paths
 
 ### 5.6 Duplicate detection and clustering
 - [ ] `vectors duplicates` command: find chunk pairs above a similarity threshold

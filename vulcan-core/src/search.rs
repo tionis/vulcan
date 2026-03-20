@@ -1,5 +1,6 @@
+use crate::vector::query_hybrid_candidates;
 use crate::{CacheDatabase, CacheError, VaultPaths};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -10,6 +11,7 @@ pub enum SearchError {
     Cache(CacheError),
     Json(serde_json::Error),
     Sqlite(rusqlite::Error),
+    Vector(crate::VectorError),
 }
 
 impl Display for SearchError {
@@ -21,6 +23,7 @@ impl Display for SearchError {
             Self::Cache(error) => write!(formatter, "{error}"),
             Self::Json(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
+            Self::Vector(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -31,6 +34,7 @@ impl Error for SearchError {
             Self::Cache(error) => Some(error),
             Self::Json(error) => Some(error),
             Self::Sqlite(error) => Some(error),
+            Self::Vector(error) => Some(error),
             Self::CacheMissing => None,
         }
     }
@@ -54,12 +58,27 @@ impl From<rusqlite::Error> for SearchError {
     }
 }
 
+impl From<crate::VectorError> for SearchError {
+    fn from(error: crate::VectorError) -> Self {
+        Self::Vector(error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    Keyword,
+    Hybrid,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchQuery {
     pub text: String,
     pub tag: Option<String>,
     pub path_prefix: Option<String>,
     pub has_property: Option<String>,
+    pub provider: Option<String>,
+    pub mode: SearchMode,
     pub limit: Option<usize>,
     pub context_size: usize,
 }
@@ -71,6 +90,8 @@ impl Default for SearchQuery {
             tag: None,
             path_prefix: None,
             has_property: None,
+            provider: None,
+            mode: SearchMode::Keyword,
             limit: None,
             context_size: 18,
         }
@@ -80,6 +101,7 @@ impl Default for SearchQuery {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SearchReport {
     pub query: String,
+    pub mode: SearchMode,
     pub tag: Option<String>,
     pub path_prefix: Option<String>,
     pub has_property: Option<String>,
@@ -98,8 +120,36 @@ pub struct SearchHit {
 pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchReport, SearchError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
-    let limit = query
-        .limit
+    let hits = match query.mode {
+        SearchMode::Keyword => keyword_search_hits(connection, query, query.limit)?,
+        SearchMode::Hybrid => hybrid_search_hits(paths, connection, query)?,
+    };
+
+    Ok(SearchReport {
+        query: query.text.clone(),
+        mode: query.mode,
+        tag: query.tag.clone(),
+        path_prefix: query.path_prefix.clone(),
+        has_property: query.has_property.clone(),
+        hits,
+    })
+}
+
+fn open_existing_cache(paths: &VaultPaths) -> Result<CacheDatabase, SearchError> {
+    if !paths.cache_db().exists() {
+        return Err(SearchError::CacheMissing);
+    }
+
+    CacheDatabase::open(paths).map_err(SearchError::from)
+}
+
+fn keyword_search_hits(
+    connection: &rusqlite::Connection,
+    query: &SearchQuery,
+    limit_override: Option<usize>,
+) -> Result<Vec<SearchHit>, SearchError> {
+    let limit = limit_override
+        .or(query.limit)
         .map_or(i64::MAX, |value| i64::try_from(value).unwrap_or(i64::MAX));
     let tag = query.tag.as_deref();
     let path_prefix = query.path_prefix.as_deref();
@@ -167,23 +217,126 @@ pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchRep
             })
         },
     )?;
-    let hits = rows.collect::<Result<Vec<_>, _>>()?;
-
-    Ok(SearchReport {
-        query: query.text.clone(),
-        tag: query.tag.clone(),
-        path_prefix: query.path_prefix.clone(),
-        has_property: query.has_property.clone(),
-        hits,
-    })
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(SearchError::from)
 }
 
-fn open_existing_cache(paths: &VaultPaths) -> Result<CacheDatabase, SearchError> {
-    if !paths.cache_db().exists() {
-        return Err(SearchError::CacheMissing);
+fn hybrid_search_hits(
+    paths: &VaultPaths,
+    connection: &rusqlite::Connection,
+    query: &SearchQuery,
+) -> Result<Vec<SearchHit>, SearchError> {
+    let requested_limit = query.limit.unwrap_or(10).max(1);
+    let candidate_limit = requested_limit.saturating_mul(4).max(10);
+    let keyword_hits = keyword_search_hits(connection, query, Some(candidate_limit))?;
+    let vector_hits = query_hybrid_candidates(
+        paths,
+        query.provider.as_deref(),
+        &query.text,
+        candidate_limit,
+    )?;
+
+    let filtered_vector_hits = vector_hits
+        .into_iter()
+        .filter(|hit| matches_filters(connection, &hit.document_path, query).unwrap_or(false))
+        .collect::<Vec<_>>();
+
+    let mut combined = std::collections::HashMap::<String, SearchHit>::new();
+    let mut scores = std::collections::HashMap::<String, f64>::new();
+
+    for (index, hit) in keyword_hits.iter().enumerate() {
+        let score = reciprocal_rank(index);
+        scores
+            .entry(hit.chunk_id.clone())
+            .and_modify(|current| *current += score)
+            .or_insert(score);
+        combined
+            .entry(hit.chunk_id.clone())
+            .or_insert_with(|| hit.clone());
     }
 
-    CacheDatabase::open(paths).map_err(SearchError::from)
+    for (index, hit) in filtered_vector_hits.iter().enumerate() {
+        let score = reciprocal_rank(index);
+        scores
+            .entry(hit.chunk_id.clone())
+            .and_modify(|current| *current += score)
+            .or_insert(score);
+        combined
+            .entry(hit.chunk_id.clone())
+            .or_insert_with(|| SearchHit {
+                document_path: hit.document_path.clone(),
+                chunk_id: hit.chunk_id.clone(),
+                heading_path: hit.heading_path.clone(),
+                snippet: hit.snippet.clone(),
+                rank: 0.0,
+            });
+    }
+
+    let mut hits = combined
+        .into_iter()
+        .map(|(chunk_id, mut hit)| {
+            hit.rank = scores.get(&chunk_id).copied().unwrap_or_default();
+            hit
+        })
+        .collect::<Vec<_>>();
+    hits.sort_by(|left, right| {
+        right
+            .rank
+            .partial_cmp(&left.rank)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.document_path.cmp(&right.document_path))
+            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+    });
+    hits.truncate(requested_limit);
+    Ok(hits)
+}
+
+fn reciprocal_rank(index: usize) -> f64 {
+    1.0 / (60.0 + f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 1.0)
+}
+
+fn matches_filters(
+    connection: &rusqlite::Connection,
+    document_path: &str,
+    query: &SearchQuery,
+) -> Result<bool, rusqlite::Error> {
+    if let Some(path_prefix) = query.path_prefix.as_deref() {
+        if !document_path.starts_with(path_prefix) {
+            return Ok(false);
+        }
+    }
+    let Some(document_id) = connection
+        .query_row(
+            "SELECT id FROM documents WHERE path = ?1",
+            [document_path],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    if let Some(tag) = query.tag.as_deref() {
+        let has_tag: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tags WHERE document_id = ?1 AND tag_text = ?2)",
+            params![&document_id, tag],
+            |row| row.get(0),
+        )?;
+        if !has_tag {
+            return Ok(false);
+        }
+    }
+    if let Some(property_key) = query.has_property.as_deref() {
+        let has_property: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM property_values WHERE document_id = ?1 AND key = ?2)",
+            params![&document_id, property_key],
+            |row| row.get(0),
+        )?;
+        if !has_property {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
 }
 
 #[cfg(test)]

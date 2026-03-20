@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 use rusqlite::{params, Connection, Transaction};
 use serde::Serialize;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -134,6 +134,14 @@ struct IncrementalScanResult {
     summary: ScanSummary,
     requires_link_resolution: bool,
     requires_property_catalog_refresh: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ChunkReuseKey {
+    heading_path: Vec<String>,
+    content_hash: Vec<u8>,
+    chunk_strategy: String,
+    chunk_version: u32,
 }
 
 #[must_use]
@@ -529,13 +537,19 @@ fn replace_derived_rows(
     config: &crate::VaultConfig,
     parsed: &ParsedDocument,
 ) -> Result<(), ScanError> {
+    let reusable_chunk_ids = load_reusable_chunk_ids(transaction, document_id)?;
     clear_derived_rows(transaction, document_id)?;
     insert_headings(transaction, document_id, &parsed.headings)?;
     insert_block_refs(transaction, document_id, &parsed.block_refs)?;
     insert_links(transaction, document_id, &parsed.links)?;
     insert_aliases(transaction, document_id, &parsed.aliases)?;
     insert_tags(transaction, document_id, &parsed.tags)?;
-    insert_chunks(transaction, document_id, &parsed.chunk_texts)?;
+    insert_chunks(
+        transaction,
+        document_id,
+        &parsed.chunk_texts,
+        reusable_chunk_ids,
+    )?;
     replace_chunk_search_rows(transaction, document_id)?;
     insert_diagnostics(transaction, document_id, &parsed.diagnostics)?;
     if let Some(properties) = extract_indexed_properties(
@@ -760,8 +774,13 @@ fn insert_chunks(
     transaction: &Transaction<'_>,
     document_id: &str,
     chunks: &[crate::ChunkText],
+    mut reusable_chunk_ids: HashMap<ChunkReuseKey, VecDeque<String>>,
 ) -> Result<(), ScanError> {
     for chunk in chunks {
+        let chunk_id = reusable_chunk_ids
+            .get_mut(&chunk_reuse_key(chunk))
+            .and_then(VecDeque::pop_front)
+            .unwrap_or_else(|| Ulid::new().to_string());
         transaction.execute(
             "
             INSERT INTO chunks (
@@ -779,7 +798,7 @@ fn insert_chunks(
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ",
             params![
-                Ulid::new().to_string(),
+                chunk_id,
                 document_id,
                 i64::try_from(chunk.sequence_index).map_err(|_| ScanError::MetadataOverflow {
                     field: "chunk.sequence_index",
@@ -805,6 +824,56 @@ fn insert_chunks(
         )?;
     }
     Ok(())
+}
+
+fn load_reusable_chunk_ids(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+) -> Result<HashMap<ChunkReuseKey, VecDeque<String>>, ScanError> {
+    let mut statement = transaction.prepare(
+        "
+        SELECT id, heading_path, content_hash, chunk_strategy, chunk_version
+        FROM chunks
+        WHERE document_id = ?1
+        ORDER BY sequence_index
+        ",
+    )?;
+    let rows = statement.query_map([document_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, u32>(4)?,
+        ))
+    })?;
+
+    let mut reusable_chunk_ids = HashMap::<ChunkReuseKey, VecDeque<String>>::new();
+    for row in rows {
+        let (chunk_id, heading_path, content_hash, chunk_strategy, chunk_version) = row?;
+        let key = ChunkReuseKey {
+            heading_path: serde_json::from_str(&heading_path)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            content_hash,
+            chunk_strategy,
+            chunk_version,
+        };
+        reusable_chunk_ids
+            .entry(key)
+            .or_default()
+            .push_back(chunk_id);
+    }
+
+    Ok(reusable_chunk_ids)
+}
+
+fn chunk_reuse_key(chunk: &crate::ChunkText) -> ChunkReuseKey {
+    ChunkReuseKey {
+        heading_path: chunk.heading_path.clone(),
+        content_hash: chunk.content_hash.clone(),
+        chunk_strategy: chunk.chunk_strategy.clone(),
+        chunk_version: chunk.chunk_version,
+    }
 }
 
 fn insert_diagnostics(
@@ -1419,6 +1488,38 @@ mod tests {
     }
 
     #[test]
+    fn incremental_scan_reuses_chunk_ids_when_frontmatter_changes_only() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let before_chunk_ids = chunk_ids_for_document(database.connection(), "Home.md");
+        drop(database);
+
+        fs::write(
+            vault_root.join("Home.md"),
+            "---\naliases:\n  - Start\n  - Landing\n\
+             tags:\n  - dashboard\n---\n\n# Home\n\n\
+             Home links to [[Projects/Alpha]] and [[People/Bob|Bob]].\n\n\
+             The dashboard note uses the tag #index.\n",
+        )
+        .expect("updated note should be written");
+
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(summary.updated, 1);
+        assert_eq!(
+            chunk_ids_for_document(database.connection(), "Home.md"),
+            before_chunk_ids
+        );
+    }
+
+    #[test]
     fn scan_respects_gitignore_and_hidden_directories() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -1640,6 +1741,26 @@ mod tests {
             .expect("statement should prepare");
         let rows = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query should succeed");
+
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn chunk_ids_for_document(connection: &Connection, path: &str) -> Vec<String> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT chunks.id
+                FROM chunks
+                JOIN documents ON documents.id = chunks.document_id
+                WHERE documents.path = ?1
+                ORDER BY chunks.sequence_index
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([path], |row| row.get(0))
             .expect("query should succeed");
 
         rows.map(|row| row.expect("row should deserialize"))

@@ -1,6 +1,6 @@
 mod cli;
 
-pub use cli::{BasesCommand, Cli, Command, OutputFormat};
+pub use cli::{BasesCommand, Cli, Command, OutputFormat, SearchMode, VectorsCommand};
 
 use clap::Parser;
 use serde::Serialize;
@@ -11,11 +11,13 @@ use std::io;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use vulcan_core::{
-    doctor_vault, evaluate_base_file, initialize_vault, move_note, query_backlinks, query_links,
-    query_notes, scan_vault, search_vault, BacklinkRecord, BacklinksReport, BasesEvalReport,
-    DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary, MoveSummary, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ScanMode, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, VaultPaths,
+    doctor_vault, evaluate_base_file, index_vectors, initialize_vault, move_note, query_backlinks,
+    query_links, query_notes, query_vector_neighbors, scan_vault, search_vault, BacklinkRecord,
+    BacklinksReport, BasesEvalReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport,
+    InitSummary, MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, ScanMode, ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths,
+    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
+    VectorNeighborsReport,
 };
 
 #[derive(Debug)]
@@ -73,6 +75,7 @@ where
     dispatch(&cli)
 }
 
+#[allow(clippy::too_many_lines)]
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
     let list_controls = ListOutputControls::from_cli(cli);
@@ -135,6 +138,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Search {
             ref query,
+            mode,
             ref tag,
             ref path_prefix,
             ref has_property,
@@ -147,6 +151,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     tag: tag.clone(),
                     path_prefix: path_prefix.clone(),
                     has_property: has_property.clone(),
+                    provider: cli.provider.clone(),
+                    mode: match mode {
+                        SearchMode::Keyword => vulcan_core::search::SearchMode::Keyword,
+                        SearchMode::Hybrid => vulcan_core::search::SearchMode::Hybrid,
+                    },
                     limit: cli.limit.map(|limit| limit.saturating_add(cli.offset)),
                     context_size,
                 },
@@ -155,6 +164,33 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_search_report(cli.output, &report, &list_controls, stdout_is_tty)?;
             Ok(())
         }
+        Command::Vectors { ref command } => match command {
+            VectorsCommand::Index => {
+                let report = index_vectors(
+                    &paths,
+                    &VectorIndexQuery {
+                        provider: cli.provider.clone(),
+                    },
+                )
+                .map_err(CliError::operation)?;
+                print_vector_index_report(cli.output, &report)?;
+                Ok(())
+            }
+            VectorsCommand::Neighbors { query, note } => {
+                let report = query_vector_neighbors(
+                    &paths,
+                    &VectorNeighborsQuery {
+                        provider: cli.provider.clone(),
+                        text: query.clone(),
+                        note: note.clone(),
+                        limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
+                    },
+                )
+                .map_err(CliError::operation)?;
+                print_vector_neighbors_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+                Ok(())
+            }
+        },
         Command::Scan { full } => {
             let summary = scan_vault(
                 &paths,
@@ -182,7 +218,7 @@ fn print_search_report(
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
-                println!("Search hits for {}", report.query);
+                println!("Search hits for {} ({:?})", report.query, report.mode);
             }
             if visible_hits.is_empty() {
                 println!("No search hits.");
@@ -238,6 +274,69 @@ fn print_notes_report(
         }
         OutputFormat::Json => print_json_lines(
             note_rows(report, visible_notes),
+            list_controls.fields.as_deref(),
+        ),
+    }
+}
+
+fn print_vector_index_report(
+    output: OutputFormat,
+    report: &VectorIndexReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "Indexed vectors with {}:{} (dims {}): {} indexed, {} skipped, {} failed in {:.3}s",
+                report.provider_name,
+                report.model_name,
+                report.dimensions,
+                report.indexed,
+                report.skipped,
+                report.failed,
+                report.elapsed_seconds
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_vector_neighbors_report(
+    output: OutputFormat,
+    report: &VectorNeighborsReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+) -> Result<(), CliError> {
+    let visible_hits = paginated_items(&report.hits, list_controls);
+
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                if let Some(query_text) = report.query_text.as_deref() {
+                    println!("Vector neighbors for {query_text}");
+                } else if let Some(note_path) = report.note_path.as_deref() {
+                    println!("Vector neighbors for note {note_path}");
+                }
+            }
+            if visible_hits.is_empty() {
+                println!("No vector neighbors.");
+                return Ok(());
+            }
+
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in vector_neighbor_rows(report, visible_hits) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for hit in visible_hits {
+                    print_vector_neighbor(hit);
+                }
+            }
+
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(
+            vector_neighbor_rows(report, visible_hits),
             list_controls.fields.as_deref(),
         ),
     }
@@ -607,6 +706,7 @@ fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
         .map(|hit| {
             serde_json::json!({
                 "query": report.query,
+                "mode": report.mode,
                 "tag": report.tag,
                 "path_prefix": report.path_prefix,
                 "has_property": report.has_property,
@@ -615,6 +715,25 @@ fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
                 "heading_path": hit.heading_path,
                 "snippet": hit.snippet,
                 "rank": hit.rank,
+            })
+        })
+        .collect()
+}
+
+fn vector_neighbor_rows(report: &VectorNeighborsReport, hits: &[VectorNeighborHit]) -> Vec<Value> {
+    hits.iter()
+        .map(|hit| {
+            serde_json::json!({
+                "provider_name": report.provider_name,
+                "model_name": report.model_name,
+                "dimensions": report.dimensions,
+                "query_text": report.query_text,
+                "note_path": report.note_path,
+                "document_path": hit.document_path,
+                "chunk_id": hit.chunk_id,
+                "heading_path": hit.heading_path,
+                "snippet": hit.snippet,
+                "distance": hit.distance,
             })
         })
         .collect()
@@ -750,6 +869,23 @@ fn print_search_hit(hit: &SearchHit) {
     }
 }
 
+fn print_vector_neighbor(hit: &VectorNeighborHit) {
+    if hit.heading_path.is_empty() {
+        println!(
+            "- {} [{:.3}]: {}",
+            hit.document_path, hit.distance, hit.snippet
+        );
+    } else {
+        println!(
+            "- {} > {} [{:.3}]: {}",
+            hit.document_path,
+            hit.heading_path.join(" > "),
+            hit.distance,
+            hit.snippet
+        );
+    }
+}
+
 fn print_note(note: &NoteRecord) {
     println!("- {}", note.document_path);
 }
@@ -856,6 +992,8 @@ mod tests {
         .expect("cli should parse");
         let bases = Cli::try_parse_from(["vulcan", "bases", "eval", "release.base"])
             .expect("cli should parse");
+        let vectors =
+            Cli::try_parse_from(["vulcan", "vectors", "index"]).expect("cli should parse");
         let move_command = Cli::try_parse_from([
             "vulcan",
             "move",
@@ -881,6 +1019,7 @@ mod tests {
             search.command,
             Command::Search {
                 query: "dashboard".to_string(),
+                mode: SearchMode::Keyword,
                 tag: Some("index".to_string()),
                 path_prefix: Some("People/".to_string()),
                 has_property: Some("status".to_string()),
@@ -901,6 +1040,12 @@ mod tests {
                 command: BasesCommand::Eval {
                     file: "release.base".to_string(),
                 },
+            }
+        );
+        assert_eq!(
+            vectors.command,
+            Command::Vectors {
+                command: VectorsCommand::Index,
             }
         );
         assert_eq!(

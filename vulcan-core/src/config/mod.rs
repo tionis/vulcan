@@ -19,9 +19,14 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r#"# Vulcan configuration
 # attachment_folder = "."
 
 # [embedding]
+# provider = "openai-compatible"
 # base_url = "http://localhost:11434/v1"
 # model = "text-embedding-3-small"
 # api_key_env = "OPENAI_API_KEY"
+# normalized = true
+# max_batch_size = 32
+# max_input_tokens = 8192
+# max_concurrency = 4
 "#;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,9 +74,21 @@ impl Default for ChunkingConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbeddingProviderConfig {
+    pub provider: Option<String>,
     pub base_url: String,
     pub model: String,
     pub api_key_env: Option<String>,
+    pub normalized: Option<bool>,
+    pub max_batch_size: Option<usize>,
+    pub max_input_tokens: Option<usize>,
+    pub max_concurrency: Option<usize>,
+}
+
+impl EmbeddingProviderConfig {
+    #[must_use]
+    pub fn provider_name(&self) -> &str {
+        self.provider.as_deref().unwrap_or("openai-compatible")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -430,9 +447,14 @@ style = "wikilink"
 attachment_folder = "assets"
 
 [embedding]
+provider = "openai-compatible"
 base_url = "http://localhost:11434/v1"
 model = "nomic-embed-text"
 api_key_env = "EMBEDDING_API_KEY"
+normalized = false
+max_batch_size = 8
+max_input_tokens = 2048
+max_concurrency = 2
 "#,
         )
         .expect("vulcan config should be written");
@@ -455,6 +477,15 @@ api_key_env = "EMBEDDING_API_KEY"
                 .expect("embedding config should be present")
                 .model,
             "nomic-embed-text"
+        );
+        assert_eq!(
+            loaded
+                .config
+                .embedding
+                .as_ref()
+                .expect("embedding config should be present")
+                .provider_name(),
+            "openai-compatible"
         );
     }
 
