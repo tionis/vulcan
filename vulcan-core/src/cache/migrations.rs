@@ -42,6 +42,7 @@ impl MigrationRegistry {
         Self::new(vec![
             Migration::new(1, "create cache schema v1", schema::apply_schema_v1),
             Migration::new(2, "add chunk content column", schema::apply_schema_v2),
+            Migration::new(3, "add chunk search index", schema::apply_schema_v3),
         ])
     }
 
@@ -184,6 +185,84 @@ mod tests {
         );
     }
 
+    #[test]
+    fn add_chunk_search_migration_backfills_existing_chunks() {
+        let mut connection = Connection::open_in_memory().expect("in-memory db should open");
+        let transaction = connection
+            .transaction()
+            .expect("setup transaction should begin");
+        schema::apply_schema_v1(&transaction).expect("schema v1 should apply");
+        schema::apply_schema_v2(&transaction).expect("schema v2 should apply");
+        transaction
+            .pragma_update(None, "user_version", 2)
+            .expect("user_version should update");
+        transaction
+            .commit()
+            .expect("setup transaction should commit");
+
+        connection
+            .execute(
+                "
+                INSERT INTO documents (
+                    id, path, filename, extension, content_hash, raw_frontmatter,
+                    file_size, file_mtime, parser_version, indexed_at
+                )
+                VALUES ('doc-1', 'Home.md', 'Home', 'md', ?1, NULL, 1, 1, 1, '1')
+                ",
+                [vec![1_u8; 32]],
+            )
+            .expect("document should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO aliases (id, document_id, alias_text)
+                VALUES ('alias-1', 'doc-1', 'Start')
+                ",
+                [],
+            )
+            .expect("alias should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO chunks (
+                    id, document_id, sequence_index, heading_path, byte_offset_start,
+                    byte_offset_end, content_hash, chunk_strategy, chunk_version, content
+                )
+                VALUES ('chunk-1', 'doc-1', 0, '[\"Home\"]', 0, 4, ?1, 'heading', 1, 'dashboard note')
+                ",
+                [vec![2_u8; 32]],
+            )
+            .expect("chunk should insert");
+
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .expect("migration to v3 should succeed");
+
+        let search_row: (String, String, String, String) = connection
+            .query_row(
+                "
+                SELECT content, document_title, aliases, headings
+                FROM chunk_search_content
+                WHERE chunk_id = 'chunk-1'
+                ",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("search content row should exist");
+        assert_eq!(
+            search_row,
+            (
+                "dashboard note".to_string(),
+                "Home".to_string(),
+                "Start".to_string(),
+                "Home".to_string()
+            )
+        );
+
+        let matched_paths = search_matches(&connection, "Start");
+        assert_eq!(matched_paths, vec!["Home.md".to_string()]);
+    }
+
     fn table_exists(connection: &Connection, name: &str) -> bool {
         connection
             .query_row(
@@ -193,5 +272,26 @@ mod tests {
             )
             .expect("sqlite_master query should succeed")
             > 0
+    }
+
+    fn search_matches(connection: &Connection, query: &str) -> Vec<String> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT DISTINCT documents.path
+                FROM chunk_search
+                JOIN chunk_search_content ON chunk_search.rowid = chunk_search_content.id
+                JOIN documents ON documents.id = chunk_search_content.document_id
+                WHERE chunk_search MATCH ?1
+                ORDER BY documents.path
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([query], |row| row.get(0))
+            .expect("query should succeed");
+
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
     }
 }

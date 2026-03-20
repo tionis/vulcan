@@ -6,6 +6,7 @@ pub const TABLES_TO_CLEAR: &[&str] = &[
     "links",
     "aliases",
     "tags",
+    "chunk_search_content",
     "chunks",
     "diagnostics",
     "documents",
@@ -114,6 +115,80 @@ pub fn apply_schema_v2(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
     transaction.execute(
         "ALTER TABLE chunks ADD COLUMN content TEXT NOT NULL DEFAULT ''",
         [],
+    )?;
+    Ok(())
+}
+
+pub fn apply_schema_v3(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE chunk_search_content (
+            id INTEGER PRIMARY KEY,
+            chunk_id TEXT NOT NULL UNIQUE REFERENCES chunks(id) ON DELETE CASCADE,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            content TEXT NOT NULL,
+            document_title TEXT NOT NULL,
+            aliases TEXT NOT NULL,
+            headings TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_chunk_search_content_document_id
+            ON chunk_search_content(document_id);
+
+        CREATE VIRTUAL TABLE chunk_search USING fts5(
+            content,
+            document_title,
+            aliases,
+            headings,
+            content = 'chunk_search_content',
+            content_rowid = 'id',
+            tokenize = 'unicode61'
+        );
+
+        CREATE TRIGGER chunk_search_content_ai AFTER INSERT ON chunk_search_content BEGIN
+            INSERT INTO chunk_search(rowid, content, document_title, aliases, headings)
+            VALUES (new.id, new.content, new.document_title, new.aliases, new.headings);
+        END;
+
+        CREATE TRIGGER chunk_search_content_ad AFTER DELETE ON chunk_search_content BEGIN
+            INSERT INTO chunk_search(chunk_search, rowid, content, document_title, aliases, headings)
+            VALUES ('delete', old.id, old.content, old.document_title, old.aliases, old.headings);
+        END;
+
+        CREATE TRIGGER chunk_search_content_au AFTER UPDATE ON chunk_search_content BEGIN
+            INSERT INTO chunk_search(chunk_search, rowid, content, document_title, aliases, headings)
+            VALUES ('delete', old.id, old.content, old.document_title, old.aliases, old.headings);
+            INSERT INTO chunk_search(rowid, content, document_title, aliases, headings)
+            VALUES (new.id, new.content, new.document_title, new.aliases, new.headings);
+        END;
+
+        INSERT INTO chunk_search_content (
+            chunk_id,
+            document_id,
+            content,
+            document_title,
+            aliases,
+            headings
+        )
+        SELECT
+            chunks.id,
+            chunks.document_id,
+            chunks.content,
+            documents.filename,
+            COALESCE((
+                SELECT group_concat(alias_text, ' ')
+                FROM aliases
+                WHERE aliases.document_id = chunks.document_id
+            ), ''),
+            COALESCE((
+                SELECT group_concat(value, ' ')
+                FROM json_each(chunks.heading_path)
+            ), '')
+        FROM chunks
+        JOIN documents ON documents.id = chunks.document_id;
+
+        INSERT INTO chunk_search(chunk_search) VALUES ('rebuild');
+        ",
     )?;
     Ok(())
 }
