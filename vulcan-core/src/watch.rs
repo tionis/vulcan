@@ -77,10 +77,24 @@ struct WatchBatch {
 pub fn watch_vault<F, E>(
     paths: &VaultPaths,
     options: &WatchOptions,
+    on_report: F,
+) -> Result<(), WatchError>
+where
+    F: FnMut(WatchReport) -> Result<(), E>,
+    E: Display,
+{
+    watch_vault_until(paths, options, || false, on_report)
+}
+
+pub fn watch_vault_until<F, S, E>(
+    paths: &VaultPaths,
+    options: &WatchOptions,
+    should_stop: S,
     mut on_report: F,
 ) -> Result<(), WatchError>
 where
     F: FnMut(WatchReport) -> Result<(), E>,
+    S: Fn() -> bool,
     E: Display,
 {
     let startup_summary = scan_vault(paths, ScanMode::Incremental)?;
@@ -100,21 +114,39 @@ where
 
     let debounce = Duration::from_millis(options.debounce_ms);
     loop {
+        if should_stop() {
+            return Ok(());
+        }
+
         let mut batch = WatchBatch::default();
         loop {
-            match receiver.recv().map_err(|_| WatchError::ChannelClosed)? {
-                Ok(event) => {
-                    if batch.push(paths, event) {
-                        break;
+            if should_stop() {
+                return Ok(());
+            }
+
+            match receiver.recv_timeout(Duration::from_millis(50)) {
+                Ok(event) => match event {
+                    Ok(event) => {
+                        if batch.push(paths, event) {
+                            break;
+                        }
                     }
-                }
-                Err(error) => return Err(WatchError::Notify(error)),
+                    Err(error) => return Err(WatchError::Notify(error)),
+                },
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(WatchError::ChannelClosed),
             }
         }
 
         let mut deadline = Instant::now() + debounce;
         loop {
-            let timeout = deadline.saturating_duration_since(Instant::now());
+            if should_stop() {
+                return Ok(());
+            }
+
+            let timeout = deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(50));
             match receiver.recv_timeout(timeout) {
                 Ok(Ok(event)) => {
                     if batch.push(paths, event) {
@@ -256,5 +288,26 @@ mod tests {
             normalize_watch_path(&paths, Path::new("/tmp/outside.md")),
             None
         );
+    }
+
+    #[test]
+    fn watch_vault_until_returns_when_stop_requested() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        std::fs::write(temp_dir.path().join("Home.md"), "# Home\n").expect("note should write");
+        let paths = VaultPaths::new(temp_dir.path());
+        let mut startup_reports = 0_usize;
+
+        watch_vault_until(
+            &paths,
+            &WatchOptions { debounce_ms: 10 },
+            || true,
+            |_| {
+                startup_reports += 1;
+                Ok::<_, std::convert::Infallible>(())
+            },
+        )
+        .expect("watch should stop cleanly");
+
+        assert_eq!(startup_reports, 1);
     }
 }

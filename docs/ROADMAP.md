@@ -425,16 +425,16 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Read-only `bases tui <file.base>` workflow for interactive inspection without sacrificing CLI parity
 
 ### 7.5 Local API and daemon mode
-- [ ] `serve` command exposing cache-backed local APIs (HTTP, JSON-RPC, or MCP)
-- [ ] Reuse the watcher and write-lock pipeline to keep served results fresh
-- [ ] Safe local-only defaults for bind address and authentication model
-- [ ] Integration tests for repeated query workloads without repeated CLI startup
+- [x] `serve` command exposing cache-backed local APIs (HTTP, JSON-RPC, or MCP)
+- [x] Reuse the watcher and write-lock pipeline to keep served results fresh
+- [x] Safe local-only defaults for bind address and authentication model
+- [x] Integration tests for repeated query workloads without repeated CLI startup
 
 ### 7.6 Advanced vector operations
-- [ ] `vectors repair` / `vectors rebuild` commands with model migration support
-- [ ] Background-safe vector indexing queue with explicit operator control
-- [ ] Cluster labeling and summaries derived from representative chunks
-- [ ] Semantic recommendation surface such as `related <note>`
+- [x] `vectors repair` / `vectors rebuild` commands with model migration support
+- [x] Background-safe vector indexing queue with explicit operator control
+- [x] Cluster labeling and summaries derived from representative chunks
+- [x] Semantic recommendation surface such as `related <note>`
 - [ ] Benchmarks for large-vault vector maintenance and migration flows
 
 ### 7.7 Graph analysis and reporting

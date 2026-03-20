@@ -1,15 +1,17 @@
 mod bases_tui;
 mod cli;
+mod serve;
 
 pub use cli::{
     BasesCommand, CacheCommand, Cli, Command, ExportArgs, ExportFormat, GraphCommand, OutputFormat,
-    RepairCommand, SavedCommand, SearchMode, VectorsCommand,
+    RepairCommand, SavedCommand, SearchMode, VectorQueueCommand, VectorsCommand,
 };
 
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use serde::Serialize;
 use serde_json::{Map, Value};
+use serve::{serve_forever, ServeOptions};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -19,23 +21,26 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vulcan_core::{
     cache_vacuum, cluster_vectors, doctor_fix, doctor_vault, evaluate_base_file,
-    index_vectors_with_progress, initialize_vault, inspect_cache, list_saved_reports,
-    load_saved_report, merge_tags, move_note, query_backlinks, query_graph_analytics,
-    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_path, query_links,
-    query_notes, query_vector_neighbors, rebuild_vault_with_progress, rename_alias,
-    rename_block_ref, rename_heading, rename_property, repair_fts, save_saved_report,
+    index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
+    list_saved_reports, load_saved_report, merge_tags, move_note, query_backlinks,
+    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
+    query_graph_path, query_links, query_notes, query_related_notes, query_vector_neighbors,
+    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, repair_fts, repair_vectors_with_progress, save_saved_report,
     scan_vault_with_progress, search_vault, vector_duplicates, verify_cache, watch_vault,
     BacklinkRecord, BacklinksReport, BasesEvalReport, CacheInspectReport, CacheVacuumQuery,
     CacheVacuumReport, CacheVerifyReport, ClusterQuery, ClusterReport, DoctorDiagnosticIssue,
     DoctorFixReport, DoctorLinkIssue, DoctorReport, GraphAnalyticsReport, GraphComponentsReport,
     GraphDeadEndsReport, GraphHubsReport, GraphPathReport, InitSummary, MoveSummary, NamedCount,
     NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, RebuildQuery,
-    RebuildReport, RefactorReport, RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat,
-    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
-    ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths,
-    VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsQuery, VectorNeighborsReport, WatchOptions, WatchReport,
+    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
+    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -45,14 +50,14 @@ pub struct CliError {
 }
 
 impl CliError {
-    fn io(error: &io::Error) -> Self {
+    pub(crate) fn io(error: &io::Error) -> Self {
         Self {
             exit_code: 1,
             message: format!("failed to read current working directory: {error}"),
         }
     }
 
-    fn operation(error: impl Display) -> Self {
+    pub(crate) fn operation(error: impl Display) -> Self {
         Self {
             exit_code: 1,
             message: error.to_string(),
@@ -736,6 +741,25 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             Ok(())
         }
+        Command::Related { ref note } => {
+            let report = query_related_notes(
+                &paths,
+                &RelatedNotesQuery {
+                    provider: cli.provider.clone(),
+                    note: note.clone(),
+                    limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
+                },
+            )
+            .map_err(CliError::operation)?;
+            print_related_notes_report(
+                cli.output,
+                &report,
+                &list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+            )?;
+            Ok(())
+        }
         Command::Describe => print_describe_report(cli.output),
         Command::Doctor { fix, dry_run } => {
             if fix {
@@ -845,6 +869,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_repair_fts_report(cli.output, &report)
             }
         },
+        Command::Serve {
+            ref bind,
+            no_watch,
+            debounce_ms,
+            ref auth_token,
+        } => serve_forever(
+            &paths,
+            &ServeOptions {
+                bind: bind.clone(),
+                watch: !no_watch,
+                debounce_ms,
+                auth_token: auth_token.clone(),
+            },
+        ),
         Command::Watch { debounce_ms } => {
             if cli.output == OutputFormat::Human && stdout_is_tty {
                 println!(
@@ -1192,6 +1230,69 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_vector_index_report(cli.output, &report, use_stdout_color)?;
                 Ok(())
             }
+            VectorsCommand::Repair { dry_run } => {
+                let mut progress = (cli.output == OutputFormat::Human)
+                    .then(|| VectorIndexProgressReporter::new(use_stderr_color));
+                let report = repair_vectors_with_progress(
+                    &paths,
+                    &VectorRepairQuery {
+                        provider: cli.provider.clone(),
+                        dry_run: *dry_run,
+                    },
+                    |event| {
+                        if let Some(progress) = progress.as_mut() {
+                            progress.record(&event);
+                        }
+                    },
+                )
+                .map_err(CliError::operation)?;
+                print_vector_repair_report(cli.output, &report, use_stdout_color)
+            }
+            VectorsCommand::Rebuild { dry_run } => {
+                let mut progress = (cli.output == OutputFormat::Human)
+                    .then(|| VectorIndexProgressReporter::new(use_stderr_color));
+                let report = rebuild_vectors_with_progress(
+                    &paths,
+                    &VectorRebuildQuery {
+                        provider: cli.provider.clone(),
+                        dry_run: *dry_run,
+                    },
+                    |event| {
+                        if let Some(progress) = progress.as_mut() {
+                            progress.record(&event);
+                        }
+                    },
+                )
+                .map_err(CliError::operation)?;
+                print_vector_index_report(cli.output, &report, use_stdout_color)?;
+                Ok(())
+            }
+            VectorsCommand::Queue { ref command } => match command {
+                VectorQueueCommand::Status => {
+                    let report = inspect_vector_queue(&paths, cli.provider.as_deref())
+                        .map_err(CliError::operation)?;
+                    print_vector_queue_report(cli.output, &report)
+                }
+                VectorQueueCommand::Run { dry_run } => {
+                    let mut progress = (cli.output == OutputFormat::Human)
+                        .then(|| VectorIndexProgressReporter::new(use_stderr_color));
+                    let report = index_vectors_with_progress(
+                        &paths,
+                        &VectorIndexQuery {
+                            provider: cli.provider.clone(),
+                            dry_run: *dry_run,
+                        },
+                        |event| {
+                            if let Some(progress) = progress.as_mut() {
+                                progress.record(&event);
+                            }
+                        },
+                    )
+                    .map_err(CliError::operation)?;
+                    print_vector_index_report(cli.output, &report, use_stdout_color)?;
+                    Ok(())
+                }
+            },
             VectorsCommand::Neighbors { query, note } => {
                 let report = query_vector_neighbors(
                     &paths,
@@ -1204,6 +1305,25 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 )
                 .map_err(CliError::operation)?;
                 print_vector_neighbors_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )?;
+                Ok(())
+            }
+            VectorsCommand::Related { note } => {
+                let report = query_related_notes(
+                    &paths,
+                    &RelatedNotesQuery {
+                        provider: cli.provider.clone(),
+                        note: note.clone(),
+                        limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
+                    },
+                )
+                .map_err(CliError::operation)?;
+                print_related_notes_report(
                     cli.output,
                     &report,
                     &list_controls,
@@ -1626,6 +1746,71 @@ fn print_vector_index_report(
     }
 }
 
+fn print_vector_queue_report(
+    output: OutputFormat,
+    report: &VectorQueueReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "Vector queue {}:{}: {} pending, {} indexed, {} stale{}",
+                report.provider_name,
+                report.model_name,
+                report.pending_chunks,
+                report.indexed_chunks,
+                report.stale_vectors,
+                if report.model_mismatch {
+                    " (model mismatch)"
+                } else {
+                    ""
+                }
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_vector_repair_report(
+    output: OutputFormat,
+    report: &VectorRepairReport,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human => {
+            let status = if report.dry_run {
+                palette.cyan("Dry run")
+            } else if report.repaired {
+                palette.green("Repaired")
+            } else {
+                palette.cyan("Checked")
+            };
+            println!(
+                "{} vectors for {}:{}: {} pending, {} stale{}",
+                status,
+                report.provider_name,
+                report.model_name,
+                report.pending_chunks,
+                report.stale_vectors,
+                if report.model_mismatch {
+                    " (model mismatch)"
+                } else {
+                    ""
+                }
+            );
+            if let Some(index_report) = report.index_report.as_ref() {
+                println!(
+                    "{} indexed, {} skipped, {} failed",
+                    index_report.indexed, index_report.skipped, index_report.failed
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_vector_neighbors_report(
     output: OutputFormat,
     report: &VectorNeighborsReport,
@@ -1674,6 +1859,57 @@ fn print_vector_neighbors_report(
             vector_neighbor_rows(report, visible_hits),
             list_controls.fields.as_deref(),
         ),
+    }
+}
+
+fn print_related_notes_report(
+    output: OutputFormat,
+    report: &RelatedNotesReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let visible_hits = paginated_items(&report.hits, list_controls);
+    let rows = related_note_rows(report, visible_hits);
+    let palette = AnsiPalette::new(use_color);
+
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!(
+                    "{} {}",
+                    palette.cyan("Related notes for"),
+                    palette.bold(&report.note_path)
+                );
+            }
+            if visible_hits.is_empty() {
+                println!("No related notes.");
+                return Ok(());
+            }
+
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for (index, hit) in visible_hits.iter().enumerate() {
+                    println!(
+                        "{}. {} ({:.3}, {} chunks)",
+                        index + 1,
+                        hit.document_path,
+                        hit.similarity,
+                        hit.matched_chunks
+                    );
+                    if !hit.heading_path.is_empty() {
+                        println!("   {}", hit.heading_path.join(" > "));
+                    }
+                    println!("   {}", hit.snippet);
+                }
+            }
+
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
     }
 }
 
@@ -2540,6 +2776,24 @@ fn vector_neighbor_rows(report: &VectorNeighborsReport, hits: &[VectorNeighborHi
         .collect()
 }
 
+fn related_note_rows(report: &RelatedNotesReport, hits: &[RelatedNoteHit]) -> Vec<Value> {
+    hits.iter()
+        .map(|hit| {
+            serde_json::json!({
+                "provider_name": report.provider_name,
+                "model_name": report.model_name,
+                "dimensions": report.dimensions,
+                "note_path": report.note_path,
+                "document_path": hit.document_path,
+                "heading_path": hit.heading_path,
+                "snippet": hit.snippet,
+                "similarity": hit.similarity,
+                "matched_chunks": hit.matched_chunks,
+            })
+        })
+        .collect()
+}
+
 fn vector_duplicate_rows(
     report: &VectorDuplicatesReport,
     pairs: &[VectorDuplicatePair],
@@ -3182,6 +3436,18 @@ mod tests {
             .expect("cli should parse");
         let watch = Cli::try_parse_from(["vulcan", "watch", "--debounce-ms", "125"])
             .expect("cli should parse");
+        let serve = Cli::try_parse_from([
+            "vulcan",
+            "serve",
+            "--bind",
+            "127.0.0.1:4000",
+            "--no-watch",
+            "--debounce-ms",
+            "100",
+            "--auth-token",
+            "secret",
+        ])
+        .expect("cli should parse");
         let doctor = Cli::try_parse_from(["vulcan", "doctor", "--fix", "--dry-run"])
             .expect("cli should parse");
         let graph_path = Cli::try_parse_from(["vulcan", "graph", "path", "Home", "Bob"])
@@ -3223,10 +3489,19 @@ mod tests {
             .expect("cli should parse");
         let vectors = Cli::try_parse_from(["vulcan", "vectors", "index", "--dry-run"])
             .expect("cli should parse");
+        let vector_repair = Cli::try_parse_from(["vulcan", "vectors", "repair", "--dry-run"])
+            .expect("cli should parse");
+        let vector_rebuild = Cli::try_parse_from(["vulcan", "vectors", "rebuild", "--dry-run"])
+            .expect("cli should parse");
+        let vector_queue = Cli::try_parse_from(["vulcan", "vectors", "queue", "status"])
+            .expect("cli should parse");
+        let vector_related = Cli::try_parse_from(["vulcan", "vectors", "related", "Home"])
+            .expect("cli should parse");
         let duplicates =
             Cli::try_parse_from(["vulcan", "vectors", "duplicates"]).expect("cli should parse");
         let cluster = Cli::try_parse_from(["vulcan", "cluster", "--clusters", "3", "--dry-run"])
             .expect("cli should parse");
+        let related = Cli::try_parse_from(["vulcan", "related", "Home"]).expect("cli should parse");
         let move_command = Cli::try_parse_from([
             "vulcan",
             "move",
@@ -3276,6 +3551,15 @@ mod tests {
             }
         );
         assert_eq!(watch.command, Command::Watch { debounce_ms: 125 });
+        assert_eq!(
+            serve.command,
+            Command::Serve {
+                bind: "127.0.0.1:4000".to_string(),
+                no_watch: true,
+                debounce_ms: 100,
+                auth_token: Some("secret".to_string()),
+            }
+        );
         assert_eq!(
             doctor.command,
             Command::Doctor {
@@ -3356,6 +3640,34 @@ mod tests {
             }
         );
         assert_eq!(
+            vector_repair.command,
+            Command::Vectors {
+                command: VectorsCommand::Repair { dry_run: true },
+            }
+        );
+        assert_eq!(
+            vector_rebuild.command,
+            Command::Vectors {
+                command: VectorsCommand::Rebuild { dry_run: true },
+            }
+        );
+        assert_eq!(
+            vector_queue.command,
+            Command::Vectors {
+                command: VectorsCommand::Queue {
+                    command: VectorQueueCommand::Status,
+                },
+            }
+        );
+        assert_eq!(
+            vector_related.command,
+            Command::Vectors {
+                command: VectorsCommand::Related {
+                    note: "Home".to_string(),
+                },
+            }
+        );
+        assert_eq!(
             duplicates.command,
             Command::Vectors {
                 command: VectorsCommand::Duplicates { threshold: 0.95 },
@@ -3366,6 +3678,12 @@ mod tests {
             Command::Cluster {
                 clusters: 3,
                 dry_run: true
+            }
+        );
+        assert_eq!(
+            related.command,
+            Command::Related {
+                note: "Home".to_string(),
             }
         );
         assert_eq!(
@@ -3571,6 +3889,10 @@ mod tests {
         assert!(report
             .commands
             .iter()
+            .any(|command| command.name == "serve"));
+        assert!(report
+            .commands
+            .iter()
             .any(|command| command.name == "rename-property"));
         assert!(report
             .commands
@@ -3588,5 +3910,9 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "batch"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "related"));
     }
 }

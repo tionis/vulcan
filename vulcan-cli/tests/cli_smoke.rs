@@ -22,6 +22,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("rebuild"))
             .and(predicate::str::contains("repair"))
             .and(predicate::str::contains("watch"))
+            .and(predicate::str::contains("serve"))
             .and(predicate::str::contains("links"))
             .and(predicate::str::contains("backlinks"))
             .and(predicate::str::contains("graph"))
@@ -30,6 +31,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("search"))
             .and(predicate::str::contains("vectors"))
             .and(predicate::str::contains("cluster"))
+            .and(predicate::str::contains("related"))
             .and(predicate::str::contains("move"))
             .and(predicate::str::contains("doctor"))
             .and(predicate::str::contains("cache"))
@@ -51,10 +53,13 @@ fn help_mentions_global_flags_and_core_commands() {
             ))
             .and(predicate::str::contains("Command Groups:"))
             .and(predicate::str::contains(
-                "Indexing: init, scan, rebuild, repair, watch",
+                "Indexing: init, scan, rebuild, repair, watch, serve",
             ))
             .and(predicate::str::contains(
                 "Graph and Query: links, backlinks, graph, search, notes, bases",
+            ))
+            .and(predicate::str::contains(
+                "Semantic: vectors, cluster, related",
             ))
             .and(predicate::str::contains(
                 "Reports and Automation: saved, batch",
@@ -1195,6 +1200,101 @@ fn vectors_duplicates_and_cluster_json_output_work() {
         .as_array()
         .expect("keywords should be an array")
         .is_empty());
+    server.shutdown();
+}
+
+#[test]
+fn vectors_repair_queue_and_related_json_output_work() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let server = MockEmbeddingServer::spawn();
+    write_embedding_config(&vault_root, &server.base_url());
+    run_scan(&vault_root);
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "vectors",
+            "index",
+        ])
+        .assert()
+        .success();
+    fs::write(
+        vault_root.join("Home.md"),
+        "---\naliases:\n  - Start\ntags:\n  - dashboard\n---\n\n# Home\n\nUpdated dashboard plans.\n",
+    )
+    .expect("updated note should write");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "scan",
+        ])
+        .assert()
+        .success();
+
+    let repair_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "vectors",
+            "repair",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let repair_json = parse_stdout_json(&repair_assert);
+    assert_eq!(repair_json["pending_chunks"], 1);
+
+    let queue_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "vectors",
+            "queue",
+            "status",
+        ])
+        .assert()
+        .success();
+    let queue_json = parse_stdout_json(&queue_assert);
+    assert_eq!(queue_json["pending_chunks"], 1);
+
+    let related_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,similarity,matched_chunks",
+            "related",
+            "Home",
+        ])
+        .assert()
+        .success();
+    let related_rows = parse_stdout_json_lines(&related_assert);
+    assert!(!related_rows.is_empty());
+    assert_ne!(related_rows[0]["document_path"], "Home.md");
     server.shutdown();
 }
 
