@@ -25,21 +25,21 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 - [x] Set up GitHub Actions CI: `cargo test` + `cargo clippy` + `cargo fmt --check`
 
 ### 1.2 SQLite cache foundation
-- [ ] Database initialization: create or open `.vulcan/cache.db` in vault root
-- [ ] Set `PRAGMA journal_mode = WAL`, `PRAGMA foreign_keys = ON`, `PRAGMA busy_timeout`
-- [ ] Implement `user_version`-based migration framework (ordered migration list, apply sequentially in transaction, refuse on downgrade)
-- [ ] Schema v1: `documents` table — `id` (ULID), `path` (relative to vault root), `filename`, `extension`, `content_hash`, `raw_frontmatter`, `file_size`, `file_mtime`, `parser_version`, `indexed_at`
-- [ ] Schema v1: `headings` table — `id`, `document_id`, `level`, `text`, `byte_offset`
-- [ ] Schema v1: `block_refs` table — `id`, `document_id`, `block_id_text`, `block_id_byte_offset`, `target_block_byte_start`, `target_block_byte_end` (the block ID is a standalone paragraph *after* the block it labels; store offsets for both the ID and the referenced content block)
-- [ ] Schema v1: `links` table — `id`, `source_document_id`, `raw_text`, `link_kind` (wikilink/markdown/embed), `display_text`, `target_path_candidate`, `target_heading`, `target_block`, `resolved_target_id` (nullable FK), `origin_context` (body/property/frontmatter), `byte_offset`
-- [ ] Schema v1: `aliases` table — `id`, `document_id`, `alias_text`
-- [ ] Schema v1: `tags` table — `id`, `document_id`, `tag_text` (normalized, no `#` prefix)
-- [ ] Schema v1: `chunks` table — `id`, `document_id`, `sequence_index`, `heading_path` (JSON array), `byte_offset_start`, `byte_offset_end`, `content_hash`, `chunk_strategy`, `chunk_version`
-- [ ] Schema v1: `diagnostics` table — `id`, `document_id` (nullable), `kind` (unresolved_link/parse_error/type_mismatch/unsupported_syntax), `message`, `detail` (JSON), `created_at`
-- [ ] Schema v1: `meta` table — `key`, `value` (for `schema_version`, `parser_version`, etc.)
-- [ ] Create indexes on: `documents(path)`, `documents(content_hash)`, `links(source_document_id)`, `links(resolved_target_id)`, `aliases(document_id)`, `aliases(alias_text)`, `tags(tag_text)`, `chunks(document_id)`
-- [ ] Write rebuild command: drop all rows, rescan vault from scratch
-- [ ] Unit tests for migration framework (apply, skip already-applied, refuse downgrade)
+- [x] Database initialization: create or open `.vulcan/cache.db` in vault root
+- [x] Set `PRAGMA journal_mode = WAL`, `PRAGMA foreign_keys = ON`, `PRAGMA busy_timeout`
+- [x] Implement `user_version`-based migration framework (ordered migration list, apply sequentially in transaction, refuse on downgrade)
+- [x] Schema v1: `documents` table — `id` (ULID), `path` (relative to vault root), `filename`, `extension`, `content_hash`, `raw_frontmatter`, `file_size`, `file_mtime`, `parser_version`, `indexed_at`
+- [x] Schema v1: `headings` table — `id`, `document_id`, `level`, `text`, `byte_offset`
+- [x] Schema v1: `block_refs` table — `id`, `document_id`, `block_id_text`, `block_id_byte_offset`, `target_block_byte_start`, `target_block_byte_end` (the block ID is a standalone paragraph *after* the block it labels; store offsets for both the ID and the referenced content block)
+- [x] Schema v1: `links` table — `id`, `source_document_id`, `raw_text`, `link_kind` (wikilink/markdown/embed), `display_text`, `target_path_candidate`, `target_heading`, `target_block`, `resolved_target_id` (nullable FK), `origin_context` (body/property/frontmatter), `byte_offset`
+- [x] Schema v1: `aliases` table — `id`, `document_id`, `alias_text`
+- [x] Schema v1: `tags` table — `id`, `document_id`, `tag_text` (normalized, no `#` prefix)
+- [x] Schema v1: `chunks` table — `id`, `document_id`, `sequence_index`, `heading_path` (JSON array), `byte_offset_start`, `byte_offset_end`, `content_hash`, `chunk_strategy`, `chunk_version`
+- [x] Schema v1: `diagnostics` table — `id`, `document_id` (nullable), `kind` (unresolved_link/parse_error/type_mismatch/unsupported_syntax), `message`, `detail` (JSON), `created_at`
+- [x] Schema v1: `meta` table — `key`, `value` (for `schema_version`, `parser_version`, etc.)
+- [x] Create indexes on: `documents(path)`, `documents(content_hash)`, `links(source_document_id)`, `links(resolved_target_id)`, `aliases(document_id)`, `aliases(alias_text)`, `tags(tag_text)`, `chunks(document_id)`
+- [~] Write rebuild command: drop all rows, rescan vault from scratch
+- [x] Unit tests for migration framework (apply, skip already-applied, refuse downgrade)
 
 ### 1.3 Vault discovery and file scanning
 - [ ] Recursive vault scan: walk directory, skip `.obsidian/`, `.vulcan/`, `.trash/`, hidden dirs, respect `.gitignore` if present

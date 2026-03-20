@@ -16,5 +16,8 @@ serde_yaml.workspace = true
 toml.workspace = true
 ulid.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
