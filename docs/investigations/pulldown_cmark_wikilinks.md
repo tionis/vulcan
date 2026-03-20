@@ -110,6 +110,15 @@ The `has_pothole` field indicates whether the pipe separator was present (pulldo
 - **LaTeX math:** MathJax inline (`$...$`) and display (`$$...$$`) formulas. pulldown-cmark 0.13 has `ENABLE_MATH` which emits `Event::InlineMath` and `Event::DisplayMath`, so the parser already handles these. No indexing relevance, but the events are available if rendering is added later.
 - **MultiMarkdown 6 tables:** Not in standard Obsidian; requires a community plugin. pulldown-cmark supports GFM tables but not MMD6 extensions (colspan, rowspan, etc.). Out of scope per §3 (no plugin-specific syntax), but worth noting if export fidelity becomes a goal.
 
+## Out of scope: common plugin syntax
+
+These are explicitly out of scope per §3 (no plugin-specific syntax extensions). They are listed here because they are extremely common in real vaults and worth understanding for triage purposes.
+
+- **Dataview:** `` ```dataview `` code blocks and inline expressions (`= this.property`). pulldown-cmark emits code blocks as `Tag::CodeBlock` and inline expressions as regular text. Both pass through harmlessly as inert chunk content. No special handling needed.
+- **Templater:** `<% %>` template tags. pulldown-cmark may emit these as `Event::InlineHtml` or `Event::Html` depending on context. Harmless — templates are typically resolved before the note is saved, so they rarely appear in vault content at rest. If they do, they're just noise in the index.
+
+Neither requires special-casing in the parser. If `doctor` ever grows a "plugin syntax detected" advisory diagnostic, these would be the first candidates.
+
 ## Sources
 
 - [pulldown-cmark wikilinks spec](https://pulldown-cmark.github.io/pulldown-cmark/specs/wikilinks.html)
