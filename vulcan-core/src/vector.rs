@@ -117,6 +117,8 @@ impl From<rusqlite::Error> for VectorError {
 }
 
 pub type VectorIndexError = VectorError;
+pub type VectorDuplicatesError = VectorError;
+pub type ClusterError = VectorError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VectorIndexQuery {
@@ -162,6 +164,55 @@ pub struct VectorNeighborHit {
     pub heading_path: Vec<String>,
     pub snippet: String,
     pub distance: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VectorDuplicatesQuery {
+    pub provider: Option<String>,
+    pub threshold: f32,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VectorDuplicatesReport {
+    pub provider_name: String,
+    pub model_name: String,
+    pub dimensions: usize,
+    pub threshold: f32,
+    pub pairs: Vec<VectorDuplicatePair>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VectorDuplicatePair {
+    pub left_document_path: String,
+    pub left_chunk_id: String,
+    pub right_document_path: String,
+    pub right_chunk_id: String,
+    pub similarity: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClusterQuery {
+    pub provider: Option<String>,
+    pub clusters: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ClusterReport {
+    pub provider_name: String,
+    pub model_name: String,
+    pub dimensions: usize,
+    pub cluster_count: usize,
+    pub assignments: Vec<ClusterAssignment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ClusterAssignment {
+    pub cluster_id: usize,
+    pub cluster_label: String,
+    pub document_path: String,
+    pub chunk_id: String,
+    pub heading_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,11 +290,12 @@ pub fn index_vectors(
         if !stale_chunk_ids.is_empty() {
             let _lock = acquire_write_lock(paths)?;
             let database = open_existing_cache(paths)?;
-            let mut store =
-                SqliteVecStore::new(database.connection()).map_err(VectorError::Store)?;
+            let connection = database.connection();
+            let mut store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
             store
                 .delete_chunks(&stale_chunk_ids)
                 .map_err(VectorError::Store)?;
+            clear_cluster_rows(connection, None)?;
             continue;
         }
 
@@ -338,6 +390,7 @@ pub fn index_vectors(
 
         if !vectors.is_empty() {
             store.upsert(&vectors).map_err(VectorError::Store)?;
+            clear_cluster_rows(connection, None)?;
         }
         refresh_embedding_diagnostics(
             connection,
@@ -451,6 +504,138 @@ pub fn query_vector_neighbors(
     })
 }
 
+pub fn vector_duplicates(
+    paths: &VaultPaths,
+    query: &VectorDuplicatesQuery,
+) -> Result<VectorDuplicatesReport, VectorDuplicatesError> {
+    let provider = load_embedding_provider(paths, query.provider.as_deref())?;
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
+    let active_model = store
+        .current_model()
+        .map_err(VectorError::Store)?
+        .ok_or(VectorError::MissingVectorIndex)?;
+    validate_active_model(&active_model, &provider)?;
+
+    let vectors = store.load_vectors().map_err(VectorError::Store)?;
+    let chunks = load_chunks_by_ids(
+        connection,
+        &vectors
+            .iter()
+            .map(|vector| vector.chunk_id.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    let mut pairs = Vec::new();
+
+    for (left_index, left) in vectors.iter().enumerate() {
+        for right in vectors.iter().skip(left_index + 1) {
+            let similarity = cosine_similarity(&left.embedding, &right.embedding);
+            if similarity < query.threshold {
+                continue;
+            }
+
+            let Some(left_chunk) = chunks.get(&left.chunk_id) else {
+                continue;
+            };
+            let Some(right_chunk) = chunks.get(&right.chunk_id) else {
+                continue;
+            };
+            pairs.push(VectorDuplicatePair {
+                left_document_path: left_chunk.document_path.clone(),
+                left_chunk_id: left.chunk_id.clone(),
+                right_document_path: right_chunk.document_path.clone(),
+                right_chunk_id: right.chunk_id.clone(),
+                similarity,
+            });
+        }
+    }
+
+    pairs.sort_by(|left, right| {
+        right
+            .similarity
+            .partial_cmp(&left.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.left_chunk_id.cmp(&right.left_chunk_id))
+            .then_with(|| left.right_chunk_id.cmp(&right.right_chunk_id))
+    });
+    pairs.truncate(query.limit.max(1));
+
+    Ok(VectorDuplicatesReport {
+        provider_name: active_model.provider_name,
+        model_name: active_model.model_name,
+        dimensions: active_model.dimensions,
+        threshold: query.threshold,
+        pairs,
+    })
+}
+
+pub fn cluster_vectors(
+    paths: &VaultPaths,
+    query: &ClusterQuery,
+) -> Result<ClusterReport, ClusterError> {
+    if query.clusters == 0 {
+        return Err(VectorError::InvalidQuery(
+            "cluster count must be at least 1".to_string(),
+        ));
+    }
+
+    let provider = load_embedding_provider(paths, query.provider.as_deref())?;
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
+    let active_model = store
+        .current_model()
+        .map_err(VectorError::Store)?
+        .ok_or(VectorError::MissingVectorIndex)?;
+    validate_active_model(&active_model, &provider)?;
+
+    let vectors = store.load_vectors().map_err(VectorError::Store)?;
+    if vectors.is_empty() {
+        return Err(VectorError::MissingVectorIndex);
+    }
+
+    let cluster_count = query.clusters.min(vectors.len());
+    let assignments = kmeans_assignments(&vectors, cluster_count);
+    let chunks = load_chunks_by_ids(
+        connection,
+        &vectors
+            .iter()
+            .map(|vector| vector.chunk_id.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    let labels = cluster_labels(&vectors, &assignments, cluster_count, &chunks);
+    let report_assignments = vectors
+        .iter()
+        .zip(assignments.iter().copied())
+        .filter_map(|(vector, cluster_id)| {
+            let chunk = chunks.get(&vector.chunk_id)?;
+            Some(ClusterAssignment {
+                cluster_id,
+                cluster_label: labels
+                    .get(&cluster_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Cluster {}", cluster_id + 1)),
+                document_path: chunk.document_path.clone(),
+                chunk_id: vector.chunk_id.clone(),
+                heading_path: chunk.heading_path.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let _lock = acquire_write_lock(paths)?;
+    let database = open_existing_cache(paths)?;
+    persist_cluster_assignments(database.connection(), &active_model, &report_assignments)?;
+
+    Ok(ClusterReport {
+        provider_name: active_model.provider_name,
+        model_name: active_model.model_name,
+        dimensions: active_model.dimensions,
+        cluster_count,
+        assignments: report_assignments,
+    })
+}
+
 pub(crate) fn query_hybrid_candidates(
     paths: &VaultPaths,
     provider: Option<&str>,
@@ -503,6 +688,26 @@ fn load_embedding_provider(
         ..OpenAICompatibleConfig::default()
     })
     .map_err(VectorError::Provider)
+}
+
+fn validate_active_model(
+    active_model: &StoredModel,
+    provider: &OpenAICompatibleProvider,
+) -> Result<(), VectorError> {
+    let requested_model = provider_model_from_metadata(&provider.metadata());
+    if active_model.provider_name != requested_model.provider_name
+        || active_model.model_name != requested_model.model_name
+    {
+        return Err(VectorError::VectorIndexModelMismatch {
+            indexed_model: format!("{}:{}", active_model.provider_name, active_model.model_name),
+            requested_model: format!(
+                "{}:{}",
+                requested_model.provider_name, requested_model.model_name
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 fn resolve_api_key(config: &EmbeddingProviderConfig) -> Result<Option<String>, VectorError> {
@@ -621,6 +826,165 @@ fn hydrate_vector_hits(
         .collect())
 }
 
+fn kmeans_assignments(vectors: &[StoredVector], cluster_count: usize) -> Vec<usize> {
+    let mut centroids = vectors
+        .iter()
+        .take(cluster_count)
+        .map(|vector| vector.embedding.clone())
+        .collect::<Vec<_>>();
+    let mut assignments = vec![0_usize; vectors.len()];
+
+    for _ in 0..16 {
+        let mut changed = false;
+        for (index, vector) in vectors.iter().enumerate() {
+            let (best_cluster, _) = centroids
+                .iter()
+                .enumerate()
+                .map(|(cluster_id, centroid)| {
+                    (cluster_id, cosine_distance(&vector.embedding, centroid))
+                })
+                .min_by(|left, right| {
+                    left.1
+                        .partial_cmp(&right.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .expect("k-means should always have at least one centroid");
+            if assignments[index] != best_cluster {
+                assignments[index] = best_cluster;
+                changed = true;
+            }
+        }
+
+        let mut sums = vec![vec![0.0_f32; centroids[0].len()]; cluster_count];
+        let mut counts = vec![0_usize; cluster_count];
+        for (vector, cluster_id) in vectors.iter().zip(assignments.iter().copied()) {
+            counts[cluster_id] += 1;
+            for (value, sum) in vector.embedding.iter().zip(sums[cluster_id].iter_mut()) {
+                *sum += *value;
+            }
+        }
+        for cluster_id in 0..cluster_count {
+            if counts[cluster_id] == 0 {
+                continue;
+            }
+            let divisor = f32::from(u16::try_from(counts[cluster_id]).unwrap_or(u16::MAX));
+            for value in &mut sums[cluster_id] {
+                *value /= divisor;
+            }
+            normalize_in_place(&mut sums[cluster_id]);
+            centroids[cluster_id].clone_from(&sums[cluster_id]);
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    assignments
+}
+
+fn cluster_labels(
+    vectors: &[StoredVector],
+    assignments: &[usize],
+    cluster_count: usize,
+    chunks: &HashMap<String, IndexedChunk>,
+) -> HashMap<usize, String> {
+    let mut labels = HashMap::new();
+
+    for cluster_id in 0..cluster_count {
+        let label = vectors
+            .iter()
+            .zip(assignments.iter().copied())
+            .find_map(|(vector, assigned_cluster)| {
+                if assigned_cluster != cluster_id {
+                    return None;
+                }
+                chunks.get(&vector.chunk_id).map(|chunk| {
+                    if chunk.heading_path.is_empty() {
+                        chunk.document_path.clone()
+                    } else {
+                        format!(
+                            "{} > {}",
+                            chunk.document_path,
+                            chunk.heading_path.join(" > ")
+                        )
+                    }
+                })
+            })
+            .unwrap_or_else(|| format!("Cluster {}", cluster_id + 1));
+        labels.insert(cluster_id, label);
+    }
+
+    labels
+}
+
+fn persist_cluster_assignments(
+    connection: &Connection,
+    model: &StoredModel,
+    assignments: &[ClusterAssignment],
+) -> Result<(), VectorError> {
+    let transaction = connection.unchecked_transaction()?;
+    clear_cluster_rows_tx(&transaction, Some(model))?;
+    for assignment in assignments {
+        transaction.execute(
+            "
+            INSERT INTO vector_clusters (
+                provider_name,
+                model_name,
+                dimensions,
+                cluster_id,
+                cluster_label,
+                chunk_id
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ",
+            params![
+                &model.provider_name,
+                &model.model_name,
+                i64::try_from(model.dimensions).unwrap_or(i64::MAX),
+                i64::try_from(assignment.cluster_id).unwrap_or(i64::MAX),
+                &assignment.cluster_label,
+                &assignment.chunk_id,
+            ],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn clear_cluster_rows(
+    connection: &Connection,
+    model: Option<&StoredModel>,
+) -> Result<(), VectorError> {
+    let transaction = connection.unchecked_transaction()?;
+    clear_cluster_rows_tx(&transaction, model)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn clear_cluster_rows_tx(
+    transaction: &rusqlite::Transaction<'_>,
+    model: Option<&StoredModel>,
+) -> Result<(), rusqlite::Error> {
+    if let Some(model) = model {
+        transaction.execute(
+            "
+            DELETE FROM vector_clusters
+            WHERE provider_name = ?1 AND model_name = ?2 AND dimensions = ?3
+            ",
+            params![
+                &model.provider_name,
+                &model.model_name,
+                i64::try_from(model.dimensions).unwrap_or(i64::MAX),
+            ],
+        )?;
+    } else {
+        transaction.execute("DELETE FROM vector_clusters", [])?;
+    }
+
+    Ok(())
+}
+
 fn refresh_embedding_diagnostics(
     connection: &Connection,
     pending_chunks: &[IndexedChunk],
@@ -696,6 +1060,35 @@ fn hash_to_hex(bytes: &[u8]) -> String {
     encoded
 }
 
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    let dot = left
+        .iter()
+        .zip(right.iter())
+        .map(|(left_value, right_value)| left_value * right_value)
+        .sum::<f32>();
+    let left_norm = left.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let right_norm = right.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if left_norm == 0.0 || right_norm == 0.0 {
+        0.0
+    } else {
+        dot / (left_norm * right_norm)
+    }
+}
+
+fn cosine_distance(left: &[f32], right: &[f32]) -> f32 {
+    1.0 - cosine_similarity(left, right)
+}
+
+fn normalize_in_place(values: &mut [f32]) {
+    let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        return;
+    }
+    for value in values {
+        *value /= norm;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,6 +1151,70 @@ mod tests {
         assert_eq!(report.hits.len(), 3);
         assert_eq!(report.hits[0].document_path, "Home.md");
         assert!(report.hits[0].distance <= report.hits[1].distance);
+        server.shutdown();
+    }
+
+    #[test]
+    fn vector_duplicates_reports_high_similarity_pairs() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        index_vectors(&paths, &VectorIndexQuery { provider: None })
+            .expect("vector index should succeed");
+
+        let report = vector_duplicates(
+            &paths,
+            &VectorDuplicatesQuery {
+                provider: None,
+                threshold: 0.7,
+                limit: 5,
+            },
+        )
+        .expect("duplicates query should succeed");
+
+        assert!(!report.pairs.is_empty());
+        assert!(report.pairs[0].similarity >= 0.7);
+        server.shutdown();
+    }
+
+    #[test]
+    fn cluster_vectors_persists_cluster_assignments() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        index_vectors(&paths, &VectorIndexQuery { provider: None })
+            .expect("vector index should succeed");
+
+        let report = cluster_vectors(
+            &paths,
+            &ClusterQuery {
+                provider: None,
+                clusters: 2,
+            },
+        )
+        .expect("cluster command should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(report.cluster_count, 2);
+        assert_eq!(report.assignments.len(), 4);
+        assert_eq!(
+            database
+                .connection()
+                .query_row("SELECT COUNT(*) FROM vector_clusters", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("cluster row count should be readable"),
+            4
+        );
         server.shutdown();
     }
 

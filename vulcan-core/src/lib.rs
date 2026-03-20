@@ -53,7 +53,9 @@ pub use resolver::{
 pub use scan::{detect_document_kind, scan_vault, DocumentKind, ScanError, ScanMode, ScanSummary};
 pub use search::{search_vault, SearchError, SearchHit, SearchQuery, SearchReport};
 pub use vector::{
-    index_vectors, query_vector_neighbors, VectorError, VectorIndexError, VectorIndexQuery,
+    cluster_vectors, index_vectors, query_vector_neighbors, vector_duplicates, ClusterAssignment,
+    ClusterError, ClusterQuery, ClusterReport, VectorDuplicatePair, VectorDuplicatesError,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorError, VectorIndexError, VectorIndexQuery,
     VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
 };
 

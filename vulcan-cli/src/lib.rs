@@ -11,13 +11,14 @@ use std::io;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use vulcan_core::{
-    doctor_vault, evaluate_base_file, index_vectors, initialize_vault, move_note, query_backlinks,
-    query_links, query_notes, query_vector_neighbors, scan_vault, search_vault, BacklinkRecord,
-    BacklinksReport, BasesEvalReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport,
-    InitSummary, MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, ScanMode, ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths,
-    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
-    VectorNeighborsReport,
+    cluster_vectors, doctor_vault, evaluate_base_file, index_vectors, initialize_vault, move_note,
+    query_backlinks, query_links, query_notes, query_vector_neighbors, scan_vault, search_vault,
+    vector_duplicates, BacklinkRecord, BacklinksReport, BasesEvalReport, ClusterQuery,
+    ClusterReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary, MoveSummary,
+    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ScanMode,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexQuery, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
 };
 
 #[derive(Debug)]
@@ -94,6 +95,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 Ok(())
             }
         },
+        Command::Cluster { clusters } => {
+            let report = cluster_vectors(
+                &paths,
+                &ClusterQuery {
+                    provider: cli.provider.clone(),
+                    clusters,
+                },
+            )
+            .map_err(CliError::operation)?;
+            print_cluster_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+            Ok(())
+        }
         Command::Describe => Err(CliError::not_implemented("describe")),
         Command::Doctor => {
             let report = doctor_vault(&paths).map_err(CliError::operation)?;
@@ -188,6 +201,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 )
                 .map_err(CliError::operation)?;
                 print_vector_neighbors_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+                Ok(())
+            }
+            VectorsCommand::Duplicates { threshold } => {
+                let report = vector_duplicates(
+                    &paths,
+                    &VectorDuplicatesQuery {
+                        provider: cli.provider.clone(),
+                        threshold: *threshold,
+                        limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
+                    },
+                )
+                .map_err(CliError::operation)?;
+                print_vector_duplicates_report(cli.output, &report, &list_controls, stdout_is_tty)?;
                 Ok(())
             }
         },
@@ -337,6 +363,80 @@ fn print_vector_neighbors_report(
         }
         OutputFormat::Json => print_json_lines(
             vector_neighbor_rows(report, visible_hits),
+            list_controls.fields.as_deref(),
+        ),
+    }
+}
+
+fn print_vector_duplicates_report(
+    output: OutputFormat,
+    report: &VectorDuplicatesReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+) -> Result<(), CliError> {
+    let visible_pairs = paginated_items(&report.pairs, list_controls);
+
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("Vector duplicates");
+            }
+            if visible_pairs.is_empty() {
+                println!("No duplicate pairs.");
+                return Ok(());
+            }
+
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in vector_duplicate_rows(report, visible_pairs) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for pair in visible_pairs {
+                    print_vector_duplicate(pair);
+                }
+            }
+
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(
+            vector_duplicate_rows(report, visible_pairs),
+            list_controls.fields.as_deref(),
+        ),
+    }
+}
+
+fn print_cluster_report(
+    output: OutputFormat,
+    report: &ClusterReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+) -> Result<(), CliError> {
+    let visible_assignments = paginated_items(&report.assignments, list_controls);
+
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("Vector clusters");
+            }
+            if visible_assignments.is_empty() {
+                println!("No cluster assignments.");
+                return Ok(());
+            }
+
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in cluster_rows(report, visible_assignments) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for assignment in visible_assignments {
+                    print_cluster_assignment(assignment);
+                }
+            }
+
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(
+            cluster_rows(report, visible_assignments),
             list_controls.fields.as_deref(),
         ),
     }
@@ -739,6 +839,50 @@ fn vector_neighbor_rows(report: &VectorNeighborsReport, hits: &[VectorNeighborHi
         .collect()
 }
 
+fn vector_duplicate_rows(
+    report: &VectorDuplicatesReport,
+    pairs: &[VectorDuplicatePair],
+) -> Vec<Value> {
+    pairs
+        .iter()
+        .map(|pair| {
+            serde_json::json!({
+                "provider_name": report.provider_name,
+                "model_name": report.model_name,
+                "dimensions": report.dimensions,
+                "threshold": report.threshold,
+                "left_document_path": pair.left_document_path,
+                "left_chunk_id": pair.left_chunk_id,
+                "right_document_path": pair.right_document_path,
+                "right_chunk_id": pair.right_chunk_id,
+                "similarity": pair.similarity,
+            })
+        })
+        .collect()
+}
+
+fn cluster_rows(
+    report: &ClusterReport,
+    assignments: &[vulcan_core::ClusterAssignment],
+) -> Vec<Value> {
+    assignments
+        .iter()
+        .map(|assignment| {
+            serde_json::json!({
+                "provider_name": report.provider_name,
+                "model_name": report.model_name,
+                "dimensions": report.dimensions,
+                "cluster_count": report.cluster_count,
+                "cluster_id": assignment.cluster_id,
+                "cluster_label": assignment.cluster_label,
+                "document_path": assignment.document_path,
+                "chunk_id": assignment.chunk_id,
+                "heading_path": assignment.heading_path,
+            })
+        })
+        .collect()
+}
+
 fn note_rows(report: &NotesReport, notes: &[NoteRecord]) -> Vec<Value> {
     notes
         .iter()
@@ -886,6 +1030,22 @@ fn print_vector_neighbor(hit: &VectorNeighborHit) {
     }
 }
 
+fn print_vector_duplicate(pair: &VectorDuplicatePair) {
+    println!(
+        "- {} <-> {} [{:.3}]",
+        pair.left_document_path, pair.right_document_path, pair.similarity
+    );
+}
+
+fn print_cluster_assignment(assignment: &vulcan_core::ClusterAssignment) {
+    println!(
+        "- [{}] {}: {}",
+        assignment.cluster_id + 1,
+        assignment.cluster_label,
+        assignment.document_path
+    );
+}
+
 fn print_note(note: &NoteRecord) {
     println!("- {}", note.document_path);
 }
@@ -960,6 +1120,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn parses_links_and_backlinks_commands() {
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
@@ -994,6 +1155,10 @@ mod tests {
             .expect("cli should parse");
         let vectors =
             Cli::try_parse_from(["vulcan", "vectors", "index"]).expect("cli should parse");
+        let duplicates =
+            Cli::try_parse_from(["vulcan", "vectors", "duplicates"]).expect("cli should parse");
+        let cluster = Cli::try_parse_from(["vulcan", "cluster", "--clusters", "3"])
+            .expect("cli should parse");
         let move_command = Cli::try_parse_from([
             "vulcan",
             "move",
@@ -1048,6 +1213,13 @@ mod tests {
                 command: VectorsCommand::Index,
             }
         );
+        assert_eq!(
+            duplicates.command,
+            Command::Vectors {
+                command: VectorsCommand::Duplicates { threshold: 0.95 },
+            }
+        );
+        assert_eq!(cluster.command, Command::Cluster { clusters: 3 });
         assert_eq!(
             move_command.command,
             Command::Move {

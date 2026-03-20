@@ -25,6 +25,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("search"))
             .and(predicate::str::contains("vectors"))
+            .and(predicate::str::contains("cluster"))
             .and(predicate::str::contains("move"))
             .and(predicate::str::contains("doctor")),
     );
@@ -565,6 +566,78 @@ fn search_hybrid_json_output_combines_vector_and_keyword_results() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["mode"], "hybrid");
     assert_eq!(rows[0]["document_path"], "Home.md");
+    server.shutdown();
+}
+
+#[test]
+fn vectors_duplicates_and_cluster_json_output_work() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let server = MockEmbeddingServer::spawn();
+    write_embedding_config(&vault_root, &server.base_url());
+    run_scan(&vault_root);
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "vectors",
+            "index",
+        ])
+        .assert()
+        .success();
+
+    let duplicates_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "left_document_path,right_document_path,similarity",
+            "vectors",
+            "duplicates",
+            "--threshold",
+            "0.7",
+        ])
+        .assert()
+        .success();
+    let duplicate_rows = parse_stdout_json_lines(&duplicates_assert);
+
+    assert!(!duplicate_rows.is_empty());
+    assert!(
+        duplicate_rows[0]["similarity"]
+            .as_f64()
+            .expect("similarity should be numeric")
+            >= 0.7
+    );
+
+    let cluster_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "cluster_id,document_path",
+            "cluster",
+            "--clusters",
+            "2",
+        ])
+        .assert()
+        .success();
+    let cluster_rows = parse_stdout_json_lines(&cluster_assert);
+
+    assert_eq!(cluster_rows.len(), 4);
     server.shutdown();
 }
 
