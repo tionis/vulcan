@@ -3,15 +3,17 @@ use crate::scan::{
     discover_relative_paths, scan_vault_unlocked_with_progress, ScanMode, ScanProgress, ScanSummary,
 };
 use crate::write_lock::acquire_write_lock;
-use crate::{CacheDatabase, CacheError, SearchError, VaultPaths};
+use crate::{doctor_vault, CacheDatabase, CacheError, SearchError, VaultPaths};
 use serde::Serialize;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::fs;
 
 #[derive(Debug)]
 pub enum MaintenanceError {
     Cache(CacheError),
     CacheMissing,
+    Doctor(String),
     Io(std::io::Error),
     Scan(crate::ScanError),
     Search(SearchError),
@@ -25,6 +27,7 @@ impl Display for MaintenanceError {
             Self::CacheMissing => {
                 formatter.write_str("cache is missing; run `vulcan scan` before repairing indexes")
             }
+            Self::Doctor(error) => write!(formatter, "{error}"),
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Scan(error) => write!(formatter, "{error}"),
             Self::Search(error) => write!(formatter, "{error}"),
@@ -41,7 +44,7 @@ impl Error for MaintenanceError {
             Self::Scan(error) => Some(error),
             Self::Search(error) => Some(error),
             Self::Sqlite(error) => Some(error),
-            Self::CacheMissing => None,
+            Self::CacheMissing | Self::Doctor(_) => None,
         }
     }
 }
@@ -55,6 +58,12 @@ impl From<CacheError> for MaintenanceError {
 impl From<std::io::Error> for MaintenanceError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl From<crate::DoctorError> for MaintenanceError {
+    fn from(error: crate::DoctorError) -> Self {
+        Self::Doctor(error.to_string())
     }
 }
 
@@ -99,6 +108,47 @@ pub struct RepairFtsReport {
     pub dry_run: bool,
     pub indexed_documents: usize,
     pub indexed_chunks: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CacheInspectReport {
+    pub cache_path: String,
+    pub database_bytes: u64,
+    pub documents: usize,
+    pub notes: usize,
+    pub attachments: usize,
+    pub bases: usize,
+    pub links: usize,
+    pub chunks: usize,
+    pub diagnostics: usize,
+    pub search_rows: usize,
+    pub vector_rows: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CacheVerifyReport {
+    pub healthy: bool,
+    pub checks: Vec<CacheVerifyCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CacheVerifyCheck {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheVacuumQuery {
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CacheVacuumReport {
+    pub dry_run: bool,
+    pub before_bytes: u64,
+    pub after_bytes: Option<u64>,
+    pub reclaimed_bytes: Option<u64>,
 }
 
 pub fn rebuild_vault(
@@ -166,6 +216,101 @@ pub fn repair_fts(
     })
 }
 
+pub fn inspect_cache(paths: &VaultPaths) -> Result<CacheInspectReport, MaintenanceError> {
+    if !paths.cache_db().exists() {
+        return Err(MaintenanceError::CacheMissing);
+    }
+    let database = CacheDatabase::open(paths)?;
+    let connection = database.connection();
+
+    Ok(CacheInspectReport {
+        cache_path: paths.cache_db().display().to_string(),
+        database_bytes: fs::metadata(paths.cache_db())?.len(),
+        documents: count_rows(connection, "documents")?,
+        notes: count_where(connection, "documents", "extension = 'md'")?,
+        attachments: count_where(connection, "documents", "extension NOT IN ('md', 'base')")?,
+        bases: count_where(connection, "documents", "extension = 'base'")?,
+        links: count_rows(connection, "links")?,
+        chunks: count_rows(connection, "chunks")?,
+        diagnostics: count_rows(connection, "diagnostics")?,
+        search_rows: count_search_rows(connection)?,
+        vector_rows: count_optional_rows(connection, "vectors")?,
+    })
+}
+
+pub fn verify_cache(paths: &VaultPaths) -> Result<CacheVerifyReport, MaintenanceError> {
+    if !paths.cache_db().exists() {
+        return Err(MaintenanceError::CacheMissing);
+    }
+    let database = CacheDatabase::open(paths)?;
+    let connection = database.connection();
+    let chunks = count_chunks(connection)?;
+    let search_rows = count_search_rows(connection)?;
+    let vector_rows = count_optional_rows(connection, "vectors")?;
+    let doctor = doctor_vault(paths)?;
+    let doctor_clean = doctor.summary.stale_index_rows == 0
+        && doctor.summary.missing_index_rows == 0
+        && doctor.summary.parse_failures == 0;
+
+    let checks = vec![
+        CacheVerifyCheck {
+            name: "search_rows_match_chunks".to_string(),
+            ok: chunks == search_rows,
+            detail: format!("chunks={chunks}, search_rows={search_rows}"),
+        },
+        CacheVerifyCheck {
+            name: "vector_rows_do_not_exceed_chunks".to_string(),
+            ok: vector_rows <= chunks,
+            detail: format!("vector_rows={vector_rows}, chunks={chunks}"),
+        },
+        CacheVerifyCheck {
+            name: "doctor_reconciliation_clean".to_string(),
+            ok: doctor_clean,
+            detail: format!(
+                "stale={}, missing={}, parse_failures={}",
+                doctor.summary.stale_index_rows,
+                doctor.summary.missing_index_rows,
+                doctor.summary.parse_failures
+            ),
+        },
+    ];
+
+    Ok(CacheVerifyReport {
+        healthy: checks.iter().all(|check| check.ok),
+        checks,
+    })
+}
+
+pub fn cache_vacuum(
+    paths: &VaultPaths,
+    query: &CacheVacuumQuery,
+) -> Result<CacheVacuumReport, MaintenanceError> {
+    if !paths.cache_db().exists() {
+        return Err(MaintenanceError::CacheMissing);
+    }
+    let before_bytes = fs::metadata(paths.cache_db())?.len();
+    if query.dry_run {
+        return Ok(CacheVacuumReport {
+            dry_run: true,
+            before_bytes,
+            after_bytes: None,
+            reclaimed_bytes: None,
+        });
+    }
+
+    let _lock = acquire_write_lock(paths)?;
+    let database = CacheDatabase::open(paths)?;
+    database.connection().execute_batch("VACUUM")?;
+    let after_bytes = fs::metadata(paths.cache_db())?.len();
+
+    Ok(CacheVacuumReport {
+        dry_run: false,
+        before_bytes,
+        after_bytes: Some(after_bytes),
+        reclaimed_bytes: Some(before_bytes.saturating_sub(after_bytes)),
+    })
+}
+
 fn existing_document_count(paths: &VaultPaths) -> Result<usize, MaintenanceError> {
     if !paths.cache_db().exists() {
         return Ok(0);
@@ -182,6 +327,54 @@ fn existing_document_count(paths: &VaultPaths) -> Result<usize, MaintenanceError
 fn count_chunks(connection: &rusqlite::Connection) -> Result<usize, MaintenanceError> {
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))?;
     Ok(usize::try_from(count).unwrap_or(usize::MAX))
+}
+
+fn count_rows(connection: &rusqlite::Connection, table: &str) -> Result<usize, MaintenanceError> {
+    let count: i64 = connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get(0)
+    })?;
+    Ok(usize::try_from(count).unwrap_or(usize::MAX))
+}
+
+fn count_optional_rows(
+    connection: &rusqlite::Connection,
+    table: &str,
+) -> Result<usize, MaintenanceError> {
+    if !table_exists(connection, table)? {
+        return Ok(0);
+    }
+
+    count_rows(connection, table)
+}
+
+fn count_where(
+    connection: &rusqlite::Connection,
+    table: &str,
+    predicate: &str,
+) -> Result<usize, MaintenanceError> {
+    let count: i64 = connection.query_row(
+        &format!("SELECT COUNT(*) FROM {table} WHERE {predicate}"),
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(usize::try_from(count).unwrap_or(usize::MAX))
+}
+
+fn count_search_rows(connection: &rusqlite::Connection) -> Result<usize, MaintenanceError> {
+    let count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM search_chunk_content", [], |row| {
+            row.get(0)
+        })?;
+    Ok(usize::try_from(count).unwrap_or(usize::MAX))
+}
+
+fn table_exists(connection: &rusqlite::Connection, table: &str) -> Result<bool, MaintenanceError> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 fn count_distinct_chunk_documents(
@@ -345,6 +538,71 @@ mod tests {
             })
             .expect("row count should be readable");
         assert_eq!(remaining_rows, 0);
+    }
+
+    #[test]
+    fn inspect_cache_reports_document_and_index_counts() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = inspect_cache(&paths).expect("inspect should succeed");
+
+        assert_eq!(report.documents, 3);
+        assert_eq!(report.notes, 3);
+        assert_eq!(report.attachments, 0);
+        assert_eq!(report.bases, 0);
+        assert_eq!(report.links, 5);
+        assert_eq!(report.chunks, 4);
+        assert_eq!(report.search_rows, 4);
+    }
+
+    #[test]
+    fn verify_cache_detects_search_mismatch() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        CacheDatabase::open(&paths)
+            .expect("database should open")
+            .with_transaction(|transaction| {
+                transaction
+                    .execute("DELETE FROM search_chunk_content", [])
+                    .expect("search rows should delete");
+                Ok::<_, MaintenanceError>(())
+            })
+            .expect("corruption setup should succeed");
+
+        let report = verify_cache(&paths).expect("verify should succeed");
+
+        assert!(!report.healthy);
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.name == "search_rows_match_chunks" && !check.ok));
+    }
+
+    #[test]
+    fn vacuum_cache_reports_sizes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let dry_run = cache_vacuum(&paths, &CacheVacuumQuery { dry_run: true })
+            .expect("dry-run vacuum should succeed");
+        assert!(dry_run.dry_run);
+        assert!(dry_run.after_bytes.is_none());
+
+        let applied = cache_vacuum(&paths, &CacheVacuumQuery { dry_run: false })
+            .expect("vacuum should succeed");
+        assert!(!applied.dry_run);
+        assert!(applied.after_bytes.is_some());
     }
 
     fn copy_fixture_vault(fixture_name: &str, destination: &Path) {

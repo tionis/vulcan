@@ -1,7 +1,8 @@
 mod cli;
 
 pub use cli::{
-    BasesCommand, Cli, Command, OutputFormat, RepairCommand, SearchMode, VectorsCommand,
+    BasesCommand, CacheCommand, Cli, Command, GraphCommand, OutputFormat, RepairCommand,
+    SearchMode, VectorsCommand,
 };
 
 use clap::{CommandFactory, Parser};
@@ -15,13 +16,17 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use vulcan_core::{
-    cluster_vectors, doctor_fix, doctor_vault, evaluate_base_file, index_vectors_with_progress,
-    initialize_vault, merge_tags, move_note, query_backlinks, query_links, query_notes,
-    query_vector_neighbors, rebuild_vault_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, scan_vault_with_progress, search_vault,
-    vector_duplicates, watch_vault, BacklinkRecord, BacklinksReport, BasesEvalReport, ClusterQuery,
-    ClusterReport, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    InitSummary, MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    cache_vacuum, cluster_vectors, doctor_fix, doctor_vault, evaluate_base_file,
+    index_vectors_with_progress, initialize_vault, inspect_cache, merge_tags, move_note,
+    query_backlinks, query_graph_analytics, query_graph_components, query_graph_dead_ends,
+    query_graph_hubs, query_graph_path, query_links, query_notes, query_vector_neighbors,
+    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    repair_fts, scan_vault_with_progress, search_vault, vector_duplicates, verify_cache,
+    watch_vault, BacklinkRecord, BacklinksReport, BasesEvalReport, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ClusterQuery, ClusterReport,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphPathReport, InitSummary,
+    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
     OutgoingLinksReport, RebuildQuery, RebuildReport, RefactorReport, RepairFtsQuery,
     RepairFtsReport, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
     SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
@@ -370,6 +375,46 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             Ok(())
         }
+        Command::Graph { ref command } => match command {
+            GraphCommand::Path { from, to } => {
+                let report = query_graph_path(&paths, from, to).map_err(CliError::operation)?;
+                print_graph_path_report(cli.output, &report)
+            }
+            GraphCommand::Hubs => {
+                let report = query_graph_hubs(&paths).map_err(CliError::operation)?;
+                print_graph_hubs_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
+            }
+            GraphCommand::DeadEnds => {
+                let report = query_graph_dead_ends(&paths).map_err(CliError::operation)?;
+                print_graph_dead_ends_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
+            }
+            GraphCommand::Components => {
+                let report = query_graph_components(&paths).map_err(CliError::operation)?;
+                print_graph_components_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
+            }
+            GraphCommand::Stats => {
+                let report = query_graph_analytics(&paths).map_err(CliError::operation)?;
+                print_graph_analytics_report(cli.output, &report)
+            }
+        },
         Command::Completions { shell } => {
             let mut command = Cli::command();
             generate(shell, &mut command, "vulcan", &mut io::stdout());
@@ -482,6 +527,21 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
+        Command::Cache { ref command } => match command {
+            CacheCommand::Inspect => {
+                let report = inspect_cache(&paths).map_err(CliError::operation)?;
+                print_cache_inspect_report(cli.output, &report)
+            }
+            CacheCommand::Verify => {
+                let report = verify_cache(&paths).map_err(CliError::operation)?;
+                print_cache_verify_report(cli.output, &report)
+            }
+            CacheCommand::Vacuum { dry_run } => {
+                let report = cache_vacuum(&paths, &CacheVacuumQuery { dry_run: *dry_run })
+                    .map_err(CliError::operation)?;
+                print_cache_vacuum_report(cli.output, &report)
+            }
+        },
         Command::Repair { ref command } => match command {
             RepairCommand::Fts { dry_run } => {
                 let report = repair_fts(&paths, &RepairFtsQuery { dry_run: *dry_run })
@@ -1299,6 +1359,222 @@ fn print_doctor_fix_report(
     }
 }
 
+fn print_graph_path_report(output: OutputFormat, report: &GraphPathReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.path.is_empty() {
+                println!(
+                    "No resolved path from {} to {}.",
+                    report.from_path, report.to_path
+                );
+            } else {
+                println!("{}", report.path.join(" -> "));
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_graph_hubs_report(
+    output: OutputFormat,
+    report: &GraphHubsReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let visible_notes = paginated_items(&report.notes, list_controls);
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Graph hubs"));
+            }
+            if visible_notes.is_empty() {
+                println!("No graph hubs.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in graph_hub_rows(visible_notes) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for note in visible_notes {
+                    println!(
+                        "- {} [{} inbound, {} outbound]",
+                        note.document_path, note.inbound, note.outbound
+                    );
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(
+            graph_hub_rows(visible_notes),
+            list_controls.fields.as_deref(),
+        ),
+    }
+}
+
+fn print_graph_dead_ends_report(
+    output: OutputFormat,
+    report: &GraphDeadEndsReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let visible_notes = paginated_items(&report.notes, list_controls);
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Graph dead ends"));
+            }
+            if visible_notes.is_empty() {
+                println!("No dead ends.");
+                return Ok(());
+            }
+            for note in visible_notes {
+                println!("- {note}");
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(
+            visible_notes
+                .iter()
+                .map(|note| serde_json::json!({ "document_path": note }))
+                .collect(),
+            list_controls.fields.as_deref(),
+        ),
+    }
+}
+
+fn print_graph_components_report(
+    output: OutputFormat,
+    report: &GraphComponentsReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let visible_components = paginated_items(&report.components, list_controls);
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Graph components"));
+            }
+            if visible_components.is_empty() {
+                println!("No components.");
+                return Ok(());
+            }
+            for component in visible_components {
+                println!("- size {}: {}", component.size, component.notes.join(", "));
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(
+            visible_components
+                .iter()
+                .map(|component| {
+                    serde_json::json!({
+                        "size": component.size,
+                        "notes": component.notes,
+                    })
+                })
+                .collect(),
+            list_controls.fields.as_deref(),
+        ),
+    }
+}
+
+fn print_graph_analytics_report(
+    output: OutputFormat,
+    report: &GraphAnalyticsReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Notes: {}", report.note_count);
+            println!("Attachments: {}", report.attachment_count);
+            println!("Bases: {}", report.base_count);
+            println!("Resolved note links: {}", report.resolved_note_links);
+            println!(
+                "Average outbound links: {:.3}",
+                report.average_outbound_links
+            );
+            println!("Orphan notes: {}", report.orphan_notes);
+            print_named_count_section("Top tags", &report.top_tags);
+            print_named_count_section("Top properties", &report.top_properties);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_cache_inspect_report(
+    output: OutputFormat,
+    report: &CacheInspectReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Cache: {}", report.cache_path);
+            println!("Bytes: {}", report.database_bytes);
+            println!("Documents: {}", report.documents);
+            println!("Notes: {}", report.notes);
+            println!("Attachments: {}", report.attachments);
+            println!("Bases: {}", report.bases);
+            println!("Links: {}", report.links);
+            println!("Chunks: {}", report.chunks);
+            println!("Diagnostics: {}", report.diagnostics);
+            println!("Search rows: {}", report.search_rows);
+            println!("Vector rows: {}", report.vector_rows);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_cache_verify_report(
+    output: OutputFormat,
+    report: &CacheVerifyReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Cache healthy: {}", report.healthy);
+            for check in &report.checks {
+                println!(
+                    "- {} [{}] {}",
+                    check.name,
+                    if check.ok { "ok" } else { "fail" },
+                    check.detail
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_cache_vacuum_report(
+    output: OutputFormat,
+    report: &CacheVacuumReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!("Dry run: cache is {} bytes", report.before_bytes);
+            } else {
+                println!(
+                    "Vacuumed cache: {} -> {} bytes (reclaimed {})",
+                    report.before_bytes,
+                    report.after_bytes.unwrap_or(report.before_bytes),
+                    report.reclaimed_bytes.unwrap_or(0)
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_json<T: Serialize>(value: &T) -> Result<(), CliError> {
     println!(
         "{}",
@@ -1794,6 +2070,16 @@ fn print_bases_row(row: &Value) {
     println!("- {document_path} ({view_name})");
 }
 
+fn print_named_count_section(title: &str, counts: &[NamedCount]) {
+    if counts.is_empty() {
+        return;
+    }
+    println!("{title}:");
+    for count in counts {
+        println!("- {} ({})", count.name, count.count);
+    }
+}
+
 fn zero_summary() -> vulcan_core::DoctorSummary {
     vulcan_core::DoctorSummary {
         unresolved_links: 0,
@@ -1830,6 +2116,20 @@ fn paginated_items<'a, T>(items: &'a [T], controls: &ListOutputControls) -> &'a 
     });
 
     &items[start..end]
+}
+
+fn graph_hub_rows(notes: &[vulcan_core::GraphNodeScore]) -> Vec<Value> {
+    notes
+        .iter()
+        .map(|note| {
+            serde_json::json!({
+                "document_path": note.document_path,
+                "inbound": note.inbound,
+                "outbound": note.outbound,
+                "total": note.total,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1874,6 +2174,10 @@ mod tests {
         let watch = Cli::try_parse_from(["vulcan", "watch", "--debounce-ms", "125"])
             .expect("cli should parse");
         let doctor = Cli::try_parse_from(["vulcan", "doctor", "--fix", "--dry-run"])
+            .expect("cli should parse");
+        let graph_path = Cli::try_parse_from(["vulcan", "graph", "path", "Home", "Bob"])
+            .expect("cli should parse");
+        let cache_vacuum = Cli::try_parse_from(["vulcan", "cache", "vacuum", "--dry-run"])
             .expect("cli should parse");
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
@@ -1936,6 +2240,21 @@ mod tests {
             Command::Doctor {
                 fix: true,
                 dry_run: true
+            }
+        );
+        assert_eq!(
+            graph_path.command,
+            Command::Graph {
+                command: GraphCommand::Path {
+                    from: "Home".to_string(),
+                    to: "Bob".to_string(),
+                }
+            }
+        );
+        assert_eq!(
+            cache_vacuum.command,
+            Command::Cache {
+                command: CacheCommand::Vacuum { dry_run: true }
             }
         );
 
@@ -2163,5 +2482,13 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "rename-property"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "graph"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "cache"));
     }
 }

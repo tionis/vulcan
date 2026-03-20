@@ -207,6 +207,66 @@
         "subcommands": []
       },
       {
+        "about": "Analyze the resolved note graph",
+        "name": "graph",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Find the shortest resolved-link path between two notes",
+            "name": "path",
+            "options": [
+              {
+                "help": "Starting note path, filename, or alias",
+                "id": "from",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FROM"
+                ]
+              },
+              {
+                "help": "Destination note path, filename, or alias",
+                "id": "to",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TO"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List notes with the highest combined link degree",
+            "name": "hubs",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "List notes without outbound resolved note links",
+            "name": "dead-ends",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Report weakly connected components of the note graph",
+            "name": "components",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Summarize note-graph and vault analytics",
+            "name": "stats",
+            "options": [],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Search indexed note content",
         "name": "search",
         "options": [
@@ -782,6 +842,46 @@
           }
         ],
         "subcommands": []
+      },
+      {
+        "about": "Inspect and maintain the SQLite cache",
+        "name": "cache",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Inspect cache sizes and row counts",
+            "name": "inspect",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Verify cache invariants against derived indexes",
+            "name": "verify",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Run SQLite VACUUM on the cache database",
+            "name": "vacuum",
+            "options": [
+              {
+                "help": "Report the vacuum scope without mutating the cache",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
       },
       {
         "about": "Describe the CLI schema and command surface",

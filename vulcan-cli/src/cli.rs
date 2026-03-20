@@ -5,9 +5,9 @@ use std::path::PathBuf;
 const COMMAND_GROUPS_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch
-  Graph and Query: links, backlinks, search, notes, bases
+  Graph and Query: links, backlinks, graph, search, notes, bases
   Semantic: vectors, cluster
-  Maintenance: move, doctor, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
+  Maintenance: move, doctor, cache, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -64,6 +64,38 @@ pub enum RepairCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum GraphCommand {
+    #[command(about = "Find the shortest resolved-link path between two notes")]
+    Path {
+        #[arg(help = "Starting note path, filename, or alias")]
+        from: String,
+        #[arg(help = "Destination note path, filename, or alias")]
+        to: String,
+    },
+    #[command(about = "List notes with the highest combined link degree")]
+    Hubs,
+    #[command(about = "List notes without outbound resolved note links")]
+    DeadEnds,
+    #[command(about = "Report weakly connected components of the note graph")]
+    Components,
+    #[command(about = "Summarize note-graph and vault analytics")]
+    Stats,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum CacheCommand {
+    #[command(about = "Inspect cache sizes and row counts")]
+    Inspect,
+    #[command(about = "Verify cache invariants against derived indexes")]
+    Verify,
+    #[command(about = "Run SQLite VACUUM on the cache database")]
+    Vacuum {
+        #[arg(long, help = "Report the vacuum scope without mutating the cache")]
+        dry_run: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Command {
     #[command(about = "Initialize .vulcan/ state for a vault")]
@@ -101,6 +133,11 @@ pub enum Command {
     Backlinks {
         #[arg(help = "Note path, filename, or alias to inspect")]
         note: String,
+    },
+    #[command(about = "Analyze the resolved note graph")]
+    Graph {
+        #[command(subcommand)]
+        command: GraphCommand,
     },
     #[command(about = "Search indexed note content")]
     Search {
@@ -224,6 +261,11 @@ pub enum Command {
         new: String,
         #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
+    },
+    #[command(about = "Inspect and maintain the SQLite cache")]
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
     },
     #[command(about = "Describe the CLI schema and command surface")]
     Describe,

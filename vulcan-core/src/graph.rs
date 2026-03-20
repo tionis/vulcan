@@ -1,7 +1,7 @@
 use crate::VaultPaths;
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -148,6 +148,60 @@ pub struct NoteReference {
     pub matched_by: NoteMatchKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphPathReport {
+    pub from_path: String,
+    pub to_path: String,
+    pub path: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphNodeScore {
+    pub document_path: String,
+    pub inbound: usize,
+    pub outbound: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphHubsReport {
+    pub notes: Vec<GraphNodeScore>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphDeadEndsReport {
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphComponent {
+    pub size: usize,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphComponentsReport {
+    pub components: Vec<GraphComponent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NamedCount {
+    pub name: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GraphAnalyticsReport {
+    pub note_count: usize,
+    pub attachment_count: usize,
+    pub base_count: usize,
+    pub resolved_note_links: usize,
+    pub average_outbound_links: f64,
+    pub orphan_notes: usize,
+    pub top_tags: Vec<NamedCount>,
+    pub top_properties: Vec<NamedCount>,
+}
+
 pub fn resolve_note_reference(
     paths: &VaultPaths,
     identifier: &str,
@@ -273,6 +327,150 @@ pub fn query_backlinks(
         note_path: note.path,
         matched_by: note.matched_by,
         backlinks,
+    })
+}
+
+pub fn query_graph_path(
+    paths: &VaultPaths,
+    from_identifier: &str,
+    to_identifier: &str,
+) -> Result<GraphPathReport, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+    let from = resolve_note_identifier(&notes, from_identifier)?;
+    let to = resolve_note_identifier(&notes, to_identifier)?;
+    let adjacency = note_adjacency(&connection)?;
+    let path = shortest_path(&adjacency, &from.id, &to.id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| {
+            notes
+                .iter()
+                .find(|note| note.id == id)
+                .map(|note| note.path.clone())
+                .unwrap_or(id)
+        })
+        .collect::<Vec<_>>();
+
+    Ok(GraphPathReport {
+        from_path: from.path,
+        to_path: to.path,
+        path,
+    })
+}
+
+pub fn query_graph_hubs(paths: &VaultPaths) -> Result<GraphHubsReport, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+    let counts = note_link_counts(&connection)?;
+    let mut scored = notes
+        .into_iter()
+        .map(|note| {
+            let (inbound, outbound) = counts.get(&note.id).copied().unwrap_or((0, 0));
+            GraphNodeScore {
+                document_path: note.path,
+                inbound,
+                outbound,
+                total: inbound + outbound,
+            }
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| {
+        right
+            .total
+            .cmp(&left.total)
+            .then(right.inbound.cmp(&left.inbound))
+            .then(right.outbound.cmp(&left.outbound))
+            .then(left.document_path.cmp(&right.document_path))
+    });
+
+    Ok(GraphHubsReport { notes: scored })
+}
+
+pub fn query_graph_dead_ends(paths: &VaultPaths) -> Result<GraphDeadEndsReport, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+    let counts = note_link_counts(&connection)?;
+    let mut dead_ends = notes
+        .into_iter()
+        .filter(|note| counts.get(&note.id).map_or(0, |(_, outbound)| *outbound) == 0)
+        .map(|note| note.path)
+        .collect::<Vec<_>>();
+    dead_ends.sort();
+
+    Ok(GraphDeadEndsReport { notes: dead_ends })
+}
+
+pub fn query_graph_components(
+    paths: &VaultPaths,
+) -> Result<GraphComponentsReport, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+    let undirected = undirected_note_adjacency(&connection)?;
+    let path_by_id = notes
+        .iter()
+        .map(|note| (note.id.clone(), note.path.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut remaining = notes
+        .iter()
+        .map(|note| note.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut components = Vec::new();
+
+    while let Some(start) = remaining.pop_first() {
+        let mut queue = VecDeque::from([start.clone()]);
+        let mut visited = BTreeSet::from([start]);
+        while let Some(current) = queue.pop_front() {
+            for neighbor in undirected.get(&current).into_iter().flatten() {
+                if visited.insert(neighbor.clone()) {
+                    remaining.remove(neighbor);
+                    queue.push_back(neighbor.clone());
+                }
+            }
+        }
+
+        let notes = visited
+            .into_iter()
+            .map(|id| path_by_id.get(&id).cloned().unwrap_or(id))
+            .collect::<Vec<_>>();
+        components.push(GraphComponent {
+            size: notes.len(),
+            notes,
+        });
+    }
+
+    components.sort_by(|left, right| {
+        right
+            .size
+            .cmp(&left.size)
+            .then(left.notes.cmp(&right.notes))
+    });
+    Ok(GraphComponentsReport { components })
+}
+
+pub fn query_graph_analytics(paths: &VaultPaths) -> Result<GraphAnalyticsReport, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+    let counts = note_link_counts(&connection)?;
+    let resolved_note_links = total_resolved_note_links(&connection)?;
+    let orphan_notes = notes
+        .iter()
+        .filter(|note| counts.get(&note.id).copied().unwrap_or((0, 0)) == (0, 0))
+        .count();
+
+    Ok(GraphAnalyticsReport {
+        note_count: notes.len(),
+        attachment_count: count_documents_by_extension_group(&connection, "attachment")?,
+        base_count: count_documents_by_extension_group(&connection, "base")?,
+        resolved_note_links,
+        average_outbound_links: if notes.is_empty() {
+            0.0
+        } else {
+            count_as_f64(resolved_note_links) / count_as_f64(notes.len())
+        },
+        orphan_notes,
+        top_tags: top_tag_counts(&connection)?,
+        top_properties: top_property_counts(&connection)?,
     })
 }
 
@@ -455,6 +653,193 @@ struct BacklinkRow {
     byte_offset: usize,
 }
 
+fn note_adjacency(
+    connection: &Connection,
+) -> Result<HashMap<String, Vec<String>>, GraphQueryError> {
+    let mut adjacency = HashMap::<String, Vec<String>>::new();
+    let mut statement = connection.prepare(
+        "
+        SELECT source.id, target.id
+        FROM links
+        JOIN documents AS source ON source.id = links.source_document_id
+        JOIN documents AS target ON target.id = links.resolved_target_id
+        WHERE source.extension = 'md' AND target.extension = 'md'
+        ORDER BY source.path, target.path, links.byte_offset
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (source_id, target_id) = row?;
+        adjacency.entry(source_id).or_default().push(target_id);
+    }
+    Ok(adjacency)
+}
+
+fn undirected_note_adjacency(
+    connection: &Connection,
+) -> Result<HashMap<String, BTreeSet<String>>, GraphQueryError> {
+    let mut adjacency = HashMap::<String, BTreeSet<String>>::new();
+    let mut statement = connection.prepare(
+        "
+        SELECT source.id, target.id
+        FROM links
+        JOIN documents AS source ON source.id = links.source_document_id
+        JOIN documents AS target ON target.id = links.resolved_target_id
+        WHERE source.extension = 'md' AND target.extension = 'md'
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (source_id, target_id) = row?;
+        adjacency
+            .entry(source_id.clone())
+            .or_default()
+            .insert(target_id.clone());
+        adjacency.entry(target_id).or_default().insert(source_id);
+    }
+    Ok(adjacency)
+}
+
+fn note_link_counts(
+    connection: &Connection,
+) -> Result<HashMap<String, (usize, usize)>, GraphQueryError> {
+    let mut counts = HashMap::<String, (usize, usize)>::new();
+    let mut statement = connection.prepare(
+        "
+        SELECT source.id, target.id
+        FROM links
+        JOIN documents AS source ON source.id = links.source_document_id
+        JOIN documents AS target ON target.id = links.resolved_target_id
+        WHERE source.extension = 'md' AND target.extension = 'md'
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (source_id, target_id) = row?;
+        counts.entry(source_id).or_insert((0, 0)).1 += 1;
+        counts.entry(target_id).or_insert((0, 0)).0 += 1;
+    }
+    Ok(counts)
+}
+
+fn total_resolved_note_links(connection: &Connection) -> Result<usize, GraphQueryError> {
+    let count: i64 = connection.query_row(
+        "
+        SELECT COUNT(*)
+        FROM links
+        JOIN documents AS source ON source.id = links.source_document_id
+        JOIN documents AS target ON target.id = links.resolved_target_id
+        WHERE source.extension = 'md' AND target.extension = 'md'
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(usize::try_from(count).unwrap_or(usize::MAX))
+}
+
+fn count_documents_by_extension_group(
+    connection: &Connection,
+    group: &str,
+) -> Result<usize, GraphQueryError> {
+    let sql = match group {
+        "attachment" => "SELECT COUNT(*) FROM documents WHERE extension NOT IN ('md', 'base')",
+        "base" => "SELECT COUNT(*) FROM documents WHERE extension = 'base'",
+        _ => unreachable!(),
+    };
+    let count: i64 = connection.query_row(sql, [], |row| row.get(0))?;
+    Ok(usize::try_from(count).unwrap_or(usize::MAX))
+}
+
+fn top_tag_counts(connection: &Connection) -> Result<Vec<NamedCount>, GraphQueryError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT tags.tag_text, COUNT(DISTINCT tags.document_id) AS usage_count
+        FROM tags
+        JOIN documents ON documents.id = tags.document_id
+        WHERE documents.extension = 'md'
+        GROUP BY tags.tag_text
+        ORDER BY usage_count DESC, tags.tag_text ASC
+        LIMIT 10
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(NamedCount {
+            name: row.get(0)?,
+            count: usize::try_from(row.get::<_, i64>(1)?).unwrap_or(usize::MAX),
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(GraphQueryError::from)
+}
+
+fn top_property_counts(connection: &Connection) -> Result<Vec<NamedCount>, GraphQueryError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT key, SUM(usage_count) AS total_usage
+        FROM property_catalog
+        GROUP BY key
+        ORDER BY total_usage DESC, key ASC
+        LIMIT 10
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(NamedCount {
+            name: row.get(0)?,
+            count: usize::try_from(row.get::<_, i64>(1)?).unwrap_or(usize::MAX),
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(GraphQueryError::from)
+}
+
+fn shortest_path(
+    adjacency: &HashMap<String, Vec<String>>,
+    start: &str,
+    goal: &str,
+) -> Option<Vec<String>> {
+    if start == goal {
+        return Some(vec![start.to_string()]);
+    }
+
+    let mut queue = VecDeque::from([start.to_string()]);
+    let mut visited = HashSet::from([start.to_string()]);
+    let mut predecessor = HashMap::<String, String>::new();
+    while let Some(current) = queue.pop_front() {
+        for neighbor in adjacency.get(&current).into_iter().flatten() {
+            if !visited.insert(neighbor.clone()) {
+                continue;
+            }
+            predecessor.insert(neighbor.clone(), current.clone());
+            if neighbor == goal {
+                let mut path = vec![goal.to_string()];
+                let mut cursor = goal;
+                while let Some(previous) = predecessor.get(cursor) {
+                    path.push(previous.clone());
+                    if previous == start {
+                        break;
+                    }
+                    cursor = previous;
+                }
+                path.reverse();
+                return Some(path);
+            }
+            queue.push_back(neighbor.clone());
+        }
+    }
+
+    None
+}
+
+fn count_as_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,6 +927,49 @@ mod tests {
             ),
             other => panic!("expected ambiguous identifier error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn graph_analysis_reports_paths_hubs_components_and_stats() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let path_report =
+            query_graph_path(&paths, "Bob", "Home").expect("path query should succeed");
+        assert_eq!(
+            path_report.path,
+            vec![
+                "People/Bob.md".to_string(),
+                "Projects/Alpha.md".to_string(),
+                "Home.md".to_string()
+            ]
+        );
+
+        let hubs = query_graph_hubs(&paths).expect("hub query should succeed");
+        assert_eq!(hubs.notes[0].document_path, "Projects/Alpha.md");
+        assert_eq!(hubs.notes[0].total, 4);
+
+        let dead_ends = query_graph_dead_ends(&paths).expect("dead-end query should succeed");
+        assert!(dead_ends.notes.is_empty());
+
+        let components = query_graph_components(&paths).expect("component query should succeed");
+        assert_eq!(components.components.len(), 1);
+        assert_eq!(components.components[0].size, 3);
+
+        let analytics = query_graph_analytics(&paths).expect("analytics query should succeed");
+        assert_eq!(analytics.note_count, 3);
+        assert_eq!(analytics.attachment_count, 0);
+        assert_eq!(analytics.base_count, 0);
+        assert_eq!(analytics.resolved_note_links, 5);
+        assert_eq!(analytics.orphan_notes, 0);
+        assert!(analytics
+            .top_properties
+            .iter()
+            .any(|property| property.name == "status"));
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {
