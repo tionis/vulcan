@@ -5,10 +5,10 @@ use std::path::PathBuf;
 const COMMAND_GROUPS_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
-  Graph and Query: links, backlinks, graph, search, notes, bases
+  Graph and Query: links, backlinks, graph, search, notes, bases, suggest
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch
-  Maintenance: move, doctor, cache, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
+  Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -174,6 +174,17 @@ pub enum CacheCommand {
         #[arg(long, help = "Report the vacuum scope without mutating the cache")]
         dry_run: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SuggestCommand {
+    #[command(about = "Report plain-text note mentions that could become links")]
+    Mentions {
+        #[arg(help = "Optional note path, filename, or alias to inspect")]
+        note: Option<String>,
+    },
+    #[command(about = "Report duplicate titles, alias collisions, and merge candidates")]
+    Duplicates,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -397,6 +408,11 @@ pub enum Command {
         #[command(subcommand)]
         command: BasesCommand,
     },
+    #[command(about = "Suggest link and merge opportunities from indexed notes")]
+    Suggest {
+        #[command(subcommand)]
+        command: SuggestCommand,
+    },
     #[command(about = "Persist and run saved reports from .vulcan/reports")]
     Saved {
         #[command(subcommand)]
@@ -446,6 +462,24 @@ pub enum Command {
         #[arg(help = "Destination note or attachment path")]
         dest: String,
         #[arg(long, help = "Report rewrite changes without moving files")]
+        dry_run: bool,
+    },
+    #[command(about = "Convert unambiguous plain-text note mentions into links")]
+    LinkMentions {
+        #[arg(help = "Optional note path, filename, or alias to update")]
+        note: Option<String>,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+    },
+    #[command(about = "Apply a literal find/replace across notes selected by filters")]
+    Rewrite {
+        #[arg(long = "where", help = "Typed property filter, repeatable")]
+        filters: Vec<String>,
+        #[arg(long, help = "Literal text to find")]
+        find: String,
+        #[arg(long, help = "Replacement text")]
+        replace: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
     },
     #[command(about = "Inspect the vault for broken or suspicious state")]

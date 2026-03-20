@@ -16,6 +16,7 @@ pub mod resolver;
 pub mod saved_queries;
 pub mod scan;
 pub mod search;
+pub mod suggestions;
 pub mod vector;
 pub mod watch;
 pub mod write_lock;
@@ -87,6 +88,11 @@ pub use scan::{
 pub use search::{
     search_vault, SearchError, SearchFuzzyExpansion, SearchHit, SearchHitExplain, SearchPlan,
     SearchQuery, SearchReport,
+};
+pub use suggestions::{
+    bulk_replace, link_mentions, suggest_duplicates, suggest_mentions, DuplicateGroup,
+    DuplicateSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    SuggestionError,
 };
 pub use vector::{
     cluster_vectors, index_vectors, index_vectors_with_progress, inspect_vector_queue,

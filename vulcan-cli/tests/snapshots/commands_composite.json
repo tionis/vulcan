@@ -668,6 +668,37 @@
         ]
       },
       {
+        "about": "Suggest link and merge opportunities from indexed notes",
+        "name": "suggest",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Report plain-text note mentions that could become links",
+            "name": "mentions",
+            "options": [
+              {
+                "help": "Optional note path, filename, or alias to inspect",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Report duplicate titles, alias collisions, and merge candidates",
+            "name": "duplicates",
+            "options": [],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Persist and run saved reports from .vulcan/reports",
         "name": "saved",
         "options": [],
@@ -1402,6 +1433,92 @@
         "subcommands": []
       },
       {
+        "about": "Convert unambiguous plain-text note mentions into links",
+        "name": "link-mentions",
+        "options": [
+          {
+            "help": "Optional note path, filename, or alias to update",
+            "id": "note",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NOTE"
+            ]
+          },
+          {
+            "help": "Report planned rewrites without modifying files",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Apply a literal find/replace across notes selected by filters",
+        "name": "rewrite",
+        "options": [
+          {
+            "help": "Typed property filter, repeatable",
+            "id": "filters",
+            "long": "where",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILTERS"
+            ]
+          },
+          {
+            "help": "Literal text to find",
+            "id": "find",
+            "long": "find",
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "FIND"
+            ]
+          },
+          {
+            "help": "Replacement text",
+            "id": "replace",
+            "long": "replace",
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "REPLACE"
+            ]
+          },
+          {
+            "help": "Report planned rewrites without modifying files",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Inspect the vault for broken or suspicious state",
         "name": "doctor",
         "options": [
@@ -1878,6 +1995,21 @@
     "created_config": true,
     "vault_root": "<vault>"
   },
+  "link_mentions": {
+    "action": "link_mentions",
+    "dry_run": true,
+    "files": [
+      {
+        "changes": [
+          {
+            "after": "[[Bob]]",
+            "before": "Bob"
+          }
+        ],
+        "path": "Home.md"
+      }
+    ]
+  },
   "links": [
     {
       "note_path": "Home.md",
@@ -1986,6 +2118,47 @@
     "indexed_chunks": 4,
     "indexed_documents": 3
   },
+  "rewrite": {
+    "action": "bulk_replace",
+    "dry_run": true,
+    "files": [
+      {
+        "changes": [
+          {
+            "after": "Manual",
+            "before": "Guide"
+          },
+          {
+            "after": "Manual",
+            "before": "Guide"
+          }
+        ],
+        "path": "Guides/Launch.md"
+      },
+      {
+        "changes": [
+          {
+            "after": "Manual",
+            "before": "Guide"
+          },
+          {
+            "after": "Manual",
+            "before": "Guide"
+          }
+        ],
+        "path": "Guides/Start.md"
+      },
+      {
+        "changes": [
+          {
+            "after": "Manual",
+            "before": "Guide"
+          }
+        ],
+        "path": "Home.md"
+      }
+    ]
+  },
   "scan": {
     "added": 3,
     "deleted": 0,
@@ -2002,6 +2175,66 @@
       ],
       "query": "dashboard",
       "snippet": "Home\n\nHome links to Projects/Alpha and Bob.\n\nThe [dashboard] note uses the tag #index."
+    }
+  ],
+  "suggest_duplicates": [
+    {
+      "kind": "duplicate_title",
+      "left_path": null,
+      "right_path": null,
+      "score": null,
+      "value": "Alpha"
+    },
+    {
+      "kind": "alias_collision",
+      "left_path": null,
+      "right_path": null,
+      "score": null,
+      "value": "Guide"
+    },
+    {
+      "kind": "merge_candidate",
+      "left_path": "Archive/Alpha.md",
+      "right_path": "Projects/Alpha.md",
+      "score": 1.0,
+      "value": null
+    },
+    {
+      "kind": "merge_candidate",
+      "left_path": "Guides/Launch.md",
+      "right_path": "Guides/Start.md",
+      "score": 0.95,
+      "value": null
+    }
+  ],
+  "suggest_mentions": [
+    {
+      "candidate_count": 1,
+      "matched_text": "Bob",
+      "source_path": "Home.md",
+      "status": "unambiguous",
+      "target_path": "People/Bob.md"
+    },
+    {
+      "candidate_count": 2,
+      "matched_text": "Alpha",
+      "source_path": "Home.md",
+      "status": "ambiguous",
+      "target_path": null
+    },
+    {
+      "candidate_count": 2,
+      "matched_text": "Alpha",
+      "source_path": "Home.md",
+      "status": "ambiguous",
+      "target_path": null
+    },
+    {
+      "candidate_count": 2,
+      "matched_text": "Guide",
+      "source_path": "Home.md",
+      "status": "ambiguous",
+      "target_path": null
     }
   ],
   "vectors_duplicates": [

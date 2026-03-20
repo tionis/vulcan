@@ -4,8 +4,8 @@ mod serve;
 
 pub use cli::{
     BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ExportArgs, ExportFormat,
-    GraphCommand, OutputFormat, RepairCommand, SavedCommand, SearchMode, VectorQueueCommand,
-    VectorsCommand,
+    GraphCommand, OutputFormat, RepairCommand, SavedCommand, SearchMode, SuggestCommand,
+    VectorQueueCommand, VectorsCommand,
 };
 
 use clap::{CommandFactory, Parser};
@@ -21,21 +21,23 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vulcan_core::{
-    cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault, evaluate_base_file,
-    index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
-    list_checkpoints, list_saved_reports, load_saved_report, merge_tags, move_note,
-    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
-    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
-    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
-    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, repair_vectors_with_progress, save_saved_report,
-    scan_vault_with_progress, search_vault, vector_duplicates, verify_cache, watch_vault,
+    bulk_replace, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
+    evaluate_base_file, index_vectors_with_progress, initialize_vault, inspect_cache,
+    inspect_vector_queue, link_mentions, list_checkpoints, list_saved_reports, load_saved_report,
+    merge_tags, move_note, query_backlinks, query_change_report, query_graph_analytics,
+    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
+    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
+    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
+    repair_vectors_with_progress, save_saved_report, scan_vault_with_progress, search_vault,
+    suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache, watch_vault,
     BacklinkRecord, BacklinksReport, BasesEvalReport, CacheInspectReport, CacheVacuumQuery,
     CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
     CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, GraphAnalyticsReport, GraphComponentsReport,
-    GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport,
-    GraphTrendsReport, InitSummary, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
+    DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphTrendsReport, InitSummary, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
     OutgoingLinkRecord, OutgoingLinksReport, RebuildQuery, RebuildReport, RefactorReport,
     RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
     SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
@@ -1003,6 +1005,29 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             Ok(())
         }
+        Command::Suggest { ref command } => match command {
+            SuggestCommand::Mentions { note } => {
+                let report =
+                    suggest_mentions(&paths, note.as_deref()).map_err(CliError::operation)?;
+                print_mention_suggestions_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
+            }
+            SuggestCommand::Duplicates => {
+                let report = suggest_duplicates(&paths).map_err(CliError::operation)?;
+                print_duplicate_suggestions_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
+            }
+        },
         Command::Saved { ref command } => match command {
             SavedCommand::List => {
                 let reports = list_saved_reports(&paths).map_err(CliError::operation)?;
@@ -1166,6 +1191,21 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 stdout_is_tty,
                 use_stdout_color,
             )
+        }
+        Command::LinkMentions { ref note, dry_run } => {
+            let report =
+                link_mentions(&paths, note.as_deref(), dry_run).map_err(CliError::operation)?;
+            print_refactor_report(cli.output, &report)
+        }
+        Command::Rewrite {
+            ref filters,
+            ref find,
+            ref replace,
+            dry_run,
+        } => {
+            let report = bulk_replace(&paths, filters, find, replace, dry_run)
+                .map_err(CliError::operation)?;
+            print_refactor_report(cli.output, &report)
         }
         Command::Batch { ref names, all } => {
             if all && !names.is_empty() {
@@ -2133,6 +2173,80 @@ fn print_bases_report(
             } else {
                 print_json(report)
             }
+        }
+    }
+}
+
+fn print_mention_suggestions_report(
+    output: OutputFormat,
+    report: &MentionSuggestionsReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let visible_suggestions = paginated_items(&report.suggestions, list_controls);
+    let rows = mention_suggestion_rows(visible_suggestions);
+    let palette = AnsiPalette::new(use_color);
+
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Mention suggestions"));
+            }
+            if visible_suggestions.is_empty() {
+                println!("No mention suggestions.");
+                return Ok(());
+            }
+
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for suggestion in visible_suggestions {
+                    print_mention_suggestion(suggestion, palette);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
+    }
+}
+
+fn print_duplicate_suggestions_report(
+    output: OutputFormat,
+    report: &DuplicateSuggestionsReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let rows = duplicate_suggestion_rows(report);
+    let visible_rows = paginated_items(&rows, list_controls);
+    let palette = AnsiPalette::new(use_color);
+
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Duplicate suggestions"));
+            }
+            if rows.is_empty() {
+                println!("No duplicate suggestions.");
+                return Ok(());
+            }
+
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in visible_rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                print_duplicate_groups("Duplicate titles", &report.duplicate_titles);
+                print_duplicate_groups("Alias collisions", &report.alias_collisions);
+                print_merge_candidates(&report.merge_candidates, palette);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => {
+            print_json_lines(visible_rows.to_vec(), list_controls.fields.as_deref())
         }
     }
 }
@@ -3152,6 +3266,67 @@ fn bases_rows(report: &BasesEvalReport) -> Vec<Value> {
         .collect()
 }
 
+fn mention_suggestion_rows(suggestions: &[MentionSuggestion]) -> Vec<Value> {
+    suggestions
+        .iter()
+        .map(|suggestion| {
+            serde_json::json!({
+                "kind": if suggestion.target_path.is_some() { "mention" } else { "ambiguous_mention" },
+                "status": if suggestion.target_path.is_some() { "unambiguous" } else { "ambiguous" },
+                "source_path": suggestion.source_path,
+                "matched_text": suggestion.matched_text,
+                "target_path": suggestion.target_path,
+                "candidate_paths": suggestion.candidate_paths,
+                "candidate_count": suggestion.candidate_paths.len(),
+                "line": suggestion.line,
+                "column": suggestion.column,
+                "context": suggestion.context,
+            })
+        })
+        .collect()
+}
+
+fn duplicate_suggestion_rows(report: &DuplicateSuggestionsReport) -> Vec<Value> {
+    let mut rows = Vec::new();
+    rows.extend(report.duplicate_titles.iter().map(|group| {
+        serde_json::json!({
+            "kind": "duplicate_title",
+            "value": group.value,
+            "paths": group.paths,
+            "path_count": group.paths.len(),
+            "left_path": Value::Null,
+            "right_path": Value::Null,
+            "score": Value::Null,
+            "reasons": Value::Null,
+        })
+    }));
+    rows.extend(report.alias_collisions.iter().map(|group| {
+        serde_json::json!({
+            "kind": "alias_collision",
+            "value": group.value,
+            "paths": group.paths,
+            "path_count": group.paths.len(),
+            "left_path": Value::Null,
+            "right_path": Value::Null,
+            "score": Value::Null,
+            "reasons": Value::Null,
+        })
+    }));
+    rows.extend(report.merge_candidates.iter().map(|candidate| {
+        serde_json::json!({
+            "kind": "merge_candidate",
+            "value": Value::Null,
+            "paths": Value::Null,
+            "path_count": 2,
+            "left_path": candidate.left_path,
+            "right_path": candidate.right_path,
+            "score": candidate.score,
+            "reasons": candidate.reasons,
+        })
+    }));
+    rows
+}
+
 fn saved_report_summary_rows(reports: &[SavedReportSummary]) -> Vec<Value> {
     reports
         .iter()
@@ -3242,6 +3417,59 @@ fn print_backlink(backlink: &BacklinkRecord) {
             "- {} [{}]: {}",
             backlink.source_path, backlink.link_kind, backlink.raw_text
         );
+    }
+}
+
+fn print_mention_suggestion(suggestion: &MentionSuggestion, palette: AnsiPalette) {
+    let location = format!(
+        "{}:{}:{}",
+        suggestion.source_path, suggestion.line, suggestion.column
+    );
+    let summary = match suggestion.target_path.as_deref() {
+        Some(target_path) => format!(
+            "{} -> {}",
+            palette.bold(&suggestion.matched_text),
+            target_path
+        ),
+        None => format!(
+            "{} -> {}",
+            palette.bold(&suggestion.matched_text),
+            suggestion.candidate_paths.join(", ")
+        ),
+    };
+    let label = if suggestion.target_path.is_some() {
+        palette.green("link")
+    } else {
+        palette.yellow("review")
+    };
+    println!("- {location} [{label}] {summary}");
+    println!("  {}", suggestion.context.trim());
+}
+
+fn print_duplicate_groups(title: &str, groups: &[vulcan_core::DuplicateGroup]) {
+    if groups.is_empty() {
+        return;
+    }
+
+    println!("{title}:");
+    for group in groups {
+        println!("- {} -> {}", group.value, group.paths.join(", "));
+    }
+    println!();
+}
+
+fn print_merge_candidates(candidates: &[MergeCandidate], palette: AnsiPalette) {
+    if candidates.is_empty() {
+        return;
+    }
+
+    println!("Merge candidates:");
+    for candidate in candidates {
+        println!(
+            "- {} <-> {} ({:.2})",
+            candidate.left_path, candidate.right_path, candidate.score
+        );
+        println!("  {}", palette.dim(&candidate.reasons.join(", ")));
     }
 }
 
@@ -3913,6 +4141,24 @@ mod tests {
             .expect("cli should parse");
         let bases_tui = Cli::try_parse_from(["vulcan", "bases", "tui", "release.base"])
             .expect("cli should parse");
+        let suggest_mentions = Cli::try_parse_from(["vulcan", "suggest", "mentions", "Home"])
+            .expect("cli should parse");
+        let suggest_duplicates =
+            Cli::try_parse_from(["vulcan", "suggest", "duplicates"]).expect("cli should parse");
+        let link_mentions = Cli::try_parse_from(["vulcan", "link-mentions", "Home", "--dry-run"])
+            .expect("cli should parse");
+        let rewrite = Cli::try_parse_from([
+            "vulcan",
+            "rewrite",
+            "--where",
+            "reviewed = true",
+            "--find",
+            "release",
+            "--replace",
+            "launch",
+            "--dry-run",
+        ])
+        .expect("cli should parse");
         let vectors = Cli::try_parse_from(["vulcan", "vectors", "index", "--dry-run"])
             .expect("cli should parse");
         let vector_repair = Cli::try_parse_from(["vulcan", "vectors", "repair", "--dry-run"])
@@ -4083,6 +4329,36 @@ mod tests {
                 command: BasesCommand::Tui {
                     file: "release.base".to_string(),
                 },
+            }
+        );
+        assert_eq!(
+            suggest_mentions.command,
+            Command::Suggest {
+                command: SuggestCommand::Mentions {
+                    note: Some("Home".to_string()),
+                },
+            }
+        );
+        assert_eq!(
+            suggest_duplicates.command,
+            Command::Suggest {
+                command: SuggestCommand::Duplicates,
+            }
+        );
+        assert_eq!(
+            link_mentions.command,
+            Command::LinkMentions {
+                note: Some("Home".to_string()),
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            rewrite.command,
+            Command::Rewrite {
+                filters: vec!["reviewed = true".to_string()],
+                find: "release".to_string(),
+                replace: "launch".to_string(),
+                dry_run: true,
             }
         );
         assert_eq!(
@@ -4381,6 +4657,18 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "saved"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "suggest"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "link-mentions"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "rewrite"));
         assert!(report
             .commands
             .iter()
