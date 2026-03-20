@@ -520,7 +520,7 @@ max_concurrency = 2
         );
         assert_eq!(
             fs::read_to_string(paths.gitignore_file()).expect("gitignore should exist"),
-            "*\n!.gitignore\n!config.toml\n"
+            "*\n!.gitignore\n!config.toml\n!reports/\nreports/*\n!reports/*.toml\n"
         );
     }
 }

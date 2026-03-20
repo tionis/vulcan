@@ -1,4 +1,4 @@
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use std::path::PathBuf;
 
@@ -7,6 +7,7 @@ Command Groups:
   Indexing: init, scan, rebuild, repair, watch
   Graph and Query: links, backlinks, graph, search, notes, bases
   Semantic: vectors, cluster
+  Reports and Automation: saved, batch
   Maintenance: move, doctor, cache, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -15,11 +16,42 @@ pub enum OutputFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ExportFormat {
+    Csv,
+    Jsonl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args, Default)]
+pub struct ExportArgs {
+    #[arg(
+        long,
+        value_enum,
+        requires = "export_path",
+        help = "Write query rows to a CSV or JSONL file"
+    )]
+    pub export: Option<ExportFormat>,
+
+    #[arg(
+        long = "export-path",
+        requires = "export",
+        help = "Destination file for CSV or JSONL exports"
+    )]
+    pub export_path: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum BasesCommand {
     #[command(about = "Evaluate a .base file against the indexed vault state")]
     Eval {
         #[arg(help = "Vault-relative path to the .base file to evaluate")]
+        file: String,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "Open a read-only interactive TUI for a .base file")]
+    Tui {
+        #[arg(help = "Vault-relative path to the .base file to inspect")]
         file: String,
     },
 }
@@ -96,6 +128,83 @@ pub enum CacheCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SavedCommand {
+    #[command(about = "List saved query and report definitions")]
+    List,
+    #[command(about = "Show one saved query or report definition")]
+    Show {
+        #[arg(help = "Saved report name")]
+        name: String,
+    },
+    #[command(about = "Persist a saved search definition in .vulcan/reports")]
+    Search {
+        #[arg(help = "Saved report name")]
+        name: String,
+        #[arg(help = "Full-text query string")]
+        query: String,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = SearchMode::Keyword,
+            help = "Search strategy to store"
+        )]
+        mode: SearchMode,
+        #[arg(long, help = "Restrict matches to notes carrying the given tag")]
+        tag: Option<String>,
+        #[arg(
+            long = "path-prefix",
+            help = "Restrict matches to paths under this prefix"
+        )]
+        path_prefix: Option<String>,
+        #[arg(long = "has-property", help = "Require a property key to be present")]
+        has_property: Option<String>,
+        #[arg(
+            long = "context-size",
+            default_value_t = 18,
+            help = "Approximate snippet context size for each search hit"
+        )]
+        context_size: usize,
+        #[arg(long, help = "Optional saved report description")]
+        description: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "Persist a saved property query definition in .vulcan/reports")]
+    Notes {
+        #[arg(help = "Saved report name")]
+        name: String,
+        #[arg(long = "where", help = "Filter expression, repeatable")]
+        filters: Vec<String>,
+        #[arg(long, help = "Property or field to sort by")]
+        sort: Option<String>,
+        #[arg(long, help = "Sort descending instead of ascending")]
+        desc: bool,
+        #[arg(long, help = "Optional saved report description")]
+        description: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "Persist a saved Bases evaluation definition in .vulcan/reports")]
+    Bases {
+        #[arg(help = "Saved report name")]
+        name: String,
+        #[arg(help = "Vault-relative path to the .base file to evaluate")]
+        file: String,
+        #[arg(long, help = "Optional saved report description")]
+        description: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "Run one saved query or report definition")]
+    Run {
+        #[arg(help = "Saved report name")]
+        name: String,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Command {
     #[command(about = "Initialize .vulcan/ state for a vault")]
@@ -165,6 +274,8 @@ pub enum Command {
             help = "Approximate snippet context size for each search hit"
         )]
         context_size: usize,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "Query notes by typed properties")]
     Notes {
@@ -174,11 +285,25 @@ pub enum Command {
         sort: Option<String>,
         #[arg(long, help = "Sort descending instead of ascending")]
         desc: bool,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "Evaluate read-only Bases views")]
     Bases {
         #[command(subcommand)]
         command: BasesCommand,
+    },
+    #[command(about = "Persist and run saved reports from .vulcan/reports")]
+    Saved {
+        #[command(subcommand)]
+        command: SavedCommand,
+    },
+    #[command(about = "Run multiple saved reports for automation and scheduled jobs")]
+    Batch {
+        #[arg(help = "Saved report names to run")]
+        names: Vec<String>,
+        #[arg(long, help = "Run every saved report definition in .vulcan/reports")]
+        all: bool,
     },
     #[command(about = "Cluster indexed vectors into topical groups")]
     Cluster {

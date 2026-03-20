@@ -12,6 +12,7 @@ pub mod paths;
 pub mod properties;
 pub mod refactor;
 pub mod resolver;
+pub mod saved_queries;
 pub mod scan;
 pub mod search;
 pub mod vector;
@@ -53,7 +54,8 @@ pub use parser::{
     ParsedDocument, RawBlockRef, RawHeading, RawLink, RawTag,
 };
 pub use paths::{
-    VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, VULCAN_DIR_NAME,
+    VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, REPORTS_DIR_NAME,
+    VULCAN_DIR_NAME,
 };
 pub use properties::{
     extract_indexed_properties, query_notes, IndexedProperties, IndexedPropertyListItem,
@@ -66,6 +68,11 @@ pub use refactor::{
 };
 pub use resolver::{
     resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverLink,
+};
+pub use saved_queries::{
+    list_saved_reports, load_saved_report, normalize_saved_report_name, report_definition_path,
+    save_saved_report, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportError,
+    SavedReportKind, SavedReportQuery, SavedReportSummary,
 };
 pub use scan::{
     detect_document_kind, scan_vault, scan_vault_with_progress, DocumentKind, ScanError, ScanMode,

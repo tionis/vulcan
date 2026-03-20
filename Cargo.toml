@@ -13,11 +13,14 @@ assert_cmd = "2.1.1"
 blake3 = "1.8.2"
 clap = { version = "4.5.49", features = ["derive", "string"] }
 clap_complete = "4.5.61"
+csv = "1.4.0"
 fs2 = "0.4.3"
 ignore = "0.4.25"
 notify = "8.2.0"
 predicates = "3.1.3"
 pulldown-cmark = "0.13.0"
+crossterm = "0.28.1"
+ratatui = "0.28.1"
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rayon = "1.11.0"
 rusqlite = { version = "0.37.0", features = ["bundled"] }

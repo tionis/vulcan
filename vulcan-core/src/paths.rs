@@ -5,8 +5,10 @@ pub const VULCAN_DIR_NAME: &str = ".vulcan";
 pub const CACHE_DB_NAME: &str = "cache.db";
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const GITIGNORE_FILE_NAME: &str = ".gitignore";
+pub const REPORTS_DIR_NAME: &str = "reports";
 pub const DEFAULT_ATTACHMENT_FOLDER: &str = ".";
-const DEFAULT_VULCAN_GITIGNORE: &str = "*\n!.gitignore\n!config.toml\n";
+const DEFAULT_VULCAN_GITIGNORE: &str =
+    "*\n!.gitignore\n!config.toml\n!reports/\nreports/*\n!reports/*.toml\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelativePathOptions {
@@ -52,6 +54,7 @@ pub struct VaultPaths {
     vulcan_dir: PathBuf,
     cache_db: PathBuf,
     config_file: PathBuf,
+    reports_dir: PathBuf,
 }
 
 impl VaultPaths {
@@ -63,6 +66,7 @@ impl VaultPaths {
         Self {
             cache_db: vulcan_dir.join(CACHE_DB_NAME),
             config_file: vulcan_dir.join(CONFIG_FILE_NAME),
+            reports_dir: vulcan_dir.join(REPORTS_DIR_NAME),
             vulcan_dir,
             vault_root,
         }
@@ -89,6 +93,11 @@ impl VaultPaths {
     }
 
     #[must_use]
+    pub fn reports_dir(&self) -> &Path {
+        &self.reports_dir
+    }
+
+    #[must_use]
     pub fn gitignore_file(&self) -> PathBuf {
         self.vulcan_dir.join(GITIGNORE_FILE_NAME)
     }
@@ -103,6 +112,7 @@ impl VaultPaths {
 
 pub(crate) fn ensure_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
     fs::create_dir_all(paths.vulcan_dir())?;
+    fs::create_dir_all(paths.reports_dir())?;
 
     let gitignore = paths.gitignore_file();
     if !gitignore.exists() {
@@ -186,6 +196,10 @@ mod tests {
             Path::new("/tmp/example-vault/.vulcan/config.toml")
         );
         assert_eq!(
+            paths.reports_dir(),
+            Path::new("/tmp/example-vault/.vulcan/reports")
+        );
+        assert_eq!(
             paths.gitignore_file(),
             PathBuf::from("/tmp/example-vault/.vulcan/.gitignore")
         );
@@ -216,6 +230,7 @@ mod tests {
         let paths = VaultPaths::new(temp_dir.path());
 
         ensure_vulcan_dir(&paths).expect("vulcan dir should be created");
+        assert!(paths.reports_dir().exists());
         assert_eq!(
             fs::read_to_string(paths.gitignore_file()).expect("gitignore should exist"),
             DEFAULT_VULCAN_GITIGNORE
