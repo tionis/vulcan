@@ -194,7 +194,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
   - [x] Compute new link text respecting original style (wikilink vs markdown, display text, subpath)
   - [x] Apply edits back-to-front to preserve offsets
 - [x] Update cache: re-index moved file + all rewritten source files
-- [~] Handle edge cases: links in frontmatter properties, links with display text, links with heading/block subpaths, embed links
+- [x] Handle edge cases: links in frontmatter properties, links with display text, links with heading/block subpaths, embed links
 - [~] Respect `useMarkdownLinks` and `newLinkFormat` vault config for newly generated link text
 - [x] Input validation: reject path traversal, control characters, non-existent source
 - [x] Dry-run output: list all files that would be modified with before/after link text

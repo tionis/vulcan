@@ -168,6 +168,7 @@ pub fn move_note(
         &destination_path,
         &inbound_links,
         &note_paths_after_move,
+        &config,
         config.link_resolution,
     )?;
     let rewritten_files = rewrite_plans
@@ -302,6 +303,7 @@ fn plan_rewrites(
     destination_path: &str,
     inbound_links: &[CachedInboundLink],
     note_paths_after_move: &[String],
+    config: &crate::VaultConfig,
     resolution_mode: LinkResolutionMode,
 ) -> Result<Vec<FileRewritePlan>, MoveError> {
     let mut inbound_by_file = BTreeMap::<String, Vec<CachedInboundLink>>::new();
@@ -315,7 +317,7 @@ fn plan_rewrites(
     let mut plans = Vec::new();
     for (original_path, links) in inbound_by_file {
         let source_contents = fs::read_to_string(paths.vault_root().join(&original_path))?;
-        let parsed = parse_document(&source_contents, &crate::VaultConfig::default());
+        let parsed = parse_document(&source_contents, config);
         let output_path = if original_path == source_path {
             destination_path.to_string()
         } else {
@@ -619,9 +621,11 @@ mod tests {
             .expect("move should succeed");
         assert!(!vault_root.join("Projects/Alpha.md").exists());
         assert!(vault_root.join("Archive/Alpha.md").exists());
-        assert!(fs::read_to_string(vault_root.join("Home.md"))
-            .expect("home should be readable")
-            .contains("[[Archive/Alpha#Status]]"));
+        let home_contents =
+            fs::read_to_string(vault_root.join("Home.md")).expect("home should be readable");
+        assert!(home_contents.contains("[[Archive/Alpha#Status]]"));
+        assert!(home_contents.contains("reference: \"[Alpha doc](Archive/Alpha.md)\""));
+        assert!(home_contents.contains("embed: \"![[Archive/Alpha]]\""));
         assert!(fs::read_to_string(vault_root.join("People/Bob.md"))
             .expect("bob should be readable")
             .contains("[[../Archive/Alpha|Project Alpha]]"));

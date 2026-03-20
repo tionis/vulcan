@@ -1,3 +1,11 @@
+---
+related:
+  - "[[Projects/Alpha]]"
+  - "[[Projects/Alpha#Status]]"
+reference: "[Alpha doc](Projects/Alpha.md)"
+embed: "![[Projects/Alpha]]"
+---
+
 # Home
 
 Links:
