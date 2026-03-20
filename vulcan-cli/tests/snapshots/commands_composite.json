@@ -371,6 +371,31 @@
             "value_names": [
               "CONTEXT_SIZE"
             ]
+          },
+          {
+            "help": "Write query rows to a CSV or JSONL file",
+            "id": "export",
+            "long": "export",
+            "possible_values": [
+              "csv",
+              "jsonl"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT"
+            ]
+          },
+          {
+            "help": "Destination file for CSV or JSONL exports",
+            "id": "export_path",
+            "long": "export-path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT_PATH"
+            ]
           }
         ],
         "subcommands": []
@@ -414,6 +439,31 @@
             "value_names": [
               "DESC"
             ]
+          },
+          {
+            "help": "Write query rows to a CSV or JSONL file",
+            "id": "export",
+            "long": "export",
+            "possible_values": [
+              "csv",
+              "jsonl"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT"
+            ]
+          },
+          {
+            "help": "Destination file for CSV or JSONL exports",
+            "id": "export_path",
+            "long": "export-path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT_PATH"
+            ]
           }
         ],
         "subcommands": []
@@ -437,11 +487,438 @@
                 "value_names": [
                   "FILE"
                 ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Open a read-only interactive TUI for a .base file",
+            "name": "tui",
+            "options": [
+              {
+                "help": "Vault-relative path to the .base file to inspect",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
               }
             ],
             "subcommands": []
           }
         ]
+      },
+      {
+        "about": "Persist and run saved reports from .vulcan/reports",
+        "name": "saved",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "List saved query and report definitions",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Show one saved query or report definition",
+            "name": "show",
+            "options": [
+              {
+                "help": "Saved report name",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Persist a saved search definition in .vulcan/reports",
+            "name": "search",
+            "options": [
+              {
+                "help": "Saved report name",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Full-text query string",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "Search strategy to store",
+                "id": "mode",
+                "long": "mode",
+                "possible_values": [
+                  "keyword",
+                  "hybrid"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "MODE"
+                ]
+              },
+              {
+                "help": "Restrict matches to notes carrying the given tag",
+                "id": "tag",
+                "long": "tag",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TAG"
+                ]
+              },
+              {
+                "help": "Restrict matches to paths under this prefix",
+                "id": "path_prefix",
+                "long": "path-prefix",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH_PREFIX"
+                ]
+              },
+              {
+                "help": "Require a property key to be present",
+                "id": "has_property",
+                "long": "has-property",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HAS_PROPERTY"
+                ]
+              },
+              {
+                "help": "Approximate snippet context size for each search hit",
+                "id": "context_size",
+                "long": "context-size",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CONTEXT_SIZE"
+                ]
+              },
+              {
+                "help": "Optional saved report description",
+                "id": "description",
+                "long": "description",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESCRIPTION"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Persist a saved property query definition in .vulcan/reports",
+            "name": "notes",
+            "options": [
+              {
+                "help": "Saved report name",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Filter expression, repeatable",
+                "id": "filters",
+                "long": "where",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILTERS"
+                ]
+              },
+              {
+                "help": "Property or field to sort by",
+                "id": "sort",
+                "long": "sort",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SORT"
+                ]
+              },
+              {
+                "help": "Sort descending instead of ascending",
+                "id": "desc",
+                "long": "desc",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESC"
+                ]
+              },
+              {
+                "help": "Optional saved report description",
+                "id": "description",
+                "long": "description",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESCRIPTION"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Persist a saved Bases evaluation definition in .vulcan/reports",
+            "name": "bases",
+            "options": [
+              {
+                "help": "Saved report name",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Vault-relative path to the .base file to evaluate",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "Optional saved report description",
+                "id": "description",
+                "long": "description",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESCRIPTION"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Run one saved query or report definition",
+            "name": "run",
+            "options": [
+              {
+                "help": "Saved report name",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Run multiple saved reports for automation and scheduled jobs",
+        "name": "batch",
+        "options": [
+          {
+            "help": "Saved report names to run",
+            "id": "names",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NAMES"
+            ]
+          },
+          {
+            "help": "Run every saved report definition in .vulcan/reports",
+            "id": "all",
+            "long": "all",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "ALL"
+            ]
+          }
+        ],
+        "subcommands": []
       },
       {
         "about": "Cluster indexed vectors into topical groups",

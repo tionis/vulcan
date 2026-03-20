@@ -1,0 +1,81 @@
+{
+  "bases_export": "document_path,group_value\nBacklog.md,backlog\n",
+  "batch": {
+    "failed": 0,
+    "items": [
+      {
+        "error": null,
+        "export_format": "csv",
+        "export_path": "<vault>/exports/release.csv",
+        "kind": "bases",
+        "name": "release-table",
+        "ok": true,
+        "row_count": 1
+      },
+      {
+        "error": null,
+        "export_format": "jsonl",
+        "export_path": "<vault>/exports/search.jsonl",
+        "kind": "search",
+        "name": "weekly-search",
+        "ok": true,
+        "row_count": 1
+      }
+    ],
+    "succeeded": 2,
+    "total": 2
+  },
+  "saved_list": [
+    {
+      "description": null,
+      "export_format": "csv",
+      "export_path": "exports/release.csv",
+      "fields": [
+        "document_path",
+        "group_value"
+      ],
+      "kind": "bases",
+      "limit": null,
+      "name": "release-table"
+    },
+    {
+      "description": "weekly release hits",
+      "export_format": "jsonl",
+      "export_path": "exports/search.jsonl",
+      "fields": [
+        "document_path",
+        "rank"
+      ],
+      "kind": "search",
+      "limit": 1,
+      "name": "weekly-search"
+    }
+  ],
+  "saved_run": [
+    {
+      "document_path": "Backlog.md",
+      "rank": -1.9642857142857144e-6
+    }
+  ],
+  "saved_show": {
+    "context_size": 18,
+    "description": "weekly release hits",
+    "export": {
+      "format": "jsonl",
+      "path": "exports/search.jsonl"
+    },
+    "fields": [
+      "document_path",
+      "rank"
+    ],
+    "has_property": null,
+    "kind": "search",
+    "limit": 1,
+    "mode": "keyword",
+    "name": "weekly-search",
+    "path_prefix": null,
+    "query": "release",
+    "tag": null
+  },
+  "search_export": "{\"document_path\":\"Backlog.md\",\"rank\":-1.9642857142857144e-6}\n"
+}

@@ -1,7 +1,7 @@
 use crate::vector::query_hybrid_candidates;
 use crate::{CacheDatabase, CacheError, VaultPaths};
 use rusqlite::{params, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -64,7 +64,7 @@ impl From<crate::VectorError> for SearchError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchMode {
     Keyword,

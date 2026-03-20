@@ -418,11 +418,11 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Integration tests with attachment-heavy fixture vaults
 
 ### 7.4 Saved queries and exports
-- [ ] Persist saved query and report definitions in `.vulcan/`
-- [ ] Export `search`, `notes`, and `bases eval` results as CSV and JSONL
-- [ ] Non-interactive batch mode for scheduled reports and automation
-- [ ] Snapshot tests for saved-query and export output formats
-- [ ] Read-only `bases tui <file.base>` workflow for interactive inspection without sacrificing CLI parity
+- [x] Persist saved query and report definitions in `.vulcan/`
+- [x] Export `search`, `notes`, and `bases eval` results as CSV and JSONL
+- [x] Non-interactive batch mode for scheduled reports and automation
+- [x] Snapshot tests for saved-query and export output formats
+- [x] Read-only `bases tui <file.base>` workflow for interactive inspection without sacrificing CLI parity
 
 ### 7.5 Local API and daemon mode
 - [ ] `serve` command exposing cache-backed local APIs (HTTP, JSON-RPC, or MCP)
