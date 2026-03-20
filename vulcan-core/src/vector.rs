@@ -123,10 +123,12 @@ pub type ClusterError = VectorError;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VectorIndexQuery {
     pub provider: Option<String>,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct VectorIndexReport {
+    pub dry_run: bool,
     pub provider_name: String,
     pub model_name: String,
     pub dimensions: usize,
@@ -195,10 +197,12 @@ pub struct VectorDuplicatePair {
 pub struct ClusterQuery {
     pub provider: Option<String>,
     pub clusters: usize,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ClusterReport {
+    pub dry_run: bool,
     pub provider_name: String,
     pub model_name: String,
     pub dimensions: usize,
@@ -234,6 +238,7 @@ pub fn index_vectors(
     let provider_metadata = provider.metadata();
     let started_at = Instant::now();
     let mut report = VectorIndexReport {
+        dry_run: query.dry_run,
         provider_name: provider_metadata.provider_name.clone(),
         model_name: provider_metadata.model_name.clone(),
         dimensions: provider_metadata.dimensions,
@@ -272,6 +277,16 @@ pub fn index_vectors(
                 .filter(|chunk| hashes.get(&chunk.chunk_id) == Some(&chunk.content_hash))
                 .count();
             initialized_skip_count = true;
+        }
+
+        if query.dry_run {
+            report.indexed = chunks
+                .iter()
+                .filter(|chunk| hashes.get(&chunk.chunk_id) != Some(&chunk.content_hash))
+                .count();
+            report.batches = report.indexed.div_ceil(batch_size);
+            finalize_index_report(&mut report, started_at);
+            return Ok(report);
         }
 
         let current_chunk_ids = chunks
@@ -402,13 +417,7 @@ pub fn index_vectors(
         )?;
     }
 
-    report.elapsed_seconds = started_at.elapsed().as_secs_f64();
-    let indexed = f64::from(u32::try_from(report.indexed).unwrap_or(u32::MAX));
-    report.rate_per_second = if report.elapsed_seconds > 0.0 {
-        indexed / report.elapsed_seconds
-    } else {
-        indexed
-    };
+    finalize_index_report(&mut report, started_at);
 
     Ok(report)
 }
@@ -623,11 +632,14 @@ pub fn cluster_vectors(
         })
         .collect::<Vec<_>>();
 
-    let _lock = acquire_write_lock(paths)?;
-    let database = open_existing_cache(paths)?;
-    persist_cluster_assignments(database.connection(), &active_model, &report_assignments)?;
+    if !query.dry_run {
+        let _lock = acquire_write_lock(paths)?;
+        let database = open_existing_cache(paths)?;
+        persist_cluster_assignments(database.connection(), &active_model, &report_assignments)?;
+    }
 
     Ok(ClusterReport {
+        dry_run: query.dry_run,
         provider_name: active_model.provider_name,
         model_name: active_model.model_name,
         dimensions: active_model.dimensions,
@@ -688,6 +700,16 @@ fn load_embedding_provider(
         ..OpenAICompatibleConfig::default()
     })
     .map_err(VectorError::Provider)
+}
+
+fn finalize_index_report(report: &mut VectorIndexReport, started_at: Instant) {
+    report.elapsed_seconds = started_at.elapsed().as_secs_f64();
+    let indexed = f64::from(u32::try_from(report.indexed).unwrap_or(u32::MAX));
+    report.rate_per_second = if report.elapsed_seconds > 0.0 {
+        indexed / report.elapsed_seconds
+    } else {
+        indexed
+    };
 }
 
 fn validate_active_model(
@@ -1112,10 +1134,22 @@ mod tests {
 
         scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
 
-        let first_report = index_vectors(&paths, &VectorIndexQuery { provider: None })
-            .expect("vector index should succeed");
-        let second_report = index_vectors(&paths, &VectorIndexQuery { provider: None })
-            .expect("second vector index should succeed");
+        let first_report = index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
+        let second_report = index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("second vector index should succeed");
 
         assert_eq!(first_report.indexed, 4);
         assert_eq!(first_report.failed, 0);
@@ -1134,8 +1168,14 @@ mod tests {
         let paths = VaultPaths::new(&vault_root);
 
         scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
-        index_vectors(&paths, &VectorIndexQuery { provider: None })
-            .expect("vector index should succeed");
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
 
         let report = query_vector_neighbors(
             &paths,
@@ -1164,8 +1204,14 @@ mod tests {
         let paths = VaultPaths::new(&vault_root);
 
         scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
-        index_vectors(&paths, &VectorIndexQuery { provider: None })
-            .expect("vector index should succeed");
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
 
         let report = vector_duplicates(
             &paths,
@@ -1192,14 +1238,21 @@ mod tests {
         let paths = VaultPaths::new(&vault_root);
 
         scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
-        index_vectors(&paths, &VectorIndexQuery { provider: None })
-            .expect("vector index should succeed");
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
 
         let report = cluster_vectors(
             &paths,
             &ClusterQuery {
                 provider: None,
                 clusters: 2,
+                dry_run: false,
             },
         )
         .expect("cluster command should succeed");
@@ -1214,6 +1267,79 @@ mod tests {
                     .get::<_, i64>(0))
                 .expect("cluster row count should be readable"),
             4
+        );
+        server.shutdown();
+    }
+
+    #[test]
+    fn vectors_index_dry_run_reports_pending_chunks_without_writing_vectors() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        let report = index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: true,
+            },
+        )
+        .expect("dry-run vector index should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let store = SqliteVecStore::new(database.connection()).expect("store should initialize");
+
+        assert!(report.dry_run);
+        assert_eq!(report.indexed, 4);
+        assert_eq!(report.skipped, 0);
+        assert!(store
+            .current_model()
+            .expect("current model should load")
+            .is_none());
+        server.shutdown();
+    }
+
+    #[test]
+    fn cluster_vectors_dry_run_does_not_persist_assignments() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
+        let report = cluster_vectors(
+            &paths,
+            &ClusterQuery {
+                provider: None,
+                clusters: 2,
+                dry_run: true,
+            },
+        )
+        .expect("dry-run cluster command should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert!(report.dry_run);
+        assert_eq!(report.cluster_count, 2);
+        assert_eq!(
+            database
+                .connection()
+                .query_row("SELECT COUNT(*) FROM vector_clusters", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("cluster row count should be readable"),
+            0
         );
         server.shutdown();
     }

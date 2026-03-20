@@ -1,0 +1,820 @@
+{
+  "backlinks": [
+    {
+      "note_path": "Projects/Alpha.md",
+      "raw_text": "[[Projects/Alpha]]",
+      "source_path": "Home.md"
+    },
+    {
+      "note_path": "Projects/Alpha.md",
+      "raw_text": "[[Projects/Alpha#Status]]",
+      "source_path": "People/Bob.md"
+    }
+  ],
+  "bases": {
+    "diagnostics": [
+      {
+        "message": "unsupported view field `group_by`",
+        "path": "views[1].group_by"
+      },
+      {
+        "message": "unsupported formula expression `concat(file.name, due)`",
+        "path": "views.Release Table.formulas.unsupported_calc"
+      },
+      {
+        "message": "unsupported view type `board`",
+        "path": "views.Board.type"
+      }
+    ],
+    "file": "release.base",
+    "views": [
+      {
+        "filters": [
+          "status = backlog",
+          "estimate > 2"
+        ],
+        "name": "Release Table",
+        "rows": [
+          {
+            "document_path": "Backlog.md",
+            "formulas": {
+              "due_copy": "2026-04-01",
+              "note_name": "Backlog"
+            },
+            "properties": {
+              "due": "2026-04-01",
+              "estimate": 5,
+              "reviewed": true,
+              "status": "backlog"
+            }
+          }
+        ],
+        "sort_by": "due",
+        "sort_descending": false,
+        "view_type": "table"
+      }
+    ]
+  },
+  "cluster": [
+    {
+      "cluster_id": 0,
+      "document_path": "Home.md"
+    },
+    {
+      "cluster_id": 1,
+      "document_path": "People/Bob.md"
+    },
+    {
+      "cluster_id": 1,
+      "document_path": "Projects/Alpha.md"
+    },
+    {
+      "cluster_id": 0,
+      "document_path": "Projects/Alpha.md"
+    }
+  ],
+  "describe": {
+    "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
+    "commands": [
+      {
+        "about": null,
+        "name": "init",
+        "options": [],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "rebuild",
+        "options": [
+          {
+            "help": null,
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "repair",
+        "options": [],
+        "subcommands": [
+          {
+            "about": null,
+            "name": "fts",
+            "options": [
+              {
+                "help": null,
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": null,
+        "name": "watch",
+        "options": [
+          {
+            "help": null,
+            "id": "debounce_ms",
+            "long": "debounce-ms",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DEBOUNCE_MS"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "scan",
+        "options": [
+          {
+            "help": null,
+            "id": "full",
+            "long": "full",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FULL"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "links",
+        "options": [
+          {
+            "help": null,
+            "id": "note",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NOTE"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "backlinks",
+        "options": [
+          {
+            "help": null,
+            "id": "note",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NOTE"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "search",
+        "options": [
+          {
+            "help": null,
+            "id": "query",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "QUERY"
+            ]
+          },
+          {
+            "help": null,
+            "id": "mode",
+            "long": "mode",
+            "possible_values": [
+              "keyword",
+              "hybrid"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "MODE"
+            ]
+          },
+          {
+            "help": null,
+            "id": "tag",
+            "long": "tag",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "TAG"
+            ]
+          },
+          {
+            "help": null,
+            "id": "path_prefix",
+            "long": "path-prefix",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "PATH_PREFIX"
+            ]
+          },
+          {
+            "help": null,
+            "id": "has_property",
+            "long": "has-property",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "HAS_PROPERTY"
+            ]
+          },
+          {
+            "help": null,
+            "id": "context_size",
+            "long": "context-size",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "CONTEXT_SIZE"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "notes",
+        "options": [
+          {
+            "help": null,
+            "id": "filters",
+            "long": "where",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILTERS"
+            ]
+          },
+          {
+            "help": null,
+            "id": "sort",
+            "long": "sort",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SORT"
+            ]
+          },
+          {
+            "help": null,
+            "id": "desc",
+            "long": "desc",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DESC"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "bases",
+        "options": [],
+        "subcommands": [
+          {
+            "about": null,
+            "name": "eval",
+            "options": [
+              {
+                "help": null,
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": null,
+        "name": "cluster",
+        "options": [
+          {
+            "help": null,
+            "id": "clusters",
+            "long": "clusters",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "CLUSTERS"
+            ]
+          },
+          {
+            "help": null,
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "vectors",
+        "options": [],
+        "subcommands": [
+          {
+            "about": null,
+            "name": "index",
+            "options": [
+              {
+                "help": null,
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": null,
+            "name": "neighbors",
+            "options": [
+              {
+                "help": null,
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": null,
+                "id": "note",
+                "long": "note",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": null,
+            "name": "duplicates",
+            "options": [
+              {
+                "help": null,
+                "id": "threshold",
+                "long": "threshold",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "THRESHOLD"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": null,
+        "name": "move",
+        "options": [
+          {
+            "help": null,
+            "id": "source",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "SOURCE"
+            ]
+          },
+          {
+            "help": null,
+            "id": "dest",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "DEST"
+            ]
+          },
+          {
+            "help": null,
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "doctor",
+        "options": [],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "describe",
+        "options": [],
+        "subcommands": []
+      },
+      {
+        "about": null,
+        "name": "completions",
+        "options": [
+          {
+            "help": null,
+            "id": "shell",
+            "long": null,
+            "possible_values": [
+              "bash",
+              "elvish",
+              "fish",
+              "powershell",
+              "zsh"
+            ],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "SHELL"
+            ]
+          }
+        ],
+        "subcommands": []
+      }
+    ],
+    "global_options": [
+      {
+        "help": null,
+        "id": "vault",
+        "long": "vault",
+        "possible_values": [],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "VAULT"
+        ]
+      },
+      {
+        "help": null,
+        "id": "output",
+        "long": "output",
+        "possible_values": [
+          "human",
+          "json"
+        ],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "OUTPUT"
+        ]
+      },
+      {
+        "help": null,
+        "id": "fields",
+        "long": "fields",
+        "possible_values": [],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "FIELDS"
+        ]
+      },
+      {
+        "help": null,
+        "id": "provider",
+        "long": "provider",
+        "possible_values": [],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "PROVIDER"
+        ]
+      },
+      {
+        "help": null,
+        "id": "limit",
+        "long": "limit",
+        "possible_values": [],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "LIMIT"
+        ]
+      },
+      {
+        "help": null,
+        "id": "offset",
+        "long": "offset",
+        "possible_values": [],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "OFFSET"
+        ]
+      },
+      {
+        "help": null,
+        "id": "verbose",
+        "long": "verbose",
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "VERBOSE"
+        ]
+      }
+    ],
+    "name": "vulcan",
+    "version": "0.1.0"
+  },
+  "doctor": {
+    "ambiguous_links": [],
+    "html_links": [],
+    "missing_index_rows": [],
+    "orphan_notes": [],
+    "parse_failures": [
+      {
+        "byte_range": null,
+        "document_path": "Broken.md",
+        "message": "Failed to parse frontmatter: did not find expected node content at line 4 column 1, while parsing a flow node"
+      }
+    ],
+    "stale_index_rows": [],
+    "summary": {
+      "ambiguous_links": 0,
+      "html_links": 0,
+      "missing_index_rows": 0,
+      "orphan_notes": 0,
+      "parse_failures": 1,
+      "stale_index_rows": 0,
+      "unresolved_links": 0
+    },
+    "unresolved_links": []
+  },
+  "init": {
+    "cache_path": "<vault>/.vulcan/cache.db",
+    "config_path": "<vault>/.vulcan/config.toml",
+    "created_cache": true,
+    "created_config": true,
+    "vault_root": "<vault>"
+  },
+  "links": [
+    {
+      "note_path": "Home.md",
+      "raw_text": "[[Projects/Alpha]]",
+      "resolution_status": "resolved",
+      "resolved_target_path": "Projects/Alpha.md"
+    },
+    {
+      "note_path": "Home.md",
+      "raw_text": "[[People/Bob|Bob]]",
+      "resolution_status": "resolved",
+      "resolved_target_path": "People/Bob.md"
+    }
+  ],
+  "move": {
+    "destination_path": "Archive/Alpha.md",
+    "dry_run": true,
+    "rewritten_files": [
+      {
+        "changes": [
+          {
+            "after": "[[Archive/Alpha]]",
+            "before": "[[Projects/Alpha]]"
+          },
+          {
+            "after": "[[Archive/Alpha#Status]]",
+            "before": "[[Projects/Alpha#Status]]"
+          },
+          {
+            "after": "[Alpha doc](Archive/Alpha.md)",
+            "before": "[Alpha doc](Projects/Alpha.md)"
+          },
+          {
+            "after": "![[Archive/Alpha]]",
+            "before": "![[Projects/Alpha]]"
+          },
+          {
+            "after": "[[Archive/Alpha]]",
+            "before": "[[Projects/Alpha]]"
+          },
+          {
+            "after": "[[Archive/Alpha#Status]]",
+            "before": "[[Projects/Alpha#Status]]"
+          },
+          {
+            "after": "[Alpha doc](Archive/Alpha.md)",
+            "before": "[Alpha doc](Projects/Alpha.md)"
+          },
+          {
+            "after": "![[Archive/Alpha]]",
+            "before": "![[Projects/Alpha]]"
+          }
+        ],
+        "path": "Home.md"
+      },
+      {
+        "changes": [
+          {
+            "after": "[[../Archive/Alpha|Project Alpha]]",
+            "before": "[[../Projects/Alpha|Project Alpha]]"
+          }
+        ],
+        "path": "People/Bob.md"
+      }
+    ],
+    "source_path": "Projects/Alpha.md"
+  },
+  "notes": [
+    {
+      "document_path": "Done.md",
+      "properties": {
+        "due": "2026-03-01",
+        "empty_list": [],
+        "empty_text": "",
+        "estimate": 3,
+        "notes": null,
+        "related": [
+          "[[Backlog]]",
+          "sprint"
+        ],
+        "reviewed": true,
+        "status": "done"
+      }
+    },
+    {
+      "document_path": "Backlog.md",
+      "properties": {
+        "due": "2026-04-01",
+        "estimate": 8,
+        "related": [
+          "[[Done]]"
+        ],
+        "reviewed": false,
+        "status": "backlog"
+      }
+    }
+  ],
+  "rebuild": {
+    "discovered": 3,
+    "dry_run": true,
+    "existing_documents": 3,
+    "summary": null
+  },
+  "repair_fts": {
+    "dry_run": true,
+    "indexed_chunks": 4,
+    "indexed_documents": 3
+  },
+  "scan": {
+    "added": 3,
+    "deleted": 0,
+    "discovered": 3,
+    "mode": "full",
+    "unchanged": 0,
+    "updated": 0
+  },
+  "search": [
+    {
+      "document_path": "Home.md",
+      "heading_path": [
+        "Home"
+      ],
+      "query": "dashboard",
+      "snippet": "Home\n\nHome links to Projects/Alpha and Bob.\n\nThe [dashboard] note uses the tag #index."
+    }
+  ],
+  "vectors_duplicates": [
+    {
+      "left_document_path": "People/Bob.md",
+      "right_document_path": "Projects/Alpha.md",
+      "similarity": 1.0
+    },
+    {
+      "left_document_path": "Home.md",
+      "right_document_path": "Projects/Alpha.md",
+      "similarity": 0.948683261871338
+    }
+  ],
+  "vectors_index": {
+    "batches": 1,
+    "dimensions": 2,
+    "dry_run": false,
+    "elapsed_seconds": 0.0,
+    "failed": 0,
+    "indexed": 4,
+    "model_name": "fixture",
+    "provider_name": "openai-compatible",
+    "rate_per_second": 0.0,
+    "rebuilt_index": false,
+    "skipped": 0
+  },
+  "vectors_neighbors": [
+    {
+      "distance": 0.0,
+      "document_path": "Home.md"
+    },
+    {
+      "distance": 0.051316700875759125,
+      "document_path": "Projects/Alpha.md"
+    }
+  ]
+}

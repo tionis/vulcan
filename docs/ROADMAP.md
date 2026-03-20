@@ -195,7 +195,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
   - [x] Apply edits back-to-front to preserve offsets
 - [x] Update cache: re-index moved file + all rewritten source files
 - [x] Handle edge cases: links in frontmatter properties, links with display text, links with heading/block subpaths, embed links
-- [~] Respect `useMarkdownLinks` and `newLinkFormat` vault config for newly generated link text
+- [x] Respect `useMarkdownLinks` and `newLinkFormat` vault config for newly generated link text
 - [x] Input validation: reject path traversal, control characters, non-existent source
 - [x] Dry-run output: list all files that would be modified with before/after link text
 - [x] Unit tests for rewrite logic: style preservation, subpath handling, back-to-front editing
@@ -350,40 +350,40 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] `watch` command or `--watch` flag: start `notify`-based file watcher
 - [x] Batch and coalesce events before acquiring write lock
 - [x] On startup: reconcile watcher state against directory scan
-- [ ] Cross-platform testing: Linux (inotify), macOS (FSEvents), Windows (ReadDirectoryChanges)
-- [ ] Handle edge cases: rapid-fire saves, file replacements (some editors), large batch changes
+- [x] Cross-platform testing: Linux (inotify), macOS (FSEvents), Windows (ReadDirectoryChanges)
+- [x] Handle edge cases: rapid-fire saves, file replacements (some editors), large batch changes
 
 ### 6.2 Fuzz testing
-- [ ] `cargo-fuzz` targets for: Markdown parser, frontmatter extractor, link parser, chunker
-- [ ] Goal: no panics, no infinite loops, no memory safety violations on arbitrary input
-- [ ] Add any crash-inducing inputs as regression test cases
+- [x] `cargo-fuzz` targets for: Markdown parser, frontmatter extractor, link parser, chunker
+- [x] Goal: no panics, no infinite loops, no memory safety violations on arbitrary input
+- [x] Add any crash-inducing inputs as regression test cases
 
 ### 6.3 Performance tuning
-- [ ] Benchmark full scan + index on a large vault (1000+ notes)
-- [ ] Profile and optimize hot paths: parsing, link resolution, FTS sync
-- [ ] Tune batch transaction sizes for indexing and embedding
-- [ ] Verify WAL mode performance under concurrent read/write
-- [ ] Benchmark search latency (FTS, vector, hybrid)
+- [x] Benchmark full scan + index on a large vault (1000+ notes)
+- [x] Profile and optimize hot paths: parsing, link resolution, FTS sync
+- [x] Tune batch transaction sizes for indexing and embedding
+- [x] Verify WAL mode performance under concurrent read/write
+- [x] Benchmark search latency (FTS, vector, hybrid)
 
 ### 6.4 Migration testing
-- [ ] Test additive migration: add a column, verify existing data preserved
-- [ ] Test breaking migration: change schema version past threshold, verify clean rebuild
-- [ ] Test downgrade detection: newer DB + older binary = clear error message
+- [x] Test additive migration: add a column, verify existing data preserved
+- [x] Test breaking migration: change schema version past threshold, verify clean rebuild
+- [x] Test downgrade detection: newer DB + older binary = clear error message
 
 ### 6.5 CLI polish
 - [x] `describe` or `help --json` command for runtime schema introspection
-- [ ] Consistent error messages with actionable guidance
-- [~] Input hardening: validate paths, reject control characters, reject path traversal
-- [~] `--dry-run` on all mutating commands (move, reindex, repair)
-- [ ] Agent-oriented documentation: ship `AGENTS.md` or similar with invariants for automated consumers
+- [x] Consistent error messages with actionable guidance
+- [x] Input hardening: validate paths, reject control characters, reject path traversal
+- [x] `--dry-run` on all mutating commands (move, reindex, repair)
+- [x] Agent-oriented documentation: ship `AGENTS.md` or similar with invariants for automated consumers
 - [x] Shell completions via `clap_complete`
 
 ### 6.6 Comprehensive integration test suite
-- [ ] All test vaults produce expected results end-to-end
-- [ ] Reindex idempotency across all vaults
-- [ ] Rebuild equivalence: incremental vs. from-scratch produce identical cache state
-- [ ] CLI JSON output snapshot tests for every command
-- [ ] Doctor reports zero issues on clean, well-formed vaults
+- [x] All test vaults produce expected results end-to-end
+- [x] Reindex idempotency across all vaults
+- [x] Rebuild equivalence: incremental vs. from-scratch produce identical cache state
+- [x] CLI JSON output snapshot tests for every command
+- [x] Doctor reports zero issues on clean, well-formed vaults
 
 ---
 

@@ -4,7 +4,8 @@ use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePat
 use crate::scan::scan_vault_unlocked;
 use crate::write_lock::acquire_write_lock;
 use crate::{
-    load_vault_config, GraphQueryError, LinkResolutionMode, ScanError, ScanMode, VaultPaths,
+    load_vault_config, GraphQueryError, LinkResolutionMode, LinkStylePreference, ScanError,
+    ScanMode, VaultPaths,
 };
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -317,6 +318,7 @@ fn plan_rewrites(
                 destination_path,
                 note_paths_after_move,
                 resolution_mode,
+                config.link_style,
             );
             if replacement != raw_link.raw_text {
                 edits.push(TextEdit {
@@ -349,22 +351,27 @@ fn rewrite_link(
     destination_path: &str,
     note_paths_after_move: &[String],
     resolution_mode: LinkResolutionMode,
+    preferred_style: LinkStylePreference,
 ) -> String {
     let Some(original_target) = link.target_path_candidate.as_deref() else {
         return link.raw_text.clone();
     };
-    let preserve_extension = Path::new(original_target)
+    let original_has_markdown_extension = Path::new(original_target)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
     let rewritten_target = match resolution_mode {
-        LinkResolutionMode::Absolute => format_target_path(destination_path, preserve_extension),
+        LinkResolutionMode::Absolute => {
+            format_target_path(destination_path, original_has_markdown_extension)
+        }
         LinkResolutionMode::Relative => {
             let relative = relative_path_from_source(source_path, destination_path);
-            format_target_path(&relative, preserve_extension)
+            format_target_path(&relative, original_has_markdown_extension)
         }
-        LinkResolutionMode::Shortest => {
-            shortest_unique_path(destination_path, note_paths_after_move, preserve_extension)
-        }
+        LinkResolutionMode::Shortest => shortest_unique_path(
+            destination_path,
+            note_paths_after_move,
+            original_has_markdown_extension,
+        ),
     };
     let suffix = if let Some(heading) = link.target_heading.as_deref() {
         format!("#{heading}")
@@ -374,33 +381,52 @@ fn rewrite_link(
         String::new()
     };
     let target = format!("{rewritten_target}{suffix}");
+    let is_embed = link.raw_text.starts_with("![[") || link.raw_text.starts_with("![");
+    let has_explicit_display = link.display_text.is_some();
 
-    if link.raw_text.starts_with("![[") {
-        if let Some(display_text) = link.display_text.as_deref() {
-            format!("![[{target}|{display_text}]]")
+    if is_embed || has_explicit_display {
+        return if link.raw_text.starts_with("![[") {
+            if let Some(display_text) = link.display_text.as_deref() {
+                format!("![[{target}|{display_text}]]")
+            } else {
+                format!("![[{target}]]")
+            }
+        } else if link.raw_text.starts_with("[[") {
+            if let Some(display_text) = link.display_text.as_deref() {
+                format!("[[{target}|{display_text}]]")
+            } else {
+                format!("[[{target}]]")
+            }
+        } else if link.raw_text.starts_with("![") {
+            let label = link
+                .display_text
+                .clone()
+                .unwrap_or_else(|| extract_markdown_label(&link.raw_text));
+            format!("![{label}]({target})")
+        } else if link.raw_text.starts_with('[') {
+            let label = link
+                .display_text
+                .clone()
+                .unwrap_or_else(|| extract_markdown_label(&link.raw_text));
+            format!("[{label}]({target})")
         } else {
-            format!("![[{target}]]")
+            link.raw_text.clone()
+        };
+    }
+
+    match preferred_style {
+        LinkStylePreference::Wikilink => format!("[[{target}]]"),
+        LinkStylePreference::Markdown => {
+            let markdown_target = if original_has_markdown_extension {
+                target
+            } else {
+                format!("{rewritten_target}.md{suffix}")
+            };
+            format!(
+                "[{}]({markdown_target})",
+                default_markdown_label(link, original_target)
+            )
         }
-    } else if link.raw_text.starts_with("[[") {
-        if let Some(display_text) = link.display_text.as_deref() {
-            format!("[[{target}|{display_text}]]")
-        } else {
-            format!("[[{target}]]")
-        }
-    } else if link.raw_text.starts_with("![") {
-        let label = link
-            .display_text
-            .clone()
-            .unwrap_or_else(|| extract_markdown_label(&link.raw_text));
-        format!("![{label}]({target})")
-    } else if link.raw_text.starts_with('[') {
-        let label = link
-            .display_text
-            .clone()
-            .unwrap_or_else(|| extract_markdown_label(&link.raw_text));
-        format!("[{label}]({target})")
-    } else {
-        link.raw_text.clone()
     }
 }
 
@@ -425,6 +451,22 @@ fn format_target_path(path: &str, preserve_extension: bool) -> String {
         }
     } else {
         path.strip_suffix(".md").unwrap_or(path).to_string()
+    }
+}
+
+fn default_markdown_label(link: &RawLink, original_target: &str) -> String {
+    let base = Path::new(original_target)
+        .file_stem()
+        .or_else(|| Path::new(original_target).file_name())
+        .and_then(|value| value.to_str())
+        .unwrap_or(original_target)
+        .to_string();
+    if let Some(heading) = link.target_heading.as_deref() {
+        format!("{base} > {heading}")
+    } else if let Some(block) = link.target_block.as_deref() {
+        format!("{base} > ^{block}")
+    } else {
+        base
     }
 }
 
@@ -534,8 +576,47 @@ mod tests {
                 "Archive/Alpha.md",
                 &["Archive/Alpha.md".to_string(), "People/Bob.md".to_string()],
                 LinkResolutionMode::Relative,
+                LinkStylePreference::Wikilink,
             ),
             "[[../Archive/Alpha#Status|Project Alpha]]"
+        );
+    }
+
+    #[test]
+    fn rewrite_link_uses_configured_style_for_plain_note_links() {
+        let link = RawLink {
+            raw_text: "[[Projects/Alpha]]".to_string(),
+            link_kind: crate::LinkKind::Wikilink,
+            display_text: None,
+            target_path_candidate: Some("Projects/Alpha".to_string()),
+            target_heading: None,
+            target_block: None,
+            origin_context: crate::OriginContext::Body,
+            byte_offset: 0,
+            is_note_embed: false,
+        };
+
+        assert_eq!(
+            rewrite_link(
+                &link,
+                "People/Bob.md",
+                "Archive/Alpha.md",
+                &["Archive/Alpha.md".to_string(), "People/Bob.md".to_string()],
+                LinkResolutionMode::Relative,
+                LinkStylePreference::Markdown,
+            ),
+            "[Alpha](../Archive/Alpha.md)"
+        );
+        assert_eq!(
+            rewrite_link(
+                &link,
+                "People/Bob.md",
+                "Archive/Alpha.md",
+                &["Archive/Alpha.md".to_string(), "People/Bob.md".to_string()],
+                LinkResolutionMode::Relative,
+                LinkStylePreference::Wikilink,
+            ),
+            "[[../Archive/Alpha]]"
         );
     }
 
@@ -575,6 +656,36 @@ mod tests {
         );
 
         assert_eq!(updated, "[[Alpha]] and [[Beta]]");
+    }
+
+    #[test]
+    fn move_rewrite_respects_vault_link_style_for_plain_links() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("move-rewrite", &vault_root);
+        fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/app.json"),
+            r#"{
+              "useMarkdownLinks": true,
+              "newLinkFormat": "relative"
+            }"#,
+        )
+        .expect("app config should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        move_note(&paths, "Projects/Alpha.md", "Archive/Alpha.md", false)
+            .expect("move should succeed");
+
+        let home = fs::read_to_string(vault_root.join("Home.md")).expect("home should be readable");
+        let bob =
+            fs::read_to_string(vault_root.join("People/Bob.md")).expect("bob should be readable");
+
+        assert!(home.contains("[Alpha](Archive/Alpha.md)"));
+        assert!(home.contains("[Alpha > Status](Archive/Alpha.md#Status)"));
+        assert!(home.contains("![[Archive/Alpha]]"));
+        assert!(bob.contains("[[../Archive/Alpha|Project Alpha]]"));
     }
 
     #[test]

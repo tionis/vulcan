@@ -9,6 +9,7 @@ pub struct Migration {
     pub version: u32,
     pub name: &'static str,
     apply: MigrationFn,
+    rebuild_cache: bool,
 }
 
 impl Migration {
@@ -18,6 +19,17 @@ impl Migration {
             version,
             name,
             apply,
+            rebuild_cache: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn breaking(version: u32, name: &'static str, apply: MigrationFn) -> Self {
+        Self {
+            version,
+            name,
+            apply,
+            rebuild_cache: true,
         }
     }
 
@@ -83,9 +95,14 @@ impl MigrationRegistry {
         }
 
         let transaction = connection.transaction()?;
+        let mut rebuild_required = false;
         for migration in pending {
             migration.run(&transaction)?;
             transaction.pragma_update(None, "user_version", migration.version)?;
+            rebuild_required |= migration.rebuild_cache;
+        }
+        if rebuild_required {
+            schema::clear_cache_tables(&transaction)?;
         }
         transaction.commit()?;
 
@@ -110,6 +127,19 @@ mod tests {
 
     fn create_second_table(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
         transaction.execute("CREATE TABLE second_table (id INTEGER PRIMARY KEY)", [])?;
+        Ok(())
+    }
+
+    fn add_name_column(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+        transaction.execute(
+            "ALTER TABLE first_table ADD COLUMN name TEXT NOT NULL DEFAULT 'unknown'",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn noop_breaking_migration(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+        transaction.execute_batch("")?;
         Ok(())
     }
 
@@ -268,6 +298,94 @@ mod tests {
 
         let matched_paths = search_matches(&connection, "Start");
         assert_eq!(matched_paths, vec!["Home.md".to_string()]);
+    }
+
+    #[test]
+    fn additive_migration_preserves_existing_rows() {
+        let mut connection = Connection::open_in_memory().expect("in-memory db should open");
+        let initial_registry =
+            MigrationRegistry::new(vec![Migration::new(1, "first", create_first_table)]);
+        initial_registry
+            .migrate(&mut connection)
+            .expect("initial migration should apply");
+        connection
+            .execute("INSERT INTO first_table (id) VALUES (7)", [])
+            .expect("test row should insert");
+
+        let upgraded_registry = MigrationRegistry::new(vec![
+            Migration::new(1, "first", create_first_table),
+            Migration::new(2, "add name", add_name_column),
+        ]);
+        upgraded_registry
+            .migrate(&mut connection)
+            .expect("additive migration should apply");
+
+        let row: (i64, String) = connection
+            .query_row("SELECT id, name FROM first_table", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("row should remain readable");
+        assert_eq!(row, (7, "unknown".to_string()));
+    }
+
+    #[test]
+    fn breaking_migration_clears_rebuildable_cache_rows() {
+        let mut connection = Connection::open_in_memory().expect("in-memory db should open");
+        let registry = MigrationRegistry::schema_v1();
+        registry
+            .migrate(&mut connection)
+            .expect("schema should apply");
+        connection
+            .execute(
+                "
+                INSERT INTO documents (
+                    id, path, filename, extension, content_hash, raw_frontmatter,
+                    file_size, file_mtime, parser_version, indexed_at
+                )
+                VALUES ('doc-1', 'Home.md', 'Home', 'md', ?1, NULL, 1, 1, 1, '1')
+                ",
+                [vec![1_u8; 32]],
+            )
+            .expect("document should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+                VALUES ('diag-1', 'doc-1', 'parse_error', 'bad yaml', '{}', '1')
+                ",
+                [],
+            )
+            .expect("diagnostic should insert");
+
+        let mut upgraded_connection = connection;
+        let mut breaking_migrations = MigrationRegistry::schema_v1().migrations;
+        breaking_migrations.push(Migration::breaking(
+            SCHEMA_VERSION + 1,
+            "force rebuild",
+            noop_breaking_migration,
+        ));
+        MigrationRegistry::new(breaking_migrations)
+            .migrate(&mut upgraded_connection)
+            .expect("breaking migration should apply");
+
+        let version: u32 = upgraded_connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version should be readable");
+        assert_eq!(version, SCHEMA_VERSION + 1);
+        assert_eq!(
+            upgraded_connection
+                .query_row("SELECT COUNT(*) FROM documents", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("document count should be readable"),
+            0
+        );
+        assert_eq!(
+            upgraded_connection
+                .query_row("SELECT COUNT(*) FROM diagnostics", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("diagnostic count should be readable"),
+            0
+        );
     }
 
     fn table_exists(connection: &Connection, name: &str) -> bool {

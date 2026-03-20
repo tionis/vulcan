@@ -21,7 +21,10 @@ pub enum SearchMode {
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum VectorsCommand {
-    Index,
+    Index {
+        #[arg(long)]
+        dry_run: bool,
+    },
     Neighbors {
         query: Option<String>,
         #[arg(long)]
@@ -94,6 +97,8 @@ pub enum Command {
     Cluster {
         #[arg(long, default_value_t = 8)]
         clusters: usize,
+        #[arg(long)]
+        dry_run: bool,
     },
     Vectors {
         #[command(subcommand)]
