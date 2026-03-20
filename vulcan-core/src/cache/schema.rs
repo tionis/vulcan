@@ -110,6 +110,14 @@ pub fn apply_schema_v1(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
     Ok(())
 }
 
+pub fn apply_schema_v2(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute(
+        "ALTER TABLE chunks ADD COLUMN content TEXT NOT NULL DEFAULT ''",
+        [],
+    )?;
+    Ok(())
+}
+
 pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     for table_name in TABLES_TO_CLEAR {
         let statement = format!("DELETE FROM {table_name}");

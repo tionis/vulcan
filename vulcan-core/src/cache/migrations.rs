@@ -39,11 +39,10 @@ impl MigrationRegistry {
 
     #[must_use]
     pub fn schema_v1() -> Self {
-        Self::new(vec![Migration::new(
-            1,
-            "create cache schema v1",
-            schema::apply_schema_v1,
-        )])
+        Self::new(vec![
+            Migration::new(1, "create cache schema v1", schema::apply_schema_v1),
+            Migration::new(2, "add chunk content column", schema::apply_schema_v2),
+        ])
     }
 
     #[must_use]

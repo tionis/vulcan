@@ -121,19 +121,19 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Implement `fixed` strategy: fixed-size window with configurable overlap
 - [x] Implement `paragraph` strategy: one chunk per paragraph
 - [x] Respect semantic boundaries: never split mid-paragraph, mid-list-item, mid-blockquote, mid-code-block
-- [~] Each chunk records: document_id, sequence index, heading path, byte offsets, content hash, strategy name, strategy version
+- [x] Each chunk records: document_id, sequence index, heading path, byte offsets, content hash, strategy name, strategy version
 - [x] Configuration: target chunk size (default ~4000 characters as proxy for ~1024 tokens), overlap (default 0), strategy selector
 - [x] Determinism: same content + same config = same chunks (required for hash-based skip)
 - [x] Unit tests: heading splits, oversized single blocks, empty docs, frontmatter-only docs, configurable size, determinism assertion
 
 ### 1.7 Indexing pipeline
-- [ ] Orchestrate: scan -> parse -> extract entities -> populate tables, all within batched transactions
-- [ ] For each changed document: re-parse, delete old derived rows (headings, blocks, links, aliases, tags, chunks), insert new rows
-- [ ] Content-hash gating: skip re-parse if hash unchanged
-- [ ] Record `parser_version` and `indexed_at` on each document row
-- [ ] Emit diagnostics for parse failures (malformed frontmatter, unrecognized syntax) rather than skipping silently
-- [ ] Integration test: index `basic/` vault, assert expected rows in all tables
-- [ ] Integration test: index `broken-frontmatter/` vault, assert diagnostics emitted
+- [x] Orchestrate: scan -> parse -> extract entities -> populate tables, all within batched transactions
+- [x] For each changed document: re-parse, delete old derived rows (headings, blocks, links, aliases, tags, chunks), insert new rows
+- [x] Content-hash gating: skip re-parse if hash unchanged
+- [x] Record `parser_version` and `indexed_at` on each document row
+- [x] Emit diagnostics for parse failures (malformed frontmatter, unrecognized syntax) rather than skipping silently
+- [x] Integration test: index `basic/` vault, assert expected rows in all tables
+- [x] Integration test: index `broken-frontmatter/` vault, assert diagnostics emitted
 
 ### 1.8 Link resolution
 - [ ] Implement Obsidian's link resolution algorithm:

@@ -1,8 +1,10 @@
 use crate::cache::CacheError;
-use crate::{CacheDatabase, VaultPaths, PARSER_VERSION};
+use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
+use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
 use ignore::WalkBuilder;
 use rusqlite::{params, Connection, Transaction};
 use serde::Serialize;
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -110,6 +112,7 @@ struct DiscoveredFile {
     relative_path: String,
     filename: String,
     extension: String,
+    kind: DocumentKind,
     file_size: i64,
     file_mtime: i64,
 }
@@ -120,6 +123,7 @@ struct CachedDocument {
     file_size: i64,
     file_mtime: i64,
     content_hash: Vec<u8>,
+    parser_version: u32,
 }
 
 #[must_use]
@@ -137,6 +141,7 @@ pub fn detect_document_kind(path: &Path) -> DocumentKind {
 }
 
 pub fn scan_vault(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, ScanError> {
+    let config = load_vault_config(paths).config;
     let discovered = discover_files(paths.vault_root())?;
     let current_paths = discovered
         .iter()
@@ -157,7 +162,11 @@ pub fn scan_vault(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, Sca
             database.rebuild_with(|transaction| -> Result<ScanSummary, ScanError> {
                 for file in &discovered {
                     let hash = compute_content_hash(&file.absolute_path)?;
-                    insert_document(transaction, &Ulid::new().to_string(), file, &hash)?;
+                    let id = Ulid::new().to_string();
+                    insert_or_update_document(transaction, &id, file, &hash, None)?;
+                    if matches!(file.kind, DocumentKind::Note) {
+                        index_note_document(transaction, &config, &id, file, &hash)?;
+                    }
                 }
 
                 Ok(ScanSummary {
@@ -172,7 +181,14 @@ pub fn scan_vault(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, Sca
         }
         ScanMode::Incremental => {
             database.with_transaction(|transaction| -> Result<ScanSummary, ScanError> {
-                apply_incremental_scan(transaction, &discovered, &existing, &deleted_paths, mode)
+                apply_incremental_scan(
+                    transaction,
+                    &config,
+                    &discovered,
+                    &existing,
+                    &deleted_paths,
+                    mode,
+                )
             })
         }
     }
@@ -180,6 +196,7 @@ pub fn scan_vault(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, Sca
 
 fn apply_incremental_scan(
     transaction: &Transaction<'_>,
+    config: &crate::VaultConfig,
     discovered: &[DiscoveredFile],
     existing: &HashMap<String, CachedDocument>,
     deleted_paths: &[String],
@@ -200,24 +217,40 @@ fn apply_incremental_scan(
 
         match existing.get(&file.relative_path) {
             Some(cached)
-                if cached.file_size == file.file_size && cached.file_mtime == file.file_mtime =>
+                if cached.file_size == file.file_size
+                    && cached.file_mtime == file.file_mtime
+                    && cached.parser_version == PARSER_VERSION =>
             {
                 summary.unchanged += 1;
             }
             Some(cached) => {
-                let hash = compute_content_hash(&file.absolute_path)?;
+                let hash =
+                    if cached.file_size == file.file_size && cached.file_mtime == file.file_mtime {
+                        cached.content_hash.clone()
+                    } else {
+                        compute_content_hash(&file.absolute_path)?
+                    };
+                let requires_reindex = matches!(file.kind, DocumentKind::Note)
+                    && (hash != cached.content_hash || cached.parser_version != PARSER_VERSION);
 
-                if hash == cached.content_hash {
+                if hash == cached.content_hash && !requires_reindex {
                     update_document_metadata(transaction, &cached.id, file)?;
                     summary.unchanged += 1;
                 } else {
-                    update_document(transaction, &cached.id, file, &hash)?;
+                    insert_or_update_document(transaction, &cached.id, file, &hash, None)?;
+                    if matches!(file.kind, DocumentKind::Note) {
+                        index_note_document(transaction, config, &cached.id, file, &hash)?;
+                    }
                     summary.updated += 1;
                 }
             }
             None => {
                 let hash = compute_content_hash(&file.absolute_path)?;
-                insert_document(transaction, &Ulid::new().to_string(), file, &hash)?;
+                let id = Ulid::new().to_string();
+                insert_or_update_document(transaction, &id, file, &hash, None)?;
+                if matches!(file.kind, DocumentKind::Note) {
+                    index_note_document(transaction, config, &id, file, &hash)?;
+                }
                 summary.added += 1;
             }
         }
@@ -276,6 +309,7 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
             relative_path,
             filename,
             extension,
+            kind: detect_document_kind(path),
             file_size: i64::try_from(metadata.len()).map_err(|_| ScanError::MetadataOverflow {
                 field: "file_size",
                 path: path.to_path_buf(),
@@ -315,7 +349,7 @@ fn load_cached_documents(
 ) -> Result<HashMap<String, CachedDocument>, rusqlite::Error> {
     let mut statement = connection.prepare(
         "
-        SELECT id, path, file_size, file_mtime, content_hash
+        SELECT id, path, file_size, file_mtime, content_hash, parser_version
         FROM documents
         ",
     )?;
@@ -327,6 +361,7 @@ fn load_cached_documents(
                 file_size: row.get(2)?,
                 file_mtime: row.get(3)?,
                 content_hash: row.get(4)?,
+                parser_version: row.get(5)?,
             },
         ))
     })?;
@@ -334,11 +369,12 @@ fn load_cached_documents(
     rows.collect::<Result<HashMap<_, _>, _>>()
 }
 
-fn insert_document(
+fn insert_or_update_document(
     transaction: &Transaction<'_>,
     id: &str,
     file: &DiscoveredFile,
     content_hash: &[u8],
+    raw_frontmatter: Option<&str>,
 ) -> Result<(), ScanError> {
     transaction.execute(
         "
@@ -354,7 +390,16 @@ fn insert_document(
             parser_version,
             indexed_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        ON CONFLICT(path) DO UPDATE SET
+            filename = excluded.filename,
+            extension = excluded.extension,
+            content_hash = excluded.content_hash,
+            raw_frontmatter = excluded.raw_frontmatter,
+            file_size = excluded.file_size,
+            file_mtime = excluded.file_mtime,
+            parser_version = excluded.parser_version,
+            indexed_at = excluded.indexed_at
         ",
         params![
             id,
@@ -362,6 +407,7 @@ fn insert_document(
             file.filename,
             file.extension,
             content_hash,
+            raw_frontmatter,
             file.file_size,
             file.file_mtime,
             PARSER_VERSION,
@@ -372,35 +418,23 @@ fn insert_document(
     Ok(())
 }
 
-fn update_document(
+fn index_note_document(
     transaction: &Transaction<'_>,
+    config: &crate::VaultConfig,
     id: &str,
     file: &DiscoveredFile,
     content_hash: &[u8],
 ) -> Result<(), ScanError> {
-    transaction.execute(
-        "
-        UPDATE documents
-        SET filename = ?2,
-            extension = ?3,
-            content_hash = ?4,
-            file_size = ?5,
-            file_mtime = ?6,
-            parser_version = ?7,
-            indexed_at = ?8
-        WHERE id = ?1
-        ",
-        params![
-            id,
-            file.filename,
-            file.extension,
-            content_hash,
-            file.file_size,
-            file.file_mtime,
-            PARSER_VERSION,
-            current_timestamp()?,
-        ],
+    let source = fs::read_to_string(&file.absolute_path)?;
+    let parsed = parse_document(&source, config);
+    insert_or_update_document(
+        transaction,
+        id,
+        file,
+        content_hash,
+        parsed.raw_frontmatter.as_deref(),
     )?;
+    replace_derived_rows(transaction, id, &parsed)?;
 
     Ok(())
 }
@@ -434,6 +468,301 @@ fn update_document_metadata(
 fn delete_document(transaction: &Transaction<'_>, id: &str) -> Result<(), rusqlite::Error> {
     transaction.execute("DELETE FROM documents WHERE id = ?1", [id])?;
     Ok(())
+}
+
+fn replace_derived_rows(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    parsed: &ParsedDocument,
+) -> Result<(), ScanError> {
+    clear_derived_rows(transaction, document_id)?;
+    insert_headings(transaction, document_id, &parsed.headings)?;
+    insert_block_refs(transaction, document_id, &parsed.block_refs)?;
+    insert_links(transaction, document_id, &parsed.links)?;
+    insert_aliases(transaction, document_id, &parsed.aliases)?;
+    insert_tags(transaction, document_id, &parsed.tags)?;
+    insert_chunks(transaction, document_id, &parsed.chunk_texts)?;
+    insert_diagnostics(transaction, document_id, &parsed.diagnostics)?;
+    Ok(())
+}
+
+fn insert_headings(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    headings: &[crate::RawHeading],
+) -> Result<(), ScanError> {
+    for heading in headings {
+        transaction.execute(
+            "
+            INSERT INTO headings (id, document_id, level, text, byte_offset)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ",
+            params![
+                Ulid::new().to_string(),
+                document_id,
+                i64::from(heading.level),
+                &heading.text,
+                i64::try_from(heading.byte_offset).map_err(|_| ScanError::MetadataOverflow {
+                    field: "heading.byte_offset",
+                    path: PathBuf::from(document_id),
+                })?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_block_refs(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    block_refs: &[crate::RawBlockRef],
+) -> Result<(), ScanError> {
+    for block_ref in block_refs {
+        transaction.execute(
+            "
+            INSERT INTO block_refs (
+                id,
+                document_id,
+                block_id_text,
+                block_id_byte_offset,
+                target_block_byte_start,
+                target_block_byte_end
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ",
+            params![
+                Ulid::new().to_string(),
+                document_id,
+                &block_ref.block_id_text,
+                i64::try_from(block_ref.block_id_byte_offset).map_err(|_| {
+                    ScanError::MetadataOverflow {
+                        field: "block_ref.byte_offset",
+                        path: PathBuf::from(document_id),
+                    }
+                })?,
+                i64::try_from(block_ref.target_block_byte_start).map_err(|_| {
+                    ScanError::MetadataOverflow {
+                        field: "block_ref.target_start",
+                        path: PathBuf::from(document_id),
+                    }
+                })?,
+                i64::try_from(block_ref.target_block_byte_end).map_err(|_| {
+                    ScanError::MetadataOverflow {
+                        field: "block_ref.target_end",
+                        path: PathBuf::from(document_id),
+                    }
+                })?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_links(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    links: &[crate::RawLink],
+) -> Result<(), ScanError> {
+    for link in links {
+        transaction.execute(
+            "
+            INSERT INTO links (
+                id,
+                source_document_id,
+                raw_text,
+                link_kind,
+                display_text,
+                target_path_candidate,
+                target_heading,
+                target_block,
+                resolved_target_id,
+                origin_context,
+                byte_offset
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10)
+            ",
+            params![
+                Ulid::new().to_string(),
+                document_id,
+                &link.raw_text,
+                link_kind_name(link.link_kind),
+                link.display_text.as_deref(),
+                link.target_path_candidate.as_deref(),
+                link.target_heading.as_deref(),
+                link.target_block.as_deref(),
+                origin_context_name(link.origin_context),
+                i64::try_from(link.byte_offset).map_err(|_| ScanError::MetadataOverflow {
+                    field: "link.byte_offset",
+                    path: PathBuf::from(document_id),
+                })?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_aliases(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    aliases: &[String],
+) -> Result<(), ScanError> {
+    for alias in aliases {
+        transaction.execute(
+            "
+            INSERT INTO aliases (id, document_id, alias_text)
+            VALUES (?1, ?2, ?3)
+            ",
+            params![Ulid::new().to_string(), document_id, alias],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_tags(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    tags: &[crate::RawTag],
+) -> Result<(), ScanError> {
+    for tag in tags {
+        transaction.execute(
+            "
+            INSERT INTO tags (id, document_id, tag_text)
+            VALUES (?1, ?2, ?3)
+            ",
+            params![Ulid::new().to_string(), document_id, &tag.tag_text],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_chunks(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    chunks: &[crate::ChunkText],
+) -> Result<(), ScanError> {
+    for chunk in chunks {
+        transaction.execute(
+            "
+            INSERT INTO chunks (
+                id,
+                document_id,
+                sequence_index,
+                heading_path,
+                byte_offset_start,
+                byte_offset_end,
+                content_hash,
+                content,
+                chunk_strategy,
+                chunk_version
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ",
+            params![
+                Ulid::new().to_string(),
+                document_id,
+                i64::try_from(chunk.sequence_index).map_err(|_| ScanError::MetadataOverflow {
+                    field: "chunk.sequence_index",
+                    path: PathBuf::from(document_id),
+                })?,
+                serde_json::to_string(&chunk.heading_path)
+                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                i64::try_from(chunk.byte_offset_start).map_err(|_| {
+                    ScanError::MetadataOverflow {
+                        field: "chunk.byte_offset_start",
+                        path: PathBuf::from(document_id),
+                    }
+                })?,
+                i64::try_from(chunk.byte_offset_end).map_err(|_| ScanError::MetadataOverflow {
+                    field: "chunk.byte_offset_end",
+                    path: PathBuf::from(document_id),
+                })?,
+                chunk.content_hash.clone(),
+                &chunk.content,
+                &chunk.chunk_strategy,
+                i64::from(chunk.chunk_version),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_diagnostics(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    diagnostics: &[crate::ParseDiagnostic],
+) -> Result<(), ScanError> {
+    for diagnostic in diagnostics {
+        transaction.execute(
+            "
+            INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ",
+            params![
+                Ulid::new().to_string(),
+                document_id,
+                diagnostic_kind_name(diagnostic.kind),
+                &diagnostic.message,
+                serde_json::to_string(&json!({
+                    "byte_range": diagnostic.byte_range.as_ref().map(|range| {
+                        json!({"start": range.start, "end": range.end})
+                    }),
+                }))
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                current_timestamp()?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn clear_derived_rows(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+) -> Result<(), rusqlite::Error> {
+    for table_name in [
+        "headings",
+        "block_refs",
+        "links",
+        "aliases",
+        "tags",
+        "chunks",
+        "diagnostics",
+    ] {
+        let key_column = if table_name == "links" {
+            "source_document_id"
+        } else {
+            "document_id"
+        };
+        transaction.execute(
+            &format!("DELETE FROM {table_name} WHERE {key_column} = ?1"),
+            [document_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn link_kind_name(link_kind: LinkKind) -> &'static str {
+    match link_kind {
+        LinkKind::Wikilink => "wikilink",
+        LinkKind::Markdown => "markdown",
+        LinkKind::Embed => "embed",
+        LinkKind::External => "external",
+    }
+}
+
+fn origin_context_name(origin_context: OriginContext) -> &'static str {
+    match origin_context {
+        OriginContext::Body => "body",
+        OriginContext::Frontmatter => "frontmatter",
+        OriginContext::Property => "property",
+    }
+}
+
+fn diagnostic_kind_name(kind: ParseDiagnosticKind) -> &'static str {
+    match kind {
+        ParseDiagnosticKind::MalformedFrontmatter => "parse_error",
+        ParseDiagnosticKind::HtmlLink | ParseDiagnosticKind::LinkInComment => "unsupported_syntax",
+    }
 }
 
 fn current_timestamp() -> Result<String, ScanError> {
@@ -513,6 +842,13 @@ mod tests {
                 "Projects/Alpha.md".to_string(),
             ]
         );
+        assert_eq!(count_rows(database.connection(), "headings"), 4);
+        assert_eq!(count_rows(database.connection(), "block_refs"), 0);
+        assert_eq!(count_rows(database.connection(), "links"), 5);
+        assert_eq!(count_rows(database.connection(), "aliases"), 2);
+        assert_eq!(count_rows(database.connection(), "tags"), 5);
+        assert_eq!(count_rows(database.connection(), "chunks"), 4);
+        assert_eq!(count_rows(database.connection(), "diagnostics"), 0);
     }
 
     #[test]
@@ -580,6 +916,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn broken_frontmatter_vault_emits_parse_diagnostics() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("broken-frontmatter", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        let summary = scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(summary.discovered, 2);
+        assert_eq!(count_rows(database.connection(), "documents"), 2);
+        assert_eq!(count_rows(database.connection(), "diagnostics"), 1);
+        assert_eq!(
+            diagnostic_kinds(database.connection()),
+            vec!["parse_error".to_string()]
+        );
+    }
+
     fn document_paths(connection: &Connection) -> Vec<String> {
         let mut statement = connection
             .prepare("SELECT path FROM documents ORDER BY path")
@@ -590,6 +945,26 @@ mod tests {
 
         rows.map(|row| row.expect("row should deserialize"))
             .collect()
+    }
+
+    fn diagnostic_kinds(connection: &Connection) -> Vec<String> {
+        let mut statement = connection
+            .prepare("SELECT kind FROM diagnostics ORDER BY kind")
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| row.get(0))
+            .expect("query should succeed");
+
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn count_rows(connection: &Connection, table_name: &str) -> i64 {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
+                row.get(0)
+            })
+            .expect("row count should be readable")
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {
