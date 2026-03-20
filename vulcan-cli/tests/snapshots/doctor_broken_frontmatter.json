@@ -1,0 +1,24 @@
+{
+  "ambiguous_links": [],
+  "html_links": [],
+  "missing_index_rows": [],
+  "orphan_notes": [],
+  "parse_failures": [
+    {
+      "byte_range": null,
+      "document_path": "Broken.md",
+      "message": "Failed to parse frontmatter: did not find expected node content at line 4 column 1, while parsing a flow node"
+    }
+  ],
+  "stale_index_rows": [],
+  "summary": {
+    "ambiguous_links": 0,
+    "html_links": 0,
+    "missing_index_rows": 0,
+    "orphan_notes": 0,
+    "parse_failures": 1,
+    "stale_index_rows": 0,
+    "unresolved_links": 0
+  },
+  "unresolved_links": []
+}
