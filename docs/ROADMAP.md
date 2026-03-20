@@ -14,15 +14,15 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 **Design refs:** §4 (architecture), §5 (data model), §6 (incremental indexing), §7 (chunking), §14 (vault config), §15 (schema/migration)
 
 ### 1.1 Project scaffold
-- [ ] Initialize Cargo workspace with three crates:
+- [x] Initialize Cargo workspace with three crates:
   - `vulcan-core` (lib): parser, indexer, data model, SQLite cache, file scanning, config
   - `vulcan-embed` (lib): embedding provider trait and implementations, vector store abstraction
   - `vulcan-cli` (bin): CLI binary, command handlers, output formatting
-- [ ] Add core dependencies to `vulcan-core`: `rusqlite` (with `bundled`), `serde`, `serde_yaml`, `serde_json`, `toml`, `pulldown-cmark` (with wikilinks + GFM), `notify`, `blake3`, `ulid`
-- [ ] Add dependencies to `vulcan-cli`: `clap`, `vulcan-core`
-- [ ] Set up `clap` CLI skeleton with global flags: `--vault <path>`, `--output <human|json>`, `--verbose`
-- [ ] Create `tests/fixtures/vaults/basic/` test vault with a handful of interlinked notes
-- [ ] Set up GitHub Actions CI: `cargo test` + `cargo clippy` + `cargo fmt --check`
+- [x] Add core dependencies to `vulcan-core`: `rusqlite` (with `bundled`), `serde`, `serde_yaml`, `serde_json`, `toml`, `pulldown-cmark` (with wikilinks + GFM), `notify`, `blake3`, `ulid`
+- [x] Add dependencies to `vulcan-cli`: `clap`, `vulcan-core`
+- [x] Set up `clap` CLI skeleton with global flags: `--vault <path>`, `--output <human|json>`, `--verbose`
+- [x] Create `tests/fixtures/vaults/basic/` test vault with a handful of interlinked notes
+- [x] Set up GitHub Actions CI: `cargo test` + `cargo clippy` + `cargo fmt --check`
 
 ### 1.2 SQLite cache foundation
 - [ ] Database initialization: create or open `.vulcan/cache.db` in vault root
