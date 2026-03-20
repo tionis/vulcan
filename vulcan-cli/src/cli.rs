@@ -7,7 +7,7 @@ Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
   Graph and Query: links, backlinks, graph, search, notes, bases
   Semantic: vectors, cluster, related
-  Reports and Automation: saved, batch
+  Reports and Automation: saved, checkpoint, changes, batch
   Maintenance: move, doctor, cache, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -144,12 +144,23 @@ pub enum GraphCommand {
     },
     #[command(about = "List notes with the highest combined link degree")]
     Hubs,
+    #[command(about = "Report candidate map-of-content style notes")]
+    Moc,
     #[command(about = "List notes without outbound resolved note links")]
     DeadEnds,
     #[command(about = "Report weakly connected components of the note graph")]
     Components,
     #[command(about = "Summarize note-graph and vault analytics")]
     Stats,
+    #[command(about = "Show note-count, orphan, stale, and link trends over saved scans")]
+    Trends {
+        #[arg(
+            long,
+            default_value_t = 10,
+            help = "Maximum number of checkpoints to include"
+        )]
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -240,6 +251,17 @@ pub enum SavedCommand {
         #[command(flatten)]
         export: ExportArgs,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum CheckpointCommand {
+    #[command(about = "Create or replace a named checkpoint from the current cache state")]
+    Create {
+        #[arg(help = "Checkpoint name")]
+        name: String,
+    },
+    #[command(about = "List saved scan and manual checkpoints")]
+    List,
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
@@ -356,6 +378,19 @@ pub enum Command {
     Saved {
         #[command(subcommand)]
         command: SavedCommand,
+    },
+    #[command(about = "Capture and inspect named cache-state checkpoints")]
+    Checkpoint {
+        #[command(subcommand)]
+        command: CheckpointCommand,
+    },
+    #[command(about = "Report note, link, property, and embedding changes since a baseline")]
+    Changes {
+        #[arg(
+            long,
+            help = "Compare against a named checkpoint instead of the previous scan"
+        )]
+        checkpoint: Option<String>,
     },
     #[command(about = "Run multiple saved reports for automation and scheduled jobs")]
     Batch {

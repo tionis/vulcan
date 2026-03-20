@@ -3,8 +3,9 @@ mod cli;
 mod serve;
 
 pub use cli::{
-    BasesCommand, CacheCommand, Cli, Command, ExportArgs, ExportFormat, GraphCommand, OutputFormat,
-    RepairCommand, SavedCommand, SearchMode, VectorQueueCommand, VectorsCommand,
+    BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ExportArgs, ExportFormat,
+    GraphCommand, OutputFormat, RepairCommand, SavedCommand, SearchMode, VectorQueueCommand,
+    VectorsCommand,
 };
 
 use clap::{CommandFactory, Parser};
@@ -20,27 +21,29 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vulcan_core::{
-    cache_vacuum, cluster_vectors, doctor_fix, doctor_vault, evaluate_base_file,
+    cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault, evaluate_base_file,
     index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
-    list_saved_reports, load_saved_report, merge_tags, move_note, query_backlinks,
-    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
-    query_graph_path, query_links, query_notes, query_related_notes, query_vector_neighbors,
+    list_checkpoints, list_saved_reports, load_saved_report, merge_tags, move_note,
+    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
+    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
+    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
     rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
     rename_heading, rename_property, repair_fts, repair_vectors_with_progress, save_saved_report,
     scan_vault_with_progress, search_vault, vector_duplicates, verify_cache, watch_vault,
     BacklinkRecord, BacklinksReport, BasesEvalReport, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ClusterQuery, ClusterReport, DoctorDiagnosticIssue,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, GraphAnalyticsReport, GraphComponentsReport,
-    GraphDeadEndsReport, GraphHubsReport, GraphPathReport, InitSummary, MoveSummary, NamedCount,
-    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, RebuildQuery,
-    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
-    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
-    VectorRepairReport, WatchOptions, WatchReport,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, GraphAnalyticsReport, GraphComponentsReport,
+    GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport,
+    GraphTrendsReport, InitSummary, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, RebuildQuery, RebuildReport, RefactorReport,
+    RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
+    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
+    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -662,6 +665,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     use_stdout_color,
                 )
             }
+            GraphCommand::Moc => {
+                let report = query_graph_moc_candidates(&paths).map_err(CliError::operation)?;
+                print_graph_moc_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
+            }
             GraphCommand::DeadEnds => {
                 let report = query_graph_dead_ends(&paths).map_err(CliError::operation)?;
                 print_graph_dead_ends_report(
@@ -685,6 +698,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             GraphCommand::Stats => {
                 let report = query_graph_analytics(&paths).map_err(CliError::operation)?;
                 print_graph_analytics_report(cli.output, &report)
+            }
+            GraphCommand::Trends { limit } => {
+                let report = query_graph_trends(&paths, *limit).map_err(CliError::operation)?;
+                print_graph_trends_report(cli.output, &report)
             }
         },
         Command::Completions { shell } => {
@@ -1096,6 +1113,38 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
             }
         },
+        Command::Checkpoint { ref command } => match command {
+            CheckpointCommand::Create { name } => {
+                let record = create_checkpoint(&paths, name).map_err(CliError::operation)?;
+                print_checkpoint_record(cli.output, &record)
+            }
+            CheckpointCommand::List => {
+                let records = list_checkpoints(&paths).map_err(CliError::operation)?;
+                print_checkpoint_list(
+                    cli.output,
+                    &records,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
+            }
+        },
+        Command::Changes { ref checkpoint } => {
+            let report = query_change_report(
+                &paths,
+                &checkpoint.as_ref().map_or(ChangeAnchor::LastScan, |name| {
+                    ChangeAnchor::Checkpoint(name.clone())
+                }),
+            )
+            .map_err(CliError::operation)?;
+            print_change_report(
+                cli.output,
+                &report,
+                &list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+            )
+        }
         Command::Batch { ref names, all } => {
             if all && !names.is_empty() {
                 return Err(CliError::operation(
@@ -2373,6 +2422,48 @@ fn print_graph_hubs_report(
     }
 }
 
+fn print_graph_moc_report(
+    output: OutputFormat,
+    report: &GraphMocReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let visible_notes = paginated_items(&report.notes, list_controls);
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("MOC candidates"));
+            }
+            if visible_notes.is_empty() {
+                println!("No MOC candidates.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in graph_moc_rows(visible_notes) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for note in visible_notes {
+                    println!(
+                        "- {} [score {}, {} inbound, {} outbound]",
+                        note.document_path, note.score, note.inbound, note.outbound
+                    );
+                    if !note.reasons.is_empty() {
+                        println!("  {}", note.reasons.join("; "));
+                    }
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(
+            graph_moc_rows(visible_notes),
+            list_controls.fields.as_deref(),
+        ),
+    }
+}
+
 fn print_graph_dead_ends_report(
     output: OutputFormat,
     report: &GraphDeadEndsReport,
@@ -2464,6 +2555,139 @@ fn print_graph_analytics_report(
             Ok(())
         }
         OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_graph_trends_report(
+    output: OutputFormat,
+    report: &GraphTrendsReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.points.is_empty() {
+                println!("No graph trend checkpoints.");
+                return Ok(());
+            }
+            for point in &report.points {
+                println!(
+                    "- {}: {} notes, {} orphan, {} stale, {} resolved links",
+                    point.label,
+                    point.note_count,
+                    point.orphan_notes,
+                    point.stale_notes,
+                    point.resolved_links
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_checkpoint_record(
+    output: OutputFormat,
+    record: &CheckpointRecord,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "Checkpoint {} [{}]: {} notes, {} orphan, {} stale, {} links",
+                record.name.as_deref().unwrap_or(&record.id),
+                record.source,
+                record.note_count,
+                record.orphan_notes,
+                record.stale_notes,
+                record.resolved_links
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(record),
+    }
+}
+
+fn print_checkpoint_list(
+    output: OutputFormat,
+    records: &[CheckpointRecord],
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let visible = paginated_items(records, list_controls);
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Checkpoints"));
+            }
+            if visible.is_empty() {
+                println!("No checkpoints.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in checkpoint_rows(visible) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for record in visible {
+                    println!(
+                        "- {} [{}] notes={}, orphan={}, stale={}, links={}",
+                        record.name.as_deref().unwrap_or(&record.id),
+                        record.source,
+                        record.note_count,
+                        record.orphan_notes,
+                        record.stale_notes,
+                        record.resolved_links
+                    );
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => {
+            print_json_lines(checkpoint_rows(visible), list_controls.fields.as_deref())
+        }
+    }
+}
+
+fn print_change_report(
+    output: OutputFormat,
+    report: &ChangeReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let rows = change_rows(report);
+    let visible = paginated_items(&rows, list_controls);
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!(
+                    "{} {}",
+                    palette.cyan("Changes since"),
+                    palette.bold(&report.anchor)
+                );
+            }
+            if visible.is_empty() {
+                println!("No recorded changes.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in visible {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for row in visible {
+                    println!(
+                        "- {} {} ({})",
+                        row["status"].as_str().unwrap_or("updated"),
+                        row["path"].as_str().unwrap_or_default(),
+                        row["kind"].as_str().unwrap_or_default()
+                    );
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(visible.to_vec(), list_controls.fields.as_deref()),
     }
 }
 
@@ -3395,6 +3619,74 @@ fn graph_hub_rows(notes: &[vulcan_core::GraphNodeScore]) -> Vec<Value> {
         .collect()
 }
 
+fn graph_moc_rows(notes: &[GraphMocCandidate]) -> Vec<Value> {
+    notes
+        .iter()
+        .map(|note| {
+            serde_json::json!({
+                "document_path": note.document_path,
+                "inbound": note.inbound,
+                "outbound": note.outbound,
+                "score": note.score,
+                "reasons": note.reasons,
+            })
+        })
+        .collect()
+}
+
+fn checkpoint_rows(records: &[CheckpointRecord]) -> Vec<Value> {
+    records
+        .iter()
+        .map(|record| {
+            serde_json::json!({
+                "id": record.id,
+                "name": record.name,
+                "source": record.source,
+                "created_at": record.created_at,
+                "note_count": record.note_count,
+                "orphan_notes": record.orphan_notes,
+                "stale_notes": record.stale_notes,
+                "resolved_links": record.resolved_links,
+            })
+        })
+        .collect()
+}
+
+fn change_rows(report: &ChangeReport) -> Vec<Value> {
+    let mut rows = Vec::new();
+    append_change_rows(&mut rows, &report.anchor, ChangeKind::Note, &report.notes);
+    append_change_rows(&mut rows, &report.anchor, ChangeKind::Link, &report.links);
+    append_change_rows(
+        &mut rows,
+        &report.anchor,
+        ChangeKind::Property,
+        &report.properties,
+    );
+    append_change_rows(
+        &mut rows,
+        &report.anchor,
+        ChangeKind::Embedding,
+        &report.embeddings,
+    );
+    rows
+}
+
+fn append_change_rows(rows: &mut Vec<Value>, anchor: &str, kind: ChangeKind, items: &[ChangeItem]) {
+    let kind_name = serde_json::to_value(kind)
+        .expect("change kind should serialize")
+        .as_str()
+        .expect("change kind should serialize to a string")
+        .to_string();
+    for item in items {
+        rows.push(serde_json::json!({
+            "anchor": anchor,
+            "kind": kind_name,
+            "path": item.path,
+            "status": item.status,
+        }));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3451,6 +3743,9 @@ mod tests {
         let doctor = Cli::try_parse_from(["vulcan", "doctor", "--fix", "--dry-run"])
             .expect("cli should parse");
         let graph_path = Cli::try_parse_from(["vulcan", "graph", "path", "Home", "Bob"])
+            .expect("cli should parse");
+        let graph_moc = Cli::try_parse_from(["vulcan", "graph", "moc"]).expect("cli should parse");
+        let graph_trends = Cli::try_parse_from(["vulcan", "graph", "trends", "--limit", "7"])
             .expect("cli should parse");
         let cache_vacuum = Cli::try_parse_from(["vulcan", "cache", "vacuum", "--dry-run"])
             .expect("cli should parse");
@@ -3541,6 +3836,12 @@ mod tests {
             "exports/weekly.jsonl",
         ])
         .expect("cli should parse");
+        let checkpoint_create = Cli::try_parse_from(["vulcan", "checkpoint", "create", "weekly"])
+            .expect("cli should parse");
+        let checkpoint_list =
+            Cli::try_parse_from(["vulcan", "checkpoint", "list"]).expect("cli should parse");
+        let changes = Cli::try_parse_from(["vulcan", "changes", "--checkpoint", "weekly"])
+            .expect("cli should parse");
         let batch = Cli::try_parse_from(["vulcan", "batch", "--all"]).expect("cli should parse");
 
         assert_eq!(rebuild.command, Command::Rebuild { dry_run: true });
@@ -3574,6 +3875,18 @@ mod tests {
                     from: "Home".to_string(),
                     to: "Bob".to_string(),
                 }
+            }
+        );
+        assert_eq!(
+            graph_moc.command,
+            Command::Graph {
+                command: GraphCommand::Moc,
+            }
+        );
+        assert_eq!(
+            graph_trends.command,
+            Command::Graph {
+                command: GraphCommand::Trends { limit: 7 },
             }
         );
         assert_eq!(
@@ -3806,6 +4119,26 @@ mod tests {
             }
         );
         assert_eq!(
+            checkpoint_create.command,
+            Command::Checkpoint {
+                command: CheckpointCommand::Create {
+                    name: "weekly".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            checkpoint_list.command,
+            Command::Checkpoint {
+                command: CheckpointCommand::List,
+            }
+        );
+        assert_eq!(
+            changes.command,
+            Command::Changes {
+                checkpoint: Some("weekly".to_string()),
+            }
+        );
+        assert_eq!(
             batch.command,
             Command::Batch {
                 names: Vec::new(),
@@ -3906,6 +4239,14 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "saved"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "checkpoint"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "changes"));
         assert!(report
             .commands
             .iter()

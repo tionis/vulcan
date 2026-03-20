@@ -41,6 +41,8 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("rename-heading"))
             .and(predicate::str::contains("rename-block-ref"))
             .and(predicate::str::contains("saved"))
+            .and(predicate::str::contains("checkpoint"))
+            .and(predicate::str::contains("changes"))
             .and(predicate::str::contains("batch"))
             .and(predicate::str::contains("describe"))
             .and(predicate::str::contains("completions"))
@@ -62,7 +64,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Semantic: vectors, cluster, related",
             ))
             .and(predicate::str::contains(
-                "Reports and Automation: saved, batch",
+                "Reports and Automation: saved, checkpoint, changes, batch",
             ))
             .and(predicate::str::contains(
                 "Maintenance: move, doctor, cache, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions",
@@ -283,6 +285,146 @@ fn graph_path_json_output_returns_note_path_chain() {
         json["path"],
         serde_json::json!(["People/Bob.md", "Projects/Alpha.md", "Home.md"])
     );
+}
+
+#[test]
+fn graph_moc_and_trends_json_output_report_candidates_and_history() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    fs::write(vault_root.join("Extra.md"), "# Extra\n\n[[Home]]\n")
+        .expect("extra note should write");
+    run_incremental_scan(&vault_root);
+
+    let moc_rows = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root
+                    .to_str()
+                    .expect("vault path should be valid utf-8"),
+                "--output",
+                "json",
+                "graph",
+                "moc",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json_lines(&assert)
+    };
+    assert_eq!(moc_rows[0]["document_path"], "Home.md");
+    assert!(moc_rows[0]["reasons"]
+        .as_array()
+        .expect("reasons should be an array")
+        .iter()
+        .any(|reason| reason.as_str().unwrap_or_default().contains("index")));
+
+    let trends = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root
+                    .to_str()
+                    .expect("vault path should be valid utf-8"),
+                "--output",
+                "json",
+                "graph",
+                "trends",
+                "--limit",
+                "2",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+    let points = trends["points"]
+        .as_array()
+        .expect("points should be an array");
+    assert_eq!(points.len(), 2);
+    assert_eq!(points[0]["note_count"], 3);
+    assert_eq!(points[1]["note_count"], 4);
+}
+
+#[test]
+fn checkpoint_and_changes_json_output_track_named_baselines() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let checkpoint = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root
+                    .to_str()
+                    .expect("vault path should be valid utf-8"),
+                "--output",
+                "json",
+                "checkpoint",
+                "create",
+                "baseline",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+    assert_eq!(checkpoint["name"], "baseline");
+    assert_eq!(checkpoint["source"], "manual");
+
+    fs::write(
+        vault_root.join("Home.md"),
+        "# Home\n\nUpdated dashboard links.\n",
+    )
+    .expect("updated note should write");
+    run_incremental_scan(&vault_root);
+
+    let checkpoint_rows = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root
+                    .to_str()
+                    .expect("vault path should be valid utf-8"),
+                "--output",
+                "json",
+                "checkpoint",
+                "list",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json_lines(&assert)
+    };
+    assert!(checkpoint_rows
+        .iter()
+        .any(|row| row["name"] == "baseline" && row["source"] == "manual"));
+
+    let changes = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root
+                    .to_str()
+                    .expect("vault path should be valid utf-8"),
+                "--output",
+                "json",
+                "changes",
+                "--checkpoint",
+                "baseline",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json_lines(&assert)
+    };
+    assert!(changes.iter().any(|row| {
+        row["anchor"] == "baseline" && row["kind"] == "note" && row["path"] == "Home.md"
+    }));
 }
 
 #[test]
@@ -1607,6 +1749,20 @@ fn run_scan(vault_root: &Path) {
                 .expect("vault path should be valid utf-8"),
             "scan",
             "--full",
+        ])
+        .assert()
+        .success();
+}
+
+fn run_incremental_scan(vault_root: &Path) {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "scan",
         ])
         .assert()
         .success();

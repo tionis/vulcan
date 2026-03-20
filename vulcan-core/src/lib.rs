@@ -4,6 +4,7 @@ pub mod chunking;
 pub mod config;
 pub mod doctor;
 pub mod graph;
+pub mod history;
 pub mod init;
 pub mod maintenance;
 pub mod move_rewrite;
@@ -35,11 +36,16 @@ pub use doctor::{
 };
 pub use graph::{
     query_backlinks, query_graph_analytics, query_graph_components, query_graph_dead_ends,
-    query_graph_hubs, query_graph_path, query_links, resolve_note_reference, BacklinkRecord,
-    BacklinksReport, GraphAnalyticsReport, GraphComponent, GraphComponentsReport,
-    GraphDeadEndsReport, GraphHubsReport, GraphNodeScore, GraphPathReport, GraphQueryError,
-    LineContext, NamedCount, NoteMatchKind, NoteReference, OutgoingLinkRecord, OutgoingLinksReport,
-    ResolutionStatus,
+    query_graph_hubs, query_graph_moc_candidates, query_graph_path, query_links,
+    resolve_note_reference, BacklinkRecord, BacklinksReport, GraphAnalyticsReport, GraphComponent,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphNodeScore, GraphPathReport, GraphQueryError, LineContext, NamedCount, NoteMatchKind,
+    NoteReference, OutgoingLinkRecord, OutgoingLinksReport, ResolutionStatus,
+};
+pub use history::{
+    create_checkpoint, list_checkpoints, query_change_report, query_graph_trends, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, ChangeStatus, CheckpointError, CheckpointRecord,
+    GraphTrendPoint, GraphTrendsReport,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
 pub use maintenance::{
@@ -94,4 +100,4 @@ pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchR
 
 pub const PARSER_VERSION: u32 = 4;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;

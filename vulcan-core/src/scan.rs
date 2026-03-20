@@ -67,6 +67,7 @@ pub struct ScanProgress {
 #[derive(Debug)]
 pub enum ScanError {
     Cache(CacheError),
+    Checkpoint(String),
     Ignore(ignore::Error),
     Io(std::io::Error),
     MetadataOverflow { field: &'static str, path: PathBuf },
@@ -78,6 +79,7 @@ impl Display for ScanError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Cache(error) => write!(formatter, "{error}"),
+            Self::Checkpoint(error) => write!(formatter, "{error}"),
             Self::Ignore(error) => write!(formatter, "{error}"),
             Self::Io(error) => write!(formatter, "{error}"),
             Self::MetadataOverflow { field, path } => {
@@ -95,7 +97,7 @@ impl Error for ScanError {
             Self::Cache(error) => Some(error),
             Self::Ignore(error) => Some(error),
             Self::Io(error) => Some(error),
-            Self::MetadataOverflow { .. } => None,
+            Self::Checkpoint(_) | Self::MetadataOverflow { .. } => None,
             Self::Sqlite(error) => Some(error),
             Self::Time(error) => Some(error),
         }
@@ -129,6 +131,12 @@ impl From<rusqlite::Error> for ScanError {
 impl From<SystemTimeError> for ScanError {
     fn from(error: SystemTimeError) -> Self {
         Self::Time(error)
+    }
+}
+
+impl From<crate::history::CheckpointError> for ScanError {
+    fn from(error: crate::history::CheckpointError) -> Self {
+        Self::Checkpoint(error.to_string())
     }
 }
 
@@ -248,7 +256,7 @@ where
         .cloned()
         .collect::<Vec<_>>();
 
-    match mode {
+    let summary = match mode {
         ScanMode::Full => {
             let discovered_count = discovered.len();
             let deleted_count = deleted_paths.len();
@@ -401,7 +409,9 @@ where
                 Ok(result.summary)
             })
         }
-    }
+    }?;
+    crate::history::record_scan_checkpoint(database.connection())?;
+    Ok(summary)
 }
 
 #[allow(clippy::too_many_lines)]

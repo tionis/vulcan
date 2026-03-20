@@ -334,6 +334,12 @@
             "subcommands": []
           },
           {
+            "about": "Report candidate map-of-content style notes",
+            "name": "moc",
+            "options": [],
+            "subcommands": []
+          },
+          {
             "about": "List notes without outbound resolved note links",
             "name": "dead-ends",
             "options": [],
@@ -349,6 +355,24 @@
             "about": "Summarize note-graph and vault analytics",
             "name": "stats",
             "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Show note-count, orphan, stale, and link trends over saved scans",
+            "name": "trends",
+            "options": [
+              {
+                "help": "Maximum number of checkpoints to include",
+                "id": "limit",
+                "long": "limit",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIMIT"
+                ]
+              }
+            ],
             "subcommands": []
           }
         ]
@@ -941,6 +965,55 @@
             "subcommands": []
           }
         ]
+      },
+      {
+        "about": "Capture and inspect named cache-state checkpoints",
+        "name": "checkpoint",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Create or replace a named checkpoint from the current cache state",
+            "name": "create",
+            "options": [
+              {
+                "help": "Checkpoint name",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List saved scan and manual checkpoints",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Report note, link, property, and embedding changes since a baseline",
+        "name": "changes",
+        "options": [
+          {
+            "help": "Compare against a named checkpoint instead of the previous scan",
+            "id": "checkpoint",
+            "long": "checkpoint",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "CHECKPOINT"
+            ]
+          }
+        ],
+        "subcommands": []
       },
       {
         "about": "Run multiple saved reports for automation and scheduled jobs",

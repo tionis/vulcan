@@ -439,8 +439,8 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 
 ### 7.7 Graph analysis and reporting
 - [x] `graph path <from> <to>` shortest-path query
-- [~] `graph hubs`, `graph dead-ends`, `graph components`, and MOC-candidate reports
-- [ ] Orphan/staleness trend reporting over time
+- [x] `graph hubs`, `graph dead-ends`, `graph components`, and MOC-candidate reports
+- [x] Orphan/staleness trend reporting over time
 - [x] Vault analytics reports: note counts, link density, tag/property usage, stale-note summaries
 - [x] `--output json` and integration tests for graph analysis commands
 
@@ -459,7 +459,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 ### 7.10 Cache maintenance and change reporting
 - [x] `cache inspect`, `cache verify`, and `cache vacuum` commands
 - [x] Performance and size diagnostics for cache, FTS, and vector indexes
-- [ ] Change reports since last scan or checkpoint for notes, links, properties, and embeddings
+- [x] Change reports since last scan or checkpoint for notes, links, properties, and embeddings
 - [x] Integration tests for maintenance and reporting flows
 
 ### 7.11 Import, export, and automation
