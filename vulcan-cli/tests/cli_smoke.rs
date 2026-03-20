@@ -161,11 +161,11 @@ fn links_json_output_supports_alias_lookup() {
         ])
         .assert()
         .success();
-    let json = parse_stdout_json(&assert);
+    let json_lines = parse_stdout_json_lines(&assert);
 
-    assert_eq!(json["note_path"], "Home.md");
-    assert_eq!(json["matched_by"], "alias");
-    assert_eq!(json["links"].as_array().map(Vec::len), Some(2));
+    assert_eq!(json_lines.len(), 2);
+    assert_eq!(json_lines[0]["note_path"], "Home.md");
+    assert_eq!(json_lines[0]["matched_by"], "alias");
 }
 
 #[test]
@@ -189,13 +189,11 @@ fn backlinks_json_output_lists_sources() {
         ])
         .assert()
         .success();
-    let json = parse_stdout_json(&assert);
+    let json_lines = parse_stdout_json_lines(&assert);
 
-    assert_eq!(json["note_path"], "Projects/Alpha.md");
+    assert_eq!(json_lines[0]["note_path"], "Projects/Alpha.md");
     assert_eq!(
-        json["backlinks"]
-            .as_array()
-            .expect("backlinks should be an array")
+        json_lines
             .iter()
             .map(|row| row["source_path"].as_str().unwrap_or_default().to_string())
             .collect::<Vec<_>>(),
@@ -203,8 +201,107 @@ fn backlinks_json_output_lists_sources() {
     );
 }
 
+#[test]
+fn links_json_output_supports_fields_limit_and_offset() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "resolved_target_path,resolution_status",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+            "links",
+            "Start",
+        ])
+        .assert()
+        .success();
+    let json_lines = parse_stdout_json_lines(&assert);
+
+    assert_eq!(json_lines.len(), 1);
+    assert_eq!(
+        json_lines[0],
+        serde_json::json!({
+            "resolved_target_path": "People/Bob.md",
+            "resolution_status": "resolved"
+        })
+    );
+}
+
+#[test]
+fn scan_json_output_matches_snapshot() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "scan",
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    assert_json_snapshot("scan_basic_full.json", &parse_stdout_json(&assert));
+}
+
+#[test]
+fn doctor_json_output_matches_snapshot() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("broken-frontmatter", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "doctor",
+        ])
+        .assert()
+        .success();
+
+    assert_json_snapshot(
+        "doctor_broken_frontmatter.json",
+        &parse_stdout_json(&assert),
+    );
+}
+
 fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {
     serde_json::from_slice(&assert.get_output().stdout).expect("stdout should contain valid json")
+}
+
+fn parse_stdout_json_lines(assert: &assert_cmd::assert::Assert) -> Vec<Value> {
+    String::from_utf8(assert.get_output().stdout.clone())
+        .expect("stdout should be valid utf-8")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each line should contain valid json"))
+        .collect()
 }
 
 fn document_paths(database: &CacheDatabase) -> Vec<String> {
@@ -233,6 +330,16 @@ fn run_scan(vault_root: &Path) {
         ])
         .assert()
         .success();
+}
+
+fn assert_json_snapshot(name: &str, value: &Value) {
+    let snapshot_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/snapshots")
+        .join(name);
+    let expected = fs::read_to_string(snapshot_path).expect("snapshot should be readable");
+    let actual = serde_json::to_string_pretty(value).expect("json should serialize");
+
+    assert_eq!(actual, expected.trim_end_matches('\n'));
 }
 
 fn copy_fixture_vault(name: &str, destination: &Path) {

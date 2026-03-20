@@ -160,12 +160,12 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Integration test: run doctor against `basic/` and `broken-frontmatter/` vaults
 
 ### 1.10 CLI output infrastructure
-- [ ] `--output json` global flag: all commands emit JSON when set
-- [ ] Line-delimited JSON for streamed/list output
-- [ ] `--fields` flag for field selection on list commands
-- [ ] `--limit` and `--offset` for pagination
-- [ ] Non-interactive detection: suppress spinners/prompts when stdout is not a TTY
-- [ ] Snapshot tests for JSON output structure of `scan` and `doctor`
+- [x] `--output json` global flag: all commands emit JSON when set
+- [x] Line-delimited JSON for streamed/list output
+- [x] `--fields` flag for field selection on list commands
+- [x] `--limit` and `--offset` for pagination
+- [x] Non-interactive detection: suppress spinners/prompts when stdout is not a TTY
+- [x] Snapshot tests for JSON output structure of `scan` and `doctor`
 
 ---
 
@@ -181,7 +181,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] `links <note>` command: list all outgoing links from a note, with resolution status
 - [x] Support note identification by path, filename, or alias
 - [x] `--output json` support for both commands
-- [ ] `--fields` support
+- [x] `--fields` support
 - [x] Integration tests against `basic/` vault
 
 ### 2.2 Move-safe rewrite engine

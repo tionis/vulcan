@@ -37,6 +37,15 @@ pub struct Cli {
     #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Human)]
     pub output: OutputFormat,
 
+    #[arg(long, global = true, value_delimiter = ',')]
+    pub fields: Option<Vec<String>>,
+
+    #[arg(long, global = true)]
+    pub limit: Option<usize>,
+
+    #[arg(long, global = true, default_value_t = 0)]
+    pub offset: usize,
+
     #[arg(long, global = true, action = ArgAction::SetTrue)]
     pub verbose: bool,
 

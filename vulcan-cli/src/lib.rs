@@ -4,9 +4,11 @@ pub use cli::{Cli, Command, OutputFormat};
 
 use clap::Parser;
 use serde::Serialize;
+use serde_json::{Map, Value};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::io;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use vulcan_core::{
     doctor_vault, initialize_vault, query_backlinks, query_links, scan_vault, BacklinkRecord,
@@ -71,11 +73,13 @@ where
 
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
+    let list_controls = ListOutputControls::from_cli(cli);
+    let stdout_is_tty = io::stdout().is_terminal();
 
     match cli.command {
         Command::Backlinks { ref note } => {
             let report = query_backlinks(&paths, note).map_err(CliError::operation)?;
-            print_backlinks_report(cli.output, &report)?;
+            print_backlinks_report(cli.output, &report, &list_controls, stdout_is_tty)?;
             Ok(())
         }
         Command::Describe => Err(CliError::not_implemented("describe")),
@@ -91,7 +95,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Links { ref note } => {
             let report = query_links(&paths, note).map_err(CliError::operation)?;
-            print_links_report(cli.output, &report)?;
+            print_links_report(cli.output, &report, &list_controls, stdout_is_tty)?;
             Ok(())
         }
         Command::Scan { full } => {
@@ -110,42 +114,78 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     }
 }
 
-fn print_links_report(output: OutputFormat, report: &OutgoingLinksReport) -> Result<(), CliError> {
+fn print_links_report(
+    output: OutputFormat,
+    report: &OutgoingLinksReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+) -> Result<(), CliError> {
+    let visible_links = paginated_items(&report.links, list_controls);
+
     match output {
         OutputFormat::Human => {
-            println!("Links for {} ({:?})", report.note_path, report.matched_by);
-            if report.links.is_empty() {
+            if stdout_is_tty {
+                println!("Links for {} ({:?})", report.note_path, report.matched_by);
+            }
+            if visible_links.is_empty() {
                 println!("No outgoing links.");
                 return Ok(());
             }
 
-            for link in &report.links {
-                print_outgoing_link(link);
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in outgoing_link_rows(report, visible_links) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for link in visible_links {
+                    print_outgoing_link(link);
+                }
             }
             Ok(())
         }
-        OutputFormat::Json => print_json(report),
+        OutputFormat::Json => print_json_lines(
+            outgoing_link_rows(report, visible_links),
+            list_controls.fields.as_deref(),
+        ),
     }
 }
 
-fn print_backlinks_report(output: OutputFormat, report: &BacklinksReport) -> Result<(), CliError> {
+fn print_backlinks_report(
+    output: OutputFormat,
+    report: &BacklinksReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+) -> Result<(), CliError> {
+    let visible_backlinks = paginated_items(&report.backlinks, list_controls);
+
     match output {
         OutputFormat::Human => {
-            println!(
-                "Backlinks for {} ({:?})",
-                report.note_path, report.matched_by
-            );
-            if report.backlinks.is_empty() {
+            if stdout_is_tty {
+                println!(
+                    "Backlinks for {} ({:?})",
+                    report.note_path, report.matched_by
+                );
+            }
+            if visible_backlinks.is_empty() {
                 println!("No backlinks.");
                 return Ok(());
             }
 
-            for backlink in &report.backlinks {
-                print_backlink(backlink);
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in backlink_rows(report, visible_backlinks) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for backlink in visible_backlinks {
+                    print_backlink(backlink);
+                }
             }
             Ok(())
         }
-        OutputFormat::Json => print_json(report),
+        OutputFormat::Json => print_json_lines(
+            backlink_rows(report, visible_backlinks),
+            list_controls.fields.as_deref(),
+        ),
     }
 }
 
@@ -238,6 +278,18 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), CliError> {
     Ok(())
 }
 
+fn print_json_lines(rows: Vec<Value>, fields: Option<&[String]>) -> Result<(), CliError> {
+    for row in rows {
+        let selected = select_fields(row, fields);
+        println!(
+            "{}",
+            serde_json::to_string(&selected).map_err(CliError::operation)?
+        );
+    }
+
+    Ok(())
+}
+
 fn resolve_vault_root(vault: &PathBuf) -> Result<PathBuf, CliError> {
     if vault.is_absolute() {
         return Ok(vault.clone());
@@ -307,6 +359,86 @@ fn print_path_section(title: &str, paths: &[String]) {
     }
 }
 
+fn outgoing_link_rows(report: &OutgoingLinksReport, links: &[OutgoingLinkRecord]) -> Vec<Value> {
+    links
+        .iter()
+        .map(|link| {
+            serde_json::json!({
+                "note_path": report.note_path,
+                "matched_by": report.matched_by,
+                "raw_text": link.raw_text,
+                "link_kind": link.link_kind,
+                "display_text": link.display_text,
+                "target_path_candidate": link.target_path_candidate,
+                "target_heading": link.target_heading,
+                "target_block": link.target_block,
+                "resolved_target_path": link.resolved_target_path,
+                "resolution_status": link.resolution_status,
+                "context": link.context,
+            })
+        })
+        .collect()
+}
+
+fn backlink_rows(report: &BacklinksReport, backlinks: &[BacklinkRecord]) -> Vec<Value> {
+    backlinks
+        .iter()
+        .map(|backlink| {
+            serde_json::json!({
+                "note_path": report.note_path,
+                "matched_by": report.matched_by,
+                "source_path": backlink.source_path,
+                "raw_text": backlink.raw_text,
+                "link_kind": backlink.link_kind,
+                "display_text": backlink.display_text,
+                "context": backlink.context,
+            })
+        })
+        .collect()
+}
+
+fn select_fields(row: Value, fields: Option<&[String]>) -> Value {
+    let Some(fields) = fields else {
+        return row;
+    };
+    let Some(object) = row.as_object() else {
+        return row;
+    };
+    let mut selected = Map::new();
+    for field in fields {
+        if let Some(value) = object.get(field) {
+            selected.insert(field.clone(), value.clone());
+        }
+    }
+    Value::Object(selected)
+}
+
+fn print_selected_human_fields(row: &Value, fields: &[String]) {
+    let Some(object) = row.as_object() else {
+        println!("{row}");
+        return;
+    };
+
+    let rendered = fields
+        .iter()
+        .filter_map(|field| {
+            object
+                .get(field)
+                .map(|value| format!("{field}={}", render_human_value(value)))
+        })
+        .collect::<Vec<_>>();
+
+    println!("{}", rendered.join(" | "));
+}
+
+fn render_human_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Null => "null".to_string(),
+        _ => value.to_string(),
+    }
+}
+
 fn print_outgoing_link(link: &OutgoingLinkRecord) {
     let target = link
         .resolved_target_path
@@ -353,6 +485,32 @@ fn zero_summary() -> vulcan_core::DoctorSummary {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ListOutputControls {
+    fields: Option<Vec<String>>,
+    limit: Option<usize>,
+    offset: usize,
+}
+
+impl ListOutputControls {
+    fn from_cli(cli: &Cli) -> Self {
+        Self {
+            fields: cli.fields.clone(),
+            limit: cli.limit,
+            offset: cli.offset,
+        }
+    }
+}
+
+fn paginated_items<'a, T>(items: &'a [T], controls: &ListOutputControls) -> &'a [T] {
+    let start = controls.offset.min(items.len());
+    let end = controls.limit.map_or(items.len(), |limit| {
+        start.saturating_add(limit).min(items.len())
+    });
+
+    &items[start..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +522,9 @@ mod tests {
 
         assert_eq!(cli.vault, PathBuf::from("."));
         assert_eq!(cli.output, OutputFormat::Human);
+        assert_eq!(cli.fields, None);
+        assert_eq!(cli.limit, None);
+        assert_eq!(cli.offset, 0);
         assert!(!cli.verbose);
         assert_eq!(cli.command, Command::Doctor);
     }
@@ -396,6 +557,12 @@ mod tests {
             "/tmp/vault",
             "--output",
             "json",
+            "--fields",
+            "source_path,raw_text",
+            "--limit",
+            "10",
+            "--offset",
+            "2",
             "--verbose",
             "scan",
             "--full",
@@ -404,6 +571,12 @@ mod tests {
 
         assert_eq!(cli.vault, PathBuf::from("/tmp/vault"));
         assert_eq!(cli.output, OutputFormat::Json);
+        assert_eq!(
+            cli.fields,
+            Some(vec!["source_path".to_string(), "raw_text".to_string()])
+        );
+        assert_eq!(cli.limit, Some(10));
+        assert_eq!(cli.offset, 2);
         assert!(cli.verbose);
         assert_eq!(cli.command, Command::Scan { full: true });
     }
