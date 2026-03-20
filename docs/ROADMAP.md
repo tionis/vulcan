@@ -30,7 +30,7 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 - [ ] Implement `user_version`-based migration framework (ordered migration list, apply sequentially in transaction, refuse on downgrade)
 - [ ] Schema v1: `documents` table — `id` (ULID), `path` (relative to vault root), `filename`, `extension`, `content_hash`, `raw_frontmatter`, `file_size`, `file_mtime`, `parser_version`, `indexed_at`
 - [ ] Schema v1: `headings` table — `id`, `document_id`, `level`, `text`, `byte_offset`
-- [ ] Schema v1: `block_refs` table — `id`, `document_id`, `block_id_text`, `byte_offset`
+- [ ] Schema v1: `block_refs` table — `id`, `document_id`, `block_id_text`, `block_id_byte_offset`, `target_block_byte_start`, `target_block_byte_end` (the block ID is a standalone paragraph *after* the block it labels; store offsets for both the ID and the referenced content block)
 - [ ] Schema v1: `links` table — `id`, `source_document_id`, `raw_text`, `link_kind` (wikilink/markdown/embed), `display_text`, `target_path_candidate`, `target_heading`, `target_block`, `resolved_target_id` (nullable FK), `origin_context` (body/property/frontmatter), `byte_offset`
 - [ ] Schema v1: `aliases` table — `id`, `document_id`, `alias_text`
 - [ ] Schema v1: `tags` table — `id`, `document_id`, `tag_text` (normalized, no `#` prefix)
@@ -63,17 +63,58 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 - [ ] Store merged config in an in-memory struct passed to parser and resolver
 - [ ] Unit tests for config merging, missing files, malformed files, precedence
 
-### 1.5 Markdown parser
-- [ ] `pulldown-cmark` integration with `ENABLE_WIKILINKS` + `ENABLE_GFM` + `into_offset_iter()`
-- [ ] Frontmatter extraction: detect `---` delimiters, extract raw YAML text, parse with `serde_yaml`, preserve raw text for lossless roundtrip
-- [ ] Heading extraction: level, text, byte offset
-- [ ] Block ref extraction: `^block-id` patterns, byte offset
-- [ ] Link extraction: wikilinks (`[[target]]`, `[[target|display]]`, `[[target#heading]]`, `[[target#^block]]`), Markdown links (`[text](target)`), embeds (`![[target]]`)
+### 1.5 Markdown parser pipeline
+
+Module layout: `vulcan-core/src/parser/` with `mod.rs`, `options.rs`, `comment_scanner.rs`, `semantic_pass.rs`, `link_classifier.rs`, `tag_extractor.rs`, `block_ref.rs`, `types.rs`.
+
+Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocument`
+
+**Stage 0: Comment region pre-scan** (`comment_scanner.rs`)
+- [ ] Scan raw source bytes for `%%` pairs, record byte ranges as comment regions (`Vec<Range<usize>>`)
+- [ ] Handle both inline (`%%comment%%`) and multi-line (`%%\n...\n%%`) comments
+- [ ] Unit tests: paired comments, nested `%%`, unclosed `%%` (treat as literal), adjacent comments
+
+**Stage 1: pulldown-cmark configuration** (`options.rs`)
+- [ ] Configure parser with `into_offset_iter()` and options: `ENABLE_WIKILINKS`, `ENABLE_GFM`, `ENABLE_MATH`, `ENABLE_FOOTNOTES`, `ENABLE_YAML_STYLE_METADATA_BLOCKS`
+
+**Stage 2: Single-pass semantic processor** (`semantic_pass.rs`)
+
+*a) Graph entity extraction (using original byte offsets):*
+- [ ] Link extraction: wikilinks (`[[target]]`, `[[target|display]]`), Markdown links (`[text](target)`), embeds (`![[target]]`)
 - [ ] For each link: capture raw text, kind, display text, target path candidate, heading/block subpath, byte offset, origin context
-- [ ] Obsidian semantic pass: classify callouts (`[!type]` in blockquotes), recognize embed markers, detect inline tags (`#tag`), detect inline aliases
+- [ ] Link classifier (`link_classifier.rs`): split `dest_url` on `#` for heading/block subpath; detect `^` prefix for block refs; distinguish note embeds from image embeds by file extension; classify `obsidian://` URIs as external links
+- [ ] Heading extraction: level, text, byte offset
+- [ ] Block ref extraction (`block_ref.rs`): track preceding block-level element, detect standalone paragraphs matching `^[a-zA-Z0-9-]+`, associate with preceding block, record byte offsets for both the ID and the content block
+- [ ] Tag extraction (`tag_extractor.rs`): match `#[a-zA-Z0-9/_-]+` in `Text` events for inline tags including nested hierarchies (`#tag/subtag/deep`)
+- [ ] Callout classification: detect `[!type]` in blockquotes
+- [ ] HTML link detection: flag `<a href>` and `<img src>` in `Html`/`InlineHtml` events for `doctor` diagnostics
+
+*b) Clean chunk text (comments and markers stripped):*
+- [ ] Suppress text content for events whose byte range overlaps a comment region from Stage 0
+- [ ] Strip `==` highlight markers from text (keep the highlighted text itself)
+- [ ] Accumulate clean text into chunk buffers (chunk splitting is handled by the chunking engine in §1.6)
+
+*c) Frontmatter extraction:*
+- [ ] Capture raw YAML from `MetadataBlock` event, parse with `serde_yaml`, preserve raw text for lossless roundtrip
 - [ ] Alias extraction from frontmatter `aliases` field
-- [ ] Tag extraction from frontmatter `tags` field and inline `#tag` occurrences
-- [ ] Unit tests: well-formed notes, malformed frontmatter, empty files, wikilinks with all subpath variants, Markdown links, embeds, nested blockquotes, callouts, Unicode content, unclosed wikilinks
+- [ ] Tag extraction from frontmatter `tags` field (merged with inline tags)
+
+**ParsedDocument output type** (`types.rs`)
+- [ ] Define `ParsedDocument`: raw frontmatter, parsed frontmatter, headings, block refs, links, tags, aliases, chunk texts (clean), diagnostics
+- [ ] Define supporting types: `RawLink`, `RawHeading`, `RawBlockRef`, `RawTag`, `ChunkText`, `ParseDiagnostic`
+
+**Unit tests**
+- [ ] Well-formed notes with all link variants (wikilinks, Markdown links, embeds, subpaths, display text)
+- [ ] Malformed frontmatter, empty files, frontmatter-only files
+- [ ] `%%comments%%` — verify stripped from chunk text, verify links inside comments are still extracted (with a diagnostic)
+- [ ] `==highlights==` — verify markers stripped, text preserved
+- [ ] Nested tags (`#tag/subtag/deep`)
+- [ ] `obsidian://` URIs classified as external
+- [ ] HTML links detected for diagnostics
+- [ ] Block refs: standalone `^id` after paragraph, list, blockquote, code block
+- [ ] Footnotes containing links
+- [ ] Callouts with internal links
+- [ ] Unicode content, unclosed wikilinks, edge cases
 
 ### 1.6 Chunking engine
 - [ ] Implement `heading` strategy (default): split at heading boundaries, sub-split at paragraph boundaries if section exceeds target size
@@ -114,6 +155,7 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
   - Stale index rows (documents in DB but not on disk)
   - Missing index rows (documents on disk but not in DB)
   - Orphan notes (no inbound or outbound links)
+  - HTML links (`<a href>`, `<img src>`) in note content that are not tracked in the link graph
 - [ ] Support `--output json` for machine-readable diagnostics
 - [ ] Integration test: run doctor against `basic/` and `broken-frontmatter/` vaults
 
