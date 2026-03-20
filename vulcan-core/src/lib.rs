@@ -87,8 +87,9 @@ pub use scan::{
     ScanPhase, ScanProgress, ScanSummary,
 };
 pub use search::{
-    search_vault, SearchError, SearchFuzzyExpansion, SearchHit, SearchHitExplain, SearchPlan,
-    SearchQuery, SearchReport,
+    export_static_search_index, search_vault, SearchError, SearchFuzzyExpansion, SearchHit,
+    SearchHitExplain, SearchPlan, SearchQuery, SearchReport, StaticSearchIndexEntry,
+    StaticSearchIndexReport,
 };
 pub use suggestions::{
     bulk_replace, link_mentions, suggest_duplicates, suggest_mentions, DuplicateGroup,

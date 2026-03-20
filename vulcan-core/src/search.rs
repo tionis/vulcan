@@ -177,6 +177,25 @@ pub struct SearchReport {
     pub hits: Vec<SearchHit>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StaticSearchIndexReport {
+    pub version: u32,
+    pub documents: usize,
+    pub chunks: usize,
+    pub entries: Vec<StaticSearchIndexEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StaticSearchIndexEntry {
+    pub document_path: String,
+    pub chunk_id: String,
+    pub sequence_index: usize,
+    pub heading_path: Vec<String>,
+    pub content: String,
+    pub document_title: String,
+    pub aliases_text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SearchHit {
     pub document_path: String,
@@ -248,12 +267,70 @@ pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchRep
     })
 }
 
+pub fn export_static_search_index(
+    paths: &VaultPaths,
+) -> Result<StaticSearchIndexReport, SearchError> {
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let entries = load_static_search_index_entries(connection)?;
+    let documents = entries
+        .iter()
+        .map(|entry| entry.document_path.as_str())
+        .collect::<HashSet<_>>()
+        .len();
+
+    Ok(StaticSearchIndexReport {
+        version: 1,
+        documents,
+        chunks: entries.len(),
+        entries,
+    })
+}
+
 fn open_existing_cache(paths: &VaultPaths) -> Result<CacheDatabase, SearchError> {
     if !paths.cache_db().exists() {
         return Err(SearchError::CacheMissing);
     }
 
     CacheDatabase::open(paths).map_err(SearchError::from)
+}
+
+fn load_static_search_index_entries(
+    connection: &Connection,
+) -> Result<Vec<StaticSearchIndexEntry>, SearchError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT
+            documents.path,
+            chunks.id,
+            chunks.sequence_index,
+            chunks.heading_path,
+            search_chunk_content.content,
+            search_chunk_content.document_title,
+            search_chunk_content.aliases
+        FROM search_chunk_content
+        JOIN chunks ON chunks.id = search_chunk_content.chunk_id
+        JOIN documents ON documents.id = search_chunk_content.document_id
+        ORDER BY documents.path, chunks.sequence_index
+        ",
+    )?;
+
+    let rows = statement.query_map([], |row| {
+        let heading_path =
+            serde_json::from_str::<Vec<String>>(&row.get::<_, String>(3)?).unwrap_or_default();
+        Ok(StaticSearchIndexEntry {
+            document_path: row.get(0)?,
+            chunk_id: row.get(1)?,
+            sequence_index: row.get(2)?,
+            heading_path,
+            content: row.get(4)?,
+            document_title: row.get(5)?,
+            aliases_text: row.get(6)?,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(SearchError::from)
 }
 
 fn execute_search(
@@ -1109,6 +1186,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Done.md".to_string()]
         );
+    }
+
+    #[test]
+    fn static_search_index_export_includes_chunk_content_and_headings() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = export_static_search_index(&paths).expect("export should succeed");
+
+        assert_eq!(report.version, 1);
+        assert_eq!(report.documents, 3);
+        assert_eq!(report.chunks, report.entries.len());
+        assert!(report.entries.iter().any(|entry| {
+            entry.document_path == "Home.md"
+                && entry.heading_path == vec!["Home".to_string()]
+                && entry.content.contains("dashboard")
+        }));
     }
 
     #[test]
