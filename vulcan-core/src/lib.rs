@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod chunking;
 pub mod config;
+pub mod doctor;
 pub mod init;
 pub mod parser;
 pub mod paths;
@@ -12,6 +13,10 @@ pub use config::{
     create_default_config, default_config_template, load_vault_config, ChunkingConfig,
     ChunkingStrategy, ConfigDiagnostic, ConfigLoadResult, EmbeddingProviderConfig,
     LinkResolutionMode, LinkStylePreference, VaultConfig,
+};
+pub use doctor::{
+    doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorLinkIssue,
+    DoctorReport, DoctorSummary,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
 pub use parser::{

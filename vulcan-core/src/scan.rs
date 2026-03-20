@@ -326,6 +326,13 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
     Ok(files)
 }
 
+pub(crate) fn discover_relative_paths(vault_root: &Path) -> Result<Vec<String>, ScanError> {
+    Ok(discover_files(vault_root)?
+        .into_iter()
+        .map(|file| file.relative_path)
+        .collect())
+}
+
 fn normalize_relative_path(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {

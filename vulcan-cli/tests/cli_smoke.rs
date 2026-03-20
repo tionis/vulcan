@@ -21,17 +21,6 @@ fn help_mentions_global_flags_and_core_commands() {
 }
 
 #[test]
-fn doctor_stub_returns_clear_error_message() {
-    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
-
-    command
-        .arg("doctor")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("doctor is not implemented yet"));
-}
-
-#[test]
 fn init_json_output_creates_default_config() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -94,6 +83,61 @@ fn scan_json_output_indexes_fixture_vault() {
     );
 }
 
+#[test]
+fn doctor_json_output_reports_clean_basic_vault() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "doctor",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["summary"]["unresolved_links"], 0);
+    assert_eq!(json["summary"]["ambiguous_links"], 0);
+    assert_eq!(json["summary"]["parse_failures"], 0);
+    assert_eq!(json["summary"]["missing_index_rows"], 0);
+    assert_eq!(json["summary"]["orphan_notes"], 0);
+}
+
+#[test]
+fn doctor_json_output_reports_broken_frontmatter_vault() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("broken-frontmatter", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "doctor",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["summary"]["parse_failures"], 1);
+    assert_eq!(json["parse_failures"][0]["document_path"], "Broken.md");
+}
+
 fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {
     serde_json::from_slice(&assert.get_output().stdout).expect("stdout should contain valid json")
 }
@@ -109,6 +153,21 @@ fn document_paths(database: &CacheDatabase) -> Vec<String> {
 
     rows.map(|row| row.expect("row should deserialize"))
         .collect()
+}
+
+fn run_scan(vault_root: &Path) {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "scan",
+            "--full",
+        ])
+        .assert()
+        .success();
 }
 
 fn copy_fixture_vault(name: &str, destination: &Path) {

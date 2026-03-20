@@ -8,7 +8,10 @@ use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::path::PathBuf;
-use vulcan_core::{initialize_vault, scan_vault, InitSummary, ScanMode, ScanSummary, VaultPaths};
+use vulcan_core::{
+    doctor_vault, initialize_vault, scan_vault, DoctorDiagnosticIssue, DoctorLinkIssue,
+    DoctorReport, InitSummary, ScanMode, ScanSummary, VaultPaths,
+};
 
 #[derive(Debug)]
 pub struct CliError {
@@ -70,7 +73,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
 
     match cli.command {
         Command::Describe => Err(CliError::not_implemented("describe")),
-        Command::Doctor => Err(CliError::not_implemented("doctor")),
+        Command::Doctor => {
+            let report = doctor_vault(&paths).map_err(CliError::operation)?;
+            print_doctor_report(cli.output, &paths, &report)?;
+            Ok(())
+        }
         Command::Init => {
             let summary = initialize_vault(&paths).map_err(CliError::operation)?;
             print_init_summary(cli.output, &summary)?;
@@ -133,6 +140,46 @@ fn print_scan_summary(output: OutputFormat, summary: &ScanSummary) {
     }
 }
 
+fn print_doctor_report(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    report: &DoctorReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Doctor summary for {}", paths.vault_root().display());
+            println!("- unresolved links: {}", report.summary.unresolved_links);
+            println!(
+                "- ambiguous link targets: {}",
+                report.summary.ambiguous_links
+            );
+            println!("- parse failures: {}", report.summary.parse_failures);
+            println!("- stale index rows: {}", report.summary.stale_index_rows);
+            println!(
+                "- missing index rows: {}",
+                report.summary.missing_index_rows
+            );
+            println!("- orphan notes: {}", report.summary.orphan_notes);
+            println!("- HTML links: {}", report.summary.html_links);
+
+            if report.summary == zero_summary() {
+                println!("No issues found.");
+                return Ok(());
+            }
+
+            print_link_section("Unresolved links", &report.unresolved_links);
+            print_link_section("Ambiguous link targets", &report.ambiguous_links);
+            print_diagnostic_section("Parse failures", &report.parse_failures);
+            print_path_section("Stale index rows", &report.stale_index_rows);
+            print_path_section("Missing index rows", &report.missing_index_rows);
+            print_path_section("Orphan notes", &report.orphan_notes);
+            print_diagnostic_section("HTML links", &report.html_links);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_json<T: Serialize>(value: &T) -> Result<(), CliError> {
     println!(
         "{}",
@@ -149,6 +196,77 @@ fn resolve_vault_root(vault: &PathBuf) -> Result<PathBuf, CliError> {
     Ok(std::env::current_dir()
         .map_err(|error| CliError::io(&error))?
         .join(vault))
+}
+
+fn print_link_section(title: &str, issues: &[DoctorLinkIssue]) {
+    if issues.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("{title}:");
+    for issue in issues {
+        let path = issue.document_path.as_deref().unwrap_or("<unknown>");
+        if issue.matches.is_empty() {
+            if let Some(target) = issue.target.as_deref() {
+                println!("- {path}: {target} ({})", issue.message);
+            } else {
+                println!("- {path}: {}", issue.message);
+            }
+        } else if let Some(target) = issue.target.as_deref() {
+            println!(
+                "- {path}: {target} ({}) [{}]",
+                issue.message,
+                issue.matches.join(", ")
+            );
+        } else {
+            println!("- {path}: {} [{}]", issue.message, issue.matches.join(", "));
+        }
+    }
+}
+
+fn print_diagnostic_section(title: &str, issues: &[DoctorDiagnosticIssue]) {
+    if issues.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("{title}:");
+    for issue in issues {
+        let path = issue.document_path.as_deref().unwrap_or("<unknown>");
+        if let Some(byte_range) = issue.byte_range.as_ref() {
+            println!(
+                "- {path}: {} (bytes {}-{})",
+                issue.message, byte_range.start, byte_range.end
+            );
+        } else {
+            println!("- {path}: {}", issue.message);
+        }
+    }
+}
+
+fn print_path_section(title: &str, paths: &[String]) {
+    if paths.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("{title}:");
+    for path in paths {
+        println!("- {path}");
+    }
+}
+
+fn zero_summary() -> vulcan_core::DoctorSummary {
+    vulcan_core::DoctorSummary {
+        unresolved_links: 0,
+        ambiguous_links: 0,
+        parse_failures: 0,
+        stale_index_rows: 0,
+        missing_index_rows: 0,
+        orphan_notes: 0,
+        html_links: 0,
+    }
 }
 
 #[cfg(test)]
