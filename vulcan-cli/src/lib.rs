@@ -16,13 +16,13 @@ use std::path::PathBuf;
 use vulcan_core::{
     cluster_vectors, doctor_vault, evaluate_base_file, index_vectors, initialize_vault, move_note,
     query_backlinks, query_links, query_notes, query_vector_neighbors, rebuild_vault, repair_fts,
-    scan_vault, search_vault, vector_duplicates, BacklinkRecord, BacklinksReport, BasesEvalReport,
-    ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary,
-    MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
-    RebuildQuery, RebuildReport, RepairFtsQuery, RepairFtsReport, ScanMode, ScanSummary, SearchHit,
-    SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
-    VectorDuplicatesReport, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsQuery, VectorNeighborsReport,
+    scan_vault, search_vault, vector_duplicates, watch_vault, BacklinkRecord, BacklinksReport,
+    BasesEvalReport, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorLinkIssue,
+    DoctorReport, InitSummary, MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, RebuildQuery, RebuildReport, RepairFtsQuery, RepairFtsReport, ScanMode,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexQuery, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -141,6 +141,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_repair_fts_report(cli.output, &report)
             }
         },
+        Command::Watch { debounce_ms } => {
+            if cli.output == OutputFormat::Human && stdout_is_tty {
+                println!(
+                    "Watching {} (debounce {}ms)",
+                    paths.vault_root().display(),
+                    debounce_ms
+                );
+            }
+            watch_vault(&paths, &WatchOptions { debounce_ms }, |report| {
+                print_watch_report(cli.output, &report)
+            })
+            .map_err(CliError::operation)
+        }
         Command::Links { ref note } => {
             let report = query_links(&paths, note).map_err(CliError::operation)?;
             print_links_report(cli.output, &report, &list_controls, stdout_is_tty)?;
@@ -369,6 +382,34 @@ fn print_repair_fts_report(output: OutputFormat, report: &RepairFtsReport) -> Re
                 println!(
                     "Rebuilt FTS rows for {} chunks across {} documents",
                     report.indexed_chunks, report.indexed_documents
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_watch_report(output: OutputFormat, report: &WatchReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.startup {
+                println!(
+                    "Initial scan: {} added, {} updated, {} unchanged, {} deleted",
+                    report.summary.added,
+                    report.summary.updated,
+                    report.summary.unchanged,
+                    report.summary.deleted
+                );
+            } else {
+                println!(
+                    "Watch update ({} events, {} paths): {} added, {} updated, {} unchanged, {} deleted",
+                    report.event_count,
+                    report.paths.len(),
+                    report.summary.added,
+                    report.summary.updated,
+                    report.summary.unchanged,
+                    report.summary.deleted
                 );
             }
             Ok(())
@@ -1276,6 +1317,8 @@ mod tests {
             Cli::try_parse_from(["vulcan", "rebuild", "--dry-run"]).expect("cli should parse");
         let repair = Cli::try_parse_from(["vulcan", "repair", "fts", "--dry-run"])
             .expect("cli should parse");
+        let watch = Cli::try_parse_from(["vulcan", "watch", "--debounce-ms", "125"])
+            .expect("cli should parse");
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
             .expect("cli should parse");
@@ -1331,6 +1374,7 @@ mod tests {
                 command: RepairCommand::Fts { dry_run: true }
             }
         );
+        assert_eq!(watch.command, Command::Watch { debounce_ms: 125 });
 
         assert_eq!(
             links.command,
@@ -1454,6 +1498,10 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "repair"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "watch"));
         assert!(report
             .commands
             .iter()

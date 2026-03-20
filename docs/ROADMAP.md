@@ -204,7 +204,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 
 ### 2.3 Write serialization
 - [x] Application-level write lock (file lock or advisory lock on the DB)
-- [~] CLI commands acquire write lock before mutating; watcher queues events during lock
+- [x] CLI commands acquire write lock before mutating; watcher queues events during lock
 - [x] `busy_timeout` as backstop
 - [x] Test: concurrent scan + move produces correct final state
 
@@ -347,9 +347,9 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 **Design refs:** §4 (concurrency/watcher), §16 (performance), §19 (test strategy)
 
 ### 6.1 File watcher
-- [ ] `watch` command or `--watch` flag: start `notify`-based file watcher
-- [ ] Batch and coalesce events before acquiring write lock
-- [ ] On startup: reconcile watcher state against directory scan
+- [x] `watch` command or `--watch` flag: start `notify`-based file watcher
+- [x] Batch and coalesce events before acquiring write lock
+- [x] On startup: reconcile watcher state against directory scan
 - [ ] Cross-platform testing: Linux (inotify), macOS (FSEvents), Windows (ReadDirectoryChanges)
 - [ ] Handle edge cases: rapid-fire saves, file replacements (some editors), large batch changes
 
@@ -373,7 +373,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 ### 6.5 CLI polish
 - [x] `describe` or `help --json` command for runtime schema introspection
 - [ ] Consistent error messages with actionable guidance
-- [ ] Input hardening: validate paths, reject control characters, reject path traversal
+- [~] Input hardening: validate paths, reject control characters, reject path traversal
 - [~] `--dry-run` on all mutating commands (move, reindex, repair)
 - [ ] Agent-oriented documentation: ship `AGENTS.md` or similar with invariants for automated consumers
 - [x] Shell completions via `clap_complete`

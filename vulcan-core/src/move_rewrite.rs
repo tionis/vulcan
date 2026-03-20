@@ -1,5 +1,6 @@
 use crate::graph::resolve_note_reference;
 use crate::parser::{parse_document, RawLink};
+use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePathOptions};
 use crate::scan::scan_vault_unlocked;
 use crate::write_lock::acquire_write_lock;
 use crate::{
@@ -17,7 +18,7 @@ use std::path::{Component, Path, PathBuf};
 pub enum MoveError {
     DestinationExists(PathBuf),
     Graph(GraphQueryError),
-    InvalidDestination(String),
+    InvalidDestination(RelativePathError),
     Io(std::io::Error),
     MissingLinkSpan { path: String, byte_offset: usize },
     Scan(ScanError),
@@ -31,7 +32,9 @@ impl Display for MoveError {
                 write!(formatter, "destination already exists: {}", path.display())
             }
             Self::Graph(error) => write!(formatter, "{error}"),
-            Self::InvalidDestination(path) => write!(formatter, "invalid destination path: {path}"),
+            Self::InvalidDestination(error) => {
+                write!(formatter, "invalid destination path: {error}")
+            }
             Self::Io(error) => write!(formatter, "{error}"),
             Self::MissingLinkSpan { path, byte_offset } => {
                 write!(
@@ -49,12 +52,11 @@ impl Error for MoveError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Graph(error) => Some(error),
+            Self::InvalidDestination(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Scan(error) => Some(error),
             Self::Sqlite(error) => Some(error),
-            Self::DestinationExists(_)
-            | Self::InvalidDestination(_)
-            | Self::MissingLinkSpan { .. } => None,
+            Self::DestinationExists(_) | Self::MissingLinkSpan { .. } => None,
         }
     }
 }
@@ -226,43 +228,14 @@ fn open_existing_cache(paths: &VaultPaths) -> Result<Connection, MoveError> {
 }
 
 fn normalize_destination_path(destination: &str) -> Result<String, MoveError> {
-    if destination.chars().any(char::is_control) {
-        return Err(MoveError::InvalidDestination(destination.to_string()));
-    }
-
-    let mut parts = Vec::new();
-    for component in Path::new(destination).components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
-            Component::ParentDir => {
-                if parts.pop().is_none() {
-                    return Err(MoveError::InvalidDestination(destination.to_string()));
-                }
-            }
-            Component::Prefix(_) | Component::RootDir => {
-                return Err(MoveError::InvalidDestination(destination.to_string()));
-            }
-        }
-    }
-
-    if parts.is_empty() {
-        return Err(MoveError::InvalidDestination(destination.to_string()));
-    }
-
-    let mut normalized = parts.join("/");
-    if Path::new(&normalized).extension().is_none() {
-        normalized.push_str(".md");
-    }
-    if Path::new(&normalized)
-        .extension()
-        .and_then(|value| value.to_str())
-        != Some("md")
-    {
-        return Err(MoveError::InvalidDestination(destination.to_string()));
-    }
-
-    Ok(normalized)
+    normalize_relative_input_path(
+        destination,
+        RelativePathOptions {
+            expected_extension: Some("md"),
+            append_extension_if_missing: true,
+        },
+    )
+    .map_err(MoveError::InvalidDestination)
 }
 
 fn load_inbound_links(
