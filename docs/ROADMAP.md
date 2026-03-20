@@ -38,7 +38,7 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 - [x] Schema v1: `diagnostics` table — `id`, `document_id` (nullable), `kind` (unresolved_link/parse_error/type_mismatch/unsupported_syntax), `message`, `detail` (JSON), `created_at`
 - [x] Schema v1: `meta` table — `key`, `value` (for `schema_version`, `parser_version`, etc.)
 - [x] Create indexes on: `documents(path)`, `documents(content_hash)`, `links(source_document_id)`, `links(resolved_target_id)`, `aliases(document_id)`, `aliases(alias_text)`, `tags(tag_text)`, `chunks(document_id)`
-- [~] Write rebuild command: drop all rows, rescan vault from scratch
+- [x] Write rebuild command: drop all rows, rescan vault from scratch
 - [x] Unit tests for migration framework (apply, skip already-applied, refuse downgrade)
 
 ### 1.3 Vault discovery and file scanning
@@ -221,7 +221,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Schema migration: add FTS5 virtual table in external-content mode, referencing `chunks` table
 - [x] Indexed fields: chunk text content, document title, aliases, headings
 - [x] Synchronization triggers or explicit rebuild to keep FTS in sync with chunks table
-- [ ] Rebuild FTS command (for repair)
+- [x] Rebuild FTS command (for repair)
 
 ### 3.2 Search command
 - [x] `search <query>` command
@@ -371,12 +371,12 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [ ] Test downgrade detection: newer DB + older binary = clear error message
 
 ### 6.5 CLI polish
-- [ ] `describe` or `help --json` command for runtime schema introspection
+- [x] `describe` or `help --json` command for runtime schema introspection
 - [ ] Consistent error messages with actionable guidance
 - [ ] Input hardening: validate paths, reject control characters, reject path traversal
-- [ ] `--dry-run` on all mutating commands (move, reindex, repair)
+- [~] `--dry-run` on all mutating commands (move, reindex, repair)
 - [ ] Agent-oriented documentation: ship `AGENTS.md` or similar with invariants for automated consumers
-- [ ] Shell completions via `clap_complete`
+- [x] Shell completions via `clap_complete`
 
 ### 6.6 Comprehensive integration test suite
 - [ ] All test vaults produce expected results end-to-end

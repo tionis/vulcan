@@ -19,6 +19,8 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("--verbose"))
             .and(predicate::str::contains("init"))
             .and(predicate::str::contains("scan"))
+            .and(predicate::str::contains("rebuild"))
+            .and(predicate::str::contains("repair"))
             .and(predicate::str::contains("links"))
             .and(predicate::str::contains("backlinks"))
             .and(predicate::str::contains("notes"))
@@ -27,7 +29,9 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("vectors"))
             .and(predicate::str::contains("cluster"))
             .and(predicate::str::contains("move"))
-            .and(predicate::str::contains("doctor")),
+            .and(predicate::str::contains("doctor"))
+            .and(predicate::str::contains("describe"))
+            .and(predicate::str::contains("completions")),
     );
 }
 
@@ -743,6 +747,79 @@ fn move_json_output_supports_dry_run_and_apply() {
     assert!(fs::read_to_string(vault_root.join("Home.md"))
         .expect("home should be readable")
         .contains("[[Archive/Alpha#Status]]"));
+}
+
+#[test]
+fn rebuild_and_repair_json_output_support_dry_run() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let rebuild_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "rebuild",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let rebuild_json = parse_stdout_json(&rebuild_assert);
+    assert_eq!(rebuild_json["dry_run"], true);
+    assert_eq!(rebuild_json["discovered"], 3);
+
+    let repair_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "repair",
+            "fts",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let repair_json = parse_stdout_json(&repair_assert);
+    assert_eq!(repair_json["dry_run"], true);
+    assert_eq!(repair_json["indexed_documents"], 3);
+    assert_eq!(repair_json["indexed_chunks"], 4);
+}
+
+#[test]
+fn describe_json_output_exposes_runtime_command_schema() {
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "json", "describe"])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["name"], "vulcan");
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .any(|command| command["name"] == "repair"));
+}
+
+#[test]
+fn completions_command_emits_shell_script() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("vulcan").and(predicate::str::contains("complete")));
 }
 
 fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {

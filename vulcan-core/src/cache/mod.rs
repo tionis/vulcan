@@ -4,6 +4,7 @@ mod schema;
 
 pub use error::CacheError;
 pub use migrations::{Migration, MigrationRegistry};
+pub(crate) use schema::rebuild_search_index;
 
 use crate::paths::{ensure_vulcan_dir, VaultPaths};
 use crate::{EXTRACTION_VERSION, PARSER_VERSION};

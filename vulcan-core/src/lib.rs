@@ -5,6 +5,7 @@ pub mod config;
 pub mod doctor;
 pub mod graph;
 pub mod init;
+pub mod maintenance;
 pub mod move_rewrite;
 pub mod parser;
 pub mod paths;
@@ -34,6 +35,10 @@ pub use graph::{
     OutgoingLinksReport, ResolutionStatus,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
+pub use maintenance::{
+    rebuild_vault, repair_fts, MaintenanceError, RebuildQuery, RebuildReport, RepairFtsQuery,
+    RepairFtsReport,
+};
 pub use move_rewrite::{move_note, LinkChange, MoveError, MoveSummary, RewrittenFile};
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
