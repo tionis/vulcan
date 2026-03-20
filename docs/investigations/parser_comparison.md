@@ -104,11 +104,11 @@ Ranked by importance to Vulcan:
 | Extensibility | Excellent | Plugin-based architecture with 150+ community plugins. Micromark for tokenization, mdast for AST, rehype for HTML. Very composable. |
 | Correctness | Good | CommonMark compliant. micromark is the JS equivalent of markdown-rs. |
 | Performance | Poor | JavaScript/Node.js. Orders of magnitude slower than Rust for batch processing of large vaults. |
-| Language fit | Poor | TypeScript — requires Node.js runtime or WASM compilation. Binary distribution is painful (pkg, nexe, or bundled V8). Not viable for a single-binary CLI. |
+| Language fit | Moderate | TypeScript — single-binary distribution is possible via Bun (`bun build --compile`). However, the resulting binary bundles a JS runtime (~50-90MB), and there is a runtime performance ceiling for CPU-bound text processing compared to native Rust. |
 
 **Strengths:** Richest ecosystem. If you need an obscure Markdown extension, there's probably a remark plugin for it. The `remark-stringify` roundtrip (parse → transform → serialize) is excellent.
 
-**Weaknesses:** Performance and distribution. Parsing 5000 notes in Node.js is slow. Distributing as a single binary requires bundling a JS runtime. The entire architecture is optimized for web/build tooling, not for a local CLI.
+**Weaknesses:** Performance. Parsing 5000 notes in JS is orders of magnitude slower than Rust for CPU-bound text processing. Single-binary distribution is possible via Bun (`bun build --compile`), but the resulting binary bundles a JS runtime (~50-90MB). The ecosystem is optimized for web/build tooling, not for a performance-sensitive local CLI.
 
 ---
 
@@ -127,7 +127,7 @@ Ranked by importance to Vulcan:
 | Extensibility | Good | Rule-based plugin system. Can add/replace/modify parsing rules. |
 | Correctness | Good | CommonMark compliant. |
 | Performance | Poor | JavaScript. |
-| Language fit | Poor | Same issues as remark — requires JS runtime. |
+| Language fit | Moderate | Same as remark — single binary possible via Bun, but JS runtime overhead and large binary size. |
 
 **Strengths:** Simple, fast-for-JS, good plugin model.
 
@@ -170,12 +170,12 @@ Ranked by importance to Vulcan:
 | **Extensibility** | ⚠️ Post-process | ✅ Options | ✅ Best | ✅ Plugins | ✅ Rules | ❌ None |
 | **Correctness** | ✅ Excellent | ✅ Excellent | ✅ Excellent | ✅ Good | ✅ Good | ✅ Best |
 | **Performance** | ✅ Fastest | ✅ Fast | ✅ Fast (Go) | ❌ Slow | ❌ Slow | ✅ Fast |
-| **Rust integration** | ✅ Native | ✅ Native | ❌ FFI/sidecar | ❌ Runtime | ❌ Runtime | ✅ Native |
+| **Rust integration** | ✅ Native | ✅ Native | ❌ FFI/sidecar | ⚠️ Bun binary | ⚠️ Bun binary | ✅ Native |
 
 ## Eliminated candidates
 
 - **markdown-it**: No byte-level offsets. Dealbreaker for rewrite engine.
-- **remark/unified**: Performance and distribution story incompatible with single-binary CLI.
+- **remark/unified**: Single binary possible via Bun, but JS runtime performance is orders of magnitude slower than Rust for CPU-bound batch processing of large vaults. Binary size overhead (~50-90MB) is also significant.
 - **markdown-rs**: No wikilinks, no extension API. Would require forking.
 - **goldmark**: Excellent parser, wrong language. FFI/sidecar overhead unjustifiable for core pipeline.
 
