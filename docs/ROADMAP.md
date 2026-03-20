@@ -70,61 +70,61 @@ Module layout: `vulcan-core/src/parser/` with `mod.rs`, `options.rs`, `comment_s
 Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocument`
 
 **Stage 0: Comment region pre-scan** (`comment_scanner.rs`)
-- [ ] Scan raw source bytes for `%%` pairs, record byte ranges as comment regions (`Vec<Range<usize>>`)
-- [ ] Handle both inline (`%%comment%%`) and multi-line (`%%\n...\n%%`) comments
-- [ ] Unit tests: paired comments, nested `%%`, unclosed `%%` (treat as literal), adjacent comments
+- [x] Scan raw source bytes for `%%` pairs, record byte ranges as comment regions (`Vec<Range<usize>>`)
+- [x] Handle both inline (`%%comment%%`) and multi-line (`%%\n...\n%%`) comments
+- [x] Unit tests: paired comments, nested `%%`, unclosed `%%` (treat as literal), adjacent comments
 
 **Stage 1: pulldown-cmark configuration** (`options.rs`)
-- [ ] Configure parser with `into_offset_iter()` and options: `ENABLE_WIKILINKS`, `ENABLE_GFM`, `ENABLE_MATH`, `ENABLE_FOOTNOTES`, `ENABLE_YAML_STYLE_METADATA_BLOCKS`
+- [x] Configure parser with `into_offset_iter()` and options: `ENABLE_WIKILINKS`, `ENABLE_GFM`, `ENABLE_MATH`, `ENABLE_FOOTNOTES`, `ENABLE_YAML_STYLE_METADATA_BLOCKS`
 
 **Stage 2: Single-pass semantic processor** (`semantic_pass.rs`)
 
 *a) Graph entity extraction (using original byte offsets):*
-- [ ] Link extraction: wikilinks (`[[target]]`, `[[target|display]]`), Markdown links (`[text](target)`), embeds (`![[target]]`)
-- [ ] For each link: capture raw text, kind, display text, target path candidate, heading/block subpath, byte offset, origin context
-- [ ] Link classifier (`link_classifier.rs`): split `dest_url` on `#` for heading/block subpath; detect `^` prefix for block refs; distinguish note embeds from image embeds by file extension; classify `obsidian://` URIs as external links
-- [ ] Heading extraction: level, text, byte offset
-- [ ] Block ref extraction (`block_ref.rs`): track preceding block-level element, detect standalone paragraphs matching `^[a-zA-Z0-9-]+`, associate with preceding block, record byte offsets for both the ID and the content block
-- [ ] Tag extraction (`tag_extractor.rs`): match `#[a-zA-Z0-9/_-]+` in `Text` events for inline tags including nested hierarchies (`#tag/subtag/deep`)
-- [ ] Callout classification: detect `[!type]` in blockquotes
-- [ ] HTML link detection: flag `<a href>` and `<img src>` in `Html`/`InlineHtml` events for `doctor` diagnostics
+- [x] Link extraction: wikilinks (`[[target]]`, `[[target|display]]`), Markdown links (`[text](target)`), embeds (`![[target]]`)
+- [x] For each link: capture raw text, kind, display text, target path candidate, heading/block subpath, byte offset, origin context
+- [x] Link classifier (`link_classifier.rs`): split `dest_url` on `#` for heading/block subpath; detect `^` prefix for block refs; distinguish note embeds from image embeds by file extension; classify `obsidian://` URIs as external links
+- [x] Heading extraction: level, text, byte offset
+- [x] Block ref extraction (`block_ref.rs`): track preceding block-level element, detect standalone paragraphs matching `^[a-zA-Z0-9-]+`, associate with preceding block, record byte offsets for both the ID and the content block
+- [x] Tag extraction (`tag_extractor.rs`): match `#[a-zA-Z0-9/_-]+` in `Text` events for inline tags including nested hierarchies (`#tag/subtag/deep`)
+- [x] Callout classification: detect `[!type]` in blockquotes
+- [x] HTML link detection: flag `<a href>` and `<img src>` in `Html`/`InlineHtml` events for `doctor` diagnostics
 
 *b) Clean chunk text (comments and markers stripped):*
-- [ ] Suppress text content for events whose byte range overlaps a comment region from Stage 0
-- [ ] Strip `==` highlight markers from text (keep the highlighted text itself)
-- [ ] Accumulate clean text into chunk buffers (chunk splitting is handled by the chunking engine in §1.6)
+- [x] Suppress text content for events whose byte range overlaps a comment region from Stage 0
+- [x] Strip `==` highlight markers from text (keep the highlighted text itself)
+- [x] Accumulate clean text into chunk buffers (chunk splitting is handled by the chunking engine in §1.6)
 
 *c) Frontmatter extraction:*
-- [ ] Capture raw YAML from `MetadataBlock` event, parse with `serde_yaml`, preserve raw text for lossless roundtrip
-- [ ] Alias extraction from frontmatter `aliases` field
-- [ ] Tag extraction from frontmatter `tags` field (merged with inline tags)
+- [x] Capture raw YAML from `MetadataBlock` event, parse with `serde_yaml`, preserve raw text for lossless roundtrip
+- [x] Alias extraction from frontmatter `aliases` field
+- [x] Tag extraction from frontmatter `tags` field (merged with inline tags)
 
 **ParsedDocument output type** (`types.rs`)
-- [ ] Define `ParsedDocument`: raw frontmatter, parsed frontmatter, headings, block refs, links, tags, aliases, chunk texts (clean), diagnostics
-- [ ] Define supporting types: `RawLink`, `RawHeading`, `RawBlockRef`, `RawTag`, `ChunkText`, `ParseDiagnostic`
+- [x] Define `ParsedDocument`: raw frontmatter, parsed frontmatter, headings, block refs, links, tags, aliases, chunk texts (clean), diagnostics
+- [x] Define supporting types: `RawLink`, `RawHeading`, `RawBlockRef`, `RawTag`, `ChunkText`, `ParseDiagnostic`
 
 **Unit tests**
-- [ ] Well-formed notes with all link variants (wikilinks, Markdown links, embeds, subpaths, display text)
-- [ ] Malformed frontmatter, empty files, frontmatter-only files
-- [ ] `%%comments%%` — verify stripped from chunk text, verify links inside comments are still extracted (with a diagnostic)
-- [ ] `==highlights==` — verify markers stripped, text preserved
-- [ ] Nested tags (`#tag/subtag/deep`)
-- [ ] `obsidian://` URIs classified as external
-- [ ] HTML links detected for diagnostics
-- [ ] Block refs: standalone `^id` after paragraph, list, blockquote, code block
-- [ ] Footnotes containing links
-- [ ] Callouts with internal links
-- [ ] Unicode content, unclosed wikilinks, edge cases
+- [x] Well-formed notes with all link variants (wikilinks, Markdown links, embeds, subpaths, display text)
+- [x] Malformed frontmatter, empty files, frontmatter-only files
+- [x] `%%comments%%` — verify stripped from chunk text, verify links inside comments are still extracted (with a diagnostic)
+- [x] `==highlights==` — verify markers stripped, text preserved
+- [x] Nested tags (`#tag/subtag/deep`)
+- [x] `obsidian://` URIs classified as external
+- [x] HTML links detected for diagnostics
+- [x] Block refs: standalone `^id` after paragraph, list, blockquote, code block
+- [x] Footnotes containing links
+- [x] Callouts with internal links
+- [x] Unicode content, unclosed wikilinks, edge cases
 
 ### 1.6 Chunking engine
-- [ ] Implement `heading` strategy (default): split at heading boundaries, sub-split at paragraph boundaries if section exceeds target size
-- [ ] Implement `fixed` strategy: fixed-size window with configurable overlap
-- [ ] Implement `paragraph` strategy: one chunk per paragraph
-- [ ] Respect semantic boundaries: never split mid-paragraph, mid-list-item, mid-blockquote, mid-code-block
-- [ ] Each chunk records: document_id, sequence index, heading path, byte offsets, content hash, strategy name, strategy version
-- [ ] Configuration: target chunk size (default ~4000 characters as proxy for ~1024 tokens), overlap (default 0), strategy selector
-- [ ] Determinism: same content + same config = same chunks (required for hash-based skip)
-- [ ] Unit tests: heading splits, oversized single blocks, empty docs, frontmatter-only docs, configurable size, determinism assertion
+- [x] Implement `heading` strategy (default): split at heading boundaries, sub-split at paragraph boundaries if section exceeds target size
+- [x] Implement `fixed` strategy: fixed-size window with configurable overlap
+- [x] Implement `paragraph` strategy: one chunk per paragraph
+- [x] Respect semantic boundaries: never split mid-paragraph, mid-list-item, mid-blockquote, mid-code-block
+- [~] Each chunk records: document_id, sequence index, heading path, byte offsets, content hash, strategy name, strategy version
+- [x] Configuration: target chunk size (default ~4000 characters as proxy for ~1024 tokens), overlap (default 0), strategy selector
+- [x] Determinism: same content + same config = same chunks (required for hash-based skip)
+- [x] Unit tests: heading splits, oversized single blocks, empty docs, frontmatter-only docs, configurable size, determinism assertion
 
 ### 1.7 Indexing pipeline
 - [ ] Orchestrate: scan -> parse -> extract entities -> populate tables, all within batched transactions
