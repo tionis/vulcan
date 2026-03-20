@@ -1,6 +1,8 @@
 pub mod cache;
+pub mod chunking;
 pub mod config;
 pub mod init;
+pub mod parser;
 pub mod paths;
 pub mod scan;
 
@@ -11,6 +13,10 @@ pub use config::{
     LinkResolutionMode, LinkStylePreference, VaultConfig,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
+pub use parser::{
+    parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
+    ParsedDocument, RawBlockRef, RawHeading, RawLink, RawTag,
+};
 pub use paths::{
     VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, VULCAN_DIR_NAME,
 };

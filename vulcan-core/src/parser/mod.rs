@@ -1,0 +1,199 @@
+mod block_ref;
+mod comment_scanner;
+mod link_classifier;
+mod options;
+mod semantic_pass;
+mod tag_extractor;
+pub mod types;
+
+pub use types::{
+    ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument,
+    RawBlockRef, RawHeading, RawLink, RawTag,
+};
+
+use crate::config::VaultConfig;
+use comment_scanner::scan_comment_regions;
+use options::parser_options;
+use pulldown_cmark::Parser;
+use semantic_pass::process_events;
+
+#[must_use]
+pub fn parse_document(source: &str, config: &VaultConfig) -> ParsedDocument {
+    let comment_regions = scan_comment_regions(source);
+    let parser = Parser::new_ext(source, parser_options()).into_offset_iter();
+    process_events(source, config, &comment_regions, parser)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ChunkingConfig, ChunkingStrategy};
+    use crate::config::{LinkResolutionMode, LinkStylePreference};
+
+    #[test]
+    fn parses_links_embeds_and_subpaths() {
+        let parsed = parse_document(
+            "See [[Note]], [[Note|Display]], [Doc](docs/doc.md#Section), ![[image.png]], ![[Note#^block]], [Open](obsidian://open?vault=V&file=N).",
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.links.len(), 6);
+        assert_eq!(parsed.links[0].link_kind, LinkKind::Wikilink);
+        assert_eq!(
+            parsed.links[0].target_path_candidate.as_deref(),
+            Some("Note")
+        );
+        assert_eq!(parsed.links[0].display_text, None);
+        assert_eq!(parsed.links[1].display_text.as_deref(), Some("Display"));
+        assert_eq!(parsed.links[2].link_kind, LinkKind::Markdown);
+        assert_eq!(parsed.links[2].target_heading.as_deref(), Some("Section"));
+        assert_eq!(parsed.links[3].link_kind, LinkKind::Embed);
+        assert!(!parsed.links[3].is_note_embed);
+        assert_eq!(parsed.links[4].target_block.as_deref(), Some("block"));
+        assert!(parsed.links[4].is_note_embed);
+        assert_eq!(parsed.links[5].link_kind, LinkKind::External);
+    }
+
+    #[test]
+    fn frontmatter_aliases_and_tags_are_extracted() {
+        let parsed = parse_document(
+            "---\naliases:\n  - One\ntags:\n  - project\n  - work\n---\n\n# Note\nBody",
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.aliases, vec!["One".to_string()]);
+        assert_eq!(
+            parsed
+                .tags
+                .iter()
+                .map(|tag| tag.tag_text.clone())
+                .collect::<Vec<_>>(),
+            vec!["project".to_string(), "work".to_string()]
+        );
+        assert_eq!(parsed.headings[0].text, "Note");
+        assert_eq!(parsed.chunk_texts.len(), 1);
+    }
+
+    #[test]
+    fn malformed_frontmatter_emits_diagnostic() {
+        let parsed = parse_document("---\na: [\n---\nBody", &VaultConfig::default());
+
+        assert!(parsed.frontmatter.is_none());
+        assert_eq!(parsed.diagnostics.len(), 1);
+        assert_eq!(
+            parsed.diagnostics[0].kind,
+            ParseDiagnosticKind::MalformedFrontmatter
+        );
+    }
+
+    #[test]
+    fn comments_are_stripped_from_chunks_but_links_inside_are_reported() {
+        let parsed = parse_document(
+            "Visible %% hidden [[Secret]] %% still visible\n\n[[Open]]",
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.links.len(), 2);
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == ParseDiagnosticKind::LinkInComment));
+        let chunk_text = parsed
+            .chunk_texts
+            .iter()
+            .map(|chunk| chunk.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!chunk_text.contains("hidden"));
+        assert!(!chunk_text.contains("Secret"));
+        assert!(chunk_text.contains("Visible"));
+        assert!(chunk_text.contains("Open"));
+    }
+
+    #[test]
+    fn highlights_and_nested_tags_are_cleaned() {
+        let parsed = parse_document(
+            "# Note\nThis is ==very== bright and tagged #tag/subtag/deep.",
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.tags.len(), 1);
+        assert_eq!(parsed.tags[0].tag_text, "tag/subtag/deep");
+        assert!(parsed.chunk_texts[0].content.contains("very"));
+        assert!(!parsed.chunk_texts[0].content.contains("=="));
+    }
+
+    #[test]
+    fn html_links_and_block_refs_are_detected() {
+        let parsed = parse_document(
+            "Paragraph\n\n^para\n\n- item\n- item two\n\n^list\n\n> quote\n\n^quote\n\n```\ncode\n```\n\n^code\n\n<a href=\"https://example.com\">html</a>",
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.block_refs.len(), 4);
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == ParseDiagnosticKind::HtmlLink));
+    }
+
+    #[test]
+    fn footnotes_and_callouts_keep_links_visible() {
+        let parsed = parse_document(
+            "> [!NOTE]\n> Callout [[Callout Note]]\n\nReference[^1]\n\n[^1]: Footnote [[Footnote Note]]",
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.links.len(), 2);
+        assert_eq!(
+            parsed
+                .links
+                .iter()
+                .map(|link| link.target_path_candidate.clone().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["Callout Note".to_string(), "Footnote Note".to_string()]
+        );
+    }
+
+    #[test]
+    fn unicode_and_frontmatter_only_documents_do_not_panic() {
+        let parsed = parse_document("---\ntitle: Привет\n---", &VaultConfig::default());
+
+        assert!(parsed.chunk_texts.is_empty());
+        assert!(parsed.headings.is_empty());
+    }
+
+    #[test]
+    fn empty_files_and_unclosed_wikilinks_are_safe() {
+        let empty = parse_document("", &VaultConfig::default());
+        let broken = parse_document("Text [[oops", &VaultConfig::default());
+
+        assert!(empty.chunk_texts.is_empty());
+        assert!(broken.links.is_empty());
+        assert_eq!(broken.chunk_texts.len(), 1);
+    }
+
+    #[test]
+    fn chunking_respects_configurable_strategy() {
+        let config = VaultConfig {
+            chunking: ChunkingConfig {
+                strategy: ChunkingStrategy::Paragraph,
+                target_size: 8,
+                overlap: 0,
+            },
+            ..VaultConfig::default()
+        };
+        let parsed = parse_document("# Title\n\nOne\n\nTwo", &config);
+
+        assert_eq!(parsed.chunk_texts.len(), 2);
+        assert_eq!(parsed.chunk_texts[0].chunk_strategy, "paragraph");
+    }
+
+    #[test]
+    fn config_defaults_remain_sane() {
+        let config = VaultConfig::default();
+
+        assert_eq!(config.link_resolution, LinkResolutionMode::Shortest);
+        assert_eq!(config.link_style, LinkStylePreference::Wikilink);
+    }
+}
