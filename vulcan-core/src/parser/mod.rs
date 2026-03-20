@@ -167,6 +167,61 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_repairs_unindented_markdown_lines_in_block_scalars() {
+        let source = concat!(
+            "---\n",
+            "title: Panam Palmer\n",
+            "cardFirstMessage: |-\n",
+            "  **Panam:** First line.\n",
+            "![AnyText or No Text](assets/example.webp)\"Come ooonnn babe\"\n",
+            "cardSummary: Summary\n",
+            "---\n",
+            "\n",
+            "# Panam Palmer Card\n",
+        );
+        let parsed = parse_document(source, &VaultConfig::default());
+
+        assert!(parsed.frontmatter.is_some());
+        assert!(!parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == ParseDiagnosticKind::MalformedFrontmatter));
+        let frontmatter = parsed.frontmatter.expect("frontmatter should parse");
+        assert!(frontmatter["cardFirstMessage"]
+            .as_str()
+            .expect("block scalar should parse to text")
+            .contains("![AnyText or No Text](assets/example.webp)"));
+    }
+
+    #[test]
+    fn frontmatter_repairs_crlf_block_scalar_continuations() {
+        let source = concat!(
+            "---\n",
+            "title: Panam\n",
+            "cardPersonality: |-\n",
+            "  Intro line.\n",
+            "  [Open: image](assets/example.gif)\r\n",
+            "![Tumblr](assets/example.gif) @laezels on Tumblr\n",
+            "cardScenario: Scenario text\n",
+            "---\n",
+            "\n",
+            "# Panam\n",
+        );
+        let parsed = parse_document(source, &VaultConfig::default());
+
+        assert!(parsed.frontmatter.is_some());
+        assert!(!parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == ParseDiagnosticKind::MalformedFrontmatter));
+        let frontmatter = parsed.frontmatter.expect("frontmatter should parse");
+        assert!(frontmatter["cardPersonality"]
+            .as_str()
+            .expect("block scalar should parse to text")
+            .contains("![Tumblr](assets/example.gif)"));
+    }
+
+    #[test]
     fn non_leading_metadata_block_is_treated_as_body_content() {
         let source = concat!(
             "---\n",

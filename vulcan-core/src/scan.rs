@@ -1941,6 +1941,40 @@ mod tests {
     }
 
     #[test]
+    fn messy_block_scalar_frontmatter_is_recovered_without_parse_errors() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault should be created");
+        fs::write(
+            vault_root.join("card.md"),
+            concat!(
+                "---\n",
+                "title: Panam\n",
+                "cardFirstMessage: |-\n",
+                "  **Panam:** First line.\n",
+                "![Tumblr](assets/example.gif)\n",
+                "cardSummary: Summary\n",
+                "---\n",
+                "\n",
+                "# Card\n",
+                "\n",
+                "Body.\n",
+            ),
+        )
+        .expect("fixture note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(
+            diagnostic_count_by_kind(database.connection(), "parse_error"),
+            0
+        );
+        assert_eq!(count_rows(database.connection(), "documents"), 1);
+    }
+
+    #[test]
     fn ambiguous_links_fixture_resolves_and_emits_diagnostics() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
