@@ -24,6 +24,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("watch"))
             .and(predicate::str::contains("links"))
             .and(predicate::str::contains("backlinks"))
+            .and(predicate::str::contains("graph"))
             .and(predicate::str::contains("notes"))
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("search"))
@@ -31,6 +32,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("cluster"))
             .and(predicate::str::contains("move"))
             .and(predicate::str::contains("doctor"))
+            .and(predicate::str::contains("cache"))
             .and(predicate::str::contains("rename-property"))
             .and(predicate::str::contains("merge-tags"))
             .and(predicate::str::contains("rename-alias"))
@@ -50,7 +52,10 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Indexing: init, scan, rebuild, repair, watch",
             ))
             .and(predicate::str::contains(
-                "Maintenance: move, doctor, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions",
+                "Graph and Query: links, backlinks, graph, search, notes, bases",
+            ))
+            .and(predicate::str::contains(
+                "Maintenance: move, doctor, cache, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions",
             )),
     );
 }
@@ -237,6 +242,68 @@ fn rename_property_json_output_reports_planned_file_changes() {
     assert_eq!(json["files"][0]["path"], "Home.md");
     assert_eq!(json["files"][0]["changes"][0]["before"], "status");
     assert_eq!(json["files"][0]["changes"][0]["after"], "phase");
+}
+
+#[test]
+fn graph_path_json_output_returns_note_path_chain() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "graph",
+            "path",
+            "Bob",
+            "Home",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(
+        json["path"],
+        serde_json::json!(["People/Bob.md", "Projects/Alpha.md", "Home.md"])
+    );
+}
+
+#[test]
+fn cache_verify_json_output_reports_healthy_fixture_cache() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "cache",
+            "verify",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["healthy"], true);
+    assert!(json["checks"]
+        .as_array()
+        .expect("checks should be an array")
+        .iter()
+        .all(|check| check["ok"] == true));
 }
 
 #[test]

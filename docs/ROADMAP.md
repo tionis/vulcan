@@ -437,11 +437,11 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [ ] Benchmarks for large-vault vector maintenance and migration flows
 
 ### 7.7 Graph analysis and reporting
-- [ ] `graph path <from> <to>` shortest-path query
-- [ ] `graph hubs`, `graph dead-ends`, `graph components`, and MOC-candidate reports
+- [x] `graph path <from> <to>` shortest-path query
+- [~] `graph hubs`, `graph dead-ends`, `graph components`, and MOC-candidate reports
 - [ ] Orphan/staleness trend reporting over time
-- [ ] Vault analytics reports: note counts, link density, tag/property usage, stale-note summaries
-- [ ] `--output json` and integration tests for graph analysis commands
+- [x] Vault analytics reports: note counts, link density, tag/property usage, stale-note summaries
+- [x] `--output json` and integration tests for graph analysis commands
 
 ### 7.8 Search ergonomics
 - [ ] User-friendly phrase/operator query parsing on top of raw FTS syntax
@@ -456,10 +456,10 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [ ] Duplicate-title, alias, and merge-candidate suggestion reports
 
 ### 7.10 Cache maintenance and change reporting
-- [ ] `cache inspect`, `cache verify`, and `cache vacuum` commands
-- [ ] Performance and size diagnostics for cache, FTS, and vector indexes
+- [x] `cache inspect`, `cache verify`, and `cache vacuum` commands
+- [x] Performance and size diagnostics for cache, FTS, and vector indexes
 - [ ] Change reports since last scan or checkpoint for notes, links, properties, and embeddings
-- [ ] Integration tests for maintenance and reporting flows
+- [x] Integration tests for maintenance and reporting flows
 
 ### 7.11 Import, export, and automation
 - [ ] Broader export surfaces for graph data, reports, and static search indexes

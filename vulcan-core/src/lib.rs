@@ -32,14 +32,19 @@ pub use doctor::{
     DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
 };
 pub use graph::{
-    query_backlinks, query_links, resolve_note_reference, BacklinkRecord, BacklinksReport,
-    GraphQueryError, LineContext, NoteMatchKind, NoteReference, OutgoingLinkRecord,
-    OutgoingLinksReport, ResolutionStatus,
+    query_backlinks, query_graph_analytics, query_graph_components, query_graph_dead_ends,
+    query_graph_hubs, query_graph_path, query_links, resolve_note_reference, BacklinkRecord,
+    BacklinksReport, GraphAnalyticsReport, GraphComponent, GraphComponentsReport,
+    GraphDeadEndsReport, GraphHubsReport, GraphNodeScore, GraphPathReport, GraphQueryError,
+    LineContext, NamedCount, NoteMatchKind, NoteReference, OutgoingLinkRecord, OutgoingLinksReport,
+    ResolutionStatus,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
 pub use maintenance::{
-    rebuild_vault, rebuild_vault_with_progress, repair_fts, MaintenanceError, RebuildQuery,
-    RebuildReport, RepairFtsQuery, RepairFtsReport,
+    cache_vacuum, inspect_cache, rebuild_vault, rebuild_vault_with_progress, repair_fts,
+    verify_cache, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyCheck,
+    CacheVerifyReport, MaintenanceError, RebuildQuery, RebuildReport, RepairFtsQuery,
+    RepairFtsReport,
 };
 pub use move_rewrite::{move_note, LinkChange, MoveError, MoveSummary, RewrittenFile};
 pub use parser::{
