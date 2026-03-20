@@ -1,3 +1,4 @@
+pub mod bases;
 pub mod cache;
 pub mod chunking;
 pub mod config;
@@ -13,6 +14,9 @@ pub mod scan;
 pub mod search;
 pub mod write_lock;
 
+pub use bases::{
+    evaluate_base_file, BasesDiagnostic, BasesError, BasesEvalReport, BasesEvaluatedView, BasesRow,
+};
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{
     create_default_config, default_config_template, load_vault_config, ChunkingConfig,

@@ -8,6 +8,11 @@ pub enum OutputFormat {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum BasesCommand {
+    Eval { file: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
     Init,
     Scan {
@@ -38,6 +43,10 @@ pub enum Command {
         sort: Option<String>,
         #[arg(long)]
         desc: bool,
+    },
+    Bases {
+        #[command(subcommand)]
+        command: BasesCommand,
     },
     Move {
         source: String,

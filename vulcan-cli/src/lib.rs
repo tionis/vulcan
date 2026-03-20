@@ -1,6 +1,6 @@
 mod cli;
 
-pub use cli::{Cli, Command, OutputFormat};
+pub use cli::{BasesCommand, Cli, Command, OutputFormat};
 
 use clap::Parser;
 use serde::Serialize;
@@ -11,11 +11,11 @@ use std::io;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use vulcan_core::{
-    doctor_vault, initialize_vault, move_note, query_backlinks, query_links, query_notes,
-    scan_vault, search_vault, BacklinkRecord, BacklinksReport, DoctorDiagnosticIssue,
-    DoctorLinkIssue, DoctorReport, InitSummary, MoveSummary, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, ScanMode, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, VaultPaths,
+    doctor_vault, evaluate_base_file, initialize_vault, move_note, query_backlinks, query_links,
+    query_notes, scan_vault, search_vault, BacklinkRecord, BacklinksReport, BasesEvalReport,
+    DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary, MoveSummary, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ScanMode, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, VaultPaths,
 };
 
 #[derive(Debug)]
@@ -84,6 +84,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_backlinks_report(cli.output, &report, &list_controls, stdout_is_tty)?;
             Ok(())
         }
+        Command::Bases { ref command } => match command {
+            BasesCommand::Eval { file } => {
+                let report = evaluate_base_file(&paths, file).map_err(CliError::operation)?;
+                print_bases_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+                Ok(())
+            }
+        },
         Command::Describe => Err(CliError::not_implemented("describe")),
         Command::Doctor => {
             let report = doctor_vault(&paths).map_err(CliError::operation)?;
@@ -233,6 +240,49 @@ fn print_notes_report(
             note_rows(report, visible_notes),
             list_controls.fields.as_deref(),
         ),
+    }
+}
+
+fn print_bases_report(
+    output: OutputFormat,
+    report: &BasesEvalReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+) -> Result<(), CliError> {
+    let rows = bases_rows(report);
+    let visible_rows = paginated_items(&rows, list_controls);
+
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("Bases eval {}", report.file);
+            }
+            if visible_rows.is_empty() {
+                println!("No bases rows.");
+            } else if let Some(fields) = list_controls.fields.as_deref() {
+                for row in visible_rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for row in visible_rows {
+                    print_bases_row(row);
+                }
+            }
+
+            if !report.diagnostics.is_empty() {
+                println!("Diagnostics:");
+                for diagnostic in &report.diagnostics {
+                    if let Some(path) = diagnostic.path.as_deref() {
+                        println!("- {path}: {}", diagnostic.message);
+                    } else {
+                        println!("- {}", diagnostic.message);
+                    }
+                }
+            }
+
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
     }
 }
 
@@ -588,6 +638,28 @@ fn note_rows(report: &NotesReport, notes: &[NoteRecord]) -> Vec<Value> {
         .collect()
 }
 
+fn bases_rows(report: &BasesEvalReport) -> Vec<Value> {
+    report
+        .views
+        .iter()
+        .flat_map(|view| {
+            view.rows.iter().map(|row| {
+                serde_json::json!({
+                    "file": report.file,
+                    "view_name": view.name,
+                    "view_type": view.view_type,
+                    "filters": view.filters,
+                    "sort_by": view.sort_by,
+                    "sort_descending": view.sort_descending,
+                    "document_path": row.document_path,
+                    "properties": row.properties,
+                    "formulas": row.formulas,
+                })
+            })
+        })
+        .collect()
+}
+
 fn select_fields(row: Value, fields: Option<&[String]>) -> Value {
     let Some(fields) = fields else {
         return row;
@@ -682,6 +754,19 @@ fn print_note(note: &NoteRecord) {
     println!("- {}", note.document_path);
 }
 
+fn print_bases_row(row: &Value) {
+    let document_path = row
+        .get("document_path")
+        .and_then(Value::as_str)
+        .unwrap_or("<unknown>");
+    let view_name = row
+        .get("view_name")
+        .and_then(Value::as_str)
+        .unwrap_or("view");
+
+    println!("- {document_path} ({view_name})");
+}
+
 fn zero_summary() -> vulcan_core::DoctorSummary {
     vulcan_core::DoctorSummary {
         unresolved_links: 0,
@@ -769,6 +854,8 @@ mod tests {
             "--desc",
         ])
         .expect("cli should parse");
+        let bases = Cli::try_parse_from(["vulcan", "bases", "eval", "release.base"])
+            .expect("cli should parse");
         let move_command = Cli::try_parse_from([
             "vulcan",
             "move",
@@ -806,6 +893,14 @@ mod tests {
                 filters: vec!["status = done".to_string(), "estimate > 2".to_string()],
                 sort: Some("due".to_string()),
                 desc: true,
+            }
+        );
+        assert_eq!(
+            bases.command,
+            Command::Bases {
+                command: BasesCommand::Eval {
+                    file: "release.base".to_string(),
+                },
             }
         );
         assert_eq!(

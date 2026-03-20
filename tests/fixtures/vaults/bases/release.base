@@ -1,0 +1,18 @@
+source: notes
+views:
+  - name: Release Table
+    type: table
+    filters:
+      - "status = backlog"
+      - "estimate > 2"
+    sort:
+      by: due
+    formulas:
+      note_name: file.name
+      due_copy: due
+      unsupported_calc: concat(file.name, due)
+  - name: Board
+    type: board
+    filters:
+      - "reviewed = true"
+    group_by: status
