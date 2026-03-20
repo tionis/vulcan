@@ -192,6 +192,11 @@ pub enum SavedCommand {
         #[arg(help = "Full-text query string")]
         query: String,
         #[arg(
+            long = "where",
+            help = "Typed property filter, repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(
             long,
             value_enum,
             default_value_t = SearchMode::Keyword,
@@ -213,6 +218,13 @@ pub enum SavedCommand {
             help = "Approximate snippet context size for each search hit"
         )]
         context_size: usize,
+        #[arg(long, help = "Persist the query string as raw FTS5 syntax")]
+        raw_query: bool,
+        #[arg(
+            long,
+            help = "Enable typo-tolerant fallback when the saved search runs"
+        )]
+        fuzzy: bool,
         #[arg(long, help = "Optional saved report description")]
         description: Option<String>,
         #[command(flatten)]
@@ -334,6 +346,11 @@ pub enum Command {
         #[arg(help = "Full-text query string")]
         query: String,
         #[arg(
+            long = "where",
+            help = "Typed property filter, repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(
             long,
             value_enum,
             default_value_t = SearchMode::Keyword,
@@ -355,6 +372,12 @@ pub enum Command {
             help = "Approximate snippet context size for each search hit"
         )]
         context_size: usize,
+        #[arg(long, help = "Treat the query string as raw FTS5 syntax")]
+        raw_query: bool,
+        #[arg(long, help = "Retry empty searches with typo-tolerant term expansion")]
+        fuzzy: bool,
+        #[arg(long, help = "Include the parsed search plan and score details")]
+        explain: bool,
         #[command(flatten)]
         export: ExportArgs,
     },

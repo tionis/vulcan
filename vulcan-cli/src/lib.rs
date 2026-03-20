@@ -379,6 +379,7 @@ struct BatchRunReport {
     items: Vec<BatchRunItemReport>,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum SavedExecution {
     Search(SearchReport),
     Notes(NotesReport),
@@ -559,7 +560,10 @@ fn execute_saved_report(
             tag,
             path_prefix,
             has_property,
+            filters,
             context_size,
+            raw_query,
+            fuzzy,
         } => Ok(SavedExecution::Search(
             search_vault(
                 paths,
@@ -568,10 +572,14 @@ fn execute_saved_report(
                     tag: tag.clone(),
                     path_prefix: path_prefix.clone(),
                     has_property: has_property.clone(),
+                    filters: filters.clone(),
                     provider,
                     mode: *mode,
                     limit: controls.requested_result_limit(),
                     context_size: *context_size,
+                    raw_query: *raw_query,
+                    fuzzy: *fuzzy,
+                    explain: false,
                 },
             )
             .map_err(CliError::operation)?,
@@ -952,11 +960,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Search {
             ref query,
+            ref filters,
             mode,
             ref tag,
             ref path_prefix,
             ref has_property,
             context_size,
+            raw_query,
+            fuzzy,
+            explain,
             ref export,
         } => {
             let report = search_vault(
@@ -966,6 +978,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     tag: tag.clone(),
                     path_prefix: path_prefix.clone(),
                     has_property: has_property.clone(),
+                    filters: filters.clone(),
                     provider: cli.provider.clone(),
                     mode: match mode {
                         SearchMode::Keyword => vulcan_core::search::SearchMode::Keyword,
@@ -973,6 +986,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     },
                     limit: cli.limit.map(|limit| limit.saturating_add(cli.offset)),
                     context_size,
+                    raw_query,
+                    fuzzy,
+                    explain,
                 },
             )
             .map_err(CliError::operation)?;
@@ -1005,11 +1021,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             SavedCommand::Search {
                 name,
                 query,
+                filters,
                 mode,
                 tag,
                 path_prefix,
                 has_property,
                 context_size,
+                raw_query,
+                fuzzy,
                 description,
                 export,
             } => {
@@ -1028,7 +1047,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         tag: tag.clone(),
                         path_prefix: path_prefix.clone(),
                         has_property: has_property.clone(),
+                        filters: filters.clone(),
                         context_size: *context_size,
+                        raw_query: *raw_query,
+                        fuzzy: *fuzzy,
                     },
                 };
                 save_saved_report(&paths, &definition).map_err(CliError::operation)?;
@@ -1449,6 +1471,9 @@ fn print_search_report(
                     }),
                 );
             }
+            if let Some(plan) = report.plan.as_ref() {
+                print_search_plan(plan, palette);
+            }
             if visible_hits.is_empty() {
                 println!("No search hits.");
                 return Ok(());
@@ -1563,7 +1588,10 @@ fn print_saved_report_definition(
                     tag,
                     path_prefix,
                     has_property,
+                    filters,
                     context_size,
+                    raw_query,
+                    fuzzy,
                 } => {
                     println!("Query: {query}");
                     println!("Mode: {mode:?}");
@@ -1576,7 +1604,16 @@ fn print_saved_report_definition(
                     if let Some(has_property) = has_property.as_deref() {
                         println!("Has property: {has_property}");
                     }
+                    if !filters.is_empty() {
+                        println!("Filters: {}", filters.join(" | "));
+                    }
                     println!("Context size: {context_size}");
+                    if *raw_query {
+                        println!("Raw query: true");
+                    }
+                    if *fuzzy {
+                        println!("Fuzzy fallback: true");
+                    }
                 }
                 SavedReportQuery::Notes {
                     filters,
@@ -2971,11 +3008,14 @@ fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
                 "tag": report.tag,
                 "path_prefix": report.path_prefix,
                 "has_property": report.has_property,
+                "filters": report.filters,
+                "effective_query": report.plan.as_ref().map(|plan| plan.effective_query.clone()),
                 "document_path": hit.document_path,
                 "chunk_id": hit.chunk_id,
                 "heading_path": hit.heading_path,
                 "snippet": hit.snippet,
                 "rank": hit.rank,
+                "explain": hit.explain,
             })
         })
         .collect()
@@ -3206,15 +3246,39 @@ fn print_backlink(backlink: &BacklinkRecord) {
 }
 
 fn print_search_hit(index: usize, hit: &SearchHit, palette: AnsiPalette) {
-    print_ranked_snippet_hit(
-        index,
-        &hit.document_path,
-        &hit.heading_path,
-        "Rank",
-        hit.rank,
-        &hit.snippet,
-        palette,
-    );
+    let location = if hit.heading_path.is_empty() {
+        hit.document_path.clone()
+    } else {
+        format!("{} > {}", hit.document_path, hit.heading_path.join(" > "))
+    };
+
+    println!("{}. {}", index + 1, palette.bold(&location));
+    println!("   {}: {:.3}", palette.cyan("Rank"), hit.rank);
+
+    if let Some(explain) = hit.explain.as_ref() {
+        println!(
+            "   {}: {}",
+            palette.cyan("Explain"),
+            render_search_hit_explain(explain)
+        );
+    }
+
+    let lines = hit
+        .snippet
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if let Some((first, rest)) = lines.split_first() {
+        println!("   {}: {first}", palette.cyan("Snippet"));
+        for line in rest {
+            println!("            {line}");
+        }
+    } else {
+        println!("   {}: <empty>", palette.cyan("Snippet"));
+    }
+
+    println!();
 }
 
 fn print_vector_neighbor(index: usize, hit: &VectorNeighborHit, palette: AnsiPalette) {
@@ -3322,6 +3386,69 @@ fn print_ranked_snippet_hit(
     }
 
     println!();
+}
+
+fn print_search_plan(plan: &vulcan_core::SearchPlan, palette: AnsiPalette) {
+    println!("{}: {}", palette.cyan("Plan"), plan.effective_query);
+    if !plan.semantic_text.is_empty() && plan.semantic_text != plan.effective_query {
+        println!("{}: {}", palette.cyan("Vector text"), plan.semantic_text);
+    }
+    if let Some(tag) = plan.tag.as_deref() {
+        println!("{}: {tag}", palette.cyan("Tag"));
+    }
+    if let Some(path_prefix) = plan.path_prefix.as_deref() {
+        println!("{}: {path_prefix}", palette.cyan("Path prefix"));
+    }
+    if let Some(has_property) = plan.has_property.as_deref() {
+        println!("{}: {has_property}", palette.cyan("Has property"));
+    }
+    if !plan.property_filters.is_empty() {
+        println!(
+            "{}: {}",
+            palette.cyan("Filters"),
+            plan.property_filters.join(" | ")
+        );
+    }
+    if plan.fuzzy_fallback_used {
+        for expansion in &plan.fuzzy_expansions {
+            println!(
+                "{}: {} -> {}",
+                palette.cyan("Fuzzy"),
+                expansion.term,
+                expansion.candidates.join(", ")
+            );
+        }
+    }
+    println!();
+}
+
+fn render_search_hit_explain(explain: &vulcan_core::SearchHitExplain) -> String {
+    match explain.strategy.as_str() {
+        "keyword" => format!(
+            "bm25={:.3}, keyword_rank={}",
+            explain.bm25.unwrap_or(explain.score),
+            explain.keyword_rank.unwrap_or(1)
+        ),
+        "hybrid" => {
+            let mut parts = vec![format!("score={:.3}", explain.score)];
+            if let Some(rank) = explain.keyword_rank {
+                parts.push(format!(
+                    "keyword#{} ({:.3})",
+                    rank,
+                    explain.keyword_contribution.unwrap_or_default()
+                ));
+            }
+            if let Some(rank) = explain.vector_rank {
+                parts.push(format!(
+                    "vector#{} ({:.3})",
+                    rank,
+                    explain.vector_contribution.unwrap_or_default()
+                ));
+            }
+            parts.join(", ")
+        }
+        _ => format!("score={:.3}", explain.score),
+    }
 }
 
 fn print_note(note: &NoteRecord) {
@@ -3756,6 +3883,8 @@ mod tests {
             "vulcan",
             "search",
             "dashboard",
+            "--where",
+            "reviewed = true",
             "--tag",
             "index",
             "--path-prefix",
@@ -3764,6 +3893,8 @@ mod tests {
             "status",
             "--context-size",
             "24",
+            "--fuzzy",
+            "--explain",
         ])
         .expect("cli should parse");
         let notes = Cli::try_parse_from([
@@ -3817,6 +3948,10 @@ mod tests {
             "search",
             "weekly",
             "dashboard",
+            "--where",
+            "reviewed = true",
+            "--raw-query",
+            "--fuzzy",
             "--description",
             "weekly dashboard",
             "--export",
@@ -3912,11 +4047,15 @@ mod tests {
             search.command,
             Command::Search {
                 query: "dashboard".to_string(),
+                filters: vec!["reviewed = true".to_string()],
                 mode: SearchMode::Keyword,
                 tag: Some("index".to_string()),
                 path_prefix: Some("People/".to_string()),
                 has_property: Some("status".to_string()),
                 context_size: 24,
+                raw_query: false,
+                fuzzy: true,
+                explain: true,
                 export: ExportArgs::default(),
             }
         );
@@ -4093,11 +4232,14 @@ mod tests {
                 command: SavedCommand::Search {
                     name: "weekly".to_string(),
                     query: "dashboard".to_string(),
+                    filters: vec!["reviewed = true".to_string()],
                     mode: SearchMode::Keyword,
                     tag: None,
                     path_prefix: None,
                     has_property: None,
                     context_size: 18,
+                    raw_query: true,
+                    fuzzy: true,
                     description: Some("weekly dashboard".to_string()),
                     export: ExportArgs {
                         export: Some(ExportFormat::Csv),

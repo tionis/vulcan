@@ -167,11 +167,6 @@ pub fn extract_indexed_properties(
 pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
-    let filters = query
-        .filters
-        .iter()
-        .map(|filter| parse_filter_expression(filter))
-        .collect::<Result<Vec<_>, _>>()?;
 
     let mut sql = String::from(
         "
@@ -186,11 +181,8 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         WHERE documents.extension = 'md'
         ",
     );
-    let mut params = Vec::<SqlValue>::new();
-    for filter in &filters {
-        sql.push_str(" AND ");
-        sql.push_str(&filter_sql_clause(filter, &mut params)?);
-    }
+    let (filter_clause, params) = build_note_filter_clause(&query.filters)?;
+    sql.push_str(&filter_clause);
     sql.push_str(" ORDER BY documents.path ASC");
 
     let mut statement = connection.prepare(&sql)?;
@@ -237,6 +229,22 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         sort_descending: query.sort_descending,
         notes,
     })
+}
+
+pub(crate) fn build_note_filter_clause(
+    filters: &[String],
+) -> Result<(String, Vec<SqlValue>), PropertyError> {
+    let parsed = filters
+        .iter()
+        .map(|filter| parse_filter_expression(filter))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut clause = String::new();
+    let mut params = Vec::<SqlValue>::new();
+    for filter in &parsed {
+        clause.push_str(" AND ");
+        clause.push_str(&filter_sql_clause(filter, &mut params)?);
+    }
+    Ok((clause, params))
 }
 
 pub(crate) fn rebuild_property_catalog(

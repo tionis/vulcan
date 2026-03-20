@@ -393,6 +393,17 @@
             ]
           },
           {
+            "help": "Typed property filter, repeatable and combined with AND",
+            "id": "filters",
+            "long": "where",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILTERS"
+            ]
+          },
+          {
             "help": "Search strategy to use",
             "id": "mode",
             "long": "mode",
@@ -448,6 +459,48 @@
             "short": null,
             "value_names": [
               "CONTEXT_SIZE"
+            ]
+          },
+          {
+            "help": "Treat the query string as raw FTS5 syntax",
+            "id": "raw_query",
+            "long": "raw-query",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "RAW_QUERY"
+            ]
+          },
+          {
+            "help": "Retry empty searches with typo-tolerant term expansion",
+            "id": "fuzzy",
+            "long": "fuzzy",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FUZZY"
+            ]
+          },
+          {
+            "help": "Include the parsed search plan and score details",
+            "id": "explain",
+            "long": "explain",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPLAIN"
             ]
           },
           {
@@ -670,6 +723,17 @@
                 ]
               },
               {
+                "help": "Typed property filter, repeatable and combined with AND",
+                "id": "filters",
+                "long": "where",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILTERS"
+                ]
+              },
+              {
                 "help": "Search strategy to store",
                 "id": "mode",
                 "long": "mode",
@@ -725,6 +789,34 @@
                 "short": null,
                 "value_names": [
                   "CONTEXT_SIZE"
+                ]
+              },
+              {
+                "help": "Persist the query string as raw FTS5 syntax",
+                "id": "raw_query",
+                "long": "raw-query",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "RAW_QUERY"
+                ]
+              },
+              {
+                "help": "Enable typo-tolerant fallback when the saved search runs",
+                "id": "fuzzy",
+                "long": "fuzzy",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FUZZY"
                 ]
               },
               {

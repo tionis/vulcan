@@ -227,6 +227,7 @@ fn route_request(
                 tag: first_param(&request.query, "tag").map(ToOwned::to_owned),
                 path_prefix: first_param(&request.query, "path_prefix").map(ToOwned::to_owned),
                 has_property: first_param(&request.query, "has_property").map(ToOwned::to_owned),
+                filters: request.query.get("where").cloned().unwrap_or_default(),
                 provider: first_param(&request.query, "provider").map(ToOwned::to_owned),
                 mode: match first_param(&request.query, "mode") {
                     Some("hybrid") => vulcan_core::search::SearchMode::Hybrid,
@@ -234,6 +235,9 @@ fn route_request(
                 },
                 limit: parse_optional_usize(&request.query, "limit"),
                 context_size: parse_optional_usize(&request.query, "context_size").unwrap_or(18),
+                raw_query: parse_optional_bool(&request.query, "raw_query").unwrap_or(false),
+                fuzzy: parse_optional_bool(&request.query, "fuzzy").unwrap_or(false),
+                explain: parse_optional_bool(&request.query, "explain").unwrap_or(false),
             };
             match search_vault(paths, &search_query) {
                 Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
