@@ -177,12 +177,12 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 **Design refs:** §8 (link semantics), §4 (concurrency)
 
 ### 2.1 Graph query commands
-- [ ] `backlinks <note>` command: list all documents linking to the target, with link context (line, kind, display text)
-- [ ] `links <note>` command: list all outgoing links from a note, with resolution status
-- [ ] Support note identification by path, filename, or alias
-- [ ] `--output json` support for both commands
+- [x] `backlinks <note>` command: list all documents linking to the target, with link context (line, kind, display text)
+- [x] `links <note>` command: list all outgoing links from a note, with resolution status
+- [x] Support note identification by path, filename, or alias
+- [x] `--output json` support for both commands
 - [ ] `--fields` support
-- [ ] Integration tests against `basic/` vault
+- [x] Integration tests against `basic/` vault
 
 ### 2.2 Move-safe rewrite engine
 - [ ] `move <source> <dest>` command with `--dry-run` support

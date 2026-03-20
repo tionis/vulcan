@@ -16,6 +16,8 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("--verbose"))
             .and(predicate::str::contains("init"))
             .and(predicate::str::contains("scan"))
+            .and(predicate::str::contains("links"))
+            .and(predicate::str::contains("backlinks"))
             .and(predicate::str::contains("doctor")),
     );
 }
@@ -136,6 +138,69 @@ fn doctor_json_output_reports_broken_frontmatter_vault() {
 
     assert_eq!(json["summary"]["parse_failures"], 1);
     assert_eq!(json["parse_failures"][0]["document_path"], "Broken.md");
+}
+
+#[test]
+fn links_json_output_supports_alias_lookup() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "links",
+            "Start",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["note_path"], "Home.md");
+    assert_eq!(json["matched_by"], "alias");
+    assert_eq!(json["links"].as_array().map(Vec::len), Some(2));
+}
+
+#[test]
+fn backlinks_json_output_lists_sources() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "backlinks",
+            "Projects/Alpha",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["note_path"], "Projects/Alpha.md");
+    assert_eq!(
+        json["backlinks"]
+            .as_array()
+            .expect("backlinks should be an array")
+            .iter()
+            .map(|row| row["source_path"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>(),
+        vec!["Home.md".to_string(), "People/Bob.md".to_string()]
+    );
 }
 
 fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {

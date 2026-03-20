@@ -2,6 +2,7 @@ pub mod cache;
 pub mod chunking;
 pub mod config;
 pub mod doctor;
+pub mod graph;
 pub mod init;
 pub mod parser;
 pub mod paths;
@@ -17,6 +18,10 @@ pub use config::{
 pub use doctor::{
     doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorLinkIssue,
     DoctorReport, DoctorSummary,
+};
+pub use graph::{
+    query_backlinks, query_links, BacklinkRecord, BacklinksReport, GraphQueryError, LineContext,
+    NoteMatchKind, OutgoingLinkRecord, OutgoingLinksReport, ResolutionStatus,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
 pub use parser::{
