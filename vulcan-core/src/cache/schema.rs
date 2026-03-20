@@ -6,7 +6,7 @@ pub const TABLES_TO_CLEAR: &[&str] = &[
     "links",
     "aliases",
     "tags",
-    "chunk_search_content",
+    "search_chunk_content",
     "chunks",
     "diagnostics",
     "documents",
@@ -120,9 +120,33 @@ pub fn apply_schema_v2(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
 }
 
 pub fn apply_schema_v3(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    create_search_schema(transaction)
+}
+
+pub fn apply_schema_v4(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     transaction.execute_batch(
         "
-        CREATE TABLE chunk_search_content (
+        DROP TRIGGER IF EXISTS chunk_search_content_ai;
+        DROP TRIGGER IF EXISTS chunk_search_content_ad;
+        DROP TRIGGER IF EXISTS chunk_search_content_au;
+        DROP TABLE IF EXISTS chunk_search;
+        DROP TABLE IF EXISTS chunk_search_content;
+
+        DROP TRIGGER IF EXISTS search_chunk_content_ai;
+        DROP TRIGGER IF EXISTS search_chunk_content_ad;
+        DROP TRIGGER IF EXISTS search_chunk_content_au;
+        DROP TABLE IF EXISTS search_chunks_fts;
+        DROP TABLE IF EXISTS search_chunk_content;
+        ",
+    )?;
+
+    create_search_schema(transaction)
+}
+
+fn create_search_schema(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE search_chunk_content (
             id INTEGER PRIMARY KEY,
             chunk_id TEXT NOT NULL UNIQUE REFERENCES chunks(id) ON DELETE CASCADE,
             document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -132,37 +156,37 @@ pub fn apply_schema_v3(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
             headings TEXT NOT NULL
         );
 
-        CREATE INDEX idx_chunk_search_content_document_id
-            ON chunk_search_content(document_id);
+        CREATE INDEX idx_search_chunk_content_document_id
+            ON search_chunk_content(document_id);
 
-        CREATE VIRTUAL TABLE chunk_search USING fts5(
+        CREATE VIRTUAL TABLE search_chunks_fts USING fts5(
             content,
             document_title,
             aliases,
             headings,
-            content = 'chunk_search_content',
+            content = 'search_chunk_content',
             content_rowid = 'id',
             tokenize = 'unicode61'
         );
 
-        CREATE TRIGGER chunk_search_content_ai AFTER INSERT ON chunk_search_content BEGIN
-            INSERT INTO chunk_search(rowid, content, document_title, aliases, headings)
+        CREATE TRIGGER search_chunk_content_ai AFTER INSERT ON search_chunk_content BEGIN
+            INSERT INTO search_chunks_fts(rowid, content, document_title, aliases, headings)
             VALUES (new.id, new.content, new.document_title, new.aliases, new.headings);
         END;
 
-        CREATE TRIGGER chunk_search_content_ad AFTER DELETE ON chunk_search_content BEGIN
-            INSERT INTO chunk_search(chunk_search, rowid, content, document_title, aliases, headings)
+        CREATE TRIGGER search_chunk_content_ad AFTER DELETE ON search_chunk_content BEGIN
+            INSERT INTO search_chunks_fts(search_chunks_fts, rowid, content, document_title, aliases, headings)
             VALUES ('delete', old.id, old.content, old.document_title, old.aliases, old.headings);
         END;
 
-        CREATE TRIGGER chunk_search_content_au AFTER UPDATE ON chunk_search_content BEGIN
-            INSERT INTO chunk_search(chunk_search, rowid, content, document_title, aliases, headings)
+        CREATE TRIGGER search_chunk_content_au AFTER UPDATE ON search_chunk_content BEGIN
+            INSERT INTO search_chunks_fts(search_chunks_fts, rowid, content, document_title, aliases, headings)
             VALUES ('delete', old.id, old.content, old.document_title, old.aliases, old.headings);
-            INSERT INTO chunk_search(rowid, content, document_title, aliases, headings)
+            INSERT INTO search_chunks_fts(rowid, content, document_title, aliases, headings)
             VALUES (new.id, new.content, new.document_title, new.aliases, new.headings);
         END;
 
-        INSERT INTO chunk_search_content (
+        INSERT INTO search_chunk_content (
             chunk_id,
             document_id,
             content,
@@ -187,7 +211,7 @@ pub fn apply_schema_v3(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
         FROM chunks
         JOIN documents ON documents.id = chunks.document_id;
 
-        INSERT INTO chunk_search(chunk_search) VALUES ('rebuild');
+        INSERT INTO search_chunks_fts(search_chunks_fts) VALUES ('rebuild');
         ",
     )?;
     Ok(())

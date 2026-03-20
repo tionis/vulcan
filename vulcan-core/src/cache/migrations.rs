@@ -43,6 +43,11 @@ impl MigrationRegistry {
             Migration::new(1, "create cache schema v1", schema::apply_schema_v1),
             Migration::new(2, "add chunk content column", schema::apply_schema_v2),
             Migration::new(3, "add chunk search index", schema::apply_schema_v3),
+            Migration::new(
+                4,
+                "repair chunk search schema naming",
+                schema::apply_schema_v4,
+            ),
         ])
     }
 
@@ -242,7 +247,7 @@ mod tests {
             .query_row(
                 "
                 SELECT content, document_title, aliases, headings
-                FROM chunk_search_content
+                FROM search_chunk_content
                 WHERE chunk_id = 'chunk-1'
                 ",
                 [],
@@ -279,10 +284,10 @@ mod tests {
             .prepare(
                 "
                 SELECT DISTINCT documents.path
-                FROM chunk_search
-                JOIN chunk_search_content ON chunk_search.rowid = chunk_search_content.id
-                JOIN documents ON documents.id = chunk_search_content.document_id
-                WHERE chunk_search MATCH ?1
+                FROM search_chunks_fts
+                JOIN search_chunk_content ON search_chunks_fts.rowid = search_chunk_content.id
+                JOIN documents ON documents.id = search_chunk_content.document_id
+                WHERE search_chunks_fts MATCH ?1
                 ORDER BY documents.path
                 ",
             )
@@ -293,5 +298,106 @@ mod tests {
 
         rows.map(|row| row.expect("row should deserialize"))
             .collect()
+    }
+
+    #[test]
+    fn repair_chunk_search_schema_recovers_shadow_table_conflict() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let database_path = temp_dir.path().join("cache.db");
+        let mut connection = Connection::open(&database_path).expect("database should open");
+        let transaction = connection
+            .transaction()
+            .expect("setup transaction should begin");
+        schema::apply_schema_v1(&transaction).expect("schema v1 should apply");
+        schema::apply_schema_v2(&transaction).expect("schema v2 should apply");
+        install_broken_v3_search_schema(&transaction).expect("broken v3 schema should apply");
+        transaction
+            .pragma_update(None, "user_version", 3)
+            .expect("user_version should update");
+        transaction
+            .execute(
+                "
+                INSERT INTO documents (
+                    id, path, filename, extension, content_hash, raw_frontmatter,
+                    file_size, file_mtime, parser_version, indexed_at
+                )
+                VALUES ('doc-1', 'Home.md', 'Home', 'md', ?1, NULL, 1, 1, 1, '1')
+                ",
+                [vec![1_u8; 32]],
+            )
+            .expect("document should insert");
+        transaction
+            .execute(
+                "
+                INSERT INTO chunks (
+                    id, document_id, sequence_index, heading_path, byte_offset_start,
+                    byte_offset_end, content_hash, chunk_strategy, chunk_version, content
+                )
+                VALUES ('chunk-1', 'doc-1', 0, '[\"Home\"]', 0, 4, ?1, 'heading', 1, 'dashboard note')
+                ",
+                [vec![2_u8; 32]],
+            )
+            .expect("chunk should insert");
+        transaction
+            .commit()
+            .expect("setup transaction should commit");
+        drop(connection);
+
+        let mut reopened = Connection::open(&database_path).expect("database should reopen");
+        MigrationRegistry::schema_v1()
+            .migrate(&mut reopened)
+            .expect("migration to v4 should repair the schema");
+
+        let matched_paths = search_matches(&reopened, "dashboard");
+        assert_eq!(matched_paths, vec!["Home.md".to_string()]);
+    }
+
+    fn install_broken_v3_search_schema(
+        transaction: &Transaction<'_>,
+    ) -> Result<(), rusqlite::Error> {
+        transaction.execute_batch(
+            "
+            CREATE TABLE chunk_search_content (
+                id INTEGER PRIMARY KEY,
+                chunk_id TEXT NOT NULL UNIQUE REFERENCES chunks(id) ON DELETE CASCADE,
+                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                document_title TEXT NOT NULL,
+                aliases TEXT NOT NULL,
+                headings TEXT NOT NULL
+            );
+
+            CREATE INDEX idx_chunk_search_content_document_id
+                ON chunk_search_content(document_id);
+
+            CREATE VIRTUAL TABLE chunk_search USING fts5(
+                content,
+                document_title,
+                aliases,
+                headings,
+                content = 'chunk_search_content',
+                content_rowid = 'id',
+                tokenize = 'unicode61'
+            );
+
+            CREATE TRIGGER chunk_search_content_ai AFTER INSERT ON chunk_search_content BEGIN
+                INSERT INTO chunk_search(rowid, content, document_title, aliases, headings)
+                VALUES (new.id, new.content, new.document_title, new.aliases, new.headings);
+            END;
+
+            CREATE TRIGGER chunk_search_content_ad AFTER DELETE ON chunk_search_content BEGIN
+                INSERT INTO chunk_search(chunk_search, rowid, content, document_title, aliases, headings)
+                VALUES ('delete', old.id, old.content, old.document_title, old.aliases, old.headings);
+            END;
+
+            CREATE TRIGGER chunk_search_content_au AFTER UPDATE ON chunk_search_content BEGIN
+                INSERT INTO chunk_search(chunk_search, rowid, content, document_title, aliases, headings)
+                VALUES ('delete', old.id, old.content, old.document_title, old.aliases, old.headings);
+                INSERT INTO chunk_search(rowid, content, document_title, aliases, headings)
+                VALUES (new.id, new.content, new.document_title, new.aliases, new.headings);
+            END;
+            ",
+        )?;
+        Ok(())
     }
 }
