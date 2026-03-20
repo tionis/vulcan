@@ -148,7 +148,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Integration test: `ambiguous-links/` vault, assert correct resolutions and diagnostics
 
 ### 1.9 Doctor command
-- [ ] `doctor` CLI command reporting:
+- [x] `doctor` CLI command reporting:
   - Unresolved links (count + list)
   - Ambiguous link targets
   - Parse failures / malformed frontmatter
@@ -156,8 +156,8 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
   - Missing index rows (documents on disk but not in DB)
   - Orphan notes (no inbound or outbound links)
   - HTML links (`<a href>`, `<img src>`) in note content that are not tracked in the link graph
-- [ ] Support `--output json` for machine-readable diagnostics
-- [ ] Integration test: run doctor against `basic/` and `broken-frontmatter/` vaults
+- [x] Support `--output json` for machine-readable diagnostics
+- [x] Integration test: run doctor against `basic/` and `broken-frontmatter/` vaults
 
 ### 1.10 CLI output infrastructure
 - [ ] `--output json` global flag: all commands emit JSON when set
