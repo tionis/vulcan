@@ -7,7 +7,7 @@ Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
   Graph and Query: links, backlinks, graph, search, notes, bases, suggest
   Semantic: vectors, cluster, related
-  Reports and Automation: saved, checkpoint, changes, batch
+  Reports and Automation: saved, checkpoint, changes, batch, export, automation
   Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -107,11 +107,15 @@ pub enum VectorsCommand {
         query: Option<String>,
         #[arg(long, help = "Existing note identifier to use as the similarity query")]
         note: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "Recommend semantically related notes for one note")]
     Related {
         #[arg(help = "Note path, filename, or alias to use as the seed note")]
         note: String,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "Report highly similar chunk pairs from the vector index")]
     Duplicates {
@@ -121,6 +125,8 @@ pub enum VectorsCommand {
             help = "Minimum cosine similarity threshold for duplicate candidates"
         )]
         threshold: f32,
+        #[command(flatten)]
+        export: ExportArgs,
     },
 }
 
@@ -143,15 +149,30 @@ pub enum GraphCommand {
         to: String,
     },
     #[command(about = "List notes with the highest combined link degree")]
-    Hubs,
+    Hubs {
+        #[command(flatten)]
+        export: ExportArgs,
+    },
     #[command(about = "Report candidate map-of-content style notes")]
-    Moc,
+    Moc {
+        #[command(flatten)]
+        export: ExportArgs,
+    },
     #[command(about = "List notes without outbound resolved note links")]
-    DeadEnds,
+    DeadEnds {
+        #[command(flatten)]
+        export: ExportArgs,
+    },
     #[command(about = "Report weakly connected components of the note graph")]
-    Components,
+    Components {
+        #[command(flatten)]
+        export: ExportArgs,
+    },
     #[command(about = "Summarize note-graph and vault analytics")]
-    Stats,
+    Stats {
+        #[command(flatten)]
+        export: ExportArgs,
+    },
     #[command(about = "Show note-count, orphan, stale, and link trends over saved scans")]
     Trends {
         #[arg(
@@ -160,6 +181,8 @@ pub enum GraphCommand {
             help = "Maximum number of checkpoints to include"
         )]
         limit: usize,
+        #[command(flatten)]
+        export: ExportArgs,
     },
 }
 
@@ -168,7 +191,10 @@ pub enum CacheCommand {
     #[command(about = "Inspect cache sizes and row counts")]
     Inspect,
     #[command(about = "Verify cache invariants against derived indexes")]
-    Verify,
+    Verify {
+        #[arg(long, help = "Return exit code 2 when one or more cache checks fail")]
+        fail_on_errors: bool,
+    },
     #[command(about = "Run SQLite VACUUM on the cache database")]
     Vacuum {
         #[arg(long, help = "Report the vacuum scope without mutating the cache")]
@@ -182,9 +208,14 @@ pub enum SuggestCommand {
     Mentions {
         #[arg(help = "Optional note path, filename, or alias to inspect")]
         note: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "Report duplicate titles, alias collisions, and merge candidates")]
-    Duplicates,
+    Duplicates {
+        #[command(flatten)]
+        export: ExportArgs,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -284,7 +315,57 @@ pub enum CheckpointCommand {
         name: String,
     },
     #[command(about = "List saved scan and manual checkpoints")]
-    List,
+    List {
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ExportCommand {
+    #[command(about = "Write the cached search corpus as a static JSON index")]
+    SearchIndex {
+        #[arg(
+            long,
+            help = "Destination JSON file; omit to print the payload to stdout"
+        )]
+        path: Option<PathBuf>,
+        #[arg(long, help = "Pretty-print the generated JSON payload")]
+        pretty: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum AutomationCommand {
+    #[command(about = "Run saved reports, checks, and repairs for non-interactive workflows")]
+    Run {
+        #[arg(help = "Saved report names to run")]
+        reports: Vec<String>,
+        #[arg(long, help = "Run every saved report definition in .vulcan/reports")]
+        all_reports: bool,
+        #[arg(
+            long,
+            help = "Run an incremental scan before checks and report execution"
+        )]
+        scan: bool,
+        #[arg(long, conflicts_with = "doctor_fix", help = "Include doctor results")]
+        doctor: bool,
+        #[arg(
+            long,
+            conflicts_with = "doctor",
+            help = "Apply deterministic doctor fixes before reporting status"
+        )]
+        doctor_fix: bool,
+        #[arg(long, help = "Verify cache invariants")]
+        verify_cache: bool,
+        #[arg(long, help = "Repair the FTS index from cached chunks")]
+        repair_fts: bool,
+        #[arg(
+            long,
+            help = "Return exit code 2 when completed checks still report issues"
+        )]
+        fail_on_issues: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
@@ -341,11 +422,15 @@ pub enum Command {
     Links {
         #[arg(help = "Note path, filename, or alias to inspect")]
         note: String,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "List inbound links pointing at a note")]
     Backlinks {
         #[arg(help = "Note path, filename, or alias to inspect")]
         note: String,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "Analyze the resolved note graph")]
     Graph {
@@ -423,6 +508,11 @@ pub enum Command {
         #[command(subcommand)]
         command: CheckpointCommand,
     },
+    #[command(about = "Write static export artifacts derived from the cache")]
+    Export {
+        #[command(subcommand)]
+        command: ExportCommand,
+    },
     #[command(about = "Report note, link, property, and embedding changes since a baseline")]
     Changes {
         #[arg(
@@ -430,6 +520,8 @@ pub enum Command {
             help = "Compare against a named checkpoint instead of the previous scan"
         )]
         checkpoint: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "Run multiple saved reports for automation and scheduled jobs")]
     Batch {
@@ -438,17 +530,26 @@ pub enum Command {
         #[arg(long, help = "Run every saved report definition in .vulcan/reports")]
         all: bool,
     },
+    #[command(about = "Run checks, repairs, and saved reports for CI and scripts")]
+    Automation {
+        #[command(subcommand)]
+        command: AutomationCommand,
+    },
     #[command(about = "Cluster indexed vectors into topical groups")]
     Cluster {
         #[arg(long, default_value_t = 8, help = "Requested cluster count")]
         clusters: usize,
         #[arg(long, help = "Report cluster assignments without persisting them")]
         dry_run: bool,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "Recommend semantically related notes for one note")]
     Related {
         #[arg(help = "Note path, filename, or alias to use as the seed note")]
         note: String,
+        #[command(flatten)]
+        export: ExportArgs,
     },
     #[command(about = "Run vector indexing and similarity commands")]
     Vectors {
@@ -491,6 +592,11 @@ pub enum Command {
             help = "Report planned repairs without mutating the vault or cache"
         )]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "Return exit code 2 when the final doctor summary still reports issues"
+        )]
+        fail_on_issues: bool,
     },
     #[command(about = "Rename a frontmatter property key across notes")]
     RenameProperty {

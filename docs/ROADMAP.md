@@ -463,10 +463,10 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Integration tests for maintenance and reporting flows
 
 ### 7.11 Import, export, and automation
-- [ ] Broader export surfaces for graph data, reports, and static search indexes
-- [ ] CSV export support for more list/query commands beyond the initial report set
-- [ ] Scriptable automation hooks for saved reports, repairs, and CI runs
-- [ ] Non-interactive machine-oriented exit codes for automation workflows
+- [x] Broader export surfaces for graph data, reports, and static search indexes
+- [x] CSV export support for more list/query commands beyond the initial report set
+- [x] Scriptable automation hooks for saved reports, repairs, and CI runs
+- [x] Non-interactive machine-oriented exit codes for automation workflows
 
 ---
 

@@ -47,6 +47,8 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("checkpoint"))
             .and(predicate::str::contains("changes"))
             .and(predicate::str::contains("batch"))
+            .and(predicate::str::contains("export"))
+            .and(predicate::str::contains("automation"))
             .and(predicate::str::contains("describe"))
             .and(predicate::str::contains("completions"))
             .and(predicate::str::contains(
@@ -67,7 +69,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Semantic: vectors, cluster, related",
             ))
             .and(predicate::str::contains(
-                "Reports and Automation: saved, checkpoint, changes, batch",
+                "Reports and Automation: saved, checkpoint, changes, batch, export, automation",
             ))
             .and(predicate::str::contains(
                 "Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions",
@@ -943,6 +945,194 @@ fn search_notes_and_bases_support_file_exports() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
+fn graph_links_changes_and_cluster_support_file_exports() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let server = MockEmbeddingServer::spawn();
+    write_embedding_config(&vault_root, &server.base_url());
+    run_scan(&vault_root);
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "checkpoint",
+            "create",
+            "baseline",
+        ])
+        .assert()
+        .success();
+    fs::write(
+        vault_root.join("Home.md"),
+        "---\naliases:\n  - Start\ntags:\n  - dashboard\n---\n\n# Home\n\nUpdated dashboard links.\n",
+    )
+    .expect("updated note should write");
+    run_incremental_scan(&vault_root);
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "vectors",
+            "index",
+        ])
+        .assert()
+        .success();
+    let links_export = temp_dir.path().join("links.csv");
+    let hubs_export = temp_dir.path().join("hubs.jsonl");
+    let changes_export = temp_dir.path().join("changes.csv");
+    let cluster_export = temp_dir.path().join("cluster.jsonl");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "links",
+            "Bob",
+            "--export",
+            "csv",
+            "--export-path",
+            links_export
+                .to_str()
+                .expect("links export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "graph",
+            "hubs",
+            "--export",
+            "jsonl",
+            "--export-path",
+            hubs_export
+                .to_str()
+                .expect("hubs export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "changes",
+            "--checkpoint",
+            "baseline",
+            "--export",
+            "csv",
+            "--export-path",
+            changes_export
+                .to_str()
+                .expect("changes export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "cluster",
+            "--clusters",
+            "2",
+            "--export",
+            "jsonl",
+            "--export-path",
+            cluster_export
+                .to_str()
+                .expect("cluster export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let links_csv = fs::read_to_string(&links_export).expect("links export should exist");
+    let hubs_jsonl = fs::read_to_string(&hubs_export).expect("hubs export should exist");
+    let changes_csv = fs::read_to_string(&changes_export).expect("changes export should exist");
+    let cluster_jsonl = fs::read_to_string(&cluster_export).expect("cluster export should exist");
+
+    assert!(links_csv.contains("Projects/Alpha.md"));
+    assert!(links_csv.contains("[[Projects/Alpha#Status]]"));
+    assert!(hubs_jsonl.contains("\"document_path\":\"Projects/Alpha.md\""));
+    assert!(changes_csv.contains("baseline"));
+    assert!(changes_csv.contains("Home.md"));
+    assert!(cluster_jsonl.contains("\"cluster_label\""));
+    server.shutdown();
+}
+
+#[test]
+fn export_search_index_writes_static_json_payload() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("search-index.json");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "search-index",
+            "--path",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+            "--pretty",
+        ])
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_str(
+        &fs::read_to_string(&export_path).expect("search index export should exist"),
+    )
+    .expect("search index export should parse");
+
+    assert_eq!(payload["version"], 1);
+    assert_eq!(payload["documents"], 3);
+    assert!(payload["entries"]
+        .as_array()
+        .expect("entries should be an array")
+        .iter()
+        .any(|entry| {
+            entry["document_path"] == "Home.md"
+                && entry["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("dashboard")
+        }));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
 fn saved_reports_can_be_listed_run_and_batched() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -1081,6 +1271,123 @@ fn saved_reports_can_be_listed_run_and_batched() {
     assert_eq!(batch_json["failed"], 0);
     assert!(vault_root.join("exports/search.jsonl").exists());
     assert!(vault_root.join("exports/release.csv").exists());
+}
+
+#[test]
+fn doctor_and_cache_verify_support_issue_exit_codes() {
+    let broken_dir = TempDir::new().expect("temp dir should be created");
+    let broken_vault = broken_dir.path().join("vault");
+    copy_fixture_vault("broken-frontmatter", &broken_vault);
+    run_scan(&broken_vault);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            broken_vault
+                .to_str()
+                .expect("broken vault path should be valid utf-8"),
+            "doctor",
+            "--fail-on-issues",
+        ])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("parse failures: 1"));
+
+    let cache_dir = TempDir::new().expect("temp dir should be created");
+    let cache_vault = cache_dir.path().join("vault");
+    copy_fixture_vault("basic", &cache_vault);
+    run_scan(&cache_vault);
+    let paths = VaultPaths::new(&cache_vault);
+    let mut database = CacheDatabase::open(&paths).expect("cache should open");
+    database
+        .with_transaction(|transaction| {
+            transaction
+                .execute("DELETE FROM search_chunk_content", [])
+                .expect("search rows should delete");
+            Ok::<_, vulcan_core::CacheError>(())
+        })
+        .expect("cache mutation should succeed");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            cache_vault
+                .to_str()
+                .expect("cache vault path should be valid utf-8"),
+            "cache",
+            "verify",
+            "--fail-on-errors",
+        ])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("Cache healthy: false"));
+}
+
+#[test]
+fn automation_run_executes_saved_reports_and_health_checks() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--fields",
+            "document_path,rank",
+            "--limit",
+            "1",
+            "saved",
+            "search",
+            "weekly-search",
+            "dashboard",
+            "--description",
+            "weekly dashboard hits",
+            "--export",
+            "jsonl",
+            "--export-path",
+            "exports/search.jsonl",
+        ])
+        .assert()
+        .success();
+
+    let automation_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root
+                    .to_str()
+                    .expect("vault path should be valid utf-8"),
+                "--output",
+                "json",
+                "automation",
+                "run",
+                "--scan",
+                "--doctor",
+                "--verify-cache",
+                "weekly-search",
+                "--fail-on-issues",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+
+    assert_eq!(
+        automation_json["actions"],
+        serde_json::json!(["scan", "doctor", "cache_verify", "saved_reports"])
+    );
+    assert_eq!(automation_json["issues_detected"], false);
+    assert_eq!(automation_json["cache_verify"]["healthy"], true);
+    assert_eq!(automation_json["reports"]["succeeded"], 1);
+    assert!(vault_root.join("exports/search.jsonl").exists());
 }
 
 fn replace_string_recursively(value: &mut Value, pattern: &str, replacement: &str) {

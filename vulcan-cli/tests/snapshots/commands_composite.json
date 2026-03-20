@@ -271,6 +271,31 @@
             "value_names": [
               "NOTE"
             ]
+          },
+          {
+            "help": "Write query rows to a CSV or JSONL file",
+            "id": "export",
+            "long": "export",
+            "possible_values": [
+              "csv",
+              "jsonl"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT"
+            ]
+          },
+          {
+            "help": "Destination file for CSV or JSONL exports",
+            "id": "export_path",
+            "long": "export-path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT_PATH"
+            ]
           }
         ],
         "subcommands": []
@@ -288,6 +313,31 @@
             "short": null,
             "value_names": [
               "NOTE"
+            ]
+          },
+          {
+            "help": "Write query rows to a CSV or JSONL file",
+            "id": "export",
+            "long": "export",
+            "possible_values": [
+              "csv",
+              "jsonl"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT"
+            ]
+          },
+          {
+            "help": "Destination file for CSV or JSONL exports",
+            "id": "export_path",
+            "long": "export-path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT_PATH"
             ]
           }
         ],
@@ -330,31 +380,161 @@
           {
             "about": "List notes with the highest combined link degree",
             "name": "hubs",
-            "options": [],
+            "options": [
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
             "subcommands": []
           },
           {
             "about": "Report candidate map-of-content style notes",
             "name": "moc",
-            "options": [],
+            "options": [
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
             "subcommands": []
           },
           {
             "about": "List notes without outbound resolved note links",
             "name": "dead-ends",
-            "options": [],
+            "options": [
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
             "subcommands": []
           },
           {
             "about": "Report weakly connected components of the note graph",
             "name": "components",
-            "options": [],
+            "options": [
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
             "subcommands": []
           },
           {
             "about": "Summarize note-graph and vault analytics",
             "name": "stats",
-            "options": [],
+            "options": [
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
             "subcommands": []
           },
           {
@@ -370,6 +550,31 @@
                 "short": null,
                 "value_names": [
                   "LIMIT"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
                 ]
               }
             ],
@@ -686,6 +891,31 @@
                 "value_names": [
                   "NOTE"
                 ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
               }
             ],
             "subcommands": []
@@ -693,7 +923,33 @@
           {
             "about": "Report duplicate titles, alias collisions, and merge candidates",
             "name": "duplicates",
-            "options": [],
+            "options": [
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
             "subcommands": []
           }
         ]
@@ -1115,7 +1371,72 @@
           {
             "about": "List saved scan and manual checkpoints",
             "name": "list",
-            "options": [],
+            "options": [
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Write static export artifacts derived from the cache",
+        "name": "export",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Write the cached search corpus as a static JSON index",
+            "name": "search-index",
+            "options": [
+              {
+                "help": "Destination JSON file; omit to print the payload to stdout",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Pretty-print the generated JSON payload",
+                "id": "pretty",
+                "long": "pretty",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PRETTY"
+                ]
+              }
+            ],
             "subcommands": []
           }
         ]
@@ -1133,6 +1454,31 @@
             "short": null,
             "value_names": [
               "CHECKPOINT"
+            ]
+          },
+          {
+            "help": "Write query rows to a CSV or JSONL file",
+            "id": "export",
+            "long": "export",
+            "possible_values": [
+              "csv",
+              "jsonl"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT"
+            ]
+          },
+          {
+            "help": "Destination file for CSV or JSONL exports",
+            "id": "export_path",
+            "long": "export-path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT_PATH"
             ]
           }
         ],
@@ -1171,6 +1517,129 @@
         "subcommands": []
       },
       {
+        "about": "Run checks, repairs, and saved reports for CI and scripts",
+        "name": "automation",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Run saved reports, checks, and repairs for non-interactive workflows",
+            "name": "run",
+            "options": [
+              {
+                "help": "Saved report names to run",
+                "id": "reports",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REPORTS"
+                ]
+              },
+              {
+                "help": "Run every saved report definition in .vulcan/reports",
+                "id": "all_reports",
+                "long": "all-reports",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALL_REPORTS"
+                ]
+              },
+              {
+                "help": "Run an incremental scan before checks and report execution",
+                "id": "scan",
+                "long": "scan",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SCAN"
+                ]
+              },
+              {
+                "help": "Include doctor results",
+                "id": "doctor",
+                "long": "doctor",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DOCTOR"
+                ]
+              },
+              {
+                "help": "Apply deterministic doctor fixes before reporting status",
+                "id": "doctor_fix",
+                "long": "doctor-fix",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DOCTOR_FIX"
+                ]
+              },
+              {
+                "help": "Verify cache invariants",
+                "id": "verify_cache",
+                "long": "verify-cache",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "VERIFY_CACHE"
+                ]
+              },
+              {
+                "help": "Repair the FTS index from cached chunks",
+                "id": "repair_fts",
+                "long": "repair-fts",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REPAIR_FTS"
+                ]
+              },
+              {
+                "help": "Return exit code 2 when completed checks still report issues",
+                "id": "fail_on_issues",
+                "long": "fail-on-issues",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FAIL_ON_ISSUES"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Cluster indexed vectors into topical groups",
         "name": "cluster",
         "options": [
@@ -1198,6 +1667,31 @@
             "value_names": [
               "DRY_RUN"
             ]
+          },
+          {
+            "help": "Write query rows to a CSV or JSONL file",
+            "id": "export",
+            "long": "export",
+            "possible_values": [
+              "csv",
+              "jsonl"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT"
+            ]
+          },
+          {
+            "help": "Destination file for CSV or JSONL exports",
+            "id": "export_path",
+            "long": "export-path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT_PATH"
+            ]
           }
         ],
         "subcommands": []
@@ -1215,6 +1709,31 @@
             "short": null,
             "value_names": [
               "NOTE"
+            ]
+          },
+          {
+            "help": "Write query rows to a CSV or JSONL file",
+            "id": "export",
+            "long": "export",
+            "possible_values": [
+              "csv",
+              "jsonl"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT"
+            ]
+          },
+          {
+            "help": "Destination file for CSV or JSONL exports",
+            "id": "export_path",
+            "long": "export-path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT_PATH"
             ]
           }
         ],
@@ -1347,6 +1866,31 @@
                 "value_names": [
                   "NOTE"
                 ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
               }
             ],
             "subcommands": []
@@ -1365,6 +1909,31 @@
                 "value_names": [
                   "NOTE"
                 ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
               }
             ],
             "subcommands": []
@@ -1382,6 +1951,31 @@
                 "short": null,
                 "value_names": [
                   "THRESHOLD"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
                 ]
               }
             ],
@@ -1548,6 +2142,20 @@
             "short": null,
             "value_names": [
               "DRY_RUN"
+            ]
+          },
+          {
+            "help": "Return exit code 2 when the final doctor summary still reports issues",
+            "id": "fail_on_issues",
+            "long": "fail-on-issues",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FAIL_ON_ISSUES"
             ]
           }
         ],
@@ -1815,7 +2423,22 @@
           {
             "about": "Verify cache invariants against derived indexes",
             "name": "verify",
-            "options": [],
+            "options": [
+              {
+                "help": "Return exit code 2 when one or more cache checks fail",
+                "id": "fail_on_errors",
+                "long": "fail-on-errors",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FAIL_ON_ERRORS"
+                ]
+              }
+            ],
             "subcommands": []
           },
           {

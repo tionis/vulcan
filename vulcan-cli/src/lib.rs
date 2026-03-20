@@ -3,9 +3,9 @@ mod cli;
 mod serve;
 
 pub use cli::{
-    BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ExportArgs, ExportFormat,
-    GraphCommand, OutputFormat, RepairCommand, SavedCommand, SearchMode, SuggestCommand,
-    VectorQueueCommand, VectorsCommand,
+    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ExportArgs,
+    ExportCommand, ExportFormat, GraphCommand, OutputFormat, RepairCommand, SavedCommand,
+    SearchMode, SuggestCommand, VectorQueueCommand, VectorsCommand,
 };
 
 use clap::{CommandFactory, Parser};
@@ -22,30 +22,31 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vulcan_core::{
     bulk_replace, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
-    evaluate_base_file, index_vectors_with_progress, initialize_vault, inspect_cache,
-    inspect_vector_queue, link_mentions, list_checkpoints, list_saved_reports, load_saved_report,
-    merge_tags, move_note, query_backlinks, query_change_report, query_graph_analytics,
-    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
-    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
-    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
-    repair_vectors_with_progress, save_saved_report, scan_vault_with_progress, search_vault,
-    suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache, watch_vault,
-    BacklinkRecord, BacklinksReport, BasesEvalReport, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphTrendsReport, InitSummary, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, RebuildQuery, RebuildReport, RefactorReport,
-    RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
-    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
-    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
+    evaluate_base_file, export_static_search_index, index_vectors_with_progress, initialize_vault,
+    inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints, list_saved_reports,
+    load_saved_report, merge_tags, move_note, query_backlinks, query_change_report,
+    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
+    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
+    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
+    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    repair_fts, repair_vectors_with_progress, save_saved_report, scan_vault_with_progress,
+    search_vault, suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache,
+    watch_vault, BacklinkRecord, BacklinksReport, BasesEvalReport, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
+    ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport,
+    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphTrendsReport, InitSummary,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
+    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, RebuildQuery,
+    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
+    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -66,6 +67,13 @@ impl CliError {
         Self {
             exit_code: 1,
             message: error.to_string(),
+        }
+    }
+
+    pub(crate) fn issues(message: impl Into<String>) -> Self {
+        Self {
+            exit_code: 2,
+            message: message.into(),
         }
     }
 
@@ -381,6 +389,18 @@ struct BatchRunReport {
     items: Vec<BatchRunItemReport>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AutomationRunReport {
+    actions: Vec<String>,
+    reports: Option<BatchRunReport>,
+    scan: Option<ScanSummary>,
+    doctor_issues: Option<vulcan_core::DoctorSummary>,
+    doctor_fix: Option<DoctorFixReport>,
+    cache_verify: Option<CacheVerifyReport>,
+    repair_fts: Option<RepairFtsReport>,
+    issues_detected: bool,
+}
+
 #[allow(clippy::large_enum_variant)]
 enum SavedExecution {
     Search(SearchReport),
@@ -626,6 +646,238 @@ fn saved_execution_rows(execution: &SavedExecution, controls: &ListOutputControl
     }
 }
 
+fn run_saved_reports_batch(
+    paths: &VaultPaths,
+    provider: Option<&String>,
+    controls: &ListOutputControls,
+    names: &[String],
+    all: bool,
+) -> Result<BatchRunReport, CliError> {
+    if all && !names.is_empty() {
+        return Err(CliError::operation(
+            "batch accepts either explicit report names or --all, not both",
+        ));
+    }
+
+    let selected_names = if all {
+        list_saved_reports(paths)
+            .map_err(CliError::operation)?
+            .into_iter()
+            .map(|report| report.name)
+            .collect::<Vec<_>>()
+    } else {
+        names.to_vec()
+    };
+
+    if selected_names.is_empty() {
+        return Err(CliError::operation(
+            "no saved reports selected; pass names or use --all",
+        ));
+    }
+
+    let mut items = Vec::new();
+    let mut succeeded = 0_usize;
+    for name in selected_names {
+        match load_saved_report(paths, &name).map_err(CliError::operation) {
+            Ok(definition) => {
+                let effective_controls =
+                    controls.with_saved_defaults(definition.fields.clone(), definition.limit);
+                let result = match definition.export.as_ref() {
+                    Some(saved_export) => {
+                        let resolved_export = resolve_saved_export(paths, saved_export);
+                        execute_saved_report(
+                            paths,
+                            &definition,
+                            provider.cloned(),
+                            &effective_controls,
+                        )
+                        .and_then(|execution| {
+                            let rows = saved_execution_rows(&execution, &effective_controls);
+                            export_rows(
+                                &rows,
+                                effective_controls.fields.as_deref(),
+                                Some(&resolved_export),
+                            )?;
+                            Ok(BatchRunItemReport {
+                                name: definition.name.clone(),
+                                kind: Some(execution.kind()),
+                                ok: true,
+                                row_count: Some(rows.len()),
+                                export_format: Some(resolved_export.format),
+                                export_path: Some(resolved_export.path.display().to_string()),
+                                error: None,
+                            })
+                        })
+                    }
+                    None => Err(CliError::operation(
+                        "batch mode requires each saved report to define an export target",
+                    )),
+                };
+
+                match result {
+                    Ok(item) => {
+                        succeeded += 1;
+                        items.push(item);
+                    }
+                    Err(error) => {
+                        items.push(BatchRunItemReport {
+                            name: definition.name,
+                            kind: Some(definition.query.kind()),
+                            ok: false,
+                            row_count: None,
+                            export_format: None,
+                            export_path: None,
+                            error: Some(error.to_string()),
+                        });
+                    }
+                }
+            }
+            Err(error) => {
+                items.push(BatchRunItemReport {
+                    name,
+                    kind: None,
+                    ok: false,
+                    row_count: None,
+                    export_format: None,
+                    export_path: None,
+                    error: Some(error.to_string()),
+                });
+            }
+        }
+    }
+
+    Ok(BatchRunReport {
+        total: items.len(),
+        succeeded,
+        failed: items.len().saturating_sub(succeeded),
+        items,
+    })
+}
+
+fn doctor_summary_has_issues(summary: &vulcan_core::DoctorSummary) -> bool {
+    summary.unresolved_links > 0
+        || summary.ambiguous_links > 0
+        || summary.broken_embeds > 0
+        || summary.parse_failures > 0
+        || summary.stale_index_rows > 0
+        || summary.missing_index_rows > 0
+        || summary.orphan_notes > 0
+        || summary.orphan_assets > 0
+        || summary.html_links > 0
+}
+
+fn execute_automation_run(
+    paths: &VaultPaths,
+    provider: Option<&String>,
+    output: OutputFormat,
+    use_stderr_color: bool,
+    controls: &ListOutputControls,
+    command: &AutomationCommand,
+) -> Result<AutomationRunReport, CliError> {
+    let AutomationCommand::Run {
+        reports,
+        all_reports,
+        scan,
+        doctor,
+        doctor_fix: doctor_fix_requested,
+        verify_cache: verify_cache_requested,
+        repair_fts: repair_fts_requested,
+        fail_on_issues: _,
+    } = command;
+
+    if !*scan
+        && !*doctor
+        && !*doctor_fix_requested
+        && !*verify_cache_requested
+        && !*repair_fts_requested
+        && !*all_reports
+        && reports.is_empty()
+    {
+        return Err(CliError::operation(
+            "automation run requires at least one action",
+        ));
+    }
+
+    let mut actions = Vec::new();
+    let mut scan_report = None;
+    if *scan {
+        actions.push("scan".to_string());
+        let mut progress =
+            (output == OutputFormat::Human).then(|| ScanProgressReporter::new(use_stderr_color));
+        scan_report = Some(
+            scan_vault_with_progress(paths, ScanMode::Incremental, |event| {
+                if let Some(progress) = progress.as_mut() {
+                    progress.record(&event);
+                }
+            })
+            .map_err(CliError::operation)?,
+        );
+    }
+
+    let mut doctor_issues = None;
+    let mut doctor_fix_report = None;
+    if *doctor {
+        actions.push("doctor".to_string());
+        doctor_issues = Some(doctor_vault(paths).map_err(CliError::operation)?.summary);
+    } else if *doctor_fix_requested {
+        actions.push("doctor_fix".to_string());
+        doctor_fix_report = Some(doctor_fix(paths, false).map_err(CliError::operation)?);
+    }
+
+    let mut cache_verify_report = None;
+    if *verify_cache_requested {
+        actions.push("cache_verify".to_string());
+        cache_verify_report = Some(verify_cache(paths).map_err(CliError::operation)?);
+    }
+
+    let mut repair_fts_report = None;
+    if *repair_fts_requested {
+        actions.push("repair_fts".to_string());
+        repair_fts_report = Some(
+            repair_fts(paths, &RepairFtsQuery { dry_run: false }).map_err(CliError::operation)?,
+        );
+    }
+
+    let batch_report = if *all_reports || !reports.is_empty() {
+        actions.push(if *all_reports {
+            "saved_reports_all".to_string()
+        } else {
+            "saved_reports".to_string()
+        });
+        Some(run_saved_reports_batch(
+            paths,
+            provider,
+            controls,
+            reports,
+            *all_reports,
+        )?)
+    } else {
+        None
+    };
+
+    let issues_detected = doctor_issues
+        .as_ref()
+        .is_some_and(doctor_summary_has_issues)
+        || doctor_fix_report
+            .as_ref()
+            .and_then(|report| report.issues_after.as_ref())
+            .is_some_and(doctor_summary_has_issues)
+        || cache_verify_report
+            .as_ref()
+            .is_some_and(|report| !report.healthy);
+
+    Ok(AutomationRunReport {
+        actions,
+        reports: batch_report,
+        scan: scan_report,
+        doctor_issues,
+        doctor_fix: doctor_fix_report,
+        cache_verify: cache_verify_report,
+        repair_fts: repair_fts_report,
+        issues_detected,
+    })
+}
+
 pub fn run() -> Result<(), CliError> {
     run_from(std::env::args_os())
 }
@@ -649,14 +901,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let use_stderr_color = color_enabled_for_terminal(stderr_is_tty);
 
     match cli.command {
-        Command::Backlinks { ref note } => {
+        Command::Backlinks {
+            ref note,
+            ref export,
+        } => {
             let report = query_backlinks(&paths, note).map_err(CliError::operation)?;
+            let export = resolve_cli_export(export)?;
             print_backlinks_report(
                 cli.output,
                 &report,
                 &list_controls,
                 stdout_is_tty,
                 use_stdout_color,
+                export.as_ref(),
             )?;
             Ok(())
         }
@@ -665,53 +922,63 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let report = query_graph_path(&paths, from, to).map_err(CliError::operation)?;
                 print_graph_path_report(cli.output, &report)
             }
-            GraphCommand::Hubs => {
+            GraphCommand::Hubs { export } => {
                 let report = query_graph_hubs(&paths).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_graph_hubs_report(
                     cli.output,
                     &report,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )
             }
-            GraphCommand::Moc => {
+            GraphCommand::Moc { export } => {
                 let report = query_graph_moc_candidates(&paths).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_graph_moc_report(
                     cli.output,
                     &report,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )
             }
-            GraphCommand::DeadEnds => {
+            GraphCommand::DeadEnds { export } => {
                 let report = query_graph_dead_ends(&paths).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_graph_dead_ends_report(
                     cli.output,
                     &report,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )
             }
-            GraphCommand::Components => {
+            GraphCommand::Components { export } => {
                 let report = query_graph_components(&paths).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_graph_components_report(
                     cli.output,
                     &report,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )
             }
-            GraphCommand::Stats => {
+            GraphCommand::Stats { export } => {
                 let report = query_graph_analytics(&paths).map_err(CliError::operation)?;
-                print_graph_analytics_report(cli.output, &report)
+                let export = resolve_cli_export(export)?;
+                print_graph_analytics_report(cli.output, &report, export.as_ref())
             }
-            GraphCommand::Trends { limit } => {
+            GraphCommand::Trends { limit, export } => {
                 let report = query_graph_trends(&paths, *limit).map_err(CliError::operation)?;
-                print_graph_trends_report(cli.output, &report)
+                let export = resolve_cli_export(export)?;
+                print_graph_trends_report(cli.output, &report, &list_controls, export.as_ref())
             }
         },
         Command::Completions { shell } => {
@@ -749,7 +1016,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
             }
         },
-        Command::Cluster { clusters, dry_run } => {
+        Command::Cluster {
+            clusters,
+            dry_run,
+            ref export,
+        } => {
             let report = cluster_vectors(
                 &paths,
                 &ClusterQuery {
@@ -759,16 +1030,21 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 },
             )
             .map_err(CliError::operation)?;
+            let export = resolve_cli_export(export)?;
             print_cluster_report(
                 cli.output,
                 &report,
                 &list_controls,
                 stdout_is_tty,
                 use_stdout_color,
+                export.as_ref(),
             )?;
             Ok(())
         }
-        Command::Related { ref note } => {
+        Command::Related {
+            ref note,
+            ref export,
+        } => {
             let report = query_related_notes(
                 &paths,
                 &RelatedNotesQuery {
@@ -778,23 +1054,41 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 },
             )
             .map_err(CliError::operation)?;
+            let export = resolve_cli_export(export)?;
             print_related_notes_report(
                 cli.output,
                 &report,
                 &list_controls,
                 stdout_is_tty,
                 use_stdout_color,
+                export.as_ref(),
             )?;
             Ok(())
         }
         Command::Describe => print_describe_report(cli.output),
-        Command::Doctor { fix, dry_run } => {
+        Command::Doctor {
+            fix,
+            dry_run,
+            fail_on_issues,
+        } => {
             if fix {
                 let report = doctor_fix(&paths, dry_run).map_err(CliError::operation)?;
                 print_doctor_fix_report(cli.output, &paths, &report)?;
+                if fail_on_issues {
+                    let summary = report
+                        .issues_after
+                        .as_ref()
+                        .unwrap_or(&report.issues_before);
+                    if doctor_summary_has_issues(summary) {
+                        return Err(CliError::issues("doctor found remaining issues"));
+                    }
+                }
             } else {
                 let report = doctor_vault(&paths).map_err(CliError::operation)?;
                 print_doctor_report(cli.output, &paths, &report)?;
+                if fail_on_issues && doctor_summary_has_issues(&report.summary) {
+                    return Err(CliError::issues("doctor found issues"));
+                }
             }
             Ok(())
         }
@@ -879,9 +1173,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let report = inspect_cache(&paths).map_err(CliError::operation)?;
                 print_cache_inspect_report(cli.output, &report)
             }
-            CacheCommand::Verify => {
+            CacheCommand::Verify { fail_on_errors } => {
                 let report = verify_cache(&paths).map_err(CliError::operation)?;
-                print_cache_verify_report(cli.output, &report)
+                print_cache_verify_report(cli.output, &report)?;
+                if *fail_on_errors && !report.healthy {
+                    Err(CliError::issues("cache verification failed"))
+                } else {
+                    Ok(())
+                }
             }
             CacheCommand::Vacuum { dry_run } => {
                 let report = cache_vacuum(&paths, &CacheVacuumQuery { dry_run: *dry_run })
@@ -923,14 +1222,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             })
             .map_err(CliError::operation)
         }
-        Command::Links { ref note } => {
+        Command::Links {
+            ref note,
+            ref export,
+        } => {
             let report = query_links(&paths, note).map_err(CliError::operation)?;
+            let export = resolve_cli_export(export)?;
             print_links_report(
                 cli.output,
                 &report,
                 &list_controls,
                 stdout_is_tty,
                 use_stdout_color,
+                export.as_ref(),
             )?;
             Ok(())
         }
@@ -1006,25 +1310,29 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Suggest { ref command } => match command {
-            SuggestCommand::Mentions { note } => {
+            SuggestCommand::Mentions { note, export } => {
                 let report =
                     suggest_mentions(&paths, note.as_deref()).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_mention_suggestions_report(
                     cli.output,
                     &report,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )
             }
-            SuggestCommand::Duplicates => {
+            SuggestCommand::Duplicates { export } => {
                 let report = suggest_duplicates(&paths).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_duplicate_suggestions_report(
                     cli.output,
                     &report,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )
             }
         },
@@ -1165,18 +1473,29 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let record = create_checkpoint(&paths, name).map_err(CliError::operation)?;
                 print_checkpoint_record(cli.output, &record)
             }
-            CheckpointCommand::List => {
+            CheckpointCommand::List { export } => {
                 let records = list_checkpoints(&paths).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_checkpoint_list(
                     cli.output,
                     &records,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )
             }
         },
-        Command::Changes { ref checkpoint } => {
+        Command::Export { ref command } => match command {
+            ExportCommand::SearchIndex { path, pretty } => {
+                let report = export_static_search_index(&paths).map_err(CliError::operation)?;
+                print_static_search_index_report(cli.output, &report, path.as_ref(), *pretty)
+            }
+        },
+        Command::Changes {
+            ref checkpoint,
+            ref export,
+        } => {
             let report = query_change_report(
                 &paths,
                 &checkpoint.as_ref().map_or(ChangeAnchor::LastScan, |name| {
@@ -1184,12 +1503,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }),
             )
             .map_err(CliError::operation)?;
+            let export = resolve_cli_export(export)?;
             print_change_report(
                 cli.output,
                 &report,
                 &list_controls,
                 stdout_is_tty,
                 use_stdout_color,
+                export.as_ref(),
             )
         }
         Command::LinkMentions { ref note, dry_run } => {
@@ -1208,108 +1529,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_refactor_report(cli.output, &report)
         }
         Command::Batch { ref names, all } => {
-            if all && !names.is_empty() {
-                return Err(CliError::operation(
-                    "batch accepts either explicit report names or --all, not both",
-                ));
-            }
-
-            let selected_names = if all {
-                list_saved_reports(&paths)
-                    .map_err(CliError::operation)?
-                    .into_iter()
-                    .map(|report| report.name)
-                    .collect::<Vec<_>>()
-            } else {
-                names.clone()
-            };
-
-            if selected_names.is_empty() {
-                return Err(CliError::operation(
-                    "no saved reports selected; pass names or use --all",
-                ));
-            }
-
-            let mut items = Vec::new();
-            let mut succeeded = 0_usize;
-            for name in selected_names {
-                match load_saved_report(&paths, &name).map_err(CliError::operation) {
-                    Ok(definition) => {
-                        let effective_controls = list_controls
-                            .with_saved_defaults(definition.fields.clone(), definition.limit);
-                        let result = match definition.export.as_ref() {
-                            Some(saved_export) => {
-                                let resolved_export = resolve_saved_export(&paths, saved_export);
-                                execute_saved_report(
-                                    &paths,
-                                    &definition,
-                                    cli.provider.clone(),
-                                    &effective_controls,
-                                )
-                                .and_then(|execution| {
-                                    let rows =
-                                        saved_execution_rows(&execution, &effective_controls);
-                                    export_rows(
-                                        &rows,
-                                        effective_controls.fields.as_deref(),
-                                        Some(&resolved_export),
-                                    )?;
-                                    Ok(BatchRunItemReport {
-                                        name: definition.name.clone(),
-                                        kind: Some(execution.kind()),
-                                        ok: true,
-                                        row_count: Some(rows.len()),
-                                        export_format: Some(resolved_export.format),
-                                        export_path: Some(
-                                            resolved_export.path.display().to_string(),
-                                        ),
-                                        error: None,
-                                    })
-                                })
-                            }
-                            None => Err(CliError::operation(
-                                "batch mode requires each saved report to define an export target",
-                            )),
-                        };
-
-                        match result {
-                            Ok(item) => {
-                                succeeded += 1;
-                                items.push(item);
-                            }
-                            Err(error) => {
-                                items.push(BatchRunItemReport {
-                                    name: definition.name,
-                                    kind: Some(definition.query.kind()),
-                                    ok: false,
-                                    row_count: None,
-                                    export_format: None,
-                                    export_path: None,
-                                    error: Some(error.to_string()),
-                                });
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        items.push(BatchRunItemReport {
-                            name,
-                            kind: None,
-                            ok: false,
-                            row_count: None,
-                            export_format: None,
-                            export_path: None,
-                            error: Some(error.to_string()),
-                        });
-                    }
-                }
-            }
-
-            let report = BatchRunReport {
-                total: items.len(),
-                succeeded,
-                failed: items.len().saturating_sub(succeeded),
-                items,
-            };
+            let report =
+                run_saved_reports_batch(&paths, cli.provider.as_ref(), &list_controls, names, all)?;
             let has_failures = report.failed > 0;
             print_batch_run_report(cli.output, &report)?;
             if has_failures {
@@ -1317,6 +1538,33 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     exit_code: 1,
                     message: "one or more saved reports failed".to_string(),
                 })
+            } else {
+                Ok(())
+            }
+        }
+        Command::Automation { ref command } => {
+            let report = execute_automation_run(
+                &paths,
+                cli.provider.as_ref(),
+                cli.output,
+                use_stderr_color,
+                &list_controls,
+                command,
+            )?;
+            let fail_on_issues = match command {
+                AutomationCommand::Run { fail_on_issues, .. } => *fail_on_issues,
+            };
+            let report_failures = report
+                .reports
+                .as_ref()
+                .is_some_and(|batch| batch.failed > 0);
+            print_automation_run_report(cli.output, &report)?;
+            if report_failures {
+                Err(CliError::operation(
+                    "one or more automation report actions failed",
+                ))
+            } else if fail_on_issues && report.issues_detected {
+                Err(CliError::issues("automation detected issues"))
             } else {
                 Ok(())
             }
@@ -1404,7 +1652,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     Ok(())
                 }
             },
-            VectorsCommand::Neighbors { query, note } => {
+            VectorsCommand::Neighbors {
+                query,
+                note,
+                export,
+            } => {
                 let report = query_vector_neighbors(
                     &paths,
                     &VectorNeighborsQuery {
@@ -1415,16 +1667,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     },
                 )
                 .map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_vector_neighbors_report(
                     cli.output,
                     &report,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )?;
                 Ok(())
             }
-            VectorsCommand::Related { note } => {
+            VectorsCommand::Related { note, export } => {
                 let report = query_related_notes(
                     &paths,
                     &RelatedNotesQuery {
@@ -1434,16 +1688,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     },
                 )
                 .map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_related_notes_report(
                     cli.output,
                     &report,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )?;
                 Ok(())
             }
-            VectorsCommand::Duplicates { threshold } => {
+            VectorsCommand::Duplicates { threshold, export } => {
                 let report = vector_duplicates(
                     &paths,
                     &VectorDuplicatesQuery {
@@ -1453,12 +1709,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     },
                 )
                 .map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
                 print_vector_duplicates_report(
                     cli.output,
                     &report,
                     &list_controls,
                     stdout_is_tty,
                     use_stdout_color,
+                    export.as_ref(),
                 )?;
                 Ok(())
             }
@@ -1943,9 +2201,11 @@ fn print_vector_neighbors_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_hits = paginated_items(&report.hits, list_controls);
     let palette = AnsiPalette::new(use_color);
+    let rows = vector_neighbor_rows(report, visible_hits);
 
     match output {
         OutputFormat::Human => {
@@ -1970,8 +2230,8 @@ fn print_vector_neighbors_report(
             }
 
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in vector_neighbor_rows(report, visible_hits) {
-                    print_selected_human_fields(&row, fields);
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
                 }
             } else {
                 for (index, hit) in visible_hits.iter().enumerate() {
@@ -1979,12 +2239,13 @@ fn print_vector_neighbors_report(
                 }
             }
 
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(
-            vector_neighbor_rows(report, visible_hits),
-            list_controls.fields.as_deref(),
-        ),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -1994,6 +2255,7 @@ fn print_related_notes_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_hits = paginated_items(&report.hits, list_controls);
     let rows = related_note_rows(report, visible_hits);
@@ -2033,9 +2295,13 @@ fn print_related_notes_report(
                 }
             }
 
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -2045,9 +2311,11 @@ fn print_vector_duplicates_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_pairs = paginated_items(&report.pairs, list_controls);
     let palette = AnsiPalette::new(use_color);
+    let rows = vector_duplicate_rows(report, visible_pairs);
 
     match output {
         OutputFormat::Human => {
@@ -2060,8 +2328,8 @@ fn print_vector_duplicates_report(
             }
 
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in vector_duplicate_rows(report, visible_pairs) {
-                    print_selected_human_fields(&row, fields);
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
                 }
             } else {
                 for pair in visible_pairs {
@@ -2069,12 +2337,13 @@ fn print_vector_duplicates_report(
                 }
             }
 
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(
-            vector_duplicate_rows(report, visible_pairs),
-            list_controls.fields.as_deref(),
-        ),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -2084,9 +2353,11 @@ fn print_cluster_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_clusters = paginated_items(&report.clusters, list_controls);
     let palette = AnsiPalette::new(use_color);
+    let rows = cluster_rows(report, visible_clusters);
 
     match output {
         OutputFormat::Human => {
@@ -2103,8 +2374,8 @@ fn print_cluster_report(
             }
 
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in cluster_rows(report, visible_clusters) {
-                    print_selected_human_fields(&row, fields);
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
                 }
             } else {
                 for (index, cluster) in visible_clusters.iter().enumerate() {
@@ -2112,12 +2383,13 @@ fn print_cluster_report(
                 }
             }
 
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(
-            cluster_rows(report, visible_clusters),
-            list_controls.fields.as_deref(),
-        ),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -2183,6 +2455,7 @@ fn print_mention_suggestions_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_suggestions = paginated_items(&report.suggestions, list_controls);
     let rows = mention_suggestion_rows(visible_suggestions);
@@ -2207,9 +2480,13 @@ fn print_mention_suggestions_report(
                     print_mention_suggestion(suggestion, palette);
                 }
             }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -2219,6 +2496,7 @@ fn print_duplicate_suggestions_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let rows = duplicate_suggestion_rows(report);
     let visible_rows = paginated_items(&rows, list_controls);
@@ -2243,9 +2521,11 @@ fn print_duplicate_suggestions_report(
                 print_duplicate_groups("Alias collisions", &report.alias_collisions);
                 print_merge_candidates(&report.merge_candidates, palette);
             }
+            export_rows(visible_rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
         OutputFormat::Json => {
+            export_rows(visible_rows, list_controls.fields.as_deref(), export)?;
             print_json_lines(visible_rows.to_vec(), list_controls.fields.as_deref())
         }
     }
@@ -2257,9 +2537,11 @@ fn print_links_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_links = paginated_items(&report.links, list_controls);
     let palette = AnsiPalette::new(use_color);
+    let rows = outgoing_link_rows(report, visible_links);
 
     match output {
         OutputFormat::Human => {
@@ -2277,20 +2559,21 @@ fn print_links_report(
             }
 
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in outgoing_link_rows(report, visible_links) {
-                    print_selected_human_fields(&row, fields);
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
                 }
             } else {
                 for link in visible_links {
                     print_outgoing_link(link);
                 }
             }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(
-            outgoing_link_rows(report, visible_links),
-            list_controls.fields.as_deref(),
-        ),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -2300,9 +2583,11 @@ fn print_backlinks_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_backlinks = paginated_items(&report.backlinks, list_controls);
     let palette = AnsiPalette::new(use_color);
+    let rows = backlink_rows(report, visible_backlinks);
 
     match output {
         OutputFormat::Human => {
@@ -2320,20 +2605,21 @@ fn print_backlinks_report(
             }
 
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in backlink_rows(report, visible_backlinks) {
-                    print_selected_human_fields(&row, fields);
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
                 }
             } else {
                 for backlink in visible_backlinks {
                     print_backlink(backlink);
                 }
             }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(
-            backlink_rows(report, visible_backlinks),
-            list_controls.fields.as_deref(),
-        ),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -2540,9 +2826,11 @@ fn print_graph_hubs_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_notes = paginated_items(&report.notes, list_controls);
     let palette = AnsiPalette::new(use_color);
+    let rows = graph_hub_rows(visible_notes);
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
@@ -2553,8 +2841,8 @@ fn print_graph_hubs_report(
                 return Ok(());
             }
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in graph_hub_rows(visible_notes) {
-                    print_selected_human_fields(&row, fields);
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
                 }
             } else {
                 for note in visible_notes {
@@ -2564,12 +2852,13 @@ fn print_graph_hubs_report(
                     );
                 }
             }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(
-            graph_hub_rows(visible_notes),
-            list_controls.fields.as_deref(),
-        ),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -2579,9 +2868,11 @@ fn print_graph_moc_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_notes = paginated_items(&report.notes, list_controls);
     let palette = AnsiPalette::new(use_color);
+    let rows = graph_moc_rows(visible_notes);
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
@@ -2592,8 +2883,8 @@ fn print_graph_moc_report(
                 return Ok(());
             }
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in graph_moc_rows(visible_notes) {
-                    print_selected_human_fields(&row, fields);
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
                 }
             } else {
                 for note in visible_notes {
@@ -2606,12 +2897,13 @@ fn print_graph_moc_report(
                     }
                 }
             }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(
-            graph_moc_rows(visible_notes),
-            list_controls.fields.as_deref(),
-        ),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -2621,9 +2913,11 @@ fn print_graph_dead_ends_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_notes = paginated_items(&report.notes, list_controls);
     let palette = AnsiPalette::new(use_color);
+    let rows = graph_dead_end_rows(visible_notes);
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
@@ -2633,18 +2927,22 @@ fn print_graph_dead_ends_report(
                 println!("No dead ends.");
                 return Ok(());
             }
-            for note in visible_notes {
-                println!("- {note}");
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for note in visible_notes {
+                    println!("- {note}");
+                }
             }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(
-            visible_notes
-                .iter()
-                .map(|note| serde_json::json!({ "document_path": note }))
-                .collect(),
-            list_controls.fields.as_deref(),
-        ),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
@@ -2654,9 +2952,11 @@ fn print_graph_components_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible_components = paginated_items(&report.components, list_controls);
     let palette = AnsiPalette::new(use_color);
+    let rows = graph_component_rows(visible_components);
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
@@ -2666,30 +2966,31 @@ fn print_graph_components_report(
                 println!("No components.");
                 return Ok(());
             }
-            for component in visible_components {
-                println!("- size {}: {}", component.size, component.notes.join(", "));
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for component in visible_components {
+                    println!("- size {}: {}", component.size, component.notes.join(", "));
+                }
             }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(
-            visible_components
-                .iter()
-                .map(|component| {
-                    serde_json::json!({
-                        "size": component.size,
-                        "notes": component.notes,
-                    })
-                })
-                .collect(),
-            list_controls.fields.as_deref(),
-        ),
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
     }
 }
 
 fn print_graph_analytics_report(
     output: OutputFormat,
     report: &GraphAnalyticsReport,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
+    let rows = graph_analytics_rows(report);
     match output {
         OutputFormat::Human => {
             println!("Notes: {}", report.note_count);
@@ -2703,35 +3004,58 @@ fn print_graph_analytics_report(
             println!("Orphan notes: {}", report.orphan_notes);
             print_named_count_section("Top tags", &report.top_tags);
             print_named_count_section("Top properties", &report.top_properties);
+            export_rows(&rows, None, export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json(report),
+        OutputFormat::Json => {
+            export_rows(&rows, None, export)?;
+            print_json(report)
+        }
     }
 }
 
 fn print_graph_trends_report(
     output: OutputFormat,
     report: &GraphTrendsReport,
+    list_controls: &ListOutputControls,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
+    let rows = graph_trend_rows(report);
+    let visible_rows = paginated_items(&rows, list_controls);
+    let visible_points = paginated_items(&report.points, list_controls);
     match output {
         OutputFormat::Human => {
             if report.points.is_empty() {
                 println!("No graph trend checkpoints.");
                 return Ok(());
             }
-            for point in &report.points {
-                println!(
-                    "- {}: {} notes, {} orphan, {} stale, {} resolved links",
-                    point.label,
-                    point.note_count,
-                    point.orphan_notes,
-                    point.stale_notes,
-                    point.resolved_links
-                );
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in visible_rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for point in visible_points {
+                    println!(
+                        "- {}: {} notes, {} orphan, {} stale, {} resolved links",
+                        point.label,
+                        point.note_count,
+                        point.orphan_notes,
+                        point.stale_notes,
+                        point.resolved_links
+                    );
+                }
             }
+            export_rows(visible_rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json(report),
+        OutputFormat::Json => {
+            export_rows(visible_rows, list_controls.fields.as_deref(), export)?;
+            if list_controls.fields.is_some() || export.is_some() {
+                print_json_lines(visible_rows.to_vec(), list_controls.fields.as_deref())
+            } else {
+                print_json(report)
+            }
+        }
     }
 }
 
@@ -2762,8 +3086,10 @@ fn print_checkpoint_list(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let visible = paginated_items(records, list_controls);
+    let rows = checkpoint_rows(visible);
     let palette = AnsiPalette::new(use_color);
     match output {
         OutputFormat::Human => {
@@ -2775,8 +3101,8 @@ fn print_checkpoint_list(
                 return Ok(());
             }
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in checkpoint_rows(visible) {
-                    print_selected_human_fields(&row, fields);
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
                 }
             } else {
                 for record in visible {
@@ -2791,10 +3117,12 @@ fn print_checkpoint_list(
                     );
                 }
             }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
         OutputFormat::Json => {
-            print_json_lines(checkpoint_rows(visible), list_controls.fields.as_deref())
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
         }
     }
 }
@@ -2805,6 +3133,7 @@ fn print_change_report(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
+    export: Option<&ResolvedExport>,
 ) -> Result<(), CliError> {
     let rows = change_rows(report);
     let visible = paginated_items(&rows, list_controls);
@@ -2836,9 +3165,113 @@ fn print_change_report(
                     );
                 }
             }
+            export_rows(visible, list_controls.fields.as_deref(), export)?;
             Ok(())
         }
-        OutputFormat::Json => print_json_lines(visible.to_vec(), list_controls.fields.as_deref()),
+        OutputFormat::Json => {
+            export_rows(visible, list_controls.fields.as_deref(), export)?;
+            print_json_lines(visible.to_vec(), list_controls.fields.as_deref())
+        }
+    }
+}
+
+fn print_static_search_index_report(
+    output: OutputFormat,
+    report: &vulcan_core::StaticSearchIndexReport,
+    path: Option<&PathBuf>,
+    pretty: bool,
+) -> Result<(), CliError> {
+    let rendered = if pretty {
+        serde_json::to_string_pretty(report).map_err(CliError::operation)?
+    } else {
+        serde_json::to_string(report).map_err(CliError::operation)?
+    };
+
+    if let Some(path) = path {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
+        }
+        fs::write(path, format!("{rendered}\n")).map_err(CliError::operation)?;
+        match output {
+            OutputFormat::Human => {
+                println!(
+                    "Exported static search index: {} documents, {} chunks -> {}",
+                    report.documents,
+                    report.chunks,
+                    path.display()
+                );
+                Ok(())
+            }
+            OutputFormat::Json => print_json(&serde_json::json!({
+                "path": path.display().to_string(),
+                "documents": report.documents,
+                "chunks": report.chunks,
+            })),
+        }
+    } else {
+        println!("{rendered}");
+        Ok(())
+    }
+}
+
+fn print_automation_run_report(
+    output: OutputFormat,
+    report: &AutomationRunReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Automation actions: {}", report.actions.join(", "));
+            if let Some(scan) = report.scan.as_ref() {
+                println!(
+                    "- scan: {} added, {} updated, {} unchanged, {} deleted",
+                    scan.added, scan.updated, scan.unchanged, scan.deleted
+                );
+            }
+            if let Some(summary) = report.doctor_issues.as_ref() {
+                println!(
+                    "- doctor: unresolved={}, ambiguous={}, parse_failures={}, stale={}, missing={}",
+                    summary.unresolved_links,
+                    summary.ambiguous_links,
+                    summary.parse_failures,
+                    summary.stale_index_rows,
+                    summary.missing_index_rows
+                );
+            }
+            if let Some(fix) = report.doctor_fix.as_ref() {
+                let summary = fix.issues_after.as_ref().unwrap_or(&fix.issues_before);
+                println!(
+                    "- doctor-fix: {} actions, unresolved={}, ambiguous={}, parse_failures={}, stale={}, missing={}",
+                    fix.fixes.len(),
+                    summary.unresolved_links,
+                    summary.ambiguous_links,
+                    summary.parse_failures,
+                    summary.stale_index_rows,
+                    summary.missing_index_rows
+                );
+            }
+            if let Some(cache) = report.cache_verify.as_ref() {
+                println!("- cache-verify: healthy={}", cache.healthy);
+            }
+            if let Some(fts) = report.repair_fts.as_ref() {
+                println!(
+                    "- repair-fts: {} chunks across {} documents",
+                    fts.indexed_chunks, fts.indexed_documents
+                );
+            }
+            if let Some(batch) = report.reports.as_ref() {
+                println!(
+                    "- saved-reports: {} succeeded, {} failed",
+                    batch.succeeded, batch.failed
+                );
+            }
+            if report.issues_detected {
+                println!("Issues detected.");
+            } else {
+                println!("No issues detected.");
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
     }
 }
 
@@ -3989,6 +4422,55 @@ fn graph_moc_rows(notes: &[GraphMocCandidate]) -> Vec<Value> {
         .collect()
 }
 
+fn graph_dead_end_rows(notes: &[String]) -> Vec<Value> {
+    notes
+        .iter()
+        .map(|note| serde_json::json!({ "document_path": note }))
+        .collect()
+}
+
+fn graph_component_rows(components: &[vulcan_core::GraphComponent]) -> Vec<Value> {
+    components
+        .iter()
+        .map(|component| {
+            serde_json::json!({
+                "size": component.size,
+                "notes": component.notes,
+            })
+        })
+        .collect()
+}
+
+fn graph_analytics_rows(report: &GraphAnalyticsReport) -> Vec<Value> {
+    vec![serde_json::json!({
+        "note_count": report.note_count,
+        "attachment_count": report.attachment_count,
+        "base_count": report.base_count,
+        "resolved_note_links": report.resolved_note_links,
+        "average_outbound_links": report.average_outbound_links,
+        "orphan_notes": report.orphan_notes,
+        "top_tags": report.top_tags,
+        "top_properties": report.top_properties,
+    })]
+}
+
+fn graph_trend_rows(report: &GraphTrendsReport) -> Vec<Value> {
+    report
+        .points
+        .iter()
+        .map(|point| {
+            serde_json::json!({
+                "label": point.label,
+                "created_at": point.created_at,
+                "note_count": point.note_count,
+                "orphan_notes": point.orphan_notes,
+                "stale_notes": point.stale_notes,
+                "resolved_links": point.resolved_links,
+            })
+        })
+        .collect()
+}
+
 fn checkpoint_rows(records: &[CheckpointRecord]) -> Vec<Value> {
     records
         .iter()
@@ -4069,7 +4551,8 @@ mod tests {
             cli.command,
             Command::Doctor {
                 fix: false,
-                dry_run: false
+                dry_run: false,
+                fail_on_issues: false,
             }
         );
     }
@@ -4097,13 +4580,20 @@ mod tests {
         .expect("cli should parse");
         let doctor = Cli::try_parse_from(["vulcan", "doctor", "--fix", "--dry-run"])
             .expect("cli should parse");
+        let doctor_fail = Cli::try_parse_from(["vulcan", "doctor", "--fail-on-issues"])
+            .expect("cli should parse");
         let graph_path = Cli::try_parse_from(["vulcan", "graph", "path", "Home", "Bob"])
             .expect("cli should parse");
         let graph_moc = Cli::try_parse_from(["vulcan", "graph", "moc"]).expect("cli should parse");
         let graph_trends = Cli::try_parse_from(["vulcan", "graph", "trends", "--limit", "7"])
             .expect("cli should parse");
+        let cache_verify = Cli::try_parse_from(["vulcan", "cache", "verify", "--fail-on-errors"])
+            .expect("cli should parse");
         let cache_vacuum = Cli::try_parse_from(["vulcan", "cache", "vacuum", "--dry-run"])
             .expect("cli should parse");
+        let export_search_index =
+            Cli::try_parse_from(["vulcan", "export", "search-index", "--pretty"])
+                .expect("cli should parse");
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
             .expect("cli should parse");
@@ -4224,6 +4714,18 @@ mod tests {
         let changes = Cli::try_parse_from(["vulcan", "changes", "--checkpoint", "weekly"])
             .expect("cli should parse");
         let batch = Cli::try_parse_from(["vulcan", "batch", "--all"]).expect("cli should parse");
+        let automation = Cli::try_parse_from([
+            "vulcan",
+            "automation",
+            "run",
+            "--scan",
+            "--doctor",
+            "--verify-cache",
+            "--repair-fts",
+            "--all-reports",
+            "--fail-on-issues",
+        ])
+        .expect("cli should parse");
 
         assert_eq!(rebuild.command, Command::Rebuild { dry_run: true });
         assert_eq!(
@@ -4246,7 +4748,16 @@ mod tests {
             doctor.command,
             Command::Doctor {
                 fix: true,
-                dry_run: true
+                dry_run: true,
+                fail_on_issues: false,
+            }
+        );
+        assert_eq!(
+            doctor_fail.command,
+            Command::Doctor {
+                fix: false,
+                dry_run: false,
+                fail_on_issues: true,
             }
         );
         assert_eq!(
@@ -4261,13 +4772,26 @@ mod tests {
         assert_eq!(
             graph_moc.command,
             Command::Graph {
-                command: GraphCommand::Moc,
+                command: GraphCommand::Moc {
+                    export: ExportArgs::default(),
+                },
             }
         );
         assert_eq!(
             graph_trends.command,
             Command::Graph {
-                command: GraphCommand::Trends { limit: 7 },
+                command: GraphCommand::Trends {
+                    limit: 7,
+                    export: ExportArgs::default(),
+                },
+            }
+        );
+        assert_eq!(
+            cache_verify.command,
+            Command::Cache {
+                command: CacheCommand::Verify {
+                    fail_on_errors: true,
+                }
             }
         );
         assert_eq!(
@@ -4276,17 +4800,28 @@ mod tests {
                 command: CacheCommand::Vacuum { dry_run: true }
             }
         );
+        assert_eq!(
+            export_search_index.command,
+            Command::Export {
+                command: ExportCommand::SearchIndex {
+                    path: None,
+                    pretty: true,
+                },
+            }
+        );
 
         assert_eq!(
             links.command,
             Command::Links {
-                note: "Home".to_string()
+                note: "Home".to_string(),
+                export: ExportArgs::default(),
             }
         );
         assert_eq!(
             backlinks.command,
             Command::Backlinks {
-                note: "Projects/Alpha".to_string()
+                note: "Projects/Alpha".to_string(),
+                export: ExportArgs::default(),
             }
         );
         assert_eq!(
@@ -4336,13 +4871,16 @@ mod tests {
             Command::Suggest {
                 command: SuggestCommand::Mentions {
                     note: Some("Home".to_string()),
+                    export: ExportArgs::default(),
                 },
             }
         );
         assert_eq!(
             suggest_duplicates.command,
             Command::Suggest {
-                command: SuggestCommand::Duplicates,
+                command: SuggestCommand::Duplicates {
+                    export: ExportArgs::default(),
+                },
             }
         );
         assert_eq!(
@@ -4392,26 +4930,32 @@ mod tests {
             Command::Vectors {
                 command: VectorsCommand::Related {
                     note: "Home".to_string(),
+                    export: ExportArgs::default(),
                 },
             }
         );
         assert_eq!(
             duplicates.command,
             Command::Vectors {
-                command: VectorsCommand::Duplicates { threshold: 0.95 },
+                command: VectorsCommand::Duplicates {
+                    threshold: 0.95,
+                    export: ExportArgs::default(),
+                },
             }
         );
         assert_eq!(
             cluster.command,
             Command::Cluster {
                 clusters: 3,
-                dry_run: true
+                dry_run: true,
+                export: ExportArgs::default(),
             }
         );
         assert_eq!(
             related.command,
             Command::Related {
                 note: "Home".to_string(),
+                export: ExportArgs::default(),
             }
         );
         assert_eq!(
@@ -4547,13 +5091,16 @@ mod tests {
         assert_eq!(
             checkpoint_list.command,
             Command::Checkpoint {
-                command: CheckpointCommand::List,
+                command: CheckpointCommand::List {
+                    export: ExportArgs::default(),
+                },
             }
         );
         assert_eq!(
             changes.command,
             Command::Changes {
                 checkpoint: Some("weekly".to_string()),
+                export: ExportArgs::default(),
             }
         );
         assert_eq!(
@@ -4561,6 +5108,21 @@ mod tests {
             Command::Batch {
                 names: Vec::new(),
                 all: true,
+            }
+        );
+        assert_eq!(
+            automation.command,
+            Command::Automation {
+                command: AutomationCommand::Run {
+                    reports: Vec::new(),
+                    all_reports: true,
+                    scan: true,
+                    doctor: true,
+                    doctor_fix: false,
+                    verify_cache: true,
+                    repair_fts: true,
+                    fail_on_issues: true,
+                }
             }
         );
     }
