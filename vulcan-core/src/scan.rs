@@ -128,6 +128,12 @@ struct CachedDocument {
     parser_version: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IncrementalScanResult {
+    summary: ScanSummary,
+    requires_link_resolution: bool,
+}
+
 #[must_use]
 pub fn detect_document_kind(path: &Path) -> DocumentKind {
     match path
@@ -192,7 +198,7 @@ pub(crate) fn scan_vault_unlocked(
         }
         ScanMode::Incremental => {
             database.with_transaction(|transaction| -> Result<ScanSummary, ScanError> {
-                let summary = apply_incremental_scan(
+                let result = apply_incremental_scan(
                     transaction,
                     &config,
                     &discovered,
@@ -200,8 +206,10 @@ pub(crate) fn scan_vault_unlocked(
                     &deleted_paths,
                     mode,
                 )?;
-                resolve_all_links(transaction, config.link_resolution)?;
-                Ok(summary)
+                if result.requires_link_resolution {
+                    resolve_all_links(transaction, config.link_resolution)?;
+                }
+                Ok(result.summary)
             })
         }
     }
@@ -214,14 +222,19 @@ fn apply_incremental_scan(
     existing: &HashMap<String, CachedDocument>,
     deleted_paths: &[String],
     mode: ScanMode,
-) -> Result<ScanSummary, ScanError> {
-    let mut summary = ScanSummary {
-        mode,
-        discovered: discovered.len(),
-        added: 0,
-        updated: 0,
-        unchanged: 0,
-        deleted: 0,
+) -> Result<IncrementalScanResult, ScanError> {
+    let mut result = IncrementalScanResult {
+        summary: ScanSummary {
+            mode,
+            discovered: discovered.len(),
+            added: 0,
+            updated: 0,
+            unchanged: 0,
+            deleted: 0,
+        },
+        // Link resolution is only needed when the set of resolvable targets or
+        // the extracted links/aliases of a note changed.
+        requires_link_resolution: false,
     };
     let mut seen_paths = HashSet::with_capacity(discovered.len());
 
@@ -234,7 +247,7 @@ fn apply_incremental_scan(
                     && cached.file_mtime == file.file_mtime
                     && cached.parser_version == PARSER_VERSION =>
             {
-                summary.unchanged += 1;
+                result.summary.unchanged += 1;
             }
             Some(cached) => {
                 let hash =
@@ -248,13 +261,14 @@ fn apply_incremental_scan(
 
                 if hash == cached.content_hash && !requires_reindex {
                     update_document_metadata(transaction, &cached.id, file)?;
-                    summary.unchanged += 1;
+                    result.summary.unchanged += 1;
                 } else {
                     insert_or_update_document(transaction, &cached.id, file, &hash, None)?;
                     if matches!(file.kind, DocumentKind::Note) {
                         index_note_document(transaction, config, &cached.id, file, &hash)?;
+                        result.requires_link_resolution = true;
                     }
-                    summary.updated += 1;
+                    result.summary.updated += 1;
                 }
             }
             None => {
@@ -264,7 +278,8 @@ fn apply_incremental_scan(
                 if matches!(file.kind, DocumentKind::Note) {
                     index_note_document(transaction, config, &id, file, &hash)?;
                 }
-                summary.added += 1;
+                result.requires_link_resolution = true;
+                result.summary.added += 1;
             }
         }
     }
@@ -272,12 +287,13 @@ fn apply_incremental_scan(
     for path in deleted_paths {
         if let Some(cached) = existing.get(path) {
             delete_document(transaction, &cached.id)?;
-            summary.deleted += 1;
+            result.requires_link_resolution = true;
+            result.summary.deleted += 1;
         }
     }
 
     debug_assert_eq!(seen_paths.len(), discovered.len());
-    Ok(summary)
+    Ok(result)
 }
 
 fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
@@ -1039,6 +1055,35 @@ mod tests {
     }
 
     #[test]
+    fn no_op_incremental_scan_preserves_existing_link_resolution_rows() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("ambiguous-links", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let before_links = resolved_links(database.connection());
+        let before_diagnostic_ids =
+            diagnostic_ids_by_kind(database.connection(), "unresolved_link");
+        drop(database);
+
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(summary.updated, 0);
+        assert_eq!(summary.deleted, 0);
+        assert_eq!(summary.added, 0);
+        assert_eq!(summary.unchanged, 4);
+        assert_eq!(resolved_links(database.connection()), before_links);
+        assert_eq!(
+            diagnostic_ids_by_kind(database.connection(), "unresolved_link"),
+            before_diagnostic_ids
+        );
+    }
+
+    #[test]
     fn scan_respects_gitignore_and_hidden_directories() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -1191,6 +1236,18 @@ mod tests {
             .expect("statement should prepare");
         let rows = statement
             .query_map([], |row| row.get(0))
+            .expect("query should succeed");
+
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn diagnostic_ids_by_kind(connection: &Connection, kind: &str) -> Vec<String> {
+        let mut statement = connection
+            .prepare("SELECT id FROM diagnostics WHERE kind = ?1 ORDER BY id")
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([kind], |row| row.get(0))
             .expect("query should succeed");
 
         rows.map(|row| row.expect("row should deserialize"))
