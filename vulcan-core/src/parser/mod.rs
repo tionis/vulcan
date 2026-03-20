@@ -75,6 +75,35 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_links_use_property_context_and_preserve_source_offsets() {
+        let source = concat!(
+            "---\n",
+            "related:\n",
+            "  - \"[[Projects/Alpha]]\"\n",
+            "reference: \"[Alpha doc](Projects/Alpha.md#Status)\"\n",
+            "---\n",
+            "\n",
+            "# Note\n",
+        );
+        let parsed = parse_document(source, &VaultConfig::default());
+
+        assert_eq!(parsed.links.len(), 2);
+        assert!(parsed
+            .links
+            .iter()
+            .all(|link| link.origin_context == OriginContext::Property));
+        assert_eq!(parsed.links[0].raw_text, "[[Projects/Alpha]]");
+        assert_eq!(
+            parsed.links[1].raw_text,
+            "[Alpha doc](Projects/Alpha.md#Status)"
+        );
+        for link in &parsed.links {
+            let end = link.byte_offset + link.raw_text.len();
+            assert_eq!(&source[link.byte_offset..end], link.raw_text);
+        }
+    }
+
+    #[test]
     fn malformed_frontmatter_emits_diagnostic() {
         let parsed = parse_document("---\na: [\n---\nBody", &VaultConfig::default());
 

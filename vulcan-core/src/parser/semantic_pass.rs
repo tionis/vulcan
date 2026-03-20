@@ -5,7 +5,7 @@ use crate::parser::comment_scanner::{overlaps_comment, visible_subranges};
 use crate::parser::link_classifier::{classify_link, explicit_display_text};
 use crate::parser::tag_extractor::extract_inline_tags;
 use crate::parser::types::{
-    ParseDiagnostic, ParseDiagnosticKind, ParsedDocument, RawHeading, SemanticBlock,
+    OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument, RawHeading, SemanticBlock,
     SemanticBlockKind,
 };
 use pulldown_cmark::{Event, Tag, TagEnd};
@@ -88,6 +88,7 @@ impl<'a> SemanticProcessor<'a> {
             Tag::MetadataBlock(_) => {
                 self.current_metadata = Some(MetadataAccumulator {
                     raw_text: String::new(),
+                    byte_offset_start: None,
                 });
             }
             Tag::Paragraph if self.current_block.is_none() => {
@@ -175,6 +176,7 @@ impl<'a> SemanticProcessor<'a> {
 
     fn handle_text(&mut self, _text: &str, range: Range<usize>) {
         if let Some(metadata) = self.current_metadata.as_mut() {
+            metadata.byte_offset_start.get_or_insert(range.start);
             metadata.raw_text.push_str(&self.source[range.clone()]);
             return;
         }
@@ -203,6 +205,12 @@ impl<'a> SemanticProcessor<'a> {
     }
 
     fn handle_literal(&mut self, text: &str, range: Range<usize>) {
+        if let Some(metadata) = self.current_metadata.as_mut() {
+            metadata.byte_offset_start.get_or_insert(range.start);
+            metadata.raw_text.push_str(text);
+            return;
+        }
+
         if overlaps_comment(&range, self.comment_regions) {
             return;
         }
@@ -219,6 +227,12 @@ impl<'a> SemanticProcessor<'a> {
     }
 
     fn handle_html(&mut self, text: &str, range: Range<usize>) {
+        if let Some(metadata) = self.current_metadata.as_mut() {
+            metadata.byte_offset_start.get_or_insert(range.start);
+            metadata.raw_text.push_str(text);
+            return;
+        }
+
         if contains_html_link(text) {
             self.parsed.diagnostics.push(ParseDiagnostic {
                 kind: ParseDiagnosticKind::HtmlLink,
@@ -316,6 +330,11 @@ impl<'a> SemanticProcessor<'a> {
         };
 
         self.parsed.raw_frontmatter = Some(metadata.raw_text.clone());
+        self.parsed.links.extend(extract_metadata_links(
+            &metadata.raw_text,
+            metadata.byte_offset_start,
+            self.config,
+        ));
         match serde_yaml::from_str(&metadata.raw_text) {
             Ok(frontmatter) => {
                 self.parsed.aliases = extract_aliases(&frontmatter);
@@ -373,6 +392,7 @@ struct BlockAccumulator {
 
 struct MetadataAccumulator {
     raw_text: String,
+    byte_offset_start: Option<usize>,
 }
 
 struct LinkAccumulator {
@@ -391,6 +411,27 @@ fn contains_html_link(text: &str) -> bool {
     let lowercase = text.to_ascii_lowercase();
     (lowercase.contains("<a ") && lowercase.contains("href="))
         || (lowercase.contains("<img ") && lowercase.contains("src="))
+}
+
+fn extract_metadata_links(
+    raw_text: &str,
+    byte_offset_start: Option<usize>,
+    config: &VaultConfig,
+) -> Vec<crate::RawLink> {
+    let Some(byte_offset_start) = byte_offset_start else {
+        return Vec::new();
+    };
+    if raw_text.is_empty() {
+        return Vec::new();
+    }
+
+    let mut parsed = crate::parser::parse_document(raw_text, config);
+    for link in &mut parsed.links {
+        link.byte_offset += byte_offset_start;
+        link.origin_context = OriginContext::Property;
+    }
+
+    parsed.links
 }
 
 fn complete_raw_link_text(source: &str, start: usize, end: usize) -> String {
