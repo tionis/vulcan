@@ -19,7 +19,8 @@ pub mod watch;
 pub mod write_lock;
 
 pub use bases::{
-    evaluate_base_file, BasesDiagnostic, BasesError, BasesEvalReport, BasesEvaluatedView, BasesRow,
+    evaluate_base_file, BasesColumn, BasesDiagnostic, BasesError, BasesEvalReport,
+    BasesEvaluatedView, BasesGroupBy, BasesRow,
 };
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{
@@ -73,10 +74,11 @@ pub use scan::{
 pub use search::{search_vault, SearchError, SearchHit, SearchQuery, SearchReport};
 pub use vector::{
     cluster_vectors, index_vectors, index_vectors_with_progress, query_vector_neighbors,
-    vector_duplicates, ClusterAssignment, ClusterError, ClusterQuery, ClusterReport,
-    VectorDuplicatePair, VectorDuplicatesError, VectorDuplicatesQuery, VectorDuplicatesReport,
-    VectorError, VectorIndexError, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
+    vector_duplicates, ClusterAssignment, ClusterDocumentCount, ClusterError, ClusterQuery,
+    ClusterReport, ClusterSummary, VectorDuplicatePair, VectorDuplicatesError,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorError, VectorIndexError, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsQuery, VectorNeighborsReport,
 };
 pub use watch::{watch_vault, WatchError, WatchOptions, WatchReport};
 

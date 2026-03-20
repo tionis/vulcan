@@ -14,10 +14,6 @@
   "bases": {
     "diagnostics": [
       {
-        "message": "unsupported view field `group_by`",
-        "path": "views[1].group_by"
-      },
-      {
         "message": "unsupported formula expression `concat(file.name, due)`",
         "path": "views.Release Table.formulas.unsupported_calc"
       },
@@ -29,18 +25,47 @@
     "file": "release.base",
     "views": [
       {
+        "columns": [
+          {
+            "display_name": "Name",
+            "key": "file.name"
+          },
+          {
+            "display_name": "Due",
+            "key": "due"
+          },
+          {
+            "display_name": "note_name",
+            "key": "note_name"
+          }
+        ],
         "filters": [
-          "status = backlog",
+          "file.ext = \"md\"",
+          "status starts_with \"b\"",
           "estimate > 2"
         ],
+        "group_by": {
+          "descending": false,
+          "display_name": "Status",
+          "property": "status"
+        },
         "name": "Release Table",
         "rows": [
           {
+            "cells": {
+              "due": "2026-04-01",
+              "file.name": "Backlog",
+              "note_name": "Backlog"
+            },
             "document_path": "Backlog.md",
+            "file_ext": "md",
+            "file_mtime": 0,
+            "file_name": "Backlog",
             "formulas": {
               "due_copy": "2026-04-01",
               "note_name": "Backlog"
             },
+            "group_value": "backlog",
             "properties": {
               "due": "2026-04-01",
               "estimate": 5,
@@ -49,7 +74,7 @@
             }
           }
         ],
-        "sort_by": "due",
+        "sort_by": null,
         "sort_descending": false,
         "view_type": "table"
       }
@@ -57,20 +82,28 @@
   },
   "cluster": [
     {
+      "chunk_count": 2,
       "cluster_id": 0,
-      "document_path": "Home.md"
+      "cluster_label": "alpha, home, references, dashboard",
+      "document_count": 2,
+      "keywords": [
+        "alpha",
+        "home",
+        "references",
+        "dashboard"
+      ]
     },
     {
+      "chunk_count": 2,
       "cluster_id": 1,
-      "document_path": "People/Bob.md"
-    },
-    {
-      "cluster_id": 1,
-      "document_path": "Projects/Alpha.md"
-    },
-    {
-      "cluster_id": 0,
-      "document_path": "Projects/Alpha.md"
+      "cluster_label": "people, alpha, projects, status",
+      "document_count": 2,
+      "keywords": [
+        "people",
+        "alpha",
+        "projects",
+        "status"
+      ]
     }
   ],
   "describe": {

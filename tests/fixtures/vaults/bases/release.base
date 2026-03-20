@@ -1,12 +1,24 @@
-source: notes
+filters:
+  and:
+    - 'file.ext == "md"'
+properties:
+  status:
+    displayName: "Status"
+  due:
+    displayName: "Due"
 views:
   - name: Release Table
     type: table
     filters:
-      - "status = backlog"
+      - 'status starts_with "b"'
       - "estimate > 2"
-    sort:
-      by: due
+    order:
+      - file.name
+      - due
+      - note_name
+    groupBy:
+      property: status
+      direction: ASC
     formulas:
       note_name: file.name
       due_copy: due
@@ -15,4 +27,3 @@ views:
     type: board
     filters:
       - "reviewed = true"
-    group_by: status

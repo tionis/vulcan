@@ -611,6 +611,7 @@ enum FilterOperator {
     Gte,
     Lt,
     Lte,
+    StartsWith,
     Contains,
 }
 
@@ -633,6 +634,7 @@ struct ParsedFilter {
 fn parse_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> {
     for (separator, operator) in [
         (" contains ", FilterOperator::Contains),
+        (" starts_with ", FilterOperator::StartsWith),
         (" >= ", FilterOperator::Gte),
         (" <= ", FilterOperator::Lte),
         (" = ", FilterOperator::Eq),
@@ -706,6 +708,13 @@ fn filter_sql_clause(
                 "EXISTS (SELECT 1 FROM property_list_items WHERE property_list_items.document_id = documents.id AND property_list_items.key = ? AND property_list_items.value_text = ?)".to_string(),
             )
         }
+        (FilterField::Property(key), FilterOperator::StartsWith, FilterValue::Text(value)) => {
+            params.push(SqlValue::Text(key.clone()));
+            params.push(SqlValue::Text(format!("{value}%")));
+            Ok(
+                "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_text LIKE ?)".to_string(),
+            )
+        }
         (FilterField::Property(key), operator, value) => {
             property_scalar_clause(key, operator, value, params)
         }
@@ -726,15 +735,16 @@ fn property_scalar_clause(
     value: &FilterValue,
     params: &mut Vec<SqlValue>,
 ) -> Result<String, PropertyError> {
-    let comparator = sql_comparator(operator)?;
     match value {
         FilterValue::Null => {
+            let _ = sql_comparator(operator)?;
             params.push(SqlValue::Text(key.to_string()));
             Ok(
                 "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_type = 'null')".to_string(),
             )
         }
         FilterValue::Bool(value_bool) => {
+            let comparator = sql_comparator(operator)?;
             params.push(SqlValue::Text(key.to_string()));
             params.push(SqlValue::Integer(i64::from(*value_bool)));
             Ok(format!(
@@ -742,6 +752,7 @@ fn property_scalar_clause(
             ))
         }
         FilterValue::Number(value_number) => {
+            let comparator = sql_comparator(operator)?;
             params.push(SqlValue::Text(key.to_string()));
             params.push(SqlValue::Real(*value_number));
             Ok(format!(
@@ -749,6 +760,7 @@ fn property_scalar_clause(
             ))
         }
         FilterValue::Date(value_date) => {
+            let comparator = sql_comparator(operator)?;
             params.push(SqlValue::Text(key.to_string()));
             params.push(SqlValue::Text(value_date.clone()));
             Ok(format!(
@@ -757,10 +769,18 @@ fn property_scalar_clause(
         }
         FilterValue::Text(value_text) => {
             params.push(SqlValue::Text(key.to_string()));
-            params.push(SqlValue::Text(value_text.clone()));
-            Ok(format!(
-                "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_text {comparator} ?)"
-            ))
+            if operator == FilterOperator::StartsWith {
+                params.push(SqlValue::Text(format!("{value_text}%")));
+                Ok(
+                    "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_text LIKE ?)".to_string(),
+                )
+            } else {
+                let comparator = sql_comparator(operator)?;
+                params.push(SqlValue::Text(value_text.clone()));
+                Ok(format!(
+                    "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_text {comparator} ?)"
+                ))
+            }
         }
     }
 }
@@ -798,7 +818,17 @@ fn file_field_clause(
         }
     };
     params.push(sql_value);
-    Ok(format!("{column} {} ?", sql_comparator(operator)?))
+    match operator {
+        FilterOperator::StartsWith => {
+            let SqlValue::Text(value) = params.pop().expect("starts_with param should exist")
+            else {
+                unreachable!("starts_with only accepts text values");
+            };
+            params.push(SqlValue::Text(format!("{value}%")));
+            Ok(format!("{column} LIKE ?"))
+        }
+        _ => Ok(format!("{column} {} ?", sql_comparator(operator)?)),
+    }
 }
 
 fn sql_comparator(operator: FilterOperator) -> Result<&'static str, PropertyError> {
@@ -808,6 +838,9 @@ fn sql_comparator(operator: FilterOperator) -> Result<&'static str, PropertyErro
         FilterOperator::Gte => Ok(">="),
         FilterOperator::Lt => Ok("<"),
         FilterOperator::Lte => Ok("<="),
+        FilterOperator::StartsWith => Err(PropertyError::InvalidFilter(
+            "starts_with only supports text fields".to_string(),
+        )),
         FilterOperator::Contains => Err(PropertyError::InvalidFilter(
             "contains only supports property lists".to_string(),
         )),
@@ -1007,6 +1040,24 @@ mod tests {
                 .map(|note| note.document_path.clone())
                 .collect::<Vec<_>>(),
             vec!["Done.md".to_string(), "Backlog.md".to_string()]
+        );
+
+        let prefixed = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["file.path starts_with \"Back\"".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .expect("prefix property query should succeed");
+        assert_eq!(
+            prefixed
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Backlog.md".to_string()]
         );
     }
 
