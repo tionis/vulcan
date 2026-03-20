@@ -394,7 +394,7 @@ fn contains_html_link(text: &str) -> bool {
 }
 
 fn complete_raw_link_text(source: &str, start: usize, end: usize) -> String {
-    let mut current_end = end.min(source.len());
+    let mut current_end = floor_char_boundary(source, end.min(source.len()));
     let mut raw = &source[start..current_end];
     let expected_suffix = if raw.starts_with("[[") || raw.starts_with("![[") {
         "]]"
@@ -408,11 +408,28 @@ fn complete_raw_link_text(source: &str, start: usize, end: usize) -> String {
         && !raw.ends_with(expected_suffix)
         && current_end < source.len()
     {
-        current_end += 1;
+        current_end = next_char_boundary(source, current_end);
         raw = &source[start..current_end];
     }
 
     raw.to_string()
+}
+
+fn floor_char_boundary(source: &str, index: usize) -> usize {
+    let mut boundary = index.min(source.len());
+    while boundary > 0 && !source.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
+fn next_char_boundary(source: &str, index: usize) -> usize {
+    if index >= source.len() {
+        return source.len();
+    }
+
+    let mut chars = source[index..].chars();
+    index + chars.next().map_or(0, char::len_utf8)
 }
 
 fn extract_aliases(frontmatter: &serde_yaml::Value) -> Vec<String> {
@@ -478,4 +495,19 @@ fn dedupe_tags(values: Vec<crate::parser::types::RawTag>) -> Vec<crate::parser::
     }
 
     deduped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::complete_raw_link_text;
+
+    #[test]
+    fn completes_markdown_links_without_slicing_inside_utf8() {
+        let source = "prefix [Doc](docs/\u{00a0}name.md) suffix";
+        let start = source.find('[').unwrap();
+        let nbsp = source.find('\u{00a0}').unwrap();
+        let raw = complete_raw_link_text(source, start, nbsp + 1);
+
+        assert_eq!(raw, "[Doc](docs/\u{00a0}name.md)");
+    }
 }
