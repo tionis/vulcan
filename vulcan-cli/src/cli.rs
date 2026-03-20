@@ -1,4 +1,5 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -32,9 +33,25 @@ pub enum VectorsCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum RepairCommand {
+    Fts {
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Command {
     Init,
+    Rebuild {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    Repair {
+        #[command(subcommand)]
+        command: RepairCommand,
+    },
     Scan {
         #[arg(long)]
         full: bool,
@@ -86,6 +103,9 @@ pub enum Command {
     },
     Doctor,
     Describe,
+    Completions {
+        shell: Shell,
+    },
 }
 
 #[derive(Debug, Clone, Parser)]

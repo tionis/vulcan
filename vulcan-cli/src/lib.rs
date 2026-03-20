@@ -1,8 +1,11 @@
 mod cli;
 
-pub use cli::{BasesCommand, Cli, Command, OutputFormat, SearchMode, VectorsCommand};
+pub use cli::{
+    BasesCommand, Cli, Command, OutputFormat, RepairCommand, SearchMode, VectorsCommand,
+};
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::generate;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::ffi::OsString;
@@ -12,13 +15,14 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use vulcan_core::{
     cluster_vectors, doctor_vault, evaluate_base_file, index_vectors, initialize_vault, move_note,
-    query_backlinks, query_links, query_notes, query_vector_neighbors, scan_vault, search_vault,
-    vector_duplicates, BacklinkRecord, BacklinksReport, BasesEvalReport, ClusterQuery,
-    ClusterReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary, MoveSummary,
-    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ScanMode,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexQuery, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
+    query_backlinks, query_links, query_notes, query_vector_neighbors, rebuild_vault, repair_fts,
+    scan_vault, search_vault, vector_duplicates, BacklinkRecord, BacklinksReport, BasesEvalReport,
+    ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary,
+    MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
+    RebuildQuery, RebuildReport, RepairFtsQuery, RepairFtsReport, ScanMode, ScanSummary, SearchHit,
+    SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
+    VectorDuplicatesReport, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsQuery, VectorNeighborsReport,
 };
 
 #[derive(Debug)]
@@ -28,13 +32,6 @@ pub struct CliError {
 }
 
 impl CliError {
-    fn not_implemented(command: &str) -> Self {
-        Self {
-            exit_code: 2,
-            message: format!("{command} is not implemented yet"),
-        }
-    }
-
     fn io(error: &io::Error) -> Self {
         Self {
             exit_code: 1,
@@ -88,6 +85,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_backlinks_report(cli.output, &report, &list_controls, stdout_is_tty)?;
             Ok(())
         }
+        Command::Completions { shell } => {
+            let mut command = Cli::command();
+            generate(shell, &mut command, "vulcan", &mut io::stdout());
+            Ok(())
+        }
         Command::Bases { ref command } => match command {
             BasesCommand::Eval { file } => {
                 let report = evaluate_base_file(&paths, file).map_err(CliError::operation)?;
@@ -107,7 +109,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_cluster_report(cli.output, &report, &list_controls, stdout_is_tty)?;
             Ok(())
         }
-        Command::Describe => Err(CliError::not_implemented("describe")),
+        Command::Describe => print_describe_report(cli.output),
         Command::Doctor => {
             let report = doctor_vault(&paths).map_err(CliError::operation)?;
             print_doctor_report(cli.output, &paths, &report)?;
@@ -118,6 +120,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_init_summary(cli.output, &summary)?;
             Ok(())
         }
+        Command::Rebuild { dry_run } => {
+            let report =
+                rebuild_vault(&paths, &RebuildQuery { dry_run }).map_err(CliError::operation)?;
+            print_rebuild_report(cli.output, &report)
+        }
         Command::Move {
             ref source,
             ref dest,
@@ -127,6 +134,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_move_summary(cli.output, &summary)?;
             Ok(())
         }
+        Command::Repair { ref command } => match command {
+            RepairCommand::Fts { dry_run } => {
+                let report = repair_fts(&paths, &RepairFtsQuery { dry_run: *dry_run })
+                    .map_err(CliError::operation)?;
+                print_repair_fts_report(cli.output, &report)
+            }
+        },
         Command::Links { ref note } => {
             let report = query_links(&paths, note).map_err(CliError::operation)?;
             print_links_report(cli.output, &report, &list_controls, stdout_is_tty)?;
@@ -269,6 +283,20 @@ fn print_search_report(
     }
 }
 
+fn print_describe_report(output: OutputFormat) -> Result<(), CliError> {
+    let report = describe_cli();
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(CliError::operation)?
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(&report),
+    }
+}
+
 fn print_notes_report(
     output: OutputFormat,
     report: &NotesReport,
@@ -302,6 +330,50 @@ fn print_notes_report(
             note_rows(report, visible_notes),
             list_controls.fields.as_deref(),
         ),
+    }
+}
+
+fn print_rebuild_report(output: OutputFormat, report: &RebuildReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!(
+                    "Dry run: would rebuild {} discovered files with {} cached documents",
+                    report.discovered, report.existing_documents
+                );
+            } else if let Some(summary) = report.summary.as_ref() {
+                println!(
+                    "Rebuilt cache from {} files: {} added, {} updated, {} unchanged, {} deleted",
+                    summary.discovered,
+                    summary.added,
+                    summary.updated,
+                    summary.unchanged,
+                    summary.deleted
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_repair_fts_report(output: OutputFormat, report: &RepairFtsReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!(
+                    "Dry run: would rebuild FTS rows for {} chunks across {} documents",
+                    report.indexed_chunks, report.indexed_documents
+                );
+            } else {
+                println!(
+                    "Rebuilt FTS rows for {} chunks across {} documents",
+                    report.indexed_chunks, report.indexed_documents
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
     }
 }
 
@@ -702,6 +774,84 @@ fn resolve_vault_root(vault: &PathBuf) -> Result<PathBuf, CliError> {
     Ok(std::env::current_dir()
         .map_err(|error| CliError::io(&error))?
         .join(vault))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CliDescribeReport {
+    name: String,
+    about: Option<String>,
+    version: Option<String>,
+    global_options: Vec<CliArgDescribe>,
+    commands: Vec<CliCommandDescribe>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CliCommandDescribe {
+    name: String,
+    about: Option<String>,
+    options: Vec<CliArgDescribe>,
+    subcommands: Vec<CliCommandDescribe>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CliArgDescribe {
+    id: String,
+    long: Option<String>,
+    short: Option<char>,
+    help: Option<String>,
+    required: bool,
+    value_names: Vec<String>,
+    possible_values: Vec<String>,
+}
+
+fn describe_cli() -> CliDescribeReport {
+    let command = Cli::command().bin_name("vulcan");
+    let name = command
+        .get_bin_name()
+        .unwrap_or(command.get_name())
+        .to_string();
+    CliDescribeReport {
+        name,
+        about: command.get_about().map(ToString::to_string),
+        version: command.get_version().map(ToString::to_string),
+        global_options: command
+            .get_arguments()
+            .filter(|argument| argument.is_global_set())
+            .map(describe_argument)
+            .collect(),
+        commands: command.get_subcommands().map(describe_command).collect(),
+    }
+}
+
+fn describe_command(command: &clap::Command) -> CliCommandDescribe {
+    CliCommandDescribe {
+        name: command.get_name().to_string(),
+        about: command.get_about().map(ToString::to_string),
+        options: command
+            .get_arguments()
+            .filter(|argument| !argument.is_global_set())
+            .map(describe_argument)
+            .collect(),
+        subcommands: command.get_subcommands().map(describe_command).collect(),
+    }
+}
+
+fn describe_argument(argument: &clap::Arg) -> CliArgDescribe {
+    CliArgDescribe {
+        id: argument.get_id().to_string(),
+        long: argument.get_long().map(ToString::to_string),
+        short: argument.get_short(),
+        help: argument.get_help().map(ToString::to_string),
+        required: argument.is_required_set(),
+        value_names: argument.get_value_names().map_or_else(Vec::new, |values| {
+            values.iter().map(ToString::to_string).collect()
+        }),
+        possible_values: argument
+            .get_possible_values()
+            .into_iter()
+            .map(|value| value.get_name().to_string())
+            .collect(),
+    }
 }
 
 fn print_link_section(title: &str, issues: &[DoctorLinkIssue]) {
@@ -1122,6 +1272,10 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn parses_links_and_backlinks_commands() {
+        let rebuild =
+            Cli::try_parse_from(["vulcan", "rebuild", "--dry-run"]).expect("cli should parse");
+        let repair = Cli::try_parse_from(["vulcan", "repair", "fts", "--dry-run"])
+            .expect("cli should parse");
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
             .expect("cli should parse");
@@ -1167,6 +1321,16 @@ mod tests {
             "--dry-run",
         ])
         .expect("cli should parse");
+        let completions =
+            Cli::try_parse_from(["vulcan", "completions", "bash"]).expect("cli should parse");
+
+        assert_eq!(rebuild.command, Command::Rebuild { dry_run: true });
+        assert_eq!(
+            repair.command,
+            Command::Repair {
+                command: RepairCommand::Fts { dry_run: true }
+            }
+        );
 
         assert_eq!(
             links.command,
@@ -1228,6 +1392,12 @@ mod tests {
                 dry_run: true
             }
         );
+        assert_eq!(
+            completions.command,
+            Command::Completions {
+                shell: clap_complete::Shell::Bash
+            }
+        );
     }
 
     #[test]
@@ -1269,5 +1439,24 @@ mod tests {
             .expect("path resolution should succeed");
 
         assert_eq!(resolved, current_dir.join("tests/fixtures/vaults/basic"));
+    }
+
+    #[test]
+    fn describe_report_lists_core_commands() {
+        let report = describe_cli();
+
+        assert_eq!(report.name, "vulcan");
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "rebuild"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "repair"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "completions"));
     }
 }

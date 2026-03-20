@@ -233,6 +233,42 @@ pub fn apply_schema_v6(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
     Ok(())
 }
 
+pub(crate) fn rebuild_search_index(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        DELETE FROM search_chunk_content;
+
+        INSERT INTO search_chunk_content (
+            chunk_id,
+            document_id,
+            content,
+            document_title,
+            aliases,
+            headings
+        )
+        SELECT
+            chunks.id,
+            chunks.document_id,
+            chunks.content,
+            documents.filename,
+            COALESCE((
+                SELECT group_concat(alias_text, ' ')
+                FROM aliases
+                WHERE aliases.document_id = chunks.document_id
+            ), ''),
+            COALESCE((
+                SELECT group_concat(value, ' ')
+                FROM json_each(chunks.heading_path)
+            ), '')
+        FROM chunks
+        JOIN documents ON documents.id = chunks.document_id;
+
+        INSERT INTO search_chunks_fts(search_chunks_fts) VALUES ('rebuild');
+        ",
+    )?;
+    Ok(())
+}
+
 fn create_search_schema(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     transaction.execute_batch(
         "
@@ -276,34 +312,9 @@ fn create_search_schema(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
             VALUES (new.id, new.content, new.document_title, new.aliases, new.headings);
         END;
 
-        INSERT INTO search_chunk_content (
-            chunk_id,
-            document_id,
-            content,
-            document_title,
-            aliases,
-            headings
-        )
-        SELECT
-            chunks.id,
-            chunks.document_id,
-            chunks.content,
-            documents.filename,
-            COALESCE((
-                SELECT group_concat(alias_text, ' ')
-                FROM aliases
-                WHERE aliases.document_id = chunks.document_id
-            ), ''),
-            COALESCE((
-                SELECT group_concat(value, ' ')
-                FROM json_each(chunks.heading_path)
-            ), '')
-        FROM chunks
-        JOIN documents ON documents.id = chunks.document_id;
-
-        INSERT INTO search_chunks_fts(search_chunks_fts) VALUES ('rebuild');
         ",
     )?;
+    rebuild_search_index(transaction)?;
     Ok(())
 }
 
