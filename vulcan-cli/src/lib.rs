@@ -97,12 +97,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 Ok(())
             }
         },
-        Command::Cluster { clusters } => {
+        Command::Cluster { clusters, dry_run } => {
             let report = cluster_vectors(
                 &paths,
                 &ClusterQuery {
                     provider: cli.provider.clone(),
                     clusters,
+                    dry_run,
                 },
             )
             .map_err(CliError::operation)?;
@@ -205,11 +206,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Vectors { ref command } => match command {
-            VectorsCommand::Index => {
+            VectorsCommand::Index { dry_run } => {
                 let report = index_vectors(
                     &paths,
                     &VectorIndexQuery {
                         provider: cli.provider.clone(),
+                        dry_run: *dry_run,
                     },
                 )
                 .map_err(CliError::operation)?;
@@ -425,7 +427,12 @@ fn print_vector_index_report(
     match output {
         OutputFormat::Human => {
             println!(
-                "Indexed vectors with {}:{} (dims {}): {} indexed, {} skipped, {} failed in {:.3}s",
+                "{} vectors with {}:{} (dims {}): {} indexed, {} skipped, {} failed in {:.3}s",
+                if report.dry_run {
+                    "Dry run for"
+                } else {
+                    "Indexed"
+                },
                 report.provider_name,
                 report.model_name,
                 report.dimensions,
@@ -529,7 +536,11 @@ fn print_cluster_report(
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
-                println!("Vector clusters");
+                if report.dry_run {
+                    println!("Vector clusters (dry run)");
+                } else {
+                    println!("Vector clusters");
+                }
             }
             if visible_assignments.is_empty() {
                 println!("No cluster assignments.");
@@ -1350,11 +1361,11 @@ mod tests {
         .expect("cli should parse");
         let bases = Cli::try_parse_from(["vulcan", "bases", "eval", "release.base"])
             .expect("cli should parse");
-        let vectors =
-            Cli::try_parse_from(["vulcan", "vectors", "index"]).expect("cli should parse");
+        let vectors = Cli::try_parse_from(["vulcan", "vectors", "index", "--dry-run"])
+            .expect("cli should parse");
         let duplicates =
             Cli::try_parse_from(["vulcan", "vectors", "duplicates"]).expect("cli should parse");
-        let cluster = Cli::try_parse_from(["vulcan", "cluster", "--clusters", "3"])
+        let cluster = Cli::try_parse_from(["vulcan", "cluster", "--clusters", "3", "--dry-run"])
             .expect("cli should parse");
         let move_command = Cli::try_parse_from([
             "vulcan",
@@ -1418,7 +1429,7 @@ mod tests {
         assert_eq!(
             vectors.command,
             Command::Vectors {
-                command: VectorsCommand::Index,
+                command: VectorsCommand::Index { dry_run: true },
             }
         );
         assert_eq!(
@@ -1427,7 +1438,13 @@ mod tests {
                 command: VectorsCommand::Duplicates { threshold: 0.95 },
             }
         );
-        assert_eq!(cluster.command, Command::Cluster { clusters: 3 });
+        assert_eq!(
+            cluster.command,
+            Command::Cluster {
+                clusters: 3,
+                dry_run: true
+            }
+        );
         assert_eq!(
             move_command.command,
             Command::Move {

@@ -455,6 +455,33 @@ mod tests {
     }
 
     #[test]
+    fn doctor_reports_zero_issues_on_clean_fixtures() {
+        for fixture in ["basic", "move-rewrite"] {
+            let temp_dir = TempDir::new().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault(fixture, &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+
+            scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+            let report = doctor_vault(&paths).expect("doctor should succeed");
+
+            assert_eq!(
+                report.summary,
+                DoctorSummary {
+                    unresolved_links: 0,
+                    ambiguous_links: 0,
+                    parse_failures: 0,
+                    stale_index_rows: 0,
+                    missing_index_rows: 0,
+                    orphan_notes: 0,
+                    html_links: 0,
+                },
+                "fixture {fixture} should be doctor-clean"
+            );
+        }
+    }
+
+    #[test]
     fn doctor_reports_broken_frontmatter() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");

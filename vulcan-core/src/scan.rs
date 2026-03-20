@@ -1242,6 +1242,7 @@ fn current_timestamp() -> Result<String, ScanError> {
 mod tests {
     use super::*;
     use crate::config::{load_vault_config, LinkResolutionMode, LinkStylePreference};
+    use serde_json::{json, Value};
     use tempfile::TempDir;
 
     #[test]
@@ -1634,6 +1635,101 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fixture_vaults_reindex_idempotently() {
+        for fixture in fixture_names() {
+            let temp_dir = TempDir::new().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault(fixture, &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+
+            scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+            let before = cache_signature(
+                CacheDatabase::open(&paths)
+                    .expect("database should open")
+                    .connection(),
+            );
+
+            let summary =
+                scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+            let after = cache_signature(
+                CacheDatabase::open(&paths)
+                    .expect("database should open")
+                    .connection(),
+            );
+
+            assert_eq!(summary.added, 0, "fixture {fixture} should not add rows");
+            assert_eq!(
+                summary.updated, 0,
+                "fixture {fixture} should not update rows"
+            );
+            assert_eq!(
+                summary.deleted, 0,
+                "fixture {fixture} should not delete rows"
+            );
+            assert_eq!(before, after, "fixture {fixture} should be idempotent");
+        }
+    }
+
+    #[test]
+    fn rebuild_matches_incremental_cache_state_for_fixture_vaults() {
+        for fixture in fixture_names() {
+            let temp_dir = TempDir::new().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault(fixture, &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+
+            scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+            let baseline = cache_signature(
+                CacheDatabase::open(&paths)
+                    .expect("database should open")
+                    .connection(),
+            );
+
+            crate::rebuild_vault(&paths, &crate::RebuildQuery { dry_run: false })
+                .expect("rebuild should succeed");
+            let rebuilt = cache_signature(
+                CacheDatabase::open(&paths)
+                    .expect("database should open")
+                    .connection(),
+            );
+
+            assert_eq!(
+                baseline, rebuilt,
+                "fixture {fixture} should rebuild to the same logical state"
+            );
+        }
+    }
+
+    fn fixture_names() -> [&'static str; 6] {
+        [
+            "basic",
+            "ambiguous-links",
+            "mixed-properties",
+            "broken-frontmatter",
+            "move-rewrite",
+            "bases",
+        ]
+    }
+
+    fn cache_signature(connection: &Connection) -> Value {
+        json!({
+            "documents": document_signature_rows(connection),
+            "headings": heading_signature_rows(connection),
+            "block_refs": block_ref_signature_rows(connection),
+            "links": link_signature_rows(connection),
+            "aliases": alias_signature_rows(connection),
+            "tags": tag_signature_rows(connection),
+            "chunks": chunk_signature_rows(connection),
+            "search_chunk_content": search_signature_rows(connection),
+            "diagnostics": diagnostic_signature_rows(connection),
+            "properties": property_signature_rows(connection),
+            "property_values": property_value_signature_rows(connection),
+            "property_list_items": property_list_item_signature_rows(connection),
+            "property_catalog": property_catalog_signature_rows(connection),
+        })
+    }
+
     fn document_paths(connection: &Connection) -> Vec<String> {
         let mut statement = connection
             .prepare("SELECT path FROM documents ORDER BY path")
@@ -1800,6 +1896,411 @@ mod tests {
 
         rows.map(|row| row.expect("row should deserialize"))
             .collect()
+    }
+
+    fn document_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT path, filename, extension, raw_frontmatter, file_size, parser_version
+                FROM documents
+                ORDER BY path
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "path": row.get::<_, String>(0)?,
+                    "filename": row.get::<_, String>(1)?,
+                    "extension": row.get::<_, String>(2)?,
+                    "raw_frontmatter": row.get::<_, Option<String>>(3)?,
+                    "file_size": row.get::<_, i64>(4)?,
+                    "parser_version": row.get::<_, u32>(5)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn heading_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT documents.path, headings.level, headings.text, headings.byte_offset
+                FROM headings
+                JOIN documents ON documents.id = headings.document_id
+                ORDER BY documents.path, headings.byte_offset
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, String>(0)?,
+                    "level": row.get::<_, i64>(1)?,
+                    "text": row.get::<_, String>(2)?,
+                    "byte_offset": row.get::<_, i64>(3)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn block_ref_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT
+                    documents.path,
+                    block_refs.block_id_text,
+                    block_refs.block_id_byte_offset,
+                    block_refs.target_block_byte_start,
+                    block_refs.target_block_byte_end
+                FROM block_refs
+                JOIN documents ON documents.id = block_refs.document_id
+                ORDER BY documents.path, block_refs.block_id_byte_offset
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, String>(0)?,
+                    "block_id_text": row.get::<_, String>(1)?,
+                    "block_id_byte_offset": row.get::<_, i64>(2)?,
+                    "target_block_byte_start": row.get::<_, i64>(3)?,
+                    "target_block_byte_end": row.get::<_, i64>(4)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn link_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT
+                    source.path,
+                    links.raw_text,
+                    links.link_kind,
+                    links.display_text,
+                    links.target_path_candidate,
+                    links.target_heading,
+                    links.target_block,
+                    target.path,
+                    links.origin_context,
+                    links.byte_offset
+                FROM links
+                JOIN documents AS source ON source.id = links.source_document_id
+                LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+                ORDER BY source.path, links.byte_offset, links.raw_text
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "source_path": row.get::<_, String>(0)?,
+                    "raw_text": row.get::<_, String>(1)?,
+                    "link_kind": row.get::<_, String>(2)?,
+                    "display_text": row.get::<_, Option<String>>(3)?,
+                    "target_path_candidate": row.get::<_, Option<String>>(4)?,
+                    "target_heading": row.get::<_, Option<String>>(5)?,
+                    "target_block": row.get::<_, Option<String>>(6)?,
+                    "resolved_target_path": row.get::<_, Option<String>>(7)?,
+                    "origin_context": row.get::<_, String>(8)?,
+                    "byte_offset": row.get::<_, i64>(9)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn alias_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT documents.path, aliases.alias_text
+                FROM aliases
+                JOIN documents ON documents.id = aliases.document_id
+                ORDER BY documents.path, aliases.alias_text
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, String>(0)?,
+                    "alias_text": row.get::<_, String>(1)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn tag_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT documents.path, tags.tag_text
+                FROM tags
+                JOIN documents ON documents.id = tags.document_id
+                ORDER BY documents.path, tags.tag_text
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, String>(0)?,
+                    "tag_text": row.get::<_, String>(1)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn chunk_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT
+                    documents.path,
+                    chunks.sequence_index,
+                    chunks.heading_path,
+                    chunks.byte_offset_start,
+                    chunks.byte_offset_end,
+                    chunks.content_hash,
+                    chunks.content,
+                    chunks.chunk_strategy,
+                    chunks.chunk_version
+                FROM chunks
+                JOIN documents ON documents.id = chunks.document_id
+                ORDER BY documents.path, chunks.sequence_index
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, String>(0)?,
+                    "sequence_index": row.get::<_, i64>(1)?,
+                    "heading_path": row.get::<_, String>(2)?,
+                    "byte_offset_start": row.get::<_, i64>(3)?,
+                    "byte_offset_end": row.get::<_, i64>(4)?,
+                    "content_hash": blob_to_hex(&row.get::<_, Vec<u8>>(5)?),
+                    "content": row.get::<_, String>(6)?,
+                    "chunk_strategy": row.get::<_, String>(7)?,
+                    "chunk_version": row.get::<_, i64>(8)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn search_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT documents.path, search_chunk_content.content, search_chunk_content.document_title,
+                       search_chunk_content.aliases, search_chunk_content.headings
+                FROM search_chunk_content
+                JOIN documents ON documents.id = search_chunk_content.document_id
+                ORDER BY documents.path, search_chunk_content.id
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, String>(0)?,
+                    "content": row.get::<_, String>(1)?,
+                    "document_title": row.get::<_, String>(2)?,
+                    "aliases": row.get::<_, String>(3)?,
+                    "headings": row.get::<_, String>(4)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn diagnostic_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT documents.path, diagnostics.kind, diagnostics.message, diagnostics.detail
+                FROM diagnostics
+                LEFT JOIN documents ON documents.id = diagnostics.document_id
+                ORDER BY documents.path, diagnostics.kind, diagnostics.message, diagnostics.detail
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, Option<String>>(0)?,
+                    "kind": row.get::<_, String>(1)?,
+                    "message": row.get::<_, String>(2)?,
+                    "detail": normalize_diagnostic_detail(connection, &row.get::<_, String>(3)?),
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn normalize_diagnostic_detail(connection: &Connection, detail: &str) -> Value {
+        let Ok(mut parsed) = serde_json::from_str::<Value>(detail) else {
+            return Value::String(detail.to_string());
+        };
+        let Some(matches) = parsed.get_mut("matches").and_then(Value::as_array_mut) else {
+            return parsed;
+        };
+
+        let mut normalized = matches
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|document_id| {
+                connection
+                    .query_row(
+                        "SELECT path FROM documents WHERE id = ?1",
+                        [document_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap_or_else(|_| document_id.to_string())
+            })
+            .collect::<Vec<_>>();
+        normalized.sort();
+        *matches = normalized.into_iter().map(Value::String).collect();
+
+        parsed
+    }
+
+    fn property_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT documents.path, properties.raw_yaml, properties.canonical_json
+                FROM properties
+                JOIN documents ON documents.id = properties.document_id
+                ORDER BY documents.path
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, String>(0)?,
+                    "raw_yaml": row.get::<_, String>(1)?,
+                    "canonical_json": row.get::<_, String>(2)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn property_value_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT
+                    documents.path,
+                    property_values.key,
+                    property_values.value_text,
+                    property_values.value_number,
+                    property_values.value_bool,
+                    property_values.value_date,
+                    property_values.value_type
+                FROM property_values
+                JOIN documents ON documents.id = property_values.document_id
+                ORDER BY documents.path, property_values.key
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, String>(0)?,
+                    "key": row.get::<_, String>(1)?,
+                    "value_text": row.get::<_, Option<String>>(2)?,
+                    "value_number": row.get::<_, Option<f64>>(3)?,
+                    "value_bool": row.get::<_, Option<i64>>(4)?,
+                    "value_date": row.get::<_, Option<String>>(5)?,
+                    "value_type": row.get::<_, String>(6)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn property_list_item_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT documents.path, property_list_items.key, property_list_items.item_index, property_list_items.value_text
+                FROM property_list_items
+                JOIN documents ON documents.id = property_list_items.document_id
+                ORDER BY documents.path, property_list_items.key, property_list_items.item_index
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "document_path": row.get::<_, String>(0)?,
+                    "key": row.get::<_, String>(1)?,
+                    "item_index": row.get::<_, i64>(2)?,
+                    "value_text": row.get::<_, String>(3)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn property_catalog_signature_rows(connection: &Connection) -> Vec<Value> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT key, observed_type, usage_count, namespace
+                FROM property_catalog
+                ORDER BY key, observed_type, namespace
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "key": row.get::<_, String>(0)?,
+                    "observed_type": row.get::<_, String>(1)?,
+                    "usage_count": row.get::<_, i64>(2)?,
+                    "namespace": row.get::<_, String>(3)?,
+                }))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn blob_to_hex(bytes: &[u8]) -> String {
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            use std::fmt::Write as _;
+            write!(&mut hex, "{byte:02x}").expect("writing to string should succeed");
+        }
+        hex
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {

@@ -823,6 +823,17 @@ fn completions_command_emits_shell_script() {
         .stdout(predicate::str::contains("vulcan").and(predicate::str::contains("complete")));
 }
 
+#[test]
+fn command_json_outputs_match_composite_snapshot() {
+    assert_json_snapshot("commands_composite.json", &build_command_snapshot());
+}
+
+#[test]
+#[ignore = "regenerates the checked-in composite command snapshot"]
+fn regenerate_command_json_snapshot() {
+    write_json_snapshot("commands_composite.json", &build_command_snapshot());
+}
+
 fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {
     serde_json::from_slice(&assert.get_output().stdout).expect("stdout should contain valid json")
 }
@@ -865,9 +876,7 @@ fn run_scan(vault_root: &Path) {
 }
 
 fn assert_json_snapshot(name: &str, value: &Value) {
-    let snapshot_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/snapshots")
-        .join(name);
+    let snapshot_path = snapshot_path(name);
     let expected = fs::read_to_string(snapshot_path).expect("snapshot should be readable");
     let actual = serde_json::to_string_pretty(value).expect("json should serialize");
 
@@ -875,13 +884,367 @@ fn assert_json_snapshot(name: &str, value: &Value) {
 }
 
 fn assert_json_snapshot_lines(name: &str, values: &[Value]) {
-    let snapshot_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/snapshots")
-        .join(name);
+    let snapshot_path = snapshot_path(name);
     let expected = fs::read_to_string(snapshot_path).expect("snapshot should be readable");
     let actual = serde_json::to_string_pretty(values).expect("json should serialize");
 
     assert_eq!(actual, expected.trim_end_matches('\n'));
+}
+
+fn write_json_snapshot(name: &str, value: &Value) {
+    let snapshot_path = snapshot_path(name);
+    if let Some(parent) = snapshot_path.parent() {
+        fs::create_dir_all(parent).expect("snapshot directory should exist");
+    }
+    fs::write(
+        snapshot_path,
+        serde_json::to_string_pretty(value).expect("snapshot should serialize"),
+    )
+    .expect("snapshot should write");
+}
+
+fn snapshot_path(name: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/snapshots")
+        .join(name)
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_command_snapshot() -> Value {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+
+    let init_root = temp_dir.path().join("init-vault");
+    fs::create_dir_all(&init_root).expect("init vault should exist");
+    let init_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                init_root
+                    .to_str()
+                    .expect("vault path should be valid utf-8"),
+                "--output",
+                "json",
+                "init",
+            ])
+            .assert()
+            .success();
+        let mut json = parse_stdout_json(&assert);
+        json["vault_root"] = Value::String("<vault>".to_string());
+        json["cache_path"] = Value::String("<vault>/.vulcan/cache.db".to_string());
+        json["config_path"] = Value::String("<vault>/.vulcan/config.toml".to_string());
+        json
+    };
+
+    let basic_root = temp_dir.path().join("basic");
+    copy_fixture_vault("basic", &basic_root);
+    let basic_root_str = basic_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    let scan_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &basic_root_str,
+                "--output",
+                "json",
+                "scan",
+                "--full",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+    let rebuild_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &basic_root_str,
+                "--output",
+                "json",
+                "rebuild",
+                "--dry-run",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+    let repair_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &basic_root_str,
+                "--output",
+                "json",
+                "repair",
+                "fts",
+                "--dry-run",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+    let links_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &basic_root_str,
+                "--output",
+                "json",
+                "--fields",
+                "note_path,raw_text,resolved_target_path,resolution_status",
+                "links",
+                "Start",
+            ])
+            .assert()
+            .success();
+        Value::Array(parse_stdout_json_lines(&assert))
+    };
+    let backlinks_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &basic_root_str,
+                "--output",
+                "json",
+                "--fields",
+                "note_path,source_path,raw_text",
+                "backlinks",
+                "Projects/Alpha",
+            ])
+            .assert()
+            .success();
+        Value::Array(parse_stdout_json_lines(&assert))
+    };
+    let search_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &basic_root_str,
+                "--output",
+                "json",
+                "--fields",
+                "document_path,heading_path,query,snippet",
+                "search",
+                "dashboard",
+            ])
+            .assert()
+            .success();
+        Value::Array(parse_stdout_json_lines(&assert))
+    };
+    let describe_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(["--output", "json", "describe"])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+
+    let mixed_root = temp_dir.path().join("mixed");
+    copy_fixture_vault("mixed-properties", &mixed_root);
+    run_scan(&mixed_root);
+    let mixed_root_str = mixed_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    let notes_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &mixed_root_str,
+                "--output",
+                "json",
+                "--fields",
+                "document_path,properties",
+                "notes",
+                "--where",
+                "estimate > 2",
+                "--sort",
+                "due",
+            ])
+            .assert()
+            .success();
+        Value::Array(parse_stdout_json_lines(&assert))
+    };
+
+    let bases_root = temp_dir.path().join("bases");
+    copy_fixture_vault("bases", &bases_root);
+    run_scan(&bases_root);
+    let bases_root_str = bases_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    let bases_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &bases_root_str,
+                "--output",
+                "json",
+                "bases",
+                "eval",
+                "release.base",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+
+    let move_root = temp_dir.path().join("move");
+    copy_fixture_vault("move-rewrite", &move_root);
+    run_scan(&move_root);
+    let move_root_str = move_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    let move_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &move_root_str,
+                "--output",
+                "json",
+                "move",
+                "Projects/Alpha.md",
+                "Archive/Alpha.md",
+                "--dry-run",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+
+    let doctor_root = temp_dir.path().join("broken");
+    copy_fixture_vault("broken-frontmatter", &doctor_root);
+    run_scan(&doctor_root);
+    let doctor_root_str = doctor_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    let doctor_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(["--vault", &doctor_root_str, "--output", "json", "doctor"])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+
+    let vectors_root = temp_dir.path().join("vectors");
+    copy_fixture_vault("basic", &vectors_root);
+    let server = MockEmbeddingServer::spawn();
+    write_embedding_config(&vectors_root, &server.base_url());
+    run_scan(&vectors_root);
+    let vectors_root_str = vectors_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    let vectors_index_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &vectors_root_str,
+                "--output",
+                "json",
+                "vectors",
+                "index",
+            ])
+            .assert()
+            .success();
+        let mut json = parse_stdout_json(&assert);
+        json["elapsed_seconds"] = serde_json::json!(0.0);
+        json["rate_per_second"] = serde_json::json!(0.0);
+        json
+    };
+    let vectors_neighbors_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &vectors_root_str,
+                "--output",
+                "json",
+                "--fields",
+                "document_path,distance",
+                "--limit",
+                "2",
+                "vectors",
+                "neighbors",
+                "dashboard",
+            ])
+            .assert()
+            .success();
+        Value::Array(parse_stdout_json_lines(&assert))
+    };
+    let vectors_duplicates_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &vectors_root_str,
+                "--output",
+                "json",
+                "--fields",
+                "left_document_path,right_document_path,similarity",
+                "vectors",
+                "duplicates",
+                "--threshold",
+                "0.7",
+            ])
+            .assert()
+            .success();
+        Value::Array(parse_stdout_json_lines(&assert))
+    };
+    let cluster_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &vectors_root_str,
+                "--output",
+                "json",
+                "--fields",
+                "cluster_id,document_path",
+                "cluster",
+                "--clusters",
+                "2",
+            ])
+            .assert()
+            .success();
+        Value::Array(parse_stdout_json_lines(&assert))
+    };
+    server.shutdown();
+
+    serde_json::json!({
+        "init": init_json,
+        "scan": scan_json,
+        "rebuild": rebuild_json,
+        "repair_fts": repair_json,
+        "links": links_json,
+        "backlinks": backlinks_json,
+        "search": search_json,
+        "notes": notes_json,
+        "bases": bases_json,
+        "move": move_json,
+        "doctor": doctor_json,
+        "describe": describe_json,
+        "vectors_index": vectors_index_json,
+        "vectors_neighbors": vectors_neighbors_json,
+        "vectors_duplicates": vectors_duplicates_json,
+        "cluster": cluster_json,
+    })
 }
 
 fn copy_fixture_vault(name: &str, destination: &Path) {
