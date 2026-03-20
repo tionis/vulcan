@@ -505,6 +505,10 @@ fn update_document_metadata(
 }
 
 fn delete_document(transaction: &Transaction<'_>, id: &str) -> Result<(), rusqlite::Error> {
+    transaction.execute(
+        "DELETE FROM chunk_search_content WHERE document_id = ?1",
+        [id],
+    )?;
     transaction.execute("DELETE FROM documents WHERE id = ?1", [id])?;
     Ok(())
 }
@@ -521,7 +525,62 @@ fn replace_derived_rows(
     insert_aliases(transaction, document_id, &parsed.aliases)?;
     insert_tags(transaction, document_id, &parsed.tags)?;
     insert_chunks(transaction, document_id, &parsed.chunk_texts)?;
+    replace_chunk_search_rows(transaction, document_id)?;
     insert_diagnostics(transaction, document_id, &parsed.diagnostics)?;
+    Ok(())
+}
+
+fn replace_chunk_search_rows(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+) -> Result<(), ScanError> {
+    let document_title: String = transaction.query_row(
+        "SELECT filename FROM documents WHERE id = ?1",
+        [document_id],
+        |row| row.get(0),
+    )?;
+    let aliases = load_search_alias_text(transaction, document_id)?;
+    let mut statement = transaction.prepare(
+        "
+        SELECT id, content, heading_path
+        FROM chunks
+        WHERE document_id = ?1
+        ORDER BY sequence_index
+        ",
+    )?;
+    let rows = statement.query_map([document_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (chunk_id, content, heading_path) = row?;
+        transaction.execute(
+            "
+            INSERT INTO chunk_search_content (
+                chunk_id,
+                document_id,
+                content,
+                document_title,
+                aliases,
+                headings
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ",
+            params![
+                chunk_id,
+                document_id,
+                content,
+                document_title,
+                aliases,
+                flatten_heading_path(&heading_path)?,
+            ],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -764,6 +823,7 @@ fn clear_derived_rows(
         "links",
         "aliases",
         "tags",
+        "chunk_search_content",
         "chunks",
         "diagnostics",
     ] {
@@ -778,6 +838,33 @@ fn clear_derived_rows(
         )?;
     }
     Ok(())
+}
+
+fn load_search_alias_text(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+) -> Result<String, ScanError> {
+    let mut statement = transaction.prepare(
+        "
+        SELECT alias_text
+        FROM aliases
+        WHERE document_id = ?1
+        ORDER BY alias_text
+        ",
+    )?;
+    let rows = statement.query_map([document_id], |row| row.get::<_, String>(0))?;
+
+    Ok(rows
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(" "))
+}
+
+fn flatten_heading_path(heading_path: &str) -> Result<String, ScanError> {
+    let values = serde_json::from_str::<Vec<String>>(heading_path)
+        .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
+    Ok(values.join(" "))
 }
 
 fn resolve_all_links(
@@ -1027,6 +1114,7 @@ mod tests {
         assert_eq!(count_rows(database.connection(), "aliases"), 2);
         assert_eq!(count_rows(database.connection(), "tags"), 5);
         assert_eq!(count_rows(database.connection(), "chunks"), 4);
+        assert_eq!(count_rows(database.connection(), "chunk_search_content"), 4);
         assert_eq!(count_rows(database.connection(), "diagnostics"), 0);
     }
 
@@ -1080,6 +1168,67 @@ mod tests {
         assert_eq!(
             diagnostic_ids_by_kind(database.connection(), "unresolved_link"),
             before_diagnostic_ids
+        );
+    }
+
+    #[test]
+    fn full_scan_populates_chunk_search_index() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(
+            search_chunk_paths(database.connection(), "dashboard"),
+            vec!["Home.md"]
+        );
+        assert_eq!(
+            search_chunk_paths(database.connection(), "Start"),
+            vec!["Home.md"]
+        );
+        assert_eq!(
+            search_chunk_paths(database.connection(), "Robert"),
+            vec!["People/Bob.md"]
+        );
+    }
+
+    #[test]
+    fn incremental_scan_refreshes_chunk_search_rows_for_changed_notes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        fs::write(
+            vault_root.join("Home.md"),
+            "---\naliases:\n  - Launch\n---\n\n# Home\n\nPortal note.\n",
+        )
+        .expect("updated note should be written");
+
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(summary.updated, 1);
+        assert_eq!(
+            search_chunk_paths(database.connection(), "dashboard"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            search_chunk_paths(database.connection(), "Start"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            search_chunk_paths(database.connection(), "Launch"),
+            vec!["Home.md"]
+        );
+        assert_eq!(
+            search_chunk_paths(database.connection(), "Portal"),
+            vec!["Home.md"]
         );
     }
 
@@ -1260,6 +1409,27 @@ mod tests {
                 row.get(0)
             })
             .expect("row count should be readable")
+    }
+
+    fn search_chunk_paths(connection: &Connection, query: &str) -> Vec<String> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT DISTINCT documents.path
+                FROM chunk_search
+                JOIN chunk_search_content ON chunk_search.rowid = chunk_search_content.id
+                JOIN documents ON documents.id = chunk_search_content.document_id
+                WHERE chunk_search MATCH ?1
+                ORDER BY documents.path
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([query], |row| row.get(0))
+            .expect("query should succeed");
+
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {
