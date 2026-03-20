@@ -17,6 +17,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 toml.workspace = true
 ulid.workspace = true
+vulcan-embed = { path = "../vulcan-embed" }
 
 [dev-dependencies]
 tempfile.workspace = true
