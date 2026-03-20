@@ -4,6 +4,7 @@ pub mod config;
 pub mod doctor;
 pub mod graph;
 pub mod init;
+pub mod move_rewrite;
 pub mod parser;
 pub mod paths;
 pub mod resolver;
@@ -20,10 +21,12 @@ pub use doctor::{
     DoctorReport, DoctorSummary,
 };
 pub use graph::{
-    query_backlinks, query_links, BacklinkRecord, BacklinksReport, GraphQueryError, LineContext,
-    NoteMatchKind, OutgoingLinkRecord, OutgoingLinksReport, ResolutionStatus,
+    query_backlinks, query_links, resolve_note_reference, BacklinkRecord, BacklinksReport,
+    GraphQueryError, LineContext, NoteMatchKind, NoteReference, OutgoingLinkRecord,
+    OutgoingLinksReport, ResolutionStatus,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
+pub use move_rewrite::{move_note, LinkChange, MoveError, MoveSummary, RewrittenFile};
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
     ParsedDocument, RawBlockRef, RawHeading, RawLink, RawTag,

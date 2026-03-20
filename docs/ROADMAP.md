@@ -185,22 +185,22 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Integration tests against `basic/` vault
 
 ### 2.2 Move-safe rewrite engine
-- [ ] `move <source> <dest>` command with `--dry-run` support
-- [ ] Filesystem operation: rename/move the file first
-- [ ] Identify all inbound links: query `links` table by `resolved_target_id`
-- [ ] For each affected source file:
-  - Re-parse to get fresh byte offsets
-  - Locate the specific link span
-  - Compute new link text respecting original style (wikilink vs markdown, display text, subpath)
-  - Apply edits back-to-front to preserve offsets
-- [ ] Update cache: re-index moved file + all rewritten source files
-- [ ] Handle edge cases: links in frontmatter properties, links with display text, links with heading/block subpaths, embed links
-- [ ] Respect `useMarkdownLinks` and `newLinkFormat` vault config for newly generated link text
-- [ ] Input validation: reject path traversal, control characters, non-existent source
-- [ ] Dry-run output: list all files that would be modified with before/after link text
-- [ ] Unit tests for rewrite logic: style preservation, subpath handling, back-to-front editing
-- [ ] Integration test: `move-rewrite/` vault — move a file, assert all links rewritten, run doctor to confirm zero broken links
-- [ ] Roundtrip test: move a file, move it back, assert original link text restored
+- [x] `move <source> <dest>` command with `--dry-run` support
+- [x] Filesystem operation: rename/move the file first
+- [x] Identify all inbound links: query `links` table by `resolved_target_id`
+- [x] For each affected source file:
+  - [x] Re-parse to get fresh byte offsets
+  - [x] Locate the specific link span
+  - [x] Compute new link text respecting original style (wikilink vs markdown, display text, subpath)
+  - [x] Apply edits back-to-front to preserve offsets
+- [x] Update cache: re-index moved file + all rewritten source files
+- [~] Handle edge cases: links in frontmatter properties, links with display text, links with heading/block subpaths, embed links
+- [~] Respect `useMarkdownLinks` and `newLinkFormat` vault config for newly generated link text
+- [x] Input validation: reject path traversal, control characters, non-existent source
+- [x] Dry-run output: list all files that would be modified with before/after link text
+- [x] Unit tests for rewrite logic: style preservation, subpath handling, back-to-front editing
+- [x] Integration test: `move-rewrite/` vault — move a file, assert all links rewritten, run doctor to confirm zero broken links
+- [x] Roundtrip test: move a file, move it back, assert original link text restored
 
 ### 2.3 Write serialization
 - [ ] Application-level write lock (file lock or advisory lock on the DB)

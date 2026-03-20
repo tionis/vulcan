@@ -18,6 +18,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("scan"))
             .and(predicate::str::contains("links"))
             .and(predicate::str::contains("backlinks"))
+            .and(predicate::str::contains("move"))
             .and(predicate::str::contains("doctor")),
     );
 }
@@ -289,6 +290,59 @@ fn doctor_json_output_matches_snapshot() {
         "doctor_broken_frontmatter.json",
         &parse_stdout_json(&assert),
     );
+}
+
+#[test]
+fn move_json_output_supports_dry_run_and_apply() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("move-rewrite", &vault_root);
+    run_scan(&vault_root);
+    let mut dry_run_command = Command::cargo_bin("vulcan").expect("binary should build");
+
+    let dry_run = dry_run_command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "move",
+            "Projects/Alpha.md",
+            "Archive/Alpha.md",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let dry_run_json = parse_stdout_json(&dry_run);
+
+    assert_eq!(dry_run_json["dry_run"], true);
+    assert_eq!(dry_run_json["destination_path"], "Archive/Alpha.md");
+    assert!(vault_root.join("Projects/Alpha.md").exists());
+
+    let mut move_command = Command::cargo_bin("vulcan").expect("binary should build");
+    let applied = move_command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "move",
+            "Projects/Alpha.md",
+            "Archive/Alpha.md",
+        ])
+        .assert()
+        .success();
+    let applied_json = parse_stdout_json(&applied);
+
+    assert_eq!(applied_json["dry_run"], false);
+    assert!(vault_root.join("Archive/Alpha.md").exists());
+    assert!(fs::read_to_string(vault_root.join("Home.md"))
+        .expect("home should be readable")
+        .contains("[[Archive/Alpha#Status]]"));
 }
 
 fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {

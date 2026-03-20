@@ -20,6 +20,12 @@ pub enum Command {
     Backlinks {
         note: String,
     },
+    Move {
+        source: String,
+        dest: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
     Doctor,
     Describe,
 }

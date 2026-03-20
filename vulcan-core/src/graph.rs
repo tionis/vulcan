@@ -141,6 +141,28 @@ struct ResolvedNote {
     matched_by: NoteMatchKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteReference {
+    pub id: String,
+    pub path: String,
+    pub matched_by: NoteMatchKind,
+}
+
+pub fn resolve_note_reference(
+    paths: &VaultPaths,
+    identifier: &str,
+) -> Result<NoteReference, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+    let note = resolve_note_identifier(&notes, identifier)?;
+
+    Ok(NoteReference {
+        id: note.id,
+        path: note.path,
+        matched_by: note.matched_by,
+    })
+}
+
 pub fn query_links(
     paths: &VaultPaths,
     identifier: &str,
