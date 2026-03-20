@@ -20,6 +20,15 @@ pub enum Command {
     Backlinks {
         note: String,
     },
+    Search {
+        query: String,
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long = "path-prefix")]
+        path_prefix: Option<String>,
+        #[arg(long = "context-size", default_value_t = 18)]
+        context_size: usize,
+    },
     Move {
         source: String,
         dest: String,

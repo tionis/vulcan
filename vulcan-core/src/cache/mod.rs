@@ -160,8 +160,8 @@ mod tests {
             "aliases",
             "tags",
             "chunks",
-            "chunk_search_content",
-            "chunk_search",
+            "search_chunk_content",
+            "search_chunks_fts",
             "diagnostics",
             "meta",
         ] {

@@ -506,7 +506,7 @@ fn update_document_metadata(
 
 fn delete_document(transaction: &Transaction<'_>, id: &str) -> Result<(), rusqlite::Error> {
     transaction.execute(
-        "DELETE FROM chunk_search_content WHERE document_id = ?1",
+        "DELETE FROM search_chunk_content WHERE document_id = ?1",
         [id],
     )?;
     transaction.execute("DELETE FROM documents WHERE id = ?1", [id])?;
@@ -560,7 +560,7 @@ fn replace_chunk_search_rows(
         let (chunk_id, content, heading_path) = row?;
         transaction.execute(
             "
-            INSERT INTO chunk_search_content (
+            INSERT INTO search_chunk_content (
                 chunk_id,
                 document_id,
                 content,
@@ -823,7 +823,7 @@ fn clear_derived_rows(
         "links",
         "aliases",
         "tags",
-        "chunk_search_content",
+        "search_chunk_content",
         "chunks",
         "diagnostics",
     ] {
@@ -1114,7 +1114,7 @@ mod tests {
         assert_eq!(count_rows(database.connection(), "aliases"), 2);
         assert_eq!(count_rows(database.connection(), "tags"), 5);
         assert_eq!(count_rows(database.connection(), "chunks"), 4);
-        assert_eq!(count_rows(database.connection(), "chunk_search_content"), 4);
+        assert_eq!(count_rows(database.connection(), "search_chunk_content"), 4);
         assert_eq!(count_rows(database.connection(), "diagnostics"), 0);
     }
 
@@ -1169,6 +1169,29 @@ mod tests {
             diagnostic_ids_by_kind(database.connection(), "unresolved_link"),
             before_diagnostic_ids
         );
+    }
+
+    #[test]
+    fn no_op_incremental_scan_preserves_chunk_search_rows() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let before_rows = chunk_search_rows(database.connection());
+        drop(database);
+
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(summary.updated, 0);
+        assert_eq!(summary.deleted, 0);
+        assert_eq!(summary.added, 0);
+        assert_eq!(summary.unchanged, 3);
+        assert_eq!(chunk_search_rows(database.connection()), before_rows);
     }
 
     #[test]
@@ -1416,16 +1439,34 @@ mod tests {
             .prepare(
                 "
                 SELECT DISTINCT documents.path
-                FROM chunk_search
-                JOIN chunk_search_content ON chunk_search.rowid = chunk_search_content.id
-                JOIN documents ON documents.id = chunk_search_content.document_id
-                WHERE chunk_search MATCH ?1
+                FROM search_chunks_fts
+                JOIN search_chunk_content ON search_chunks_fts.rowid = search_chunk_content.id
+                JOIN documents ON documents.id = search_chunk_content.document_id
+                WHERE search_chunks_fts MATCH ?1
                 ORDER BY documents.path
                 ",
             )
             .expect("statement should prepare");
         let rows = statement
             .query_map([query], |row| row.get(0))
+            .expect("query should succeed");
+
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn chunk_search_rows(connection: &Connection) -> Vec<(i64, String, String)> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT id, chunk_id, content
+                FROM search_chunk_content
+                ORDER BY id
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .expect("query should succeed");
 
         rows.map(|row| row.expect("row should deserialize"))

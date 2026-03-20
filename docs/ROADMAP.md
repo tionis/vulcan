@@ -218,25 +218,25 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 **Design refs:** §10 (FTS architecture)
 
 ### 3.1 FTS5 setup
-- [ ] Schema migration: add FTS5 virtual table in external-content mode, referencing `chunks` table
-- [ ] Indexed fields: chunk text content, document title, aliases, headings
-- [ ] Synchronization triggers or explicit rebuild to keep FTS in sync with chunks table
+- [x] Schema migration: add FTS5 virtual table in external-content mode, referencing `chunks` table
+- [x] Indexed fields: chunk text content, document title, aliases, headings
+- [x] Synchronization triggers or explicit rebuild to keep FTS in sync with chunks table
 - [ ] Rebuild FTS command (for repair)
 
 ### 3.2 Search command
-- [ ] `search <query>` command
-- [ ] FTS5 query syntax: term search, phrase search, prefix search
-- [ ] Snippet extraction with configurable context size
-- [ ] Result ranking (BM25 via FTS5 rank)
-- [ ] Compose with relational filters: `--tag`, `--path-prefix`, `--has-property`
-- [ ] `--output json` with structured results (document path, chunk id, snippet, rank)
-- [ ] `--limit` for result count
-- [ ] Integration test: index `basic/` vault, search for known terms, assert results
+- [x] `search <query>` command
+- [x] FTS5 query syntax: term search, phrase search, prefix search
+- [x] Snippet extraction with configurable context size
+- [x] Result ranking (BM25 via FTS5 rank)
+- [~] Compose with relational filters: `--tag`, `--path-prefix`, `--has-property`
+- [x] `--output json` with structured results (document path, chunk id, snippet, rank)
+- [x] `--limit` for result count
+- [x] Integration test: index `basic/` vault, search for known terms, assert results
 
 ### 3.3 Incremental FTS maintenance
-- [ ] On re-index: delete FTS rows for changed chunks, insert new FTS rows
-- [ ] Verify FTS stays in sync after incremental updates
-- [ ] Idempotency test: reindex with no changes, assert FTS state unchanged
+- [x] On re-index: delete FTS rows for changed chunks, insert new FTS rows
+- [x] Verify FTS stays in sync after incremental updates
+- [x] Idempotency test: reindex with no changes, assert FTS state unchanged
 
 ---
 

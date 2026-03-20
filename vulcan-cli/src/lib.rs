@@ -12,9 +12,9 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use vulcan_core::{
     doctor_vault, initialize_vault, move_note, query_backlinks, query_links, scan_vault,
-    BacklinkRecord, BacklinksReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport,
-    InitSummary, MoveSummary, OutgoingLinkRecord, OutgoingLinksReport, ScanMode, ScanSummary,
-    VaultPaths,
+    search_vault, BacklinkRecord, BacklinksReport, DoctorDiagnosticIssue, DoctorLinkIssue,
+    DoctorReport, InitSummary, MoveSummary, OutgoingLinkRecord, OutgoingLinksReport, ScanMode,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths,
 };
 
 #[derive(Debug)]
@@ -108,6 +108,26 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_links_report(cli.output, &report, &list_controls, stdout_is_tty)?;
             Ok(())
         }
+        Command::Search {
+            ref query,
+            ref tag,
+            ref path_prefix,
+            context_size,
+        } => {
+            let report = search_vault(
+                &paths,
+                &SearchQuery {
+                    text: query.clone(),
+                    tag: tag.clone(),
+                    path_prefix: path_prefix.clone(),
+                    limit: cli.limit.map(|limit| limit.saturating_add(cli.offset)),
+                    context_size,
+                },
+            )
+            .map_err(CliError::operation)?;
+            print_search_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+            Ok(())
+        }
         Command::Scan { full } => {
             let summary = scan_vault(
                 &paths,
@@ -121,6 +141,42 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_scan_summary(cli.output, &summary);
             Ok(())
         }
+    }
+}
+
+fn print_search_report(
+    output: OutputFormat,
+    report: &SearchReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+) -> Result<(), CliError> {
+    let visible_hits = paginated_items(&report.hits, list_controls);
+
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("Search hits for {}", report.query);
+            }
+            if visible_hits.is_empty() {
+                println!("No search hits.");
+                return Ok(());
+            }
+
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in search_hit_rows(report, visible_hits) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for hit in visible_hits {
+                    print_search_hit(hit);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(
+            search_hit_rows(report, visible_hits),
+            list_controls.fields.as_deref(),
+        ),
     }
 }
 
@@ -440,6 +496,23 @@ fn backlink_rows(report: &BacklinksReport, backlinks: &[BacklinkRecord]) -> Vec<
         .collect()
 }
 
+fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
+    hits.iter()
+        .map(|hit| {
+            serde_json::json!({
+                "query": report.query,
+                "tag": report.tag,
+                "path_prefix": report.path_prefix,
+                "document_path": hit.document_path,
+                "chunk_id": hit.chunk_id,
+                "heading_path": hit.heading_path,
+                "snippet": hit.snippet,
+                "rank": hit.rank,
+            })
+        })
+        .collect()
+}
+
 fn select_fields(row: Value, fields: Option<&[String]>) -> Value {
     let Some(fields) = fields else {
         return row;
@@ -516,6 +589,20 @@ fn print_backlink(backlink: &BacklinkRecord) {
     }
 }
 
+fn print_search_hit(hit: &SearchHit) {
+    if hit.heading_path.is_empty() {
+        println!("- {} [{:.3}]: {}", hit.document_path, hit.rank, hit.snippet);
+    } else {
+        println!(
+            "- {} > {} [{:.3}]: {}",
+            hit.document_path,
+            hit.heading_path.join(" > "),
+            hit.rank,
+            hit.snippet
+        );
+    }
+}
+
 fn zero_summary() -> vulcan_core::DoctorSummary {
     vulcan_core::DoctorSummary {
         unresolved_links: 0,
@@ -577,6 +664,18 @@ mod tests {
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
             .expect("cli should parse");
+        let search = Cli::try_parse_from([
+            "vulcan",
+            "search",
+            "dashboard",
+            "--tag",
+            "index",
+            "--path-prefix",
+            "People/",
+            "--context-size",
+            "24",
+        ])
+        .expect("cli should parse");
         let move_command = Cli::try_parse_from([
             "vulcan",
             "move",
@@ -596,6 +695,15 @@ mod tests {
             backlinks.command,
             Command::Backlinks {
                 note: "Projects/Alpha".to_string()
+            }
+        );
+        assert_eq!(
+            search.command,
+            Command::Search {
+                query: "dashboard".to_string(),
+                tag: Some("index".to_string()),
+                path_prefix: Some("People/".to_string()),
+                context_size: 24,
             }
         );
         assert_eq!(

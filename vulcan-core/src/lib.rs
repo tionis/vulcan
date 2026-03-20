@@ -9,6 +9,7 @@ pub mod parser;
 pub mod paths;
 pub mod resolver;
 pub mod scan;
+pub mod search;
 pub mod write_lock;
 
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
@@ -39,7 +40,8 @@ pub use resolver::{
     resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverLink,
 };
 pub use scan::{detect_document_kind, scan_vault, DocumentKind, ScanError, ScanMode, ScanSummary};
+pub use search::{search_vault, SearchError, SearchHit, SearchQuery, SearchReport};
 
 pub const PARSER_VERSION: u32 = 1;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
