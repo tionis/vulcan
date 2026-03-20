@@ -451,10 +451,10 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Richer property predicates and multi-filter composition
 
 ### 7.9 Link suggestions and bulk rewrites
-- [ ] Unlinked mention detection with candidate target suggestions
-- [ ] Optional mention-to-link conversion workflow with `--dry-run`
-- [ ] Bulk query-driven rewrite commands with previewable before/after output
-- [ ] Duplicate-title, alias, and merge-candidate suggestion reports
+- [x] Unlinked mention detection with candidate target suggestions
+- [x] Optional mention-to-link conversion workflow with `--dry-run`
+- [x] Bulk query-driven rewrite commands with previewable before/after output
+- [x] Duplicate-title, alias, and merge-candidate suggestion reports
 
 ### 7.10 Cache maintenance and change reporting
 - [x] `cache inspect`, `cache verify`, and `cache vacuum` commands

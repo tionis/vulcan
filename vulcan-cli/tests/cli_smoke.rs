@@ -28,11 +28,14 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("graph"))
             .and(predicate::str::contains("notes"))
             .and(predicate::str::contains("bases"))
+            .and(predicate::str::contains("suggest"))
             .and(predicate::str::contains("search"))
             .and(predicate::str::contains("vectors"))
             .and(predicate::str::contains("cluster"))
             .and(predicate::str::contains("related"))
             .and(predicate::str::contains("move"))
+            .and(predicate::str::contains("link-mentions"))
+            .and(predicate::str::contains("rewrite"))
             .and(predicate::str::contains("doctor"))
             .and(predicate::str::contains("cache"))
             .and(predicate::str::contains("rename-property"))
@@ -58,7 +61,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Indexing: init, scan, rebuild, repair, watch, serve",
             ))
             .and(predicate::str::contains(
-                "Graph and Query: links, backlinks, graph, search, notes, bases",
+                "Graph and Query: links, backlinks, graph, search, notes, bases, suggest",
             ))
             .and(predicate::str::contains(
                 "Semantic: vectors, cluster, related",
@@ -67,7 +70,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Reports and Automation: saved, checkpoint, changes, batch",
             ))
             .and(predicate::str::contains(
-                "Maintenance: move, doctor, cache, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions",
+                "Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions",
             )),
     );
 }
@@ -1638,6 +1641,117 @@ fn move_json_output_supports_dry_run_and_apply() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn suggest_and_rewrite_json_outputs_cover_linking_and_duplicates() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("suggestions", &vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let mentions_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "--fields",
+            "source_path,matched_text,target_path,candidate_count,status",
+            "suggest",
+            "mentions",
+            "Home",
+        ])
+        .assert()
+        .success();
+    let mention_rows = parse_stdout_json_lines(&mentions_assert);
+    assert!(mention_rows.iter().any(|row| {
+        row["matched_text"] == "Bob"
+            && row["target_path"] == "People/Bob.md"
+            && row["status"] == "unambiguous"
+    }));
+    assert!(mention_rows.iter().any(|row| {
+        row["matched_text"] == "Alpha"
+            && row["target_path"].is_null()
+            && row["candidate_count"] == 2
+            && row["status"] == "ambiguous"
+    }));
+
+    let duplicates_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "--fields",
+            "kind,value,paths,left_path,right_path,score",
+            "suggest",
+            "duplicates",
+        ])
+        .assert()
+        .success();
+    let duplicate_rows = parse_stdout_json_lines(&duplicates_assert);
+    assert!(duplicate_rows
+        .iter()
+        .any(|row| row["kind"] == "duplicate_title" && row["value"] == "Alpha"));
+    assert!(duplicate_rows
+        .iter()
+        .any(|row| row["kind"] == "alias_collision" && row["value"] == "Guide"));
+    assert!(duplicate_rows.iter().any(|row| {
+        row["kind"] == "merge_candidate"
+            && row["left_path"] == "Archive/Alpha.md"
+            && row["right_path"] == "Projects/Alpha.md"
+    }));
+
+    let link_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "link-mentions",
+            "Home",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let link_json = parse_stdout_json(&link_assert);
+    assert_eq!(link_json["action"], "link_mentions");
+    assert_eq!(link_json["dry_run"], true);
+    assert_eq!(link_json["files"][0]["path"], "Home.md");
+
+    let rewrite_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "rewrite",
+            "--find",
+            "Guide",
+            "--replace",
+            "Manual",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let rewrite_json = parse_stdout_json(&rewrite_assert);
+    assert_eq!(rewrite_json["action"], "bulk_replace");
+    assert_eq!(rewrite_json["dry_run"], true);
+    assert!(rewrite_json["files"]
+        .as_array()
+        .expect("files should be an array")
+        .iter()
+        .any(|file| file["path"] == "Home.md"));
+}
+
+#[test]
 fn rebuild_and_repair_json_output_support_dry_run() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -2051,6 +2165,83 @@ fn build_command_snapshot() -> Value {
         replace_field_recursively(&mut json, "file_mtime", &serde_json::json!(0));
         json
     };
+    let suggestions_root = temp_dir.path().join("suggestions");
+    copy_fixture_vault("suggestions", &suggestions_root);
+    run_scan(&suggestions_root);
+    let suggestions_root_str = suggestions_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    let suggest_mentions_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &suggestions_root_str,
+                "--output",
+                "json",
+                "--fields",
+                "source_path,matched_text,target_path,candidate_count,status",
+                "suggest",
+                "mentions",
+                "Home",
+            ])
+            .assert()
+            .success();
+        Value::Array(parse_stdout_json_lines(&assert))
+    };
+    let suggest_duplicates_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &suggestions_root_str,
+                "--output",
+                "json",
+                "--fields",
+                "kind,value,left_path,right_path,score",
+                "suggest",
+                "duplicates",
+            ])
+            .assert()
+            .success();
+        Value::Array(parse_stdout_json_lines(&assert))
+    };
+    let link_mentions_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &suggestions_root_str,
+                "--output",
+                "json",
+                "link-mentions",
+                "Home",
+                "--dry-run",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+    let rewrite_json = {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &suggestions_root_str,
+                "--output",
+                "json",
+                "rewrite",
+                "--find",
+                "Guide",
+                "--replace",
+                "Manual",
+                "--dry-run",
+            ])
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
 
     let move_root = temp_dir.path().join("move");
     copy_fixture_vault("move-rewrite", &move_root);
@@ -2189,6 +2380,10 @@ fn build_command_snapshot() -> Value {
         "search": search_json,
         "notes": notes_json,
         "bases": bases_json,
+        "suggest_mentions": suggest_mentions_json,
+        "suggest_duplicates": suggest_duplicates_json,
+        "link_mentions": link_mentions_json,
+        "rewrite": rewrite_json,
         "move": move_json,
         "doctor": doctor_json,
         "describe": describe_json,
