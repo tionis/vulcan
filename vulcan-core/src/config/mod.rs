@@ -1,4 +1,4 @@
-use crate::paths::VaultPaths;
+use crate::paths::{ensure_vulcan_dir, VaultPaths};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -150,7 +150,7 @@ pub fn default_config_template() -> &'static str {
 }
 
 pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error> {
-    fs::create_dir_all(paths.vulcan_dir())?;
+    ensure_vulcan_dir(paths)?;
 
     if paths.config_file().exists() {
         return Ok(false);
@@ -486,6 +486,10 @@ api_key_env = "EMBEDDING_API_KEY"
         assert_eq!(
             fs::read_to_string(paths.config_file()).expect("config file should exist"),
             default_config_template()
+        );
+        assert_eq!(
+            fs::read_to_string(paths.gitignore_file()).expect("gitignore should exist"),
+            "*\n!.gitignore\n!config.toml\n"
         );
     }
 }

@@ -48,6 +48,12 @@ fn init_json_output_creates_default_config() {
     assert_eq!(json["created_cache"], true);
     assert!(vault_root.join(".vulcan/config.toml").exists());
     assert!(vault_root.join(".vulcan/cache.db").exists());
+    assert!(vault_root.join(".vulcan/.gitignore").exists());
+    assert_eq!(
+        fs::read_to_string(vault_root.join(".vulcan/.gitignore"))
+            .expect("gitignore should be readable"),
+        "*\n!.gitignore\n!config.toml\n"
+    );
 }
 
 #[test]

@@ -5,10 +5,9 @@ mod schema;
 pub use error::CacheError;
 pub use migrations::{Migration, MigrationRegistry};
 
-use crate::paths::VaultPaths;
+use crate::paths::{ensure_vulcan_dir, VaultPaths};
 use crate::{EXTRACTION_VERSION, PARSER_VERSION};
 use rusqlite::{Connection, OptionalExtension, Transaction};
-use std::fs;
 use std::time::Duration;
 
 pub const BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -23,7 +22,7 @@ pub struct CacheDatabase {
 
 impl CacheDatabase {
     pub fn open(paths: &VaultPaths) -> Result<Self, CacheError> {
-        fs::create_dir_all(paths.vulcan_dir())?;
+        ensure_vulcan_dir(paths)?;
 
         let mut connection = Connection::open(paths.cache_db())?;
         configure_connection(&connection)?;
@@ -139,6 +138,7 @@ mod tests {
         let database = CacheDatabase::open(&paths).expect("database should open");
 
         assert!(paths.cache_db().exists());
+        assert!(paths.gitignore_file().exists());
         assert_eq!(
             database
                 .user_version()
