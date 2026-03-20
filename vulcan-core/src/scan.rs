@@ -1,5 +1,6 @@
 use crate::cache::CacheError;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
+use crate::properties::{extract_indexed_properties, rebuild_property_catalog, IndexedProperties};
 use crate::resolver::{resolve_link, LinkResolutionProblem, ResolverDocument, ResolverLink};
 use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
@@ -132,6 +133,7 @@ struct CachedDocument {
 struct IncrementalScanResult {
     summary: ScanSummary,
     requires_link_resolution: bool,
+    requires_property_catalog_refresh: bool,
 }
 
 #[must_use]
@@ -184,6 +186,7 @@ pub(crate) fn scan_vault_unlocked(
                         index_note_document(transaction, &config, &id, file, &hash)?;
                     }
                 }
+                rebuild_property_catalog(transaction, &config.property_types)?;
                 resolve_all_links(transaction, config.link_resolution)?;
 
                 Ok(ScanSummary {
@@ -206,6 +209,9 @@ pub(crate) fn scan_vault_unlocked(
                     &deleted_paths,
                     mode,
                 )?;
+                if result.requires_property_catalog_refresh {
+                    rebuild_property_catalog(transaction, &config.property_types)?;
+                }
                 if result.requires_link_resolution {
                     resolve_all_links(transaction, config.link_resolution)?;
                 }
@@ -235,6 +241,7 @@ fn apply_incremental_scan(
         // Link resolution is only needed when the set of resolvable targets or
         // the extracted links/aliases of a note changed.
         requires_link_resolution: false,
+        requires_property_catalog_refresh: false,
     };
     let mut seen_paths = HashSet::with_capacity(discovered.len());
 
@@ -267,6 +274,7 @@ fn apply_incremental_scan(
                     if matches!(file.kind, DocumentKind::Note) {
                         index_note_document(transaction, config, &cached.id, file, &hash)?;
                         result.requires_link_resolution = true;
+                        result.requires_property_catalog_refresh = true;
                     }
                     result.summary.updated += 1;
                 }
@@ -279,6 +287,7 @@ fn apply_incremental_scan(
                     index_note_document(transaction, config, &id, file, &hash)?;
                 }
                 result.requires_link_resolution = true;
+                result.requires_property_catalog_refresh = matches!(file.kind, DocumentKind::Note);
                 result.summary.added += 1;
             }
         }
@@ -288,6 +297,7 @@ fn apply_incremental_scan(
         if let Some(cached) = existing.get(path) {
             delete_document(transaction, &cached.id)?;
             result.requires_link_resolution = true;
+            result.requires_property_catalog_refresh = true;
             result.summary.deleted += 1;
         }
     }
@@ -473,7 +483,7 @@ fn index_note_document(
         content_hash,
         parsed.raw_frontmatter.as_deref(),
     )?;
-    replace_derived_rows(transaction, id, &parsed)?;
+    replace_derived_rows(transaction, id, config, &parsed)?;
 
     Ok(())
 }
@@ -516,6 +526,7 @@ fn delete_document(transaction: &Transaction<'_>, id: &str) -> Result<(), rusqli
 fn replace_derived_rows(
     transaction: &Transaction<'_>,
     document_id: &str,
+    config: &crate::VaultConfig,
     parsed: &ParsedDocument,
 ) -> Result<(), ScanError> {
     clear_derived_rows(transaction, document_id)?;
@@ -527,6 +538,18 @@ fn replace_derived_rows(
     insert_chunks(transaction, document_id, &parsed.chunk_texts)?;
     replace_chunk_search_rows(transaction, document_id)?;
     insert_diagnostics(transaction, document_id, &parsed.diagnostics)?;
+    if let Some(properties) = extract_indexed_properties(
+        parsed.raw_frontmatter.as_deref(),
+        parsed.frontmatter.as_ref(),
+        config,
+    )
+    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?
+    {
+        insert_properties(transaction, document_id, &properties)?;
+        insert_property_values(transaction, document_id, &properties)?;
+        insert_property_list_items(transaction, document_id, &properties)?;
+        insert_property_diagnostics(transaction, document_id, &properties)?;
+    }
     Ok(())
 }
 
@@ -813,6 +836,111 @@ fn insert_diagnostics(
     Ok(())
 }
 
+fn insert_properties(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    properties: &IndexedProperties,
+) -> Result<(), ScanError> {
+    transaction.execute(
+        "
+        INSERT INTO properties (document_id, raw_yaml, canonical_json)
+        VALUES (?1, ?2, ?3)
+        ",
+        params![
+            document_id,
+            &properties.raw_yaml,
+            &properties.canonical_json
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_property_values(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    properties: &IndexedProperties,
+) -> Result<(), ScanError> {
+    for property in &properties.values {
+        transaction.execute(
+            "
+            INSERT INTO property_values (
+                document_id,
+                key,
+                value_text,
+                value_number,
+                value_bool,
+                value_date,
+                value_type
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ",
+            params![
+                document_id,
+                &property.key,
+                property.value_text.as_deref(),
+                property.value_number,
+                property.value_bool.map(i64::from),
+                property.value_date.as_deref(),
+                &property.value_type,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_property_list_items(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    properties: &IndexedProperties,
+) -> Result<(), ScanError> {
+    for item in &properties.list_items {
+        transaction.execute(
+            "
+            INSERT INTO property_list_items (document_id, key, item_index, value_text)
+            VALUES (?1, ?2, ?3, ?4)
+            ",
+            params![
+                document_id,
+                &item.key,
+                i64::try_from(item.item_index).map_err(|_| ScanError::MetadataOverflow {
+                    field: "property_list_items.item_index",
+                    path: PathBuf::from(document_id),
+                })?,
+                &item.value_text,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_property_diagnostics(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    properties: &IndexedProperties,
+) -> Result<(), ScanError> {
+    for diagnostic in &properties.diagnostics {
+        transaction.execute(
+            "
+            INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+            VALUES (?1, ?2, 'type_mismatch', ?3, ?4, ?5)
+            ",
+            params![
+                Ulid::new().to_string(),
+                document_id,
+                &diagnostic.message,
+                serde_json::to_string(&json!({
+                    "key": diagnostic.key,
+                    "expected_type": diagnostic.expected_type,
+                    "actual_type": diagnostic.actual_type,
+                }))
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                current_timestamp()?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn clear_derived_rows(
     transaction: &Transaction<'_>,
     document_id: &str,
@@ -823,6 +951,9 @@ fn clear_derived_rows(
         "links",
         "aliases",
         "tags",
+        "properties",
+        "property_values",
+        "property_list_items",
         "search_chunk_content",
         "chunks",
         "diagnostics",
@@ -1116,6 +1247,38 @@ mod tests {
         assert_eq!(count_rows(database.connection(), "chunks"), 4);
         assert_eq!(count_rows(database.connection(), "search_chunk_content"), 4);
         assert_eq!(count_rows(database.connection(), "diagnostics"), 0);
+    }
+
+    #[test]
+    fn mixed_properties_vault_indexes_property_projections_and_type_diagnostics() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        let summary = scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(summary.discovered, 3);
+        assert_eq!(count_rows(database.connection(), "properties"), 3);
+        assert_eq!(count_rows(database.connection(), "property_values"), 18);
+        assert_eq!(count_rows(database.connection(), "property_list_items"), 4);
+        assert_eq!(
+            property_value_type(database.connection(), "Done.md", "due"),
+            Some("date".to_string())
+        );
+        assert_eq!(
+            property_value_type(database.connection(), "Done.md", "empty_list"),
+            Some("list".to_string())
+        );
+        assert_eq!(
+            property_list_items(database.connection(), "Done.md", "related"),
+            vec!["[[Backlog]]".to_string(), "sprint".to_string()]
+        );
+        assert_eq!(
+            diagnostic_count_by_kind(database.connection(), "type_mismatch"),
+            5
+        );
     }
 
     #[test]
@@ -1426,6 +1589,16 @@ mod tests {
             .collect()
     }
 
+    fn diagnostic_count_by_kind(connection: &Connection, kind: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM diagnostics WHERE kind = ?1",
+                [kind],
+                |row| row.get(0),
+            )
+            .expect("diagnostic count should be readable")
+    }
+
     fn count_rows(connection: &Connection, table_name: &str) -> i64 {
         connection
             .query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
@@ -1467,6 +1640,41 @@ mod tests {
             .expect("statement should prepare");
         let rows = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query should succeed");
+
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn property_value_type(connection: &Connection, path: &str, key: &str) -> Option<String> {
+        connection
+            .query_row(
+                "
+                SELECT property_values.value_type
+                FROM property_values
+                JOIN documents ON documents.id = property_values.document_id
+                WHERE documents.path = ?1 AND property_values.key = ?2
+                ",
+                params![path, key],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    fn property_list_items(connection: &Connection, path: &str, key: &str) -> Vec<String> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT property_list_items.value_text
+                FROM property_list_items
+                JOIN documents ON documents.id = property_list_items.document_id
+                WHERE documents.path = ?1 AND property_list_items.key = ?2
+                ORDER BY property_list_items.item_index
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map(params![path, key], |row| row.get(0))
             .expect("query should succeed");
 
         rows.map(|row| row.expect("row should deserialize"))

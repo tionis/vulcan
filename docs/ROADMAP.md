@@ -228,7 +228,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] FTS5 query syntax: term search, phrase search, prefix search
 - [x] Snippet extraction with configurable context size
 - [x] Result ranking (BM25 via FTS5 rank)
-- [~] Compose with relational filters: `--tag`, `--path-prefix`, `--has-property`
+- [x] Compose with relational filters: `--tag`, `--path-prefix`, `--has-property`
 - [x] `--output json` with structured results (document path, chunk id, snippet, rank)
 - [x] `--limit` for result count
 - [x] Integration test: index `basic/` vault, search for known terms, assert results
@@ -248,23 +248,23 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 **Design refs:** §9 (properties), §12 (Bases)
 
 ### 4.1 Property storage and projections
-- [ ] Schema migration: `properties` table — `document_id`, `raw_yaml` (lossless), `canonical_json` (JSONB normalized)
-- [ ] Schema migration: `property_values` table — `document_id`, `key`, `value_text`, `value_number`, `value_bool`, `value_date`, `value_type`, for relational projection of scalar properties
-- [ ] Schema migration: `property_list_items` table — `document_id`, `key`, `index`, `value_text`, for multivalue properties
-- [ ] Schema migration: `property_catalog` table — `key`, `observed_type`, `usage_count`, `namespace`
-- [ ] Populate property tables during indexing pipeline (extend Phase 1 indexer)
-- [ ] Type inference: use `.obsidian/types.json` when available, fall back to observed value heuristics
-- [ ] Handle: missing vs null vs empty string vs empty list vs invalid
-- [ ] Link-valued property detection and storage
-- [ ] Unit tests: type coercion, multivalue, null/missing/empty distinctions
-- [ ] Integration test: `mixed-properties/` vault, assert correct types and diagnostics for inconsistencies
+- [x] Schema migration: `properties` table — `document_id`, `raw_yaml` (lossless), `canonical_json` (JSONB normalized)
+- [x] Schema migration: `property_values` table — `document_id`, `key`, `value_text`, `value_number`, `value_bool`, `value_date`, `value_type`, for relational projection of scalar properties
+- [x] Schema migration: `property_list_items` table — `document_id`, `key`, `index`, `value_text`, for multivalue properties
+- [x] Schema migration: `property_catalog` table — `key`, `observed_type`, `usage_count`, `namespace`
+- [x] Populate property tables during indexing pipeline (extend Phase 1 indexer)
+- [x] Type inference: use `.obsidian/types.json` when available, fall back to observed value heuristics
+- [x] Handle: missing vs null vs empty string vs empty list vs invalid
+- [x] Link-valued property detection and storage
+- [x] Unit tests: type coercion, multivalue, null/missing/empty distinctions
+- [x] Integration test: `mixed-properties/` vault, assert correct types and diagnostics for inconsistencies
 
 ### 4.2 Property query surface
-- [ ] `query` or `notes` command with property filters: `--where "status = done"`, `--where "tags contains foo"`
-- [ ] Typed comparisons: string, number, date, boolean, list membership
-- [ ] Sort by property value
-- [ ] `--output json` with property data in results
-- [ ] Integration tests for filter/sort operations
+- [x] `query` or `notes` command with property filters: `--where "status = done"`, `--where "tags contains foo"`
+- [x] Typed comparisons: string, number, date, boolean, list membership
+- [x] Sort by property value
+- [x] `--output json` with property data in results
+- [x] Integration tests for filter/sort operations
 
 ### 4.3 Bases parser
 - [ ] Parse `.base` YAML files into a validated internal model

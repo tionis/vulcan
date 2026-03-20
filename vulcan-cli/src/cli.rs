@@ -26,8 +26,18 @@ pub enum Command {
         tag: Option<String>,
         #[arg(long = "path-prefix")]
         path_prefix: Option<String>,
+        #[arg(long = "has-property")]
+        has_property: Option<String>,
         #[arg(long = "context-size", default_value_t = 18)]
         context_size: usize,
+    },
+    Notes {
+        #[arg(long = "where")]
+        filters: Vec<String>,
+        #[arg(long)]
+        sort: Option<String>,
+        #[arg(long)]
+        desc: bool,
     },
     Move {
         source: String,

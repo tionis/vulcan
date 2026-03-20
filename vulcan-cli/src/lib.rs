@@ -11,10 +11,11 @@ use std::io;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use vulcan_core::{
-    doctor_vault, initialize_vault, move_note, query_backlinks, query_links, scan_vault,
-    search_vault, BacklinkRecord, BacklinksReport, DoctorDiagnosticIssue, DoctorLinkIssue,
-    DoctorReport, InitSummary, MoveSummary, OutgoingLinkRecord, OutgoingLinksReport, ScanMode,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths,
+    doctor_vault, initialize_vault, move_note, query_backlinks, query_links, query_notes,
+    scan_vault, search_vault, BacklinkRecord, BacklinksReport, DoctorDiagnosticIssue,
+    DoctorLinkIssue, DoctorReport, InitSummary, MoveSummary, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, ScanMode, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, VaultPaths,
 };
 
 #[derive(Debug)]
@@ -108,10 +109,28 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_links_report(cli.output, &report, &list_controls, stdout_is_tty)?;
             Ok(())
         }
+        Command::Notes {
+            ref filters,
+            ref sort,
+            desc,
+        } => {
+            let report = query_notes(
+                &paths,
+                &NoteQuery {
+                    filters: filters.clone(),
+                    sort_by: sort.clone(),
+                    sort_descending: desc,
+                },
+            )
+            .map_err(CliError::operation)?;
+            print_notes_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+            Ok(())
+        }
         Command::Search {
             ref query,
             ref tag,
             ref path_prefix,
+            ref has_property,
             context_size,
         } => {
             let report = search_vault(
@@ -120,6 +139,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     text: query.clone(),
                     tag: tag.clone(),
                     path_prefix: path_prefix.clone(),
+                    has_property: has_property.clone(),
                     limit: cli.limit.map(|limit| limit.saturating_add(cli.offset)),
                     context_size,
                 },
@@ -175,6 +195,42 @@ fn print_search_report(
         }
         OutputFormat::Json => print_json_lines(
             search_hit_rows(report, visible_hits),
+            list_controls.fields.as_deref(),
+        ),
+    }
+}
+
+fn print_notes_report(
+    output: OutputFormat,
+    report: &NotesReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+) -> Result<(), CliError> {
+    let visible_notes = paginated_items(&report.notes, list_controls);
+
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("Notes query");
+            }
+            if visible_notes.is_empty() {
+                println!("No notes matched.");
+                return Ok(());
+            }
+
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in note_rows(report, visible_notes) {
+                    print_selected_human_fields(&row, fields);
+                }
+            } else {
+                for note in visible_notes {
+                    print_note(note);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(
+            note_rows(report, visible_notes),
             list_controls.fields.as_deref(),
         ),
     }
@@ -503,11 +559,30 @@ fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
                 "query": report.query,
                 "tag": report.tag,
                 "path_prefix": report.path_prefix,
+                "has_property": report.has_property,
                 "document_path": hit.document_path,
                 "chunk_id": hit.chunk_id,
                 "heading_path": hit.heading_path,
                 "snippet": hit.snippet,
                 "rank": hit.rank,
+            })
+        })
+        .collect()
+}
+
+fn note_rows(report: &NotesReport, notes: &[NoteRecord]) -> Vec<Value> {
+    notes
+        .iter()
+        .map(|note| {
+            serde_json::json!({
+                "filters": report.filters,
+                "sort_by": report.sort_by,
+                "sort_descending": report.sort_descending,
+                "document_path": note.document_path,
+                "file_name": note.file_name,
+                "file_ext": note.file_ext,
+                "file_mtime": note.file_mtime,
+                "properties": note.properties,
             })
         })
         .collect()
@@ -603,6 +678,10 @@ fn print_search_hit(hit: &SearchHit) {
     }
 }
 
+fn print_note(note: &NoteRecord) {
+    println!("- {}", note.document_path);
+}
+
 fn zero_summary() -> vulcan_core::DoctorSummary {
     vulcan_core::DoctorSummary {
         unresolved_links: 0,
@@ -672,8 +751,22 @@ mod tests {
             "index",
             "--path-prefix",
             "People/",
+            "--has-property",
+            "status",
             "--context-size",
             "24",
+        ])
+        .expect("cli should parse");
+        let notes = Cli::try_parse_from([
+            "vulcan",
+            "notes",
+            "--where",
+            "status = done",
+            "--where",
+            "estimate > 2",
+            "--sort",
+            "due",
+            "--desc",
         ])
         .expect("cli should parse");
         let move_command = Cli::try_parse_from([
@@ -703,7 +796,16 @@ mod tests {
                 query: "dashboard".to_string(),
                 tag: Some("index".to_string()),
                 path_prefix: Some("People/".to_string()),
+                has_property: Some("status".to_string()),
                 context_size: 24,
+            }
+        );
+        assert_eq!(
+            notes.command,
+            Command::Notes {
+                filters: vec!["status = done".to_string(), "estimate > 2".to_string()],
+                sort: Some("due".to_string()),
+                desc: true,
             }
         );
         assert_eq!(

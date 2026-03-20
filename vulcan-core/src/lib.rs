@@ -7,6 +7,7 @@ pub mod init;
 pub mod move_rewrite;
 pub mod parser;
 pub mod paths;
+pub mod properties;
 pub mod resolver;
 pub mod scan;
 pub mod search;
@@ -36,12 +37,17 @@ pub use parser::{
 pub use paths::{
     VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, VULCAN_DIR_NAME,
 };
+pub use properties::{
+    extract_indexed_properties, query_notes, IndexedProperties, IndexedPropertyListItem,
+    IndexedPropertyValue, NoteQuery, NoteRecord, NotesReport, PropertyError,
+    PropertyTypeDiagnostic,
+};
 pub use resolver::{
     resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverLink,
 };
 pub use scan::{detect_document_kind, scan_vault, DocumentKind, ScanError, ScanMode, ScanSummary};
 pub use search::{search_vault, SearchError, SearchHit, SearchQuery, SearchReport};
 
-pub const PARSER_VERSION: u32 = 1;
+pub const PARSER_VERSION: u32 = 2;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;

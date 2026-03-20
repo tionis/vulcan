@@ -6,6 +6,10 @@ pub const TABLES_TO_CLEAR: &[&str] = &[
     "links",
     "aliases",
     "tags",
+    "property_list_items",
+    "property_values",
+    "properties",
+    "property_catalog",
     "search_chunk_content",
     "chunks",
     "diagnostics",
@@ -141,6 +145,61 @@ pub fn apply_schema_v4(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
     )?;
 
     create_search_schema(transaction)
+}
+
+pub fn apply_schema_v5(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS properties (
+            document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+            raw_yaml TEXT NOT NULL,
+            canonical_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS property_values (
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value_text TEXT,
+            value_number REAL,
+            value_bool INTEGER,
+            value_date TEXT,
+            value_type TEXT NOT NULL,
+            PRIMARY KEY (document_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS property_list_items (
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            item_index INTEGER NOT NULL,
+            value_text TEXT NOT NULL,
+            PRIMARY KEY (document_id, key, item_index)
+        );
+
+        CREATE TABLE IF NOT EXISTS property_catalog (
+            key TEXT NOT NULL,
+            observed_type TEXT NOT NULL,
+            usage_count INTEGER NOT NULL,
+            namespace TEXT NOT NULL,
+            PRIMARY KEY (key, observed_type, namespace)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_property_values_key ON property_values(key);
+        CREATE INDEX IF NOT EXISTS idx_property_values_key_text
+            ON property_values(key, value_text);
+        CREATE INDEX IF NOT EXISTS idx_property_values_key_number
+            ON property_values(key, value_number);
+        CREATE INDEX IF NOT EXISTS idx_property_values_key_bool
+            ON property_values(key, value_bool);
+        CREATE INDEX IF NOT EXISTS idx_property_values_key_date
+            ON property_values(key, value_date);
+        CREATE INDEX IF NOT EXISTS idx_property_list_items_key_value
+            ON property_list_items(key, value_text);
+        CREATE INDEX IF NOT EXISTS idx_property_catalog_key
+            ON property_catalog(key);
+        ",
+    )?;
+
+    Ok(())
 }
 
 fn create_search_schema(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
