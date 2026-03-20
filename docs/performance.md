@@ -30,6 +30,25 @@ Benchmark keyword and hybrid search latency:
 ./scripts/benchmark_search.sh ~/path/to/vault dashboard
 ```
 
+Benchmark vector queue, repair, and rebuild maintenance flows:
+
+```bash
+./scripts/benchmark_vectors.sh ~/path/to/vault
+```
+
+To include mutating vector operations in the benchmark run:
+
+```bash
+RUN_MUTATING=1 ./scripts/benchmark_vectors.sh ~/path/to/vault
+```
+
+For model migration benchmarks on a large vault:
+
+1. Run `vectors index` once on the current model so the queue is empty.
+2. Change `[embedding].model`, dimensions, or provider settings in `.vulcan/config.toml`.
+3. Re-run `./scripts/benchmark_vectors.sh ~/path/to/vault` and compare `vectors queue status`, `vectors repair --dry-run`, and `vectors rebuild --dry-run`.
+4. If you want end-to-end migration timings, rerun with `RUN_MUTATING=1`.
+
 ## Profiling
 
 Linux `perf` example:
@@ -44,6 +63,8 @@ The main hot paths to watch are:
 - Markdown parsing and chunk construction
 - Link resolution when the graph changes
 - FTS backfill or repair work after schema changes
+- Embedding request batching and vector row writes during `vectors index`
+- Large vector maintenance passes after provider/model changes
 
 ## Concurrency verification
 

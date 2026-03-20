@@ -435,7 +435,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Background-safe vector indexing queue with explicit operator control
 - [x] Cluster labeling and summaries derived from representative chunks
 - [x] Semantic recommendation surface such as `related <note>`
-- [ ] Benchmarks for large-vault vector maintenance and migration flows
+- [x] Benchmarks for large-vault vector maintenance and migration flows
 
 ### 7.7 Graph analysis and reporting
 - [x] `graph path <from> <to>` shortest-path query
