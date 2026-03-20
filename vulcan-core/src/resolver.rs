@@ -199,11 +199,44 @@ fn normalize_path(path: &str) -> String {
             Component::ParentDir => {
                 parts.pop();
             }
-            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::Normal(part) => parts.push(percent_decode_lossy(&part.to_string_lossy())),
         }
     }
 
     parts.join("/")
+}
+
+fn percent_decode_lossy(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
+                decoded.push((high << 4) | low);
+                index += 3;
+                continue;
+            }
+        }
+
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8(decoded)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn strip_markdown_extension(path: &str) -> String {
@@ -290,6 +323,26 @@ mod tests {
         let result = resolve_link(&documents, &link, LinkResolutionMode::Relative);
 
         assert_eq!(result.resolved_target_id.as_deref(), Some("archive-topic"));
+    }
+
+    #[test]
+    fn percent_encoded_paths_are_decoded_before_resolution() {
+        let documents = vec![ResolverDocument {
+            id: "ssh-ca".to_string(),
+            path: "notes/SSH CA.md".to_string(),
+            filename: "SSH CA".to_string(),
+            aliases: Vec::new(),
+        }];
+        let link = ResolverLink {
+            source_document_id: "source".to_string(),
+            source_path: "notes/index.md".to_string(),
+            target_path_candidate: Some("notes/SSH%20CA.md".to_string()),
+            link_kind: LinkKind::Markdown,
+        };
+
+        let result = resolve_link(&documents, &link, LinkResolutionMode::Absolute);
+
+        assert_eq!(result.resolved_target_id.as_deref(), Some("ssh-ca"));
     }
 
     #[test]

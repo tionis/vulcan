@@ -3,6 +3,7 @@ use crate::config::VaultConfig;
 use crate::parser::block_ref::{detect_block_refs, is_block_id_block};
 use crate::parser::comment_scanner::{overlaps_comment, visible_subranges};
 use crate::parser::link_classifier::{classify_link, explicit_display_text};
+use crate::parser::parse_document_fragment;
 use crate::parser::tag_extractor::extract_inline_tags;
 use crate::parser::types::{
     OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument, RawHeading, SemanticBlock,
@@ -40,6 +41,7 @@ struct SemanticProcessor<'a> {
     current_metadata: Option<MetadataAccumulator>,
     current_links: Vec<LinkAccumulator>,
     semantic_blocks: Vec<SemanticBlock>,
+    saw_body_content: bool,
 }
 
 impl<'a> SemanticProcessor<'a> {
@@ -55,6 +57,7 @@ impl<'a> SemanticProcessor<'a> {
             current_metadata: None,
             current_links: Vec::new(),
             semantic_blocks: Vec::new(),
+            saw_body_content: false,
         }
     }
 
@@ -184,6 +187,9 @@ impl<'a> SemanticProcessor<'a> {
         for visible_range in visible_subranges(range.clone(), self.comment_regions) {
             let visible_text = &self.source[visible_range.clone()];
             let clean_text = strip_highlight_markers(visible_text);
+            if !clean_text.trim().is_empty() {
+                self.saw_body_content = true;
+            }
             self.push_text_to_active(&clean_text);
 
             if let Some(heading) = self.current_heading.as_mut() {
@@ -215,6 +221,9 @@ impl<'a> SemanticProcessor<'a> {
             return;
         }
 
+        if !text.trim().is_empty() {
+            self.saw_body_content = true;
+        }
         self.push_text_to_active(text);
 
         if let Some(heading) = self.current_heading.as_mut() {
@@ -245,6 +254,9 @@ impl<'a> SemanticProcessor<'a> {
             return;
         }
 
+        if !text.trim().is_empty() {
+            self.saw_body_content = true;
+        }
         self.push_text_to_active(text);
         if let Some(heading) = self.current_heading.as_mut() {
             heading.text.push_str(text);
@@ -329,6 +341,18 @@ impl<'a> SemanticProcessor<'a> {
             return;
         };
 
+        let is_leading_frontmatter =
+            !self.saw_body_content && self.parsed.raw_frontmatter.is_none();
+        if !is_leading_frontmatter {
+            let fragment = parse_document_fragment(
+                &metadata.raw_text,
+                self.config,
+                metadata.byte_offset_start.unwrap_or_default(),
+            );
+            self.merge_fragment(fragment);
+            return;
+        }
+
         self.parsed.raw_frontmatter = Some(metadata.raw_text.clone());
         self.parsed.links.extend(extract_metadata_links(
             &metadata.raw_text,
@@ -351,6 +375,16 @@ impl<'a> SemanticProcessor<'a> {
                 });
             }
         }
+    }
+
+    fn merge_fragment(&mut self, parsed: ParsedDocument) {
+        self.parsed.headings.extend(parsed.headings);
+        self.parsed.block_refs.extend(parsed.block_refs);
+        self.parsed.links.extend(parsed.links);
+        self.parsed.tags.extend(parsed.tags);
+        self.parsed.aliases.extend(parsed.aliases);
+        self.parsed.chunk_texts.extend(parsed.chunk_texts);
+        self.parsed.diagnostics.extend(parsed.diagnostics);
     }
 
     fn finish(mut self) -> ParsedDocument {

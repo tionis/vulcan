@@ -80,6 +80,6 @@ pub use vector::{
 };
 pub use watch::{watch_vault, WatchError, WatchOptions, WatchReport};
 
-pub const PARSER_VERSION: u32 = 2;
+pub const PARSER_VERSION: u32 = 3;
 pub const EXTRACTION_VERSION: u32 = 1;
 pub const SCHEMA_VERSION: u32 = 6;
