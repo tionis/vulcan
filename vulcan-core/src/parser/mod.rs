@@ -13,15 +13,66 @@ pub use types::{
 
 use crate::config::VaultConfig;
 use comment_scanner::scan_comment_regions;
-use options::parser_options;
+use options::{fragment_parser_options, parser_options};
 use pulldown_cmark::Parser;
 use semantic_pass::process_events;
 
 #[must_use]
 pub fn parse_document(source: &str, config: &VaultConfig) -> ParsedDocument {
+    parse_document_internal(source, config, true)
+}
+
+#[must_use]
+pub(crate) fn parse_document_fragment(
+    source: &str,
+    config: &VaultConfig,
+    base_offset: usize,
+) -> ParsedDocument {
+    let mut parsed = parse_document_internal(source, config, false);
+    shift_parsed_document_offsets(&mut parsed, base_offset);
+    parsed
+}
+
+fn parse_document_internal(
+    source: &str,
+    config: &VaultConfig,
+    include_metadata_blocks: bool,
+) -> ParsedDocument {
     let comment_regions = scan_comment_regions(source);
-    let parser = Parser::new_ext(source, parser_options()).into_offset_iter();
+    let options = if include_metadata_blocks {
+        parser_options()
+    } else {
+        fragment_parser_options()
+    };
+    let parser = Parser::new_ext(source, options).into_offset_iter();
     process_events(source, config, &comment_regions, parser)
+}
+
+fn shift_parsed_document_offsets(parsed: &mut ParsedDocument, base_offset: usize) {
+    for heading in &mut parsed.headings {
+        heading.byte_offset += base_offset;
+    }
+    for block_ref in &mut parsed.block_refs {
+        block_ref.block_id_byte_offset += base_offset;
+        block_ref.target_block_byte_start += base_offset;
+        block_ref.target_block_byte_end += base_offset;
+    }
+    for link in &mut parsed.links {
+        link.byte_offset += base_offset;
+    }
+    for tag in &mut parsed.tags {
+        tag.byte_offset += base_offset;
+    }
+    for chunk in &mut parsed.chunk_texts {
+        chunk.byte_offset_start += base_offset;
+        chunk.byte_offset_end += base_offset;
+    }
+    for diagnostic in &mut parsed.diagnostics {
+        if let Some(range) = diagnostic.byte_range.as_mut() {
+            range.start += base_offset;
+            range.end += base_offset;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -113,6 +164,48 @@ mod tests {
             parsed.diagnostics[0].kind,
             ParseDiagnosticKind::MalformedFrontmatter
         );
+    }
+
+    #[test]
+    fn non_leading_metadata_block_is_treated_as_body_content() {
+        let source = concat!(
+            "---\n",
+            "title: Session\n",
+            "---\n",
+            "\n",
+            "# User\n",
+            "Before the separator.\n",
+            "\n",
+            "--- \n",
+            "## Model\n",
+            "\n",
+            "[[Inside]]\n",
+        );
+        let parsed = parse_document(source, &VaultConfig::default());
+
+        assert!(parsed.frontmatter.is_some());
+        assert_eq!(parsed.links.len(), 1);
+        assert_eq!(
+            parsed.links[0].target_path_candidate.as_deref(),
+            Some("Inside")
+        );
+        assert!(parsed.headings.iter().any(|heading| heading.text == "User"));
+        assert!(parsed
+            .headings
+            .iter()
+            .any(|heading| heading.text == "Model"));
+        assert!(parsed
+            .chunk_texts
+            .iter()
+            .any(|chunk| chunk.content.contains("Before the separator.")));
+        assert!(parsed
+            .chunk_texts
+            .iter()
+            .any(|chunk| chunk.content.contains("Inside")));
+        assert!(!parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == ParseDiagnosticKind::MalformedFrontmatter));
     }
 
     #[test]
