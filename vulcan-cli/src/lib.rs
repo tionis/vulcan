@@ -13,16 +13,19 @@ use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::Instant;
 use vulcan_core::{
-    cluster_vectors, doctor_vault, evaluate_base_file, index_vectors, initialize_vault, move_note,
-    query_backlinks, query_links, query_notes, query_vector_neighbors, rebuild_vault, repair_fts,
-    scan_vault, search_vault, vector_duplicates, watch_vault, BacklinkRecord, BacklinksReport,
-    BasesEvalReport, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorLinkIssue,
-    DoctorReport, InitSummary, MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, RebuildQuery, RebuildReport, RepairFtsQuery, RepairFtsReport, ScanMode,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexQuery, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport, WatchOptions, WatchReport,
+    cluster_vectors, doctor_vault, evaluate_base_file, index_vectors_with_progress,
+    initialize_vault, move_note, query_backlinks, query_links, query_notes, query_vector_neighbors,
+    rebuild_vault_with_progress, repair_fts, scan_vault_with_progress, search_vault,
+    vector_duplicates, watch_vault, BacklinkRecord, BacklinksReport, BasesEvalReport, ClusterQuery,
+    ClusterReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary, MoveSummary,
+    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, RebuildQuery,
+    RebuildReport, RepairFtsQuery, RepairFtsReport, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
+    WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -59,6 +62,150 @@ impl Display for CliError {
 }
 
 impl std::error::Error for CliError {}
+
+const SCAN_PROGRESS_STEP: usize = 250;
+
+struct ScanProgressReporter {
+    last_phase: Option<ScanPhase>,
+    next_checkpoint: usize,
+}
+
+impl ScanProgressReporter {
+    fn new() -> Self {
+        Self {
+            last_phase: None,
+            next_checkpoint: SCAN_PROGRESS_STEP,
+        }
+    }
+
+    fn record(&mut self, progress: &ScanProgress) {
+        match progress.phase {
+            ScanPhase::ScanningFiles => {
+                if progress.processed == 0 {
+                    eprintln!(
+                        "Discovered {} files; running {} scan...",
+                        progress.discovered,
+                        match progress.mode {
+                            ScanMode::Full => "full",
+                            ScanMode::Incremental => "incremental",
+                        }
+                    );
+                    self.last_phase = Some(progress.phase);
+                    self.next_checkpoint = SCAN_PROGRESS_STEP.min(progress.discovered.max(1));
+                    return;
+                }
+
+                if progress.processed >= self.next_checkpoint
+                    || progress.processed == progress.discovered
+                {
+                    eprintln!(
+                        "Scanned {}/{} files: {} added, {} updated, {} unchanged, {} deleted",
+                        progress.processed,
+                        progress.discovered,
+                        progress.added,
+                        progress.updated,
+                        progress.unchanged,
+                        progress.deleted
+                    );
+                    while self.next_checkpoint <= progress.processed {
+                        self.next_checkpoint += SCAN_PROGRESS_STEP;
+                    }
+                }
+            }
+            ScanPhase::RefreshingPropertyCatalog | ScanPhase::ResolvingLinks => {
+                if self.last_phase != Some(progress.phase) {
+                    eprintln!(
+                        "{}...",
+                        match progress.phase {
+                            ScanPhase::RefreshingPropertyCatalog => "Refreshing property catalog",
+                            ScanPhase::ResolvingLinks => "Resolving links",
+                            ScanPhase::ScanningFiles | ScanPhase::Completed => unreachable!(),
+                        }
+                    );
+                    self.last_phase = Some(progress.phase);
+                }
+            }
+            ScanPhase::Completed => {}
+        }
+    }
+}
+
+struct VectorIndexProgressReporter {
+    started_at: Instant,
+    last_batches_completed: usize,
+    prepared: bool,
+}
+
+impl VectorIndexProgressReporter {
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            last_batches_completed: 0,
+            prepared: false,
+        }
+    }
+
+    fn record(&mut self, progress: &VectorIndexProgress) {
+        match progress.phase {
+            VectorIndexPhase::Preparing => {
+                if self.prepared {
+                    return;
+                }
+                self.prepared = true;
+                if progress.pending == 0 {
+                    eprintln!(
+                        "Vector index is up to date for {}:{} (batch size {}, concurrency {}); {} skipped",
+                        progress.provider_name,
+                        progress.model_name,
+                        progress.batch_size,
+                        progress.max_concurrency,
+                        progress.skipped
+                    );
+                } else {
+                    eprintln!(
+                        "Indexing {} vector chunks with {}:{} (batch size {}, concurrency {}, {} batches)",
+                        progress.pending,
+                        progress.provider_name,
+                        progress.model_name,
+                        progress.batch_size,
+                        progress.max_concurrency,
+                        progress.total_batches
+                    );
+                }
+            }
+            VectorIndexPhase::Embedding => {
+                if progress.batches_completed > self.last_batches_completed {
+                    let remaining = progress.pending.saturating_sub(progress.processed);
+                    eprintln!(
+                        "Completed batch {}/{}: {} indexed, {} failed, {} remaining",
+                        progress.batches_completed,
+                        progress.total_batches.max(1),
+                        progress.indexed,
+                        progress.failed,
+                        remaining
+                    );
+                    self.last_batches_completed = progress.batches_completed;
+                }
+            }
+            VectorIndexPhase::Completed => {
+                if progress.dry_run {
+                    eprintln!(
+                        "Dry run planned {} vector chunks across {} batches",
+                        progress.pending, progress.total_batches
+                    );
+                } else if !self.prepared {
+                    eprintln!(
+                        "Vector index complete in {:.3}s: {} indexed, {} failed, {} skipped",
+                        self.started_at.elapsed().as_secs_f64(),
+                        progress.indexed,
+                        progress.failed,
+                        progress.skipped
+                    );
+                }
+            }
+        }
+    }
+}
 
 pub fn run() -> Result<(), CliError> {
     run_from(std::env::args_os())
@@ -122,8 +269,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Rebuild { dry_run } => {
-            let report =
-                rebuild_vault(&paths, &RebuildQuery { dry_run }).map_err(CliError::operation)?;
+            let mut progress = (cli.output == OutputFormat::Human).then(ScanProgressReporter::new);
+            let report = rebuild_vault_with_progress(&paths, &RebuildQuery { dry_run }, |event| {
+                if let Some(progress) = progress.as_mut() {
+                    progress.record(&event);
+                }
+            })
+            .map_err(CliError::operation)?;
             print_rebuild_report(cli.output, &report)
         }
         Command::Move {
@@ -207,11 +359,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Vectors { ref command } => match command {
             VectorsCommand::Index { dry_run } => {
-                let report = index_vectors(
+                let mut progress =
+                    (cli.output == OutputFormat::Human).then(VectorIndexProgressReporter::new);
+                let report = index_vectors_with_progress(
                     &paths,
                     &VectorIndexQuery {
                         provider: cli.provider.clone(),
                         dry_run: *dry_run,
+                    },
+                    |event| {
+                        if let Some(progress) = progress.as_mut() {
+                            progress.record(&event);
+                        }
                     },
                 )
                 .map_err(CliError::operation)?;
@@ -247,12 +406,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
         },
         Command::Scan { full } => {
-            let summary = scan_vault(
+            let mut progress = (cli.output == OutputFormat::Human).then(ScanProgressReporter::new);
+            let summary = scan_vault_with_progress(
                 &paths,
                 if full {
                     ScanMode::Full
                 } else {
                     ScanMode::Incremental
+                },
+                |event| {
+                    if let Some(progress) = progress.as_mut() {
+                        progress.record(&event);
+                    }
                 },
             )
             .map_err(CliError::operation)?;
@@ -273,7 +438,14 @@ fn print_search_report(
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
-                println!("Search hits for {} ({:?})", report.query, report.mode);
+                println!(
+                    "Search hits for {} ({})",
+                    report.query,
+                    match report.mode {
+                        vulcan_core::search::SearchMode::Keyword => "keyword",
+                        vulcan_core::search::SearchMode::Hybrid => "hybrid",
+                    }
+                );
             }
             if visible_hits.is_empty() {
                 println!("No search hits.");
@@ -285,8 +457,8 @@ fn print_search_report(
                     print_selected_human_fields(&row, fields);
                 }
             } else {
-                for hit in visible_hits {
-                    print_search_hit(hit);
+                for (index, hit) in visible_hits.iter().enumerate() {
+                    print_search_hit(index, hit);
                 }
             }
             Ok(())
@@ -427,7 +599,7 @@ fn print_vector_index_report(
     match output {
         OutputFormat::Human => {
             println!(
-                "{} vectors with {}:{} (dims {}): {} indexed, {} skipped, {} failed in {:.3}s",
+                "{} vectors with {}:{} (dims {}, batch size {}, concurrency {}): {} indexed, {} skipped, {} failed in {:.3}s",
                 if report.dry_run {
                     "Dry run for"
                 } else {
@@ -436,6 +608,8 @@ fn print_vector_index_report(
                 report.provider_name,
                 report.model_name,
                 report.dimensions,
+                report.batch_size,
+                report.max_concurrency,
                 report.indexed,
                 report.skipped,
                 report.failed,
@@ -474,8 +648,8 @@ fn print_vector_neighbors_report(
                     print_selected_human_fields(&row, fields);
                 }
             } else {
-                for hit in visible_hits {
-                    print_vector_neighbor(hit);
+                for (index, hit) in visible_hits.iter().enumerate() {
+                    print_vector_neighbor(index, hit);
                 }
             }
 
@@ -1201,35 +1375,26 @@ fn print_backlink(backlink: &BacklinkRecord) {
     }
 }
 
-fn print_search_hit(hit: &SearchHit) {
-    if hit.heading_path.is_empty() {
-        println!("- {} [{:.3}]: {}", hit.document_path, hit.rank, hit.snippet);
-    } else {
-        println!(
-            "- {} > {} [{:.3}]: {}",
-            hit.document_path,
-            hit.heading_path.join(" > "),
-            hit.rank,
-            hit.snippet
-        );
-    }
+fn print_search_hit(index: usize, hit: &SearchHit) {
+    print_ranked_snippet_hit(
+        index,
+        &hit.document_path,
+        &hit.heading_path,
+        "Rank",
+        hit.rank,
+        &hit.snippet,
+    );
 }
 
-fn print_vector_neighbor(hit: &VectorNeighborHit) {
-    if hit.heading_path.is_empty() {
-        println!(
-            "- {} [{:.3}]: {}",
-            hit.document_path, hit.distance, hit.snippet
-        );
-    } else {
-        println!(
-            "- {} > {} [{:.3}]: {}",
-            hit.document_path,
-            hit.heading_path.join(" > "),
-            hit.distance,
-            hit.snippet
-        );
-    }
+fn print_vector_neighbor(index: usize, hit: &VectorNeighborHit) {
+    print_ranked_snippet_hit(
+        index,
+        &hit.document_path,
+        &hit.heading_path,
+        "Distance",
+        f64::from(hit.distance),
+        &hit.snippet,
+    );
 }
 
 fn print_vector_duplicate(pair: &VectorDuplicatePair) {
@@ -1246,6 +1411,40 @@ fn print_cluster_assignment(assignment: &vulcan_core::ClusterAssignment) {
         assignment.cluster_label,
         assignment.document_path
     );
+}
+
+fn print_ranked_snippet_hit(
+    index: usize,
+    document_path: &str,
+    heading_path: &[String],
+    metric_label: &str,
+    metric_value: f64,
+    snippet: &str,
+) {
+    let location = if heading_path.is_empty() {
+        document_path.to_string()
+    } else {
+        format!("{document_path} > {}", heading_path.join(" > "))
+    };
+
+    println!("{}. {location}", index + 1);
+    println!("   {metric_label}: {metric_value:.3}");
+
+    let lines = snippet
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if let Some((first, rest)) = lines.split_first() {
+        println!("   Snippet: {first}");
+        for line in rest {
+            println!("            {line}");
+        }
+    } else {
+        println!("   Snippet: <empty>");
+    }
+
+    println!();
 }
 
 fn print_note(note: &NoteRecord) {
@@ -1507,10 +1706,24 @@ mod tests {
         let report = describe_cli();
 
         assert_eq!(report.name, "vulcan");
-        assert!(report
+        let rebuild = report
             .commands
             .iter()
-            .any(|command| command.name == "rebuild"));
+            .find(|command| command.name == "rebuild")
+            .expect("rebuild command should be described");
+        assert_eq!(
+            rebuild.about.as_deref(),
+            Some("Rebuild the cache from disk")
+        );
+        let completions = report
+            .commands
+            .iter()
+            .find(|command| command.name == "completions")
+            .expect("completions command should be described");
+        assert_eq!(
+            completions.about.as_deref(),
+            Some("Generate shell completion scripts")
+        );
         assert!(report
             .commands
             .iter()
@@ -1519,9 +1732,5 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "watch"));
-        assert!(report
-            .commands
-            .iter()
-            .any(|command| command.name == "completions"));
     }
 }

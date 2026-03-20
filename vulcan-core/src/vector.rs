@@ -132,6 +132,8 @@ pub struct VectorIndexReport {
     pub provider_name: String,
     pub model_name: String,
     pub dimensions: usize,
+    pub batch_size: usize,
+    pub max_concurrency: usize,
     pub indexed: usize,
     pub skipped: usize,
     pub failed: usize,
@@ -139,6 +141,31 @@ pub struct VectorIndexReport {
     pub rebuilt_index: bool,
     pub elapsed_seconds: f64,
     pub rate_per_second: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorIndexPhase {
+    Preparing,
+    Embedding,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VectorIndexProgress {
+    pub dry_run: bool,
+    pub provider_name: String,
+    pub model_name: String,
+    pub batch_size: usize,
+    pub max_concurrency: usize,
+    pub phase: VectorIndexPhase,
+    pub pending: usize,
+    pub processed: usize,
+    pub indexed: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub batches_completed: usize,
+    pub total_batches: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -234,6 +261,18 @@ pub fn index_vectors(
     paths: &VaultPaths,
     query: &VectorIndexQuery,
 ) -> Result<VectorIndexReport, VectorIndexError> {
+    index_vectors_with_progress(paths, query, |_| {})
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn index_vectors_with_progress<F>(
+    paths: &VaultPaths,
+    query: &VectorIndexQuery,
+    mut on_progress: F,
+) -> Result<VectorIndexReport, VectorIndexError>
+where
+    F: FnMut(VectorIndexProgress),
+{
     let provider = load_embedding_provider(paths, query.provider.as_deref())?;
     let provider_metadata = provider.metadata();
     let started_at = Instant::now();
@@ -242,6 +281,8 @@ pub fn index_vectors(
         provider_name: provider_metadata.provider_name.clone(),
         model_name: provider_metadata.model_name.clone(),
         dimensions: provider_metadata.dimensions,
+        batch_size: provider_metadata.max_batch_size.max(1),
+        max_concurrency: provider_metadata.max_concurrency.max(1),
         indexed: 0,
         skipped: 0,
         failed: 0,
@@ -250,8 +291,11 @@ pub fn index_vectors(
         elapsed_seconds: 0.0,
         rate_per_second: 0.0,
     };
-    let batch_size = provider_metadata.max_batch_size.max(1);
+    let batch_size = report.batch_size;
+    let max_concurrency = report.max_concurrency;
     let mut initialized_skip_count = false;
+    let mut planned_batches = None;
+    let mut pending_total = None;
 
     loop {
         let database = open_existing_cache(paths)?;
@@ -278,14 +322,30 @@ pub fn index_vectors(
                 .count();
             initialized_skip_count = true;
         }
+        let pending_count = chunks
+            .iter()
+            .filter(|chunk| hashes.get(&chunk.chunk_id) != Some(&chunk.content_hash))
+            .count();
 
         if query.dry_run {
-            report.indexed = chunks
-                .iter()
-                .filter(|chunk| hashes.get(&chunk.chunk_id) != Some(&chunk.content_hash))
-                .count();
+            report.indexed = pending_count;
             report.batches = report.indexed.div_ceil(batch_size);
             finalize_index_report(&mut report, started_at);
+            on_progress(VectorIndexProgress {
+                dry_run: report.dry_run,
+                provider_name: report.provider_name.clone(),
+                model_name: report.model_name.clone(),
+                batch_size,
+                max_concurrency,
+                phase: VectorIndexPhase::Completed,
+                pending: report.indexed,
+                processed: 0,
+                indexed: report.indexed,
+                skipped: report.skipped,
+                failed: 0,
+                batches_completed: 0,
+                total_batches: report.batches,
+            });
             return Ok(report);
         }
 
@@ -312,6 +372,25 @@ pub fn index_vectors(
                 .map_err(VectorError::Store)?;
             clear_cluster_rows(connection, None)?;
             continue;
+        }
+        if pending_total.is_none() {
+            pending_total = Some(pending_count);
+            planned_batches = Some(pending_count.div_ceil(batch_size));
+            on_progress(VectorIndexProgress {
+                dry_run: report.dry_run,
+                provider_name: report.provider_name.clone(),
+                model_name: report.model_name.clone(),
+                batch_size,
+                max_concurrency,
+                phase: VectorIndexPhase::Preparing,
+                pending: pending_count,
+                processed: 0,
+                indexed: 0,
+                skipped: report.skipped,
+                failed: 0,
+                batches_completed: 0,
+                total_batches: planned_batches.unwrap_or(0),
+            });
         }
 
         let pending_chunks = chunks
@@ -415,9 +494,40 @@ pub fn index_vectors(
             &provider.metadata().model_name,
             &failures,
         )?;
+
+        on_progress(VectorIndexProgress {
+            dry_run: report.dry_run,
+            provider_name: report.provider_name.clone(),
+            model_name: report.model_name.clone(),
+            batch_size,
+            max_concurrency,
+            phase: VectorIndexPhase::Embedding,
+            pending: pending_total.unwrap_or(report.indexed + report.failed),
+            processed: report.indexed + report.failed,
+            indexed: report.indexed,
+            skipped: report.skipped,
+            failed: report.failed,
+            batches_completed: report.batches,
+            total_batches: planned_batches.unwrap_or(report.batches),
+        });
     }
 
     finalize_index_report(&mut report, started_at);
+    on_progress(VectorIndexProgress {
+        dry_run: report.dry_run,
+        provider_name: report.provider_name.clone(),
+        model_name: report.model_name.clone(),
+        batch_size,
+        max_concurrency,
+        phase: VectorIndexPhase::Completed,
+        pending: pending_total.unwrap_or(0),
+        processed: report.indexed + report.failed,
+        indexed: report.indexed,
+        skipped: report.skipped,
+        failed: report.failed,
+        batches_completed: report.batches,
+        total_batches: planned_batches.unwrap_or(report.batches),
+    });
 
     Ok(report)
 }
@@ -1153,6 +1263,8 @@ mod tests {
 
         assert_eq!(first_report.indexed, 4);
         assert_eq!(first_report.failed, 0);
+        assert_eq!(first_report.batch_size, 8);
+        assert_eq!(first_report.max_concurrency, 1);
         assert_eq!(second_report.indexed, 0);
         assert_eq!(second_report.skipped, 4);
         server.shutdown();
@@ -1299,6 +1411,43 @@ mod tests {
             .current_model()
             .expect("current model should load")
             .is_none());
+        server.shutdown();
+    }
+
+    #[test]
+    fn vector_index_progress_reports_preparation_and_completion() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        let mut events = Vec::new();
+        let report = index_vectors_with_progress(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+            |progress| events.push(progress),
+        )
+        .expect("vector index should succeed");
+
+        assert_eq!(report.batch_size, 8);
+        assert_eq!(report.max_concurrency, 1);
+        assert!(!events.is_empty());
+        assert_eq!(
+            events.first().expect("first event should exist").phase,
+            VectorIndexPhase::Preparing
+        );
+        assert_eq!(events.first().expect("first event should exist").pending, 4);
+        assert_eq!(
+            events.last().expect("last event should exist").phase,
+            VectorIndexPhase::Completed
+        );
+        assert_eq!(events.last().expect("last event should exist").indexed, 4);
         server.shutdown();
     }
 

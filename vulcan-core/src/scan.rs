@@ -41,6 +41,27 @@ pub struct ScanSummary {
     pub deleted: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanPhase {
+    ScanningFiles,
+    RefreshingPropertyCatalog,
+    ResolvingLinks,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScanProgress {
+    pub mode: ScanMode,
+    pub phase: ScanPhase,
+    pub discovered: usize,
+    pub processed: usize,
+    pub added: usize,
+    pub updated: usize,
+    pub unchanged: usize,
+    pub deleted: usize,
+}
+
 #[derive(Debug)]
 pub enum ScanError {
     Cache(CacheError),
@@ -159,14 +180,38 @@ pub fn detect_document_kind(path: &Path) -> DocumentKind {
 }
 
 pub fn scan_vault(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, ScanError> {
+    scan_vault_with_progress(paths, mode, |_| {})
+}
+
+pub fn scan_vault_with_progress<F>(
+    paths: &VaultPaths,
+    mode: ScanMode,
+    mut on_progress: F,
+) -> Result<ScanSummary, ScanError>
+where
+    F: FnMut(ScanProgress),
+{
     let _lock = acquire_write_lock(paths)?;
-    scan_vault_unlocked(paths, mode)
+    scan_vault_unlocked_with_progress(paths, mode, &mut on_progress)
 }
 
 pub(crate) fn scan_vault_unlocked(
     paths: &VaultPaths,
     mode: ScanMode,
 ) -> Result<ScanSummary, ScanError> {
+    let mut noop = |_| {};
+    scan_vault_unlocked_with_progress(paths, mode, &mut noop)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn scan_vault_unlocked_with_progress<F>(
+    paths: &VaultPaths,
+    mode: ScanMode,
+    on_progress: &mut F,
+) -> Result<ScanSummary, ScanError>
+where
+    F: FnMut(ScanProgress),
+{
     let config = load_vault_config(paths).config;
     let discovered = discover_files(paths.vault_root())?;
     let current_paths = discovered
@@ -186,25 +231,91 @@ pub(crate) fn scan_vault_unlocked(
             let discovered_count = discovered.len();
             let deleted_count = deleted_paths.len();
             database.rebuild_with(|transaction| -> Result<ScanSummary, ScanError> {
-                for file in &discovered {
+                emit_scan_progress(
+                    on_progress,
+                    ScanProgress {
+                        mode,
+                        phase: ScanPhase::ScanningFiles,
+                        discovered: discovered_count,
+                        processed: 0,
+                        added: 0,
+                        updated: 0,
+                        unchanged: 0,
+                        deleted: deleted_count,
+                    },
+                );
+                for (index, file) in discovered.iter().enumerate() {
                     let hash = compute_content_hash(&file.absolute_path)?;
                     let id = Ulid::new().to_string();
                     insert_or_update_document(transaction, &id, file, &hash, None)?;
                     if matches!(file.kind, DocumentKind::Note) {
                         index_note_document(transaction, &config, &id, file, &hash)?;
                     }
+                    emit_scan_progress(
+                        on_progress,
+                        ScanProgress {
+                            mode,
+                            phase: ScanPhase::ScanningFiles,
+                            discovered: discovered_count,
+                            processed: index + 1,
+                            added: index + 1,
+                            updated: 0,
+                            unchanged: 0,
+                            deleted: deleted_count,
+                        },
+                    );
                 }
+                emit_scan_progress(
+                    on_progress,
+                    ScanProgress {
+                        mode,
+                        phase: ScanPhase::RefreshingPropertyCatalog,
+                        discovered: discovered_count,
+                        processed: discovered_count,
+                        added: discovered_count,
+                        updated: 0,
+                        unchanged: 0,
+                        deleted: deleted_count,
+                    },
+                );
                 rebuild_property_catalog(transaction, &config.property_types)?;
+                emit_scan_progress(
+                    on_progress,
+                    ScanProgress {
+                        mode,
+                        phase: ScanPhase::ResolvingLinks,
+                        discovered: discovered_count,
+                        processed: discovered_count,
+                        added: discovered_count,
+                        updated: 0,
+                        unchanged: 0,
+                        deleted: deleted_count,
+                    },
+                );
                 resolve_all_links(transaction, config.link_resolution)?;
 
-                Ok(ScanSummary {
+                let summary = ScanSummary {
                     mode,
                     discovered: discovered_count,
                     added: discovered_count,
                     updated: 0,
                     unchanged: 0,
                     deleted: deleted_count,
-                })
+                };
+                emit_scan_progress(
+                    on_progress,
+                    ScanProgress {
+                        mode,
+                        phase: ScanPhase::Completed,
+                        discovered: summary.discovered,
+                        processed: summary.discovered,
+                        added: summary.added,
+                        updated: summary.updated,
+                        unchanged: summary.unchanged,
+                        deleted: summary.deleted,
+                    },
+                );
+                Ok(summary)
             })
         }
         ScanMode::Incremental => {
@@ -216,19 +327,60 @@ pub(crate) fn scan_vault_unlocked(
                     &existing,
                     &deleted_paths,
                     mode,
+                    on_progress,
                 )?;
                 if result.requires_property_catalog_refresh {
+                    emit_scan_progress(
+                        on_progress,
+                        ScanProgress {
+                            mode,
+                            phase: ScanPhase::RefreshingPropertyCatalog,
+                            discovered: result.summary.discovered,
+                            processed: result.summary.discovered,
+                            added: result.summary.added,
+                            updated: result.summary.updated,
+                            unchanged: result.summary.unchanged,
+                            deleted: result.summary.deleted,
+                        },
+                    );
                     rebuild_property_catalog(transaction, &config.property_types)?;
                 }
                 if result.requires_link_resolution {
+                    emit_scan_progress(
+                        on_progress,
+                        ScanProgress {
+                            mode,
+                            phase: ScanPhase::ResolvingLinks,
+                            discovered: result.summary.discovered,
+                            processed: result.summary.discovered,
+                            added: result.summary.added,
+                            updated: result.summary.updated,
+                            unchanged: result.summary.unchanged,
+                            deleted: result.summary.deleted,
+                        },
+                    );
                     resolve_all_links(transaction, config.link_resolution)?;
                 }
+                emit_scan_progress(
+                    on_progress,
+                    ScanProgress {
+                        mode,
+                        phase: ScanPhase::Completed,
+                        discovered: result.summary.discovered,
+                        processed: result.summary.discovered,
+                        added: result.summary.added,
+                        updated: result.summary.updated,
+                        unchanged: result.summary.unchanged,
+                        deleted: result.summary.deleted,
+                    },
+                );
                 Ok(result.summary)
             })
         }
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn apply_incremental_scan(
     transaction: &Transaction<'_>,
     config: &crate::VaultConfig,
@@ -236,6 +388,7 @@ fn apply_incremental_scan(
     existing: &HashMap<String, CachedDocument>,
     deleted_paths: &[String],
     mode: ScanMode,
+    on_progress: &mut impl FnMut(ScanProgress),
 ) -> Result<IncrementalScanResult, ScanError> {
     let mut result = IncrementalScanResult {
         summary: ScanSummary {
@@ -251,9 +404,22 @@ fn apply_incremental_scan(
         requires_link_resolution: false,
         requires_property_catalog_refresh: false,
     };
+    emit_scan_progress(
+        on_progress,
+        ScanProgress {
+            mode,
+            phase: ScanPhase::ScanningFiles,
+            discovered: discovered.len(),
+            processed: 0,
+            added: 0,
+            updated: 0,
+            unchanged: 0,
+            deleted: 0,
+        },
+    );
     let mut seen_paths = HashSet::with_capacity(discovered.len());
 
-    for file in discovered {
+    for (index, file) in discovered.iter().enumerate() {
         seen_paths.insert(file.relative_path.clone());
 
         match existing.get(&file.relative_path) {
@@ -299,6 +465,20 @@ fn apply_incremental_scan(
                 result.summary.added += 1;
             }
         }
+
+        emit_scan_progress(
+            on_progress,
+            ScanProgress {
+                mode,
+                phase: ScanPhase::ScanningFiles,
+                discovered: discovered.len(),
+                processed: index + 1,
+                added: result.summary.added,
+                updated: result.summary.updated,
+                unchanged: result.summary.unchanged,
+                deleted: result.summary.deleted,
+            },
+        );
     }
 
     for path in deleted_paths {
@@ -307,11 +487,28 @@ fn apply_incremental_scan(
             result.requires_link_resolution = true;
             result.requires_property_catalog_refresh = true;
             result.summary.deleted += 1;
+            emit_scan_progress(
+                on_progress,
+                ScanProgress {
+                    mode,
+                    phase: ScanPhase::ScanningFiles,
+                    discovered: discovered.len(),
+                    processed: discovered.len(),
+                    added: result.summary.added,
+                    updated: result.summary.updated,
+                    unchanged: result.summary.unchanged,
+                    deleted: result.summary.deleted,
+                },
+            );
         }
     }
 
     debug_assert_eq!(seen_paths.len(), discovered.len());
     Ok(result)
+}
+
+fn emit_scan_progress(on_progress: &mut impl FnMut(ScanProgress), progress: ScanProgress) {
+    on_progress(progress);
 }
 
 fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
@@ -1317,6 +1514,45 @@ mod tests {
         assert_eq!(count_rows(database.connection(), "chunks"), 4);
         assert_eq!(count_rows(database.connection(), "search_chunk_content"), 4);
         assert_eq!(count_rows(database.connection(), "diagnostics"), 0);
+    }
+
+    #[test]
+    fn scan_progress_reports_scan_and_resolve_phases() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        let mut events = Vec::new();
+
+        let summary = scan_vault_with_progress(&paths, ScanMode::Full, |progress| {
+            events.push(progress);
+        })
+        .expect("scan should succeed");
+
+        assert_eq!(summary.discovered, 3);
+        assert!(!events.is_empty());
+        assert_eq!(
+            events.first().expect("first event should exist").phase,
+            ScanPhase::ScanningFiles
+        );
+        assert_eq!(
+            events
+                .iter()
+                .rfind(|event| event.phase == ScanPhase::ScanningFiles)
+                .expect("scan event should exist")
+                .processed,
+            3
+        );
+        assert!(events
+            .iter()
+            .any(|event| event.phase == ScanPhase::RefreshingPropertyCatalog));
+        assert!(events
+            .iter()
+            .any(|event| event.phase == ScanPhase::ResolvingLinks));
+        assert_eq!(
+            events.last().expect("last event should exist").phase,
+            ScanPhase::Completed
+        );
     }
 
     #[test]

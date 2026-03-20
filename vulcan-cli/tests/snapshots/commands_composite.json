@@ -77,17 +77,17 @@
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
     "commands": [
       {
-        "about": null,
+        "about": "Initialize .vulcan/ state for a vault",
         "name": "init",
         "options": [],
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Rebuild the cache from disk",
         "name": "rebuild",
         "options": [
           {
-            "help": null,
+            "help": "Report rebuild scope without mutating the cache",
             "id": "dry_run",
             "long": "dry-run",
             "possible_values": [
@@ -104,16 +104,16 @@
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Repair derived indexes and cache structures",
         "name": "repair",
         "options": [],
         "subcommands": [
           {
-            "about": null,
+            "about": "Rebuild the full-text search index from cached chunks",
             "name": "fts",
             "options": [
               {
-                "help": null,
+                "help": "Report the repair scope without mutating the cache",
                 "id": "dry_run",
                 "long": "dry-run",
                 "possible_values": [
@@ -132,11 +132,11 @@
         ]
       },
       {
-        "about": null,
+        "about": "Watch the vault for filesystem changes and keep the cache fresh",
         "name": "watch",
         "options": [
           {
-            "help": null,
+            "help": "Event coalescing window in milliseconds",
             "id": "debounce_ms",
             "long": "debounce-ms",
             "possible_values": [],
@@ -150,11 +150,11 @@
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Scan the vault and update the cache",
         "name": "scan",
         "options": [
           {
-            "help": null,
+            "help": "Force a full scan instead of incremental reconciliation",
             "id": "full",
             "long": "full",
             "possible_values": [
@@ -171,11 +171,11 @@
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "List outgoing links for a note",
         "name": "links",
         "options": [
           {
-            "help": null,
+            "help": "Note path, filename, or alias to inspect",
             "id": "note",
             "long": null,
             "possible_values": [],
@@ -189,11 +189,11 @@
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "List inbound links pointing at a note",
         "name": "backlinks",
         "options": [
           {
-            "help": null,
+            "help": "Note path, filename, or alias to inspect",
             "id": "note",
             "long": null,
             "possible_values": [],
@@ -207,11 +207,11 @@
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Search indexed note content",
         "name": "search",
         "options": [
           {
-            "help": null,
+            "help": "Full-text query string",
             "id": "query",
             "long": null,
             "possible_values": [],
@@ -222,7 +222,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Search strategy to use",
             "id": "mode",
             "long": "mode",
             "possible_values": [
@@ -236,7 +236,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Restrict matches to notes carrying the given tag",
             "id": "tag",
             "long": "tag",
             "possible_values": [],
@@ -247,7 +247,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Restrict matches to paths under this prefix",
             "id": "path_prefix",
             "long": "path-prefix",
             "possible_values": [],
@@ -258,7 +258,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Require a property key to be present",
             "id": "has_property",
             "long": "has-property",
             "possible_values": [],
@@ -269,7 +269,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Approximate snippet context size for each search hit",
             "id": "context_size",
             "long": "context-size",
             "possible_values": [],
@@ -283,11 +283,11 @@
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Query notes by typed properties",
         "name": "notes",
         "options": [
           {
-            "help": null,
+            "help": "Filter expression, repeatable",
             "id": "filters",
             "long": "where",
             "possible_values": [],
@@ -298,7 +298,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Property or field to sort by",
             "id": "sort",
             "long": "sort",
             "possible_values": [],
@@ -309,7 +309,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Sort descending instead of ascending",
             "id": "desc",
             "long": "desc",
             "possible_values": [
@@ -326,16 +326,16 @@
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Evaluate read-only Bases views",
         "name": "bases",
         "options": [],
         "subcommands": [
           {
-            "about": null,
+            "about": "Evaluate a .base file against the indexed vault state",
             "name": "eval",
             "options": [
               {
-                "help": null,
+                "help": "Vault-relative path to the .base file to evaluate",
                 "id": "file",
                 "long": null,
                 "possible_values": [],
@@ -351,11 +351,11 @@
         ]
       },
       {
-        "about": null,
+        "about": "Cluster indexed vectors into topical groups",
         "name": "cluster",
         "options": [
           {
-            "help": null,
+            "help": "Requested cluster count",
             "id": "clusters",
             "long": "clusters",
             "possible_values": [],
@@ -366,7 +366,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Report cluster assignments without persisting them",
             "id": "dry_run",
             "long": "dry-run",
             "possible_values": [
@@ -383,16 +383,16 @@
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Run vector indexing and similarity commands",
         "name": "vectors",
         "options": [],
         "subcommands": [
           {
-            "about": null,
+            "about": "Embed pending chunks and update the vector index",
             "name": "index",
             "options": [
               {
-                "help": null,
+                "help": "Report pending vector work without writing embeddings",
                 "id": "dry_run",
                 "long": "dry-run",
                 "possible_values": [
@@ -409,11 +409,11 @@
             "subcommands": []
           },
           {
-            "about": null,
+            "about": "Find nearest indexed chunks for text or a note",
             "name": "neighbors",
             "options": [
               {
-                "help": null,
+                "help": "Ad hoc text query to embed and search",
                 "id": "query",
                 "long": null,
                 "possible_values": [],
@@ -424,7 +424,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Existing note identifier to use as the similarity query",
                 "id": "note",
                 "long": "note",
                 "possible_values": [],
@@ -438,11 +438,11 @@
             "subcommands": []
           },
           {
-            "about": null,
+            "about": "Report highly similar chunk pairs from the vector index",
             "name": "duplicates",
             "options": [
               {
-                "help": null,
+                "help": "Minimum cosine similarity threshold for duplicate candidates",
                 "id": "threshold",
                 "long": "threshold",
                 "possible_values": [],
@@ -458,11 +458,11 @@
         ]
       },
       {
-        "about": null,
+        "about": "Move a note and safely rewrite inbound links",
         "name": "move",
         "options": [
           {
-            "help": null,
+            "help": "Existing source note path",
             "id": "source",
             "long": null,
             "possible_values": [],
@@ -473,7 +473,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Destination note path",
             "id": "dest",
             "long": null,
             "possible_values": [],
@@ -484,7 +484,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Report rewrite changes without moving files",
             "id": "dry_run",
             "long": "dry-run",
             "possible_values": [
@@ -501,23 +501,23 @@
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Inspect the vault for broken or suspicious state",
         "name": "doctor",
         "options": [],
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Describe the CLI schema and command surface",
         "name": "describe",
         "options": [],
         "subcommands": []
       },
       {
-        "about": null,
+        "about": "Generate shell completion scripts",
         "name": "completions",
         "options": [
           {
-            "help": null,
+            "help": "Shell to generate completions for",
             "id": "shell",
             "long": null,
             "possible_values": [
@@ -539,7 +539,7 @@
     ],
     "global_options": [
       {
-        "help": null,
+        "help": "Vault root directory",
         "id": "vault",
         "long": "vault",
         "possible_values": [],
@@ -550,7 +550,7 @@
         ]
       },
       {
-        "help": null,
+        "help": "Output format",
         "id": "output",
         "long": "output",
         "possible_values": [
@@ -564,7 +564,7 @@
         ]
       },
       {
-        "help": null,
+        "help": "Comma-separated field selection for list output",
         "id": "fields",
         "long": "fields",
         "possible_values": [],
@@ -575,7 +575,7 @@
         ]
       },
       {
-        "help": null,
+        "help": "Embedding provider override for vector commands",
         "id": "provider",
         "long": "provider",
         "possible_values": [],
@@ -586,7 +586,7 @@
         ]
       },
       {
-        "help": null,
+        "help": "Maximum number of rows to return",
         "id": "limit",
         "long": "limit",
         "possible_values": [],
@@ -597,7 +597,7 @@
         ]
       },
       {
-        "help": null,
+        "help": "Row offset for pagination",
         "id": "offset",
         "long": "offset",
         "possible_values": [],
@@ -608,7 +608,7 @@
         ]
       },
       {
-        "help": null,
+        "help": "Enable extra diagnostic output",
         "id": "verbose",
         "long": "verbose",
         "possible_values": [
@@ -795,12 +795,14 @@
     }
   ],
   "vectors_index": {
+    "batch_size": 8,
     "batches": 1,
     "dimensions": 2,
     "dry_run": false,
     "elapsed_seconds": 0.0,
     "failed": 0,
     "indexed": 4,
+    "max_concurrency": 1,
     "model_name": "fixture",
     "provider_name": "openai-compatible",
     "rate_per_second": 0.0,

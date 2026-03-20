@@ -32,7 +32,18 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("move"))
             .and(predicate::str::contains("doctor"))
             .and(predicate::str::contains("describe"))
-            .and(predicate::str::contains("completions")),
+            .and(predicate::str::contains("completions"))
+            .and(predicate::str::contains(
+                "Initialize .vulcan/ state for a vault",
+            ))
+            .and(predicate::str::contains("Search indexed note content"))
+            .and(predicate::str::contains(
+                "Generate shell completion scripts",
+            ))
+            .and(predicate::str::contains("Command Groups:"))
+            .and(predicate::str::contains(
+                "Indexing: init, scan, rebuild, repair, watch",
+            )),
     );
 }
 
@@ -526,6 +537,35 @@ fn vectors_index_and_neighbors_json_output_work_end_to_end() {
 }
 
 #[test]
+fn search_human_output_is_multi_line_and_readable() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "search",
+            "dashboard",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("1. Home.md > Home")
+                .and(predicate::str::contains("\n   Rank: "))
+                .and(predicate::str::contains("\n   Snippet: Home"))
+                .and(predicate::str::contains(
+                    "The [dashboard] note uses the tag #index.",
+                )),
+        );
+}
+
+#[test]
 fn search_hybrid_json_output_combines_vector_and_keyword_results() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -643,6 +683,61 @@ fn vectors_duplicates_and_cluster_json_output_work() {
     let cluster_rows = parse_stdout_json_lines(&cluster_assert);
 
     assert_eq!(cluster_rows.len(), 4);
+    server.shutdown();
+}
+
+#[test]
+fn scan_human_output_reports_progress_on_stderr() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "scan",
+            "--full",
+        ])
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("Discovered 3 files; running full scan...")
+                .and(predicate::str::contains("Scanned 3/3 files"))
+                .and(predicate::str::contains("Resolving links...")),
+        );
+}
+
+#[test]
+fn vectors_index_human_output_reports_progress_and_throughput_settings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let server = MockEmbeddingServer::spawn();
+    write_embedding_config(&vault_root, &server.base_url());
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "vectors",
+            "index",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("batch size 8, concurrency 1"))
+        .stderr(
+            predicate::str::contains("Indexing 4 vector chunks with openai-compatible:fixture")
+                .and(predicate::str::contains("Completed batch 1/1")),
+        );
+
     server.shutdown();
 }
 
@@ -821,6 +916,19 @@ fn completions_command_emits_shell_script() {
         .assert()
         .success()
         .stdout(predicate::str::contains("vulcan").and(predicate::str::contains("complete")));
+}
+
+#[test]
+fn fish_completions_command_emits_shell_script() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["completions", "fish"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("complete -c vulcan")
+                .and(predicate::str::contains("Search indexed note content")),
+        );
 }
 
 #[test]

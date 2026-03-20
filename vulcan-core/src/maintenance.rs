@@ -1,5 +1,7 @@
 use crate::cache::rebuild_search_index;
-use crate::scan::{discover_relative_paths, scan_vault_unlocked, ScanMode, ScanSummary};
+use crate::scan::{
+    discover_relative_paths, scan_vault_unlocked_with_progress, ScanMode, ScanProgress, ScanSummary,
+};
 use crate::write_lock::acquire_write_lock;
 use crate::{CacheDatabase, CacheError, SearchError, VaultPaths};
 use serde::Serialize;
@@ -103,6 +105,17 @@ pub fn rebuild_vault(
     paths: &VaultPaths,
     query: &RebuildQuery,
 ) -> Result<RebuildReport, MaintenanceError> {
+    rebuild_vault_with_progress(paths, query, |_| {})
+}
+
+pub fn rebuild_vault_with_progress<F>(
+    paths: &VaultPaths,
+    query: &RebuildQuery,
+    mut on_progress: F,
+) -> Result<RebuildReport, MaintenanceError>
+where
+    F: FnMut(ScanProgress),
+{
     let discovered = discover_relative_paths(paths.vault_root())?.len();
     let existing_documents = existing_document_count(paths)?;
     if query.dry_run {
@@ -115,7 +128,7 @@ pub fn rebuild_vault(
     }
 
     let _lock = acquire_write_lock(paths)?;
-    let summary = scan_vault_unlocked(paths, ScanMode::Full)?;
+    let summary = scan_vault_unlocked_with_progress(paths, ScanMode::Full, &mut on_progress)?;
     Ok(RebuildReport {
         dry_run: false,
         discovered,

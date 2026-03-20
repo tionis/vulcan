@@ -76,6 +76,7 @@ impl OpenAICompatibleProvider {
                 dimensions: 0,
                 normalized: config.normalized,
                 max_batch_size: config.max_batch_size.max(1),
+                max_concurrency: config.max_concurrency.max(1),
                 max_input_tokens: config.max_input_tokens.max(1),
             })),
             max_concurrency: config.max_concurrency.max(1),
