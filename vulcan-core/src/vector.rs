@@ -1885,6 +1885,53 @@ mod tests {
     }
 
     #[test]
+    fn vectors_index_extracted_attachment_chunks() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("attachments", &vault_root);
+        write_attachment_sidecar(
+            &vault_root,
+            "assets/guide.pdf.txt",
+            "dashboard manual reference",
+        );
+        write_attachment_sidecar(&vault_root, "assets/logo.png.txt", "dashboard logo");
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_and_extraction_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        let index_report = index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+            },
+        )
+        .expect("vector index should succeed");
+        let neighbor_report = query_vector_neighbors(
+            &paths,
+            &VectorNeighborsQuery {
+                provider: None,
+                text: Some("dashboard".to_string()),
+                note: None,
+                limit: 8,
+            },
+        )
+        .expect("neighbors query should succeed");
+
+        assert!(index_report.indexed >= 4);
+        assert!(neighbor_report
+            .hits
+            .iter()
+            .any(|hit| hit.document_path == "assets/guide.pdf"));
+        assert!(neighbor_report
+            .hits
+            .iter()
+            .any(|hit| hit.document_path == "assets/logo.png"));
+        server.shutdown();
+    }
+
+    #[test]
     fn vector_duplicates_reports_high_similarity_pairs() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -2272,12 +2319,31 @@ mod tests {
         .expect("config should write");
     }
 
+    fn write_embedding_and_extraction_config(vault_root: &Path, base_url: &str) {
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            format!(
+                "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{base_url}\"\nmodel = \"fixture\"\nmax_batch_size = 8\nmax_concurrency = 1\n\n[extraction]\ncommand = \"sh\"\nargs = [\"-c\", \"cat \\\"$1.txt\\\"\", \"sh\", \"{{path}}\"]\nextensions = [\"pdf\", \"png\"]\nmax_output_bytes = 4096\n"
+            ),
+        )
+        .expect("config should write");
+    }
+
     fn copy_fixture_vault(name: &str, destination: &Path) {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/vaults")
             .join(name);
 
         copy_dir_recursive(&source, destination);
+    }
+
+    fn write_attachment_sidecar(vault_root: &Path, relative_path: &str, contents: &str) {
+        let path = vault_root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("sidecar parent should exist");
+        }
+        fs::write(path, contents).expect("sidecar should write");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {

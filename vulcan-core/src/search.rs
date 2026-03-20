@@ -1053,6 +1053,36 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_extracted_attachment_text() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("attachments", &vault_root);
+        write_attachment_sidecar(
+            &vault_root,
+            "assets/guide.pdf.txt",
+            "dashboard manual reference",
+        );
+        write_attachment_sidecar(&vault_root, "assets/logo.png.txt", "dashboard logo");
+        write_attachment_extraction_config(&vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "manual".to_string(),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        assert!(report
+            .hits
+            .iter()
+            .any(|hit| hit.document_path == "assets/guide.pdf"));
+    }
+
+    #[test]
     fn search_filters_by_property_presence_and_where_clauses() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -1153,6 +1183,23 @@ mod tests {
             .join(name);
 
         copy_dir_recursive(&source, destination);
+    }
+
+    fn write_attachment_extraction_config(vault_root: &Path) {
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[extraction]\ncommand = \"sh\"\nargs = [\"-c\", \"cat \\\"$1.txt\\\"\", \"sh\", \"{path}\"]\nextensions = [\"pdf\", \"png\"]\nmax_output_bytes = 4096\n",
+        )
+        .expect("config should write");
+    }
+
+    fn write_attachment_sidecar(vault_root: &Path, relative_path: &str, contents: &str) {
+        let path = vault_root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("sidecar parent should exist");
+        }
+        fs::write(path, contents).expect("sidecar should write");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {

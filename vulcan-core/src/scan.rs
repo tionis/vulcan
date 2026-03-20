@@ -1,4 +1,5 @@
 use crate::cache::CacheError;
+use crate::extraction::extract_attachment_chunks;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
 use crate::properties::{extract_indexed_properties, rebuild_property_catalog, IndexedProperties};
 use crate::resolver::{resolve_link, LinkResolutionProblem, ResolverDocument, ResolverLink};
@@ -66,6 +67,7 @@ pub struct ScanProgress {
 
 #[derive(Debug)]
 pub enum ScanError {
+    AttachmentExtraction(String),
     Cache(CacheError),
     Checkpoint(String),
     Ignore(ignore::Error),
@@ -79,7 +81,9 @@ impl Display for ScanError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Cache(error) => write!(formatter, "{error}"),
-            Self::Checkpoint(error) => write!(formatter, "{error}"),
+            Self::AttachmentExtraction(error) | Self::Checkpoint(error) => {
+                write!(formatter, "{error}")
+            }
             Self::Ignore(error) => write!(formatter, "{error}"),
             Self::Io(error) => write!(formatter, "{error}"),
             Self::MetadataOverflow { field, path } => {
@@ -97,7 +101,9 @@ impl Error for ScanError {
             Self::Cache(error) => Some(error),
             Self::Ignore(error) => Some(error),
             Self::Io(error) => Some(error),
-            Self::Checkpoint(_) | Self::MetadataOverflow { .. } => None,
+            Self::AttachmentExtraction(_) | Self::Checkpoint(_) | Self::MetadataOverflow { .. } => {
+                None
+            }
             Self::Sqlite(error) => Some(error),
             Self::Time(error) => Some(error),
         }
@@ -107,6 +113,12 @@ impl Error for ScanError {
 impl From<CacheError> for ScanError {
     fn from(error: CacheError) -> Self {
         Self::Cache(error)
+    }
+}
+
+impl From<crate::extraction::AttachmentExtractionError> for ScanError {
+    fn from(error: crate::extraction::AttachmentExtractionError) -> Self {
+        Self::AttachmentExtraction(error.to_string())
     }
 }
 
@@ -179,7 +191,14 @@ struct ChunkReuseKey {
 struct PreparedFullScanDocument {
     file: DiscoveredFile,
     content_hash: Vec<u8>,
-    parsed: Option<ParsedDocument>,
+    derived: PreparedDerivedContent,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum PreparedDerivedContent {
+    None,
+    Note(Box<ParsedDocument>),
+    Attachment(Vec<crate::ChunkText>),
 }
 
 #[must_use]
@@ -460,29 +479,50 @@ fn apply_incremental_scan(
             Some(cached)
                 if cached.file_size == file.file_size
                     && cached.file_mtime == file.file_mtime
-                    && cached.parser_version == PARSER_VERSION =>
+                    && cached.parser_version == document_index_version(file.kind, config) =>
             {
                 result.summary.unchanged += 1;
             }
             Some(cached) => {
+                let current_version = document_index_version(file.kind, config);
                 let hash =
                     if cached.file_size == file.file_size && cached.file_mtime == file.file_mtime {
                         cached.content_hash.clone()
                     } else {
                         compute_content_hash(&file.absolute_path)?
                     };
-                let requires_reindex = matches!(file.kind, DocumentKind::Note)
-                    && (hash != cached.content_hash || cached.parser_version != PARSER_VERSION);
+                let requires_reindex =
+                    hash != cached.content_hash || cached.parser_version != current_version;
 
                 if hash == cached.content_hash && !requires_reindex {
                     update_document_metadata(transaction, &cached.id, file)?;
                     result.summary.unchanged += 1;
                 } else {
-                    insert_or_update_document(transaction, &cached.id, file, &hash, None)?;
-                    if matches!(file.kind, DocumentKind::Note) {
-                        index_note_document(transaction, config, &cached.id, file, &hash)?;
-                        result.requires_link_resolution = true;
-                        result.requires_property_catalog_refresh = true;
+                    match file.kind {
+                        DocumentKind::Note => {
+                            index_note_document(transaction, config, &cached.id, file, &hash)?;
+                            result.requires_link_resolution = true;
+                            result.requires_property_catalog_refresh = true;
+                        }
+                        DocumentKind::Attachment => {
+                            index_attachment_document(
+                                transaction,
+                                config,
+                                &cached.id,
+                                file,
+                                &hash,
+                            )?;
+                        }
+                        DocumentKind::Base => {
+                            insert_or_update_document(
+                                transaction,
+                                &cached.id,
+                                file,
+                                &hash,
+                                None,
+                                current_version,
+                            )?;
+                        }
                     }
                     result.summary.updated += 1;
                 }
@@ -490,9 +530,23 @@ fn apply_incremental_scan(
             None => {
                 let hash = compute_content_hash(&file.absolute_path)?;
                 let id = Ulid::new().to_string();
-                insert_or_update_document(transaction, &id, file, &hash, None)?;
-                if matches!(file.kind, DocumentKind::Note) {
-                    index_note_document(transaction, config, &id, file, &hash)?;
+                match file.kind {
+                    DocumentKind::Note => {
+                        index_note_document(transaction, config, &id, file, &hash)?;
+                    }
+                    DocumentKind::Attachment => {
+                        index_attachment_document(transaction, config, &id, file, &hash)?;
+                    }
+                    DocumentKind::Base => {
+                        insert_or_update_document(
+                            transaction,
+                            &id,
+                            file,
+                            &hash,
+                            None,
+                            document_index_version(file.kind, config),
+                        )?;
+                    }
                 }
                 result.requires_link_resolution = true;
                 result.requires_property_catalog_refresh = matches!(file.kind, DocumentKind::Note);
@@ -655,19 +709,22 @@ fn prepare_full_scan_document(
 ) -> Result<PreparedFullScanDocument, ScanError> {
     let bytes = fs::read(&file.absolute_path)?;
     let content_hash = blake3::hash(&bytes).as_bytes().to_vec();
-    let parsed = if matches!(file.kind, DocumentKind::Note) {
-        Some(parse_document(
-            &decode_note_source(bytes, &file.absolute_path)?,
-            config,
-        ))
-    } else {
-        None
-    };
+    let derived =
+        match file.kind {
+            DocumentKind::Note => PreparedDerivedContent::Note(Box::new(parse_document(
+                &decode_note_source(bytes, &file.absolute_path)?,
+                config,
+            ))),
+            DocumentKind::Attachment => PreparedDerivedContent::Attachment(
+                extract_attachment_chunks(config, &file.absolute_path, &file.relative_path)?,
+            ),
+            DocumentKind::Base => PreparedDerivedContent::None,
+        };
 
     Ok(PreparedFullScanDocument {
         file: file.clone(),
         content_hash,
-        parsed,
+        derived,
     })
 }
 
@@ -719,6 +776,7 @@ fn insert_or_update_document(
     file: &DiscoveredFile,
     content_hash: &[u8],
     raw_frontmatter: Option<&str>,
+    parser_version: u32,
 ) -> Result<(), ScanError> {
     transaction.execute(
         "
@@ -754,7 +812,7 @@ fn insert_or_update_document(
             raw_frontmatter,
             file.file_size,
             file.file_mtime,
-            PARSER_VERSION,
+            parser_version,
             current_timestamp()?,
         ],
     )?;
@@ -777,9 +835,30 @@ fn index_note_document(
         file,
         content_hash,
         parsed.raw_frontmatter.as_deref(),
+        document_index_version(file.kind, config),
     )?;
     replace_derived_rows(transaction, id, config, &parsed)?;
 
+    Ok(())
+}
+
+fn index_attachment_document(
+    transaction: &Transaction<'_>,
+    config: &crate::VaultConfig,
+    id: &str,
+    file: &DiscoveredFile,
+    content_hash: &[u8],
+) -> Result<(), ScanError> {
+    insert_or_update_document(
+        transaction,
+        id,
+        file,
+        content_hash,
+        None,
+        document_index_version(file.kind, config),
+    )?;
+    let chunks = extract_attachment_chunks(config, &file.absolute_path, &file.relative_path)?;
+    replace_attachment_rows(transaction, id, &chunks)?;
     Ok(())
 }
 
@@ -794,13 +873,20 @@ fn apply_prepared_full_scan_document(
         id,
         &prepared.file,
         &prepared.content_hash,
-        prepared
-            .parsed
-            .as_ref()
-            .and_then(|parsed| parsed.raw_frontmatter.as_deref()),
+        match &prepared.derived {
+            PreparedDerivedContent::Note(parsed) => parsed.raw_frontmatter.as_deref(),
+            PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => None,
+        },
+        document_index_version(prepared.file.kind, config),
     )?;
-    if let Some(parsed) = prepared.parsed.as_ref() {
-        replace_derived_rows(transaction, id, config, parsed)?;
+    match &prepared.derived {
+        PreparedDerivedContent::Note(parsed) => {
+            replace_derived_rows(transaction, id, config, parsed)?;
+        }
+        PreparedDerivedContent::Attachment(chunks) => {
+            replace_attachment_rows(transaction, id, chunks)?;
+        }
+        PreparedDerivedContent::None => {}
     }
     Ok(())
 }
@@ -873,6 +959,18 @@ fn replace_derived_rows(
         insert_property_list_items(transaction, document_id, &properties)?;
         insert_property_diagnostics(transaction, document_id, &properties)?;
     }
+    Ok(())
+}
+
+fn replace_attachment_rows(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    chunks: &[crate::ChunkText],
+) -> Result<(), ScanError> {
+    let reusable_chunk_ids = load_reusable_chunk_ids(transaction, document_id)?;
+    clear_derived_rows(transaction, document_id)?;
+    insert_chunks(transaction, document_id, chunks, reusable_chunk_ids)?;
+    replace_chunk_search_rows(transaction, document_id)?;
     Ok(())
 }
 
@@ -1547,10 +1645,37 @@ fn current_timestamp() -> Result<String, ScanError> {
         .to_string())
 }
 
+fn document_index_version(kind: DocumentKind, config: &crate::VaultConfig) -> u32 {
+    match kind {
+        DocumentKind::Attachment => attachment_index_version(config),
+        DocumentKind::Note | DocumentKind::Base => PARSER_VERSION,
+    }
+}
+
+fn attachment_index_version(config: &crate::VaultConfig) -> u32 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&crate::EXTRACTION_VERSION.to_le_bytes());
+    if let Some(extraction) = config.extraction.as_ref() {
+        let serialized =
+            serde_json::to_vec(extraction).expect("attachment extraction config should serialize");
+        hasher.update(&serialized);
+    } else {
+        hasher.update(b"disabled");
+    }
+    let digest = hasher.finalize();
+    u32::from_le_bytes(
+        digest.as_bytes()[..4]
+            .try_into()
+            .expect("digest should contain four bytes"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{load_vault_config, LinkResolutionMode, LinkStylePreference};
+    use crate::config::{
+        load_vault_config, AttachmentExtractionConfig, LinkResolutionMode, LinkStylePreference,
+    };
     use serde_json::{json, Value};
     use tempfile::TempDir;
 
@@ -1586,6 +1711,22 @@ mod tests {
         let hash = compute_content_hash(&file).expect("hash should be computed");
 
         assert_eq!(hash, blake3::hash(b"hello world").as_bytes().to_vec());
+    }
+
+    #[test]
+    fn attachment_index_version_changes_with_extraction_config() {
+        let disabled = attachment_index_version(&crate::VaultConfig::default());
+        let enabled = attachment_index_version(&crate::VaultConfig {
+            extraction: Some(AttachmentExtractionConfig {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), "cat \"$1.txt\"".to_string()],
+                extensions: vec!["pdf".to_string()],
+                max_output_bytes: Some(4096),
+            }),
+            ..crate::VaultConfig::default()
+        });
+
+        assert_ne!(disabled, enabled);
     }
 
     #[test]
@@ -1626,6 +1767,32 @@ mod tests {
         assert_eq!(count_rows(database.connection(), "chunks"), 4);
         assert_eq!(count_rows(database.connection(), "search_chunk_content"), 4);
         assert_eq!(count_rows(database.connection(), "diagnostics"), 0);
+    }
+
+    #[test]
+    fn attachment_extraction_indexes_search_rows_for_supported_assets() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("attachments", &vault_root);
+        write_attachment_sidecar(
+            &vault_root,
+            "assets/guide.pdf.txt",
+            "dashboard manual reference",
+        );
+        write_attachment_sidecar(&vault_root, "assets/logo.png.txt", "dashboard logo");
+        write_attachment_extraction_config(&vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let search_rows = search_content_rows(database.connection());
+
+        assert!(search_rows.iter().any(|(path, content)| {
+            path == "assets/guide.pdf" && content.contains("dashboard manual reference")
+        }));
+        assert!(search_rows
+            .iter()
+            .any(|(path, content)| path == "assets/logo.png" && content.contains("dashboard")));
     }
 
     #[test]
@@ -2307,6 +2474,26 @@ mod tests {
             .collect()
     }
 
+    fn search_content_rows(connection: &Connection) -> Vec<(String, String)> {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT documents.path, search_chunk_content.content
+                FROM search_chunk_content
+                JOIN documents ON documents.id = search_chunk_content.document_id
+                ORDER BY documents.path, search_chunk_content.id
+                ",
+            )
+            .expect("statement should prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query should succeed");
+        rows.map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
     fn heading_signature_rows(connection: &Connection) -> Vec<Value> {
         let mut statement = connection
             .prepare(
@@ -2692,6 +2879,23 @@ mod tests {
             .join(name);
 
         copy_dir_recursive(&source, destination);
+    }
+
+    fn write_attachment_extraction_config(vault_root: &Path) {
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[extraction]\ncommand = \"sh\"\nargs = [\"-c\", \"cat \\\"$1.txt\\\"\", \"sh\", \"{path}\"]\nextensions = [\"pdf\", \"png\"]\nmax_output_bytes = 4096\n",
+        )
+        .expect("config should write");
+    }
+
+    fn write_attachment_sidecar(vault_root: &Path, relative_path: &str, contents: &str) {
+        let path = vault_root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("sidecar parent should exist");
+        }
+        fs::write(path, contents).expect("sidecar should write");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {
