@@ -422,6 +422,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [ ] Export `search`, `notes`, and `bases eval` results as CSV and JSONL
 - [ ] Non-interactive batch mode for scheduled reports and automation
 - [ ] Snapshot tests for saved-query and export output formats
+- [ ] Read-only `bases tui <file.base>` workflow for interactive inspection without sacrificing CLI parity
 
 ### 7.5 Local API and daemon mode
 - [ ] `serve` command exposing cache-backed local APIs (HTTP, JSON-RPC, or MCP)

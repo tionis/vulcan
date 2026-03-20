@@ -359,7 +359,7 @@ impl<'a> SemanticProcessor<'a> {
             metadata.byte_offset_start,
             self.config,
         ));
-        match serde_yaml::from_str(&metadata.raw_text) {
+        match parse_frontmatter_with_recovery(&metadata.raw_text) {
             Ok(frontmatter) => {
                 self.parsed.aliases = extract_aliases(&frontmatter);
                 self.parsed
@@ -466,6 +466,87 @@ fn extract_metadata_links(
     }
 
     parsed.links
+}
+
+fn parse_frontmatter_with_recovery(raw_text: &str) -> Result<serde_yaml::Value, serde_yaml::Error> {
+    match serde_yaml::from_str(raw_text) {
+        Ok(frontmatter) => Ok(frontmatter),
+        Err(error) => {
+            let Some(repaired) = repair_block_scalar_frontmatter(raw_text) else {
+                return Err(error);
+            };
+            serde_yaml::from_str(&repaired).map_err(|_| error)
+        }
+    }
+}
+
+fn repair_block_scalar_frontmatter(raw_text: &str) -> Option<String> {
+    let normalized = normalize_yaml_newlines(raw_text);
+    let mut repaired = Vec::new();
+    let mut changed = normalized != raw_text;
+    let mut block_scalar_indent = None;
+
+    for line in normalized.split('\n') {
+        let indent = count_leading_spaces(line);
+
+        if let Some(required_indent) = block_scalar_indent {
+            if line.trim().is_empty() {
+                repaired.push(line.to_string());
+                continue;
+            }
+
+            if indent < required_indent && !looks_like_yaml_mapping_key(line) {
+                repaired.push(format!(
+                    "{}{}",
+                    " ".repeat(required_indent),
+                    line.trim_start()
+                ));
+                changed = true;
+                continue;
+            }
+
+            if indent < required_indent {
+                block_scalar_indent = None;
+            }
+        }
+
+        repaired.push(line.to_string());
+        block_scalar_indent = block_scalar_content_indent(line).or(block_scalar_indent);
+    }
+
+    changed.then(|| repaired.join("\n"))
+}
+
+fn normalize_yaml_newlines(raw_text: &str) -> String {
+    raw_text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn count_leading_spaces(line: &str) -> usize {
+    line.as_bytes()
+        .iter()
+        .take_while(|byte| **byte == b' ')
+        .count()
+}
+
+fn block_scalar_content_indent(line: &str) -> Option<usize> {
+    let indent = count_leading_spaces(line);
+    let trimmed = line[indent..].trim_end();
+    let (_, value) = trimmed.split_once(':')?;
+    let indicator = value.trim_start();
+    matches!(indicator.chars().next(), Some('|' | '>')).then_some(indent + 2)
+}
+
+fn looks_like_yaml_mapping_key(line: &str) -> bool {
+    let indent = count_leading_spaces(line);
+    let trimmed = line[indent..].trim_end();
+    let Some((key, _)) = trimmed.split_once(':') else {
+        return false;
+    };
+
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 fn complete_raw_link_text(source: &str, start: usize, end: usize) -> String {
