@@ -13,7 +13,7 @@ use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::IsTerminal;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use vulcan_core::{
     cluster_vectors, doctor_vault, evaluate_base_file, index_vectors_with_progress,
     initialize_vault, move_note, query_backlinks, query_links, query_notes, query_vector_neighbors,
@@ -65,14 +65,61 @@ impl std::error::Error for CliError {}
 
 const SCAN_PROGRESS_STEP: usize = 250;
 
+#[derive(Clone, Copy)]
+struct AnsiPalette {
+    enabled: bool,
+}
+
+impl AnsiPalette {
+    fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    fn bold(self, text: &str) -> String {
+        self.wrap("1", text)
+    }
+
+    fn cyan(self, text: &str) -> String {
+        self.wrap("36", text)
+    }
+
+    fn green(self, text: &str) -> String {
+        self.wrap("32", text)
+    }
+
+    fn yellow(self, text: &str) -> String {
+        self.wrap("33", text)
+    }
+
+    fn red(self, text: &str) -> String {
+        self.wrap("31", text)
+    }
+
+    fn dim(self, text: &str) -> String {
+        self.wrap("2", text)
+    }
+
+    fn wrap(self, code: &str, text: &str) -> String {
+        if self.enabled {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+}
+
 struct ScanProgressReporter {
+    palette: AnsiPalette,
+    started_at: Instant,
     last_phase: Option<ScanPhase>,
     next_checkpoint: usize,
 }
 
 impl ScanProgressReporter {
-    fn new() -> Self {
+    fn new(use_color: bool) -> Self {
         Self {
+            palette: AnsiPalette::new(use_color),
+            started_at: Instant::now(),
             last_phase: None,
             next_checkpoint: SCAN_PROGRESS_STEP,
         }
@@ -80,15 +127,30 @@ impl ScanProgressReporter {
 
     fn record(&mut self, progress: &ScanProgress) {
         match progress.phase {
-            ScanPhase::ScanningFiles => {
-                if progress.processed == 0 {
+            ScanPhase::PreparingFiles => {
+                if self.last_phase != Some(progress.phase) {
                     eprintln!(
-                        "Discovered {} files; running {} scan...",
+                        "{} {} files for a {} scan...",
+                        self.palette.cyan("Preparing"),
                         progress.discovered,
                         match progress.mode {
                             ScanMode::Full => "full",
                             ScanMode::Incremental => "incremental",
                         }
+                    );
+                    self.last_phase = Some(progress.phase);
+                }
+            }
+            ScanPhase::ScanningFiles => {
+                if progress.processed == 0 {
+                    eprintln!(
+                        "{} {} files; running {} scan...",
+                        self.palette.cyan("Discovered"),
+                        progress.discovered,
+                        self.palette.bold(match progress.mode {
+                            ScanMode::Full => "full",
+                            ScanMode::Incremental => "incremental",
+                        })
                     );
                     self.last_phase = Some(progress.phase);
                     self.next_checkpoint = SCAN_PROGRESS_STEP.min(progress.discovered.max(1));
@@ -98,14 +160,22 @@ impl ScanProgressReporter {
                 if progress.processed >= self.next_checkpoint
                     || progress.processed == progress.discovered
                 {
+                    let elapsed = self.started_at.elapsed();
+                    let rate =
+                        count_as_f64(progress.processed) / elapsed.as_secs_f64().max(f64::EPSILON);
+                    let remaining = progress.discovered.saturating_sub(progress.processed);
                     eprintln!(
-                        "Scanned {}/{} files: {} added, {} updated, {} unchanged, {} deleted",
-                        progress.processed,
+                        "{} {}/{} files: {} added, {} updated, {} unchanged, {} deleted | {} | {}",
+                        self.palette.cyan("Scanned"),
+                        self.palette.bold(&progress.processed.to_string()),
                         progress.discovered,
-                        progress.added,
-                        progress.updated,
+                        self.palette.green(&progress.added.to_string()),
+                        self.palette.yellow(&progress.updated.to_string()),
                         progress.unchanged,
-                        progress.deleted
+                        self.palette.red(&progress.deleted.to_string()),
+                        self.palette.dim(&format!("{rate:.0} files/s")),
+                        self.palette
+                            .dim(&format!("ETA {}", format_eta(remaining, rate)))
                     );
                     while self.next_checkpoint <= progress.processed {
                         self.next_checkpoint += SCAN_PROGRESS_STEP;
@@ -116,11 +186,13 @@ impl ScanProgressReporter {
                 if self.last_phase != Some(progress.phase) {
                     eprintln!(
                         "{}...",
-                        match progress.phase {
+                        self.palette.cyan(match progress.phase {
                             ScanPhase::RefreshingPropertyCatalog => "Refreshing property catalog",
                             ScanPhase::ResolvingLinks => "Resolving links",
-                            ScanPhase::ScanningFiles | ScanPhase::Completed => unreachable!(),
-                        }
+                            ScanPhase::PreparingFiles
+                            | ScanPhase::ScanningFiles
+                            | ScanPhase::Completed => unreachable!(),
+                        })
                     );
                     self.last_phase = Some(progress.phase);
                 }
@@ -131,14 +203,16 @@ impl ScanProgressReporter {
 }
 
 struct VectorIndexProgressReporter {
+    palette: AnsiPalette,
     started_at: Instant,
     last_batches_completed: usize,
     prepared: bool,
 }
 
 impl VectorIndexProgressReporter {
-    fn new() -> Self {
+    fn new(use_color: bool) -> Self {
         Self {
+            palette: AnsiPalette::new(use_color),
             started_at: Instant::now(),
             last_batches_completed: 0,
             prepared: false,
@@ -154,35 +228,46 @@ impl VectorIndexProgressReporter {
                 self.prepared = true;
                 if progress.pending == 0 {
                     eprintln!(
-                        "Vector index is up to date for {}:{} (batch size {}, concurrency {}); {} skipped",
+                        "{} for {}:{} {}",
+                        self.palette.cyan("Vector index is up to date"),
                         progress.provider_name,
                         progress.model_name,
-                        progress.batch_size,
-                        progress.max_concurrency,
-                        progress.skipped
+                        self.palette.dim(&format!(
+                            "(batch size {}, concurrency {}, {} skipped)",
+                            progress.batch_size, progress.max_concurrency, progress.skipped
+                        ))
                     );
                 } else {
                     eprintln!(
-                        "Indexing {} vector chunks with {}:{} (batch size {}, concurrency {}, {} batches)",
-                        progress.pending,
+                        "{} {} vector chunks with {}:{} {}",
+                        self.palette.cyan("Indexing"),
+                        self.palette.bold(&progress.pending.to_string()),
                         progress.provider_name,
                         progress.model_name,
-                        progress.batch_size,
-                        progress.max_concurrency,
-                        progress.total_batches
+                        self.palette.dim(&format!(
+                            "(batch size {}, concurrency {}, {} batches)",
+                            progress.batch_size, progress.max_concurrency, progress.total_batches
+                        ))
                     );
                 }
             }
             VectorIndexPhase::Embedding => {
                 if progress.batches_completed > self.last_batches_completed {
+                    let elapsed = self.started_at.elapsed();
+                    let rate =
+                        count_as_f64(progress.processed) / elapsed.as_secs_f64().max(f64::EPSILON);
                     let remaining = progress.pending.saturating_sub(progress.processed);
                     eprintln!(
-                        "Completed batch {}/{}: {} indexed, {} failed, {} remaining",
-                        progress.batches_completed,
+                        "{} {}/{}: {} indexed, {} failed, {} remaining | {} | {}",
+                        self.palette.cyan("Completed batch"),
+                        self.palette.bold(&progress.batches_completed.to_string()),
                         progress.total_batches.max(1),
-                        progress.indexed,
-                        progress.failed,
-                        remaining
+                        self.palette.green(&progress.indexed.to_string()),
+                        self.palette.red(&progress.failed.to_string()),
+                        remaining,
+                        self.palette.dim(&format!("{rate:.1} chunks/s")),
+                        self.palette
+                            .dim(&format!("ETA {}", format_eta(remaining, rate)))
                     );
                     self.last_batches_completed = progress.batches_completed;
                 }
@@ -190,21 +275,64 @@ impl VectorIndexProgressReporter {
             VectorIndexPhase::Completed => {
                 if progress.dry_run {
                     eprintln!(
-                        "Dry run planned {} vector chunks across {} batches",
-                        progress.pending, progress.total_batches
+                        "{} {} vector chunks across {} batches",
+                        self.palette.cyan("Dry run planned"),
+                        self.palette.bold(&progress.pending.to_string()),
+                        progress.total_batches
                     );
                 } else if !self.prepared {
                     eprintln!(
-                        "Vector index complete in {:.3}s: {} indexed, {} failed, {} skipped",
-                        self.started_at.elapsed().as_secs_f64(),
-                        progress.indexed,
-                        progress.failed,
-                        progress.skipped
+                        "{} {} indexed, {} failed, {} skipped {}",
+                        self.palette.cyan("Vector index complete"),
+                        self.palette.green(&progress.indexed.to_string()),
+                        self.palette.red(&progress.failed.to_string()),
+                        progress.skipped,
+                        self.palette.dim(&format!(
+                            "in {:.3}s",
+                            self.started_at.elapsed().as_secs_f64()
+                        ))
                     );
                 }
             }
         }
     }
+}
+
+fn color_enabled_for_terminal(is_tty: bool) -> bool {
+    is_tty
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::env::var("TERM").map_or(true, |value| value != "dumb")
+}
+
+fn format_eta(remaining_units: usize, rate_per_second: f64) -> String {
+    if remaining_units == 0 || rate_per_second <= f64::EPSILON {
+        return "0s".to_string();
+    }
+
+    format_duration(Duration::from_secs_f64(
+        count_as_f64(remaining_units) / rate_per_second,
+    ))
+}
+
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs_f64();
+    if seconds < 1.0 {
+        "<1s".to_string()
+    } else if seconds < 60.0 {
+        format!("{seconds:.1}s")
+    } else if seconds < 3_600.0 {
+        let minutes = (seconds / 60.0).floor();
+        let remaining = seconds - (minutes * 60.0);
+        format!("{minutes:.0}m {remaining:.0}s")
+    } else {
+        let hours = (seconds / 3_600.0).floor();
+        let minutes = ((seconds - (hours * 3_600.0)) / 60.0).floor();
+        format!("{hours:.0}h {minutes:.0}m")
+    }
+}
+
+fn count_as_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
 }
 
 pub fn run() -> Result<(), CliError> {
@@ -225,11 +353,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
+    let stderr_is_tty = io::stderr().is_terminal();
+    let use_stdout_color = color_enabled_for_terminal(stdout_is_tty);
+    let use_stderr_color = color_enabled_for_terminal(stderr_is_tty);
 
     match cli.command {
         Command::Backlinks { ref note } => {
             let report = query_backlinks(&paths, note).map_err(CliError::operation)?;
-            print_backlinks_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+            print_backlinks_report(
+                cli.output,
+                &report,
+                &list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+            )?;
             Ok(())
         }
         Command::Completions { shell } => {
@@ -269,14 +406,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Rebuild { dry_run } => {
-            let mut progress = (cli.output == OutputFormat::Human).then(ScanProgressReporter::new);
+            let mut progress = (cli.output == OutputFormat::Human)
+                .then(|| ScanProgressReporter::new(use_stderr_color));
             let report = rebuild_vault_with_progress(&paths, &RebuildQuery { dry_run }, |event| {
                 if let Some(progress) = progress.as_mut() {
                     progress.record(&event);
                 }
             })
             .map_err(CliError::operation)?;
-            print_rebuild_report(cli.output, &report)
+            print_rebuild_report(cli.output, &report, use_stdout_color)
         }
         Command::Move {
             ref source,
@@ -309,7 +447,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Links { ref note } => {
             let report = query_links(&paths, note).map_err(CliError::operation)?;
-            print_links_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+            print_links_report(
+                cli.output,
+                &report,
+                &list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+            )?;
             Ok(())
         }
         Command::Notes {
@@ -326,7 +470,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 },
             )
             .map_err(CliError::operation)?;
-            print_notes_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+            print_notes_report(
+                cli.output,
+                &report,
+                &list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+            )?;
             Ok(())
         }
         Command::Search {
@@ -354,13 +504,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 },
             )
             .map_err(CliError::operation)?;
-            print_search_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+            print_search_report(
+                cli.output,
+                &report,
+                &list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+            )?;
             Ok(())
         }
         Command::Vectors { ref command } => match command {
             VectorsCommand::Index { dry_run } => {
-                let mut progress =
-                    (cli.output == OutputFormat::Human).then(VectorIndexProgressReporter::new);
+                let mut progress = (cli.output == OutputFormat::Human)
+                    .then(|| VectorIndexProgressReporter::new(use_stderr_color));
                 let report = index_vectors_with_progress(
                     &paths,
                     &VectorIndexQuery {
@@ -374,7 +530,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     },
                 )
                 .map_err(CliError::operation)?;
-                print_vector_index_report(cli.output, &report)?;
+                print_vector_index_report(cli.output, &report, use_stdout_color)?;
                 Ok(())
             }
             VectorsCommand::Neighbors { query, note } => {
@@ -388,7 +544,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     },
                 )
                 .map_err(CliError::operation)?;
-                print_vector_neighbors_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+                print_vector_neighbors_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )?;
                 Ok(())
             }
             VectorsCommand::Duplicates { threshold } => {
@@ -401,12 +563,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     },
                 )
                 .map_err(CliError::operation)?;
-                print_vector_duplicates_report(cli.output, &report, &list_controls, stdout_is_tty)?;
+                print_vector_duplicates_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )?;
                 Ok(())
             }
         },
         Command::Scan { full } => {
-            let mut progress = (cli.output == OutputFormat::Human).then(ScanProgressReporter::new);
+            let mut progress = (cli.output == OutputFormat::Human)
+                .then(|| ScanProgressReporter::new(use_stderr_color));
             let summary = scan_vault_with_progress(
                 &paths,
                 if full {
@@ -421,7 +590,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 },
             )
             .map_err(CliError::operation)?;
-            print_scan_summary(cli.output, &summary);
+            print_scan_summary(cli.output, &summary, use_stdout_color);
             Ok(())
         }
     }
@@ -432,19 +601,22 @@ fn print_search_report(
     report: &SearchReport,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     let visible_hits = paginated_items(&report.hits, list_controls);
+    let palette = AnsiPalette::new(use_color);
 
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
                 println!(
-                    "Search hits for {} ({})",
-                    report.query,
-                    match report.mode {
+                    "{} {} {}",
+                    palette.cyan("Search hits for"),
+                    palette.bold(&report.query),
+                    palette.dim(match report.mode {
                         vulcan_core::search::SearchMode::Keyword => "keyword",
                         vulcan_core::search::SearchMode::Hybrid => "hybrid",
-                    }
+                    }),
                 );
             }
             if visible_hits.is_empty() {
@@ -458,7 +630,7 @@ fn print_search_report(
                 }
             } else {
                 for (index, hit) in visible_hits.iter().enumerate() {
-                    print_search_hit(index, hit);
+                    print_search_hit(index, hit, palette);
                 }
             }
             Ok(())
@@ -489,13 +661,15 @@ fn print_notes_report(
     report: &NotesReport,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     let visible_notes = paginated_items(&report.notes, list_controls);
+    let palette = AnsiPalette::new(use_color);
 
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
-                println!("Notes query");
+                println!("{}", palette.cyan("Notes query"));
             }
             if visible_notes.is_empty() {
                 println!("No notes matched.");
@@ -520,22 +694,30 @@ fn print_notes_report(
     }
 }
 
-fn print_rebuild_report(output: OutputFormat, report: &RebuildReport) -> Result<(), CliError> {
+fn print_rebuild_report(
+    output: OutputFormat,
+    report: &RebuildReport,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let palette = AnsiPalette::new(use_color);
     match output {
         OutputFormat::Human => {
             if report.dry_run {
                 println!(
-                    "Dry run: would rebuild {} discovered files with {} cached documents",
-                    report.discovered, report.existing_documents
+                    "{}: would rebuild {} discovered files with {} cached documents",
+                    palette.cyan("Dry run"),
+                    report.discovered,
+                    report.existing_documents
                 );
             } else if let Some(summary) = report.summary.as_ref() {
                 println!(
-                    "Rebuilt cache from {} files: {} added, {} updated, {} unchanged, {} deleted",
+                    "{} from {} files: {} added, {} updated, {} unchanged, {} deleted",
+                    palette.cyan("Rebuilt cache"),
                     summary.discovered,
-                    summary.added,
-                    summary.updated,
+                    palette.green(&summary.added.to_string()),
+                    palette.yellow(&summary.updated.to_string()),
                     summary.unchanged,
-                    summary.deleted
+                    palette.red(&summary.deleted.to_string())
                 );
             }
             Ok(())
@@ -595,25 +777,28 @@ fn print_watch_report(output: OutputFormat, report: &WatchReport) -> Result<(), 
 fn print_vector_index_report(
     output: OutputFormat,
     report: &VectorIndexReport,
+    use_color: bool,
 ) -> Result<(), CliError> {
+    let palette = AnsiPalette::new(use_color);
     match output {
         OutputFormat::Human => {
             println!(
-                "{} vectors with {}:{} (dims {}, batch size {}, concurrency {}): {} indexed, {} skipped, {} failed in {:.3}s",
+                "{} vectors with {}:{} {}: {} indexed, {} skipped, {} failed {}",
                 if report.dry_run {
-                    "Dry run for"
+                    palette.cyan("Dry run for")
                 } else {
-                    "Indexed"
+                    palette.cyan("Indexed")
                 },
                 report.provider_name,
                 report.model_name,
-                report.dimensions,
-                report.batch_size,
-                report.max_concurrency,
-                report.indexed,
+                palette.dim(&format!(
+                    "(dims {}, batch size {}, concurrency {})",
+                    report.dimensions, report.batch_size, report.max_concurrency
+                )),
+                palette.green(&report.indexed.to_string()),
                 report.skipped,
-                report.failed,
-                report.elapsed_seconds
+                palette.red(&report.failed.to_string()),
+                palette.dim(&format!("in {:.3}s", report.elapsed_seconds))
             );
             Ok(())
         }
@@ -626,16 +811,26 @@ fn print_vector_neighbors_report(
     report: &VectorNeighborsReport,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     let visible_hits = paginated_items(&report.hits, list_controls);
+    let palette = AnsiPalette::new(use_color);
 
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
                 if let Some(query_text) = report.query_text.as_deref() {
-                    println!("Vector neighbors for {query_text}");
+                    println!(
+                        "{} {}",
+                        palette.cyan("Vector neighbors for"),
+                        palette.bold(query_text)
+                    );
                 } else if let Some(note_path) = report.note_path.as_deref() {
-                    println!("Vector neighbors for note {note_path}");
+                    println!(
+                        "{} {}",
+                        palette.cyan("Vector neighbors for note"),
+                        palette.bold(note_path)
+                    );
                 }
             }
             if visible_hits.is_empty() {
@@ -649,7 +844,7 @@ fn print_vector_neighbors_report(
                 }
             } else {
                 for (index, hit) in visible_hits.iter().enumerate() {
-                    print_vector_neighbor(index, hit);
+                    print_vector_neighbor(index, hit, palette);
                 }
             }
 
@@ -667,13 +862,15 @@ fn print_vector_duplicates_report(
     report: &VectorDuplicatesReport,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     let visible_pairs = paginated_items(&report.pairs, list_controls);
+    let palette = AnsiPalette::new(use_color);
 
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
-                println!("Vector duplicates");
+                println!("{}", palette.cyan("Vector duplicates"));
             }
             if visible_pairs.is_empty() {
                 println!("No duplicate pairs.");
@@ -788,13 +985,20 @@ fn print_links_report(
     report: &OutgoingLinksReport,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     let visible_links = paginated_items(&report.links, list_controls);
+    let palette = AnsiPalette::new(use_color);
 
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
-                println!("Links for {} ({:?})", report.note_path, report.matched_by);
+                println!(
+                    "{} {} {}",
+                    palette.cyan("Links for"),
+                    palette.bold(&report.note_path),
+                    palette.dim(&format!("({:?})", report.matched_by))
+                );
             }
             if visible_links.is_empty() {
                 println!("No outgoing links.");
@@ -824,15 +1028,19 @@ fn print_backlinks_report(
     report: &BacklinksReport,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     let visible_backlinks = paginated_items(&report.backlinks, list_controls);
+    let palette = AnsiPalette::new(use_color);
 
     match output {
         OutputFormat::Human => {
             if stdout_is_tty {
                 println!(
-                    "Backlinks for {} ({:?})",
-                    report.note_path, report.matched_by
+                    "{} {} {}",
+                    palette.cyan("Backlinks for"),
+                    palette.bold(&report.note_path),
+                    palette.dim(&format!("({:?})", report.matched_by))
                 );
             }
             if visible_backlinks.is_empty() {
@@ -881,16 +1089,18 @@ fn print_init_summary(output: OutputFormat, summary: &InitSummary) -> Result<(),
     }
 }
 
-fn print_scan_summary(output: OutputFormat, summary: &ScanSummary) {
+fn print_scan_summary(output: OutputFormat, summary: &ScanSummary, use_color: bool) {
+    let palette = AnsiPalette::new(use_color);
     match output {
         OutputFormat::Human => {
             println!(
-                "Scanned {} files: {} added, {} updated, {} unchanged, {} deleted",
+                "{} {} files: {} added, {} updated, {} unchanged, {} deleted",
+                palette.cyan("Scanned"),
                 summary.discovered,
-                summary.added,
-                summary.updated,
+                palette.green(&summary.added.to_string()),
+                palette.yellow(&summary.updated.to_string()),
                 summary.unchanged,
-                summary.deleted
+                palette.red(&summary.deleted.to_string())
             );
         }
         OutputFormat::Json => {
@@ -1375,7 +1585,7 @@ fn print_backlink(backlink: &BacklinkRecord) {
     }
 }
 
-fn print_search_hit(index: usize, hit: &SearchHit) {
+fn print_search_hit(index: usize, hit: &SearchHit, palette: AnsiPalette) {
     print_ranked_snippet_hit(
         index,
         &hit.document_path,
@@ -1383,10 +1593,11 @@ fn print_search_hit(index: usize, hit: &SearchHit) {
         "Rank",
         hit.rank,
         &hit.snippet,
+        palette,
     );
 }
 
-fn print_vector_neighbor(index: usize, hit: &VectorNeighborHit) {
+fn print_vector_neighbor(index: usize, hit: &VectorNeighborHit, palette: AnsiPalette) {
     print_ranked_snippet_hit(
         index,
         &hit.document_path,
@@ -1394,6 +1605,7 @@ fn print_vector_neighbor(index: usize, hit: &VectorNeighborHit) {
         "Distance",
         f64::from(hit.distance),
         &hit.snippet,
+        palette,
     );
 }
 
@@ -1420,6 +1632,7 @@ fn print_ranked_snippet_hit(
     metric_label: &str,
     metric_value: f64,
     snippet: &str,
+    palette: AnsiPalette,
 ) {
     let location = if heading_path.is_empty() {
         document_path.to_string()
@@ -1427,8 +1640,8 @@ fn print_ranked_snippet_hit(
         format!("{document_path} > {}", heading_path.join(" > "))
     };
 
-    println!("{}. {location}", index + 1);
-    println!("   {metric_label}: {metric_value:.3}");
+    println!("{}. {}", index + 1, palette.bold(&location));
+    println!("   {}: {metric_value:.3}", palette.cyan(metric_label));
 
     let lines = snippet
         .lines()
@@ -1436,12 +1649,12 @@ fn print_ranked_snippet_hit(
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
     if let Some((first, rest)) = lines.split_first() {
-        println!("   Snippet: {first}");
+        println!("   {}: {first}", palette.cyan("Snippet"));
         for line in rest {
             println!("            {line}");
         }
     } else {
-        println!("   Snippet: <empty>");
+        println!("   {}: <empty>", palette.cyan("Snippet"));
     }
 
     println!();
@@ -1506,6 +1719,14 @@ fn paginated_items<'a, T>(items: &'a [T], controls: &ListOutputControls) -> &'a 
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn formats_eta_compactly_for_progress_reporting() {
+        assert_eq!(format_eta(0, 12.0), "0s");
+        assert_eq!(format_eta(5, 10.0), "<1s");
+        assert_eq!(format_eta(120, 10.0), "12.0s");
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
+    }
 
     #[test]
     fn parses_defaults_for_doctor_command() {

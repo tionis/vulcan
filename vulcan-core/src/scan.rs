@@ -5,6 +5,7 @@ use crate::resolver::{resolve_link, LinkResolutionProblem, ResolverDocument, Res
 use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
 use ignore::WalkBuilder;
+use rayon::prelude::*;
 use rusqlite::{params, Connection, Transaction};
 use serde::Serialize;
 use serde_json::json;
@@ -44,6 +45,7 @@ pub struct ScanSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScanPhase {
+    PreparingFiles,
     ScanningFiles,
     RefreshingPropertyCatalog,
     ResolvingLinks,
@@ -165,6 +167,13 @@ struct ChunkReuseKey {
     chunk_version: u32,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedFullScanDocument {
+    file: DiscoveredFile,
+    content_hash: Vec<u8>,
+    parsed: Option<ParsedDocument>,
+}
+
 #[must_use]
 pub fn detect_document_kind(path: &Path) -> DocumentKind {
     match path
@@ -214,6 +223,19 @@ where
 {
     let config = load_vault_config(paths).config;
     let discovered = discover_files(paths.vault_root())?;
+    emit_scan_progress(
+        on_progress,
+        ScanProgress {
+            mode,
+            phase: ScanPhase::PreparingFiles,
+            discovered: discovered.len(),
+            processed: 0,
+            added: 0,
+            updated: 0,
+            unchanged: 0,
+            deleted: 0,
+        },
+    );
     let current_paths = discovered
         .iter()
         .map(|file| file.relative_path.clone())
@@ -230,6 +252,7 @@ where
         ScanMode::Full => {
             let discovered_count = discovered.len();
             let deleted_count = deleted_paths.len();
+            let prepared = prepare_full_scan_documents(&discovered, &config)?;
             database.rebuild_with(|transaction| -> Result<ScanSummary, ScanError> {
                 emit_scan_progress(
                     on_progress,
@@ -244,13 +267,14 @@ where
                         deleted: deleted_count,
                     },
                 );
-                for (index, file) in discovered.iter().enumerate() {
-                    let hash = compute_content_hash(&file.absolute_path)?;
+                for (index, prepared_document) in prepared.iter().enumerate() {
                     let id = Ulid::new().to_string();
-                    insert_or_update_document(transaction, &id, file, &hash, None)?;
-                    if matches!(file.kind, DocumentKind::Note) {
-                        index_note_document(transaction, &config, &id, file, &hash)?;
-                    }
+                    apply_prepared_full_scan_document(
+                        transaction,
+                        &config,
+                        &id,
+                        prepared_document,
+                    )?;
                     emit_scan_progress(
                         on_progress,
                         ScanProgress {
@@ -590,6 +614,62 @@ fn compute_content_hash(path: &Path) -> Result<Vec<u8>, ScanError> {
     Ok(blake3::hash(&fs::read(path)?).as_bytes().to_vec())
 }
 
+fn prepare_full_scan_documents(
+    discovered: &[DiscoveredFile],
+    config: &crate::VaultConfig,
+) -> Result<Vec<PreparedFullScanDocument>, ScanError> {
+    let batch_size = full_scan_prepare_batch_size();
+    let mut prepared = Vec::with_capacity(discovered.len());
+
+    for batch in discovered.chunks(batch_size) {
+        let mut prepared_batch = batch
+            .par_iter()
+            .map(|file| prepare_full_scan_document(file, config))
+            .collect::<Result<Vec<_>, _>>()?;
+        prepared.append(&mut prepared_batch);
+    }
+
+    Ok(prepared)
+}
+
+fn full_scan_prepare_batch_size() -> usize {
+    let workers = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    workers.saturating_mul(8).max(32)
+}
+
+fn prepare_full_scan_document(
+    file: &DiscoveredFile,
+    config: &crate::VaultConfig,
+) -> Result<PreparedFullScanDocument, ScanError> {
+    let bytes = fs::read(&file.absolute_path)?;
+    let content_hash = blake3::hash(&bytes).as_bytes().to_vec();
+    let parsed = if matches!(file.kind, DocumentKind::Note) {
+        Some(parse_document(
+            &decode_note_source(bytes, &file.absolute_path)?,
+            config,
+        ))
+    } else {
+        None
+    };
+
+    Ok(PreparedFullScanDocument {
+        file: file.clone(),
+        content_hash,
+        parsed,
+    })
+}
+
+fn decode_note_source(bytes: Vec<u8>, path: &Path) -> Result<String, ScanError> {
+    String::from_utf8(bytes).map_err(|error| {
+        ScanError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} is not valid UTF-8: {error}", path.display()),
+        ))
+    })
+}
+
 fn system_time_to_millis(time: SystemTime, path: &Path) -> Result<i64, ScanError> {
     let millis = time.duration_since(UNIX_EPOCH)?.as_millis();
     i64::try_from(millis).map_err(|_| ScanError::MetadataOverflow {
@@ -690,6 +770,28 @@ fn index_note_document(
     )?;
     replace_derived_rows(transaction, id, config, &parsed)?;
 
+    Ok(())
+}
+
+fn apply_prepared_full_scan_document(
+    transaction: &Transaction<'_>,
+    config: &crate::VaultConfig,
+    id: &str,
+    prepared: &PreparedFullScanDocument,
+) -> Result<(), ScanError> {
+    insert_or_update_document(
+        transaction,
+        id,
+        &prepared.file,
+        &prepared.content_hash,
+        prepared
+            .parsed
+            .as_ref()
+            .and_then(|parsed| parsed.raw_frontmatter.as_deref()),
+    )?;
+    if let Some(parsed) = prepared.parsed.as_ref() {
+        replace_derived_rows(transaction, id, config, parsed)?;
+    }
     Ok(())
 }
 
@@ -1533,7 +1635,7 @@ mod tests {
         assert!(!events.is_empty());
         assert_eq!(
             events.first().expect("first event should exist").phase,
-            ScanPhase::ScanningFiles
+            ScanPhase::PreparingFiles
         );
         assert_eq!(
             events
