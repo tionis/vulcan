@@ -599,6 +599,44 @@ fn search_json_output_returns_ranked_hits_and_supports_filters() {
 }
 
 #[test]
+fn search_json_output_supports_explain_fuzzy_and_where_filters() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,effective_query,explain",
+            "search",
+            "releese",
+            "--where",
+            "reviewed = true",
+            "--fuzzy",
+            "--explain",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["document_path"], "Done.md");
+    assert!(rows[0]["effective_query"]
+        .as_str()
+        .expect("effective query should be a string")
+        .contains("release"));
+    assert_eq!(rows[0]["explain"]["strategy"], "keyword");
+}
+
+#[test]
 fn notes_json_output_filters_and_sorts_property_queries() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

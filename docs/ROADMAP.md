@@ -445,10 +445,10 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] `--output json` and integration tests for graph analysis commands
 
 ### 7.8 Search ergonomics
-- [ ] User-friendly phrase/operator query parsing on top of raw FTS syntax
-- [ ] `search --explain` for ranking/debug output
-- [ ] Fuzzy matching / typo tolerance
-- [ ] Richer property predicates and multi-filter composition
+- [x] User-friendly phrase/operator query parsing on top of raw FTS syntax
+- [x] `search --explain` for ranking/debug output
+- [x] Fuzzy matching / typo tolerance
+- [x] Richer property predicates and multi-filter composition
 
 ### 7.9 Link suggestions and bulk rewrites
 - [ ] Unlinked mention detection with candidate target suggestions

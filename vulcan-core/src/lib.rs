@@ -84,7 +84,10 @@ pub use scan::{
     detect_document_kind, scan_vault, scan_vault_with_progress, DocumentKind, ScanError, ScanMode,
     ScanPhase, ScanProgress, ScanSummary,
 };
-pub use search::{search_vault, SearchError, SearchHit, SearchQuery, SearchReport};
+pub use search::{
+    search_vault, SearchError, SearchFuzzyExpansion, SearchHit, SearchHitExplain, SearchPlan,
+    SearchQuery, SearchReport,
+};
 pub use vector::{
     cluster_vectors, index_vectors, index_vectors_with_progress, inspect_vector_queue,
     query_related_notes, query_vector_neighbors, rebuild_vectors, rebuild_vectors_with_progress,

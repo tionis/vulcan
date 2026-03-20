@@ -89,7 +89,13 @@ pub enum SavedReportQuery {
         tag: Option<String>,
         path_prefix: Option<String>,
         has_property: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        filters: Vec<String>,
         context_size: usize,
+        #[serde(default, skip_serializing_if = "is_false")]
+        raw_query: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        fuzzy: bool,
     },
     Notes {
         filters: Vec<String>,
@@ -250,6 +256,11 @@ fn report_name_from_path(path: &Path) -> Option<String> {
         .map(ToString::to_string)
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,7 +285,10 @@ mod tests {
                 tag: Some("index".to_string()),
                 path_prefix: Some("Projects/".to_string()),
                 has_property: Some("status".to_string()),
+                filters: vec!["reviewed = true".to_string()],
                 context_size: 24,
+                raw_query: true,
+                fuzzy: true,
             },
         };
 
