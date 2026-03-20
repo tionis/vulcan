@@ -10,6 +10,7 @@ pub mod move_rewrite;
 pub mod parser;
 pub mod paths;
 pub mod properties;
+pub mod refactor;
 pub mod resolver;
 pub mod scan;
 pub mod search;
@@ -27,8 +28,8 @@ pub use config::{
     LinkResolutionMode, LinkStylePreference, VaultConfig,
 };
 pub use doctor::{
-    doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorLinkIssue,
-    DoctorReport, DoctorSummary,
+    doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
 };
 pub use graph::{
     query_backlinks, query_links, resolve_note_reference, BacklinkRecord, BacklinksReport,
@@ -52,6 +53,10 @@ pub use properties::{
     extract_indexed_properties, query_notes, IndexedProperties, IndexedPropertyListItem,
     IndexedPropertyValue, NoteQuery, NoteRecord, NotesReport, PropertyError,
     PropertyTypeDiagnostic,
+};
+pub use refactor::{
+    merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property, RefactorChange,
+    RefactorError, RefactorFileReport, RefactorReport,
 };
 pub use resolver::{
     resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverLink,

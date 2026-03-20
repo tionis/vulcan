@@ -1,5 +1,6 @@
+use crate::maintenance::{repair_fts, RepairFtsQuery};
 use crate::scan::discover_relative_paths;
-use crate::VaultPaths;
+use crate::{initialize_vault, VaultPaths};
 use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
@@ -9,6 +10,8 @@ use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]
 pub enum DoctorError {
+    Init(crate::InitError),
+    Maintenance(crate::MaintenanceError),
     Scan(crate::ScanError),
     Sqlite(rusqlite::Error),
 }
@@ -16,6 +19,8 @@ pub enum DoctorError {
 impl Display for DoctorError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Init(error) => write!(formatter, "{error}"),
+            Self::Maintenance(error) => write!(formatter, "{error}"),
             Self::Scan(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
         }
@@ -25,9 +30,23 @@ impl Display for DoctorError {
 impl Error for DoctorError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Init(error) => Some(error),
+            Self::Maintenance(error) => Some(error),
             Self::Scan(error) => Some(error),
             Self::Sqlite(error) => Some(error),
         }
+    }
+}
+
+impl From<crate::InitError> for DoctorError {
+    fn from(error: crate::InitError) -> Self {
+        Self::Init(error)
+    }
+}
+
+impl From<crate::MaintenanceError> for DoctorError {
+    fn from(error: crate::MaintenanceError) -> Self {
+        Self::Maintenance(error)
     }
 }
 
@@ -64,6 +83,21 @@ pub struct DoctorSummary {
     pub missing_index_rows: usize,
     pub orphan_notes: usize,
     pub html_links: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DoctorFixReport {
+    pub dry_run: bool,
+    pub issues_before: DoctorSummary,
+    pub issues_after: Option<DoctorSummary>,
+    pub fixes: Vec<DoctorFixAction>,
+    pub suggestions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DoctorFixAction {
+    pub kind: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -131,6 +165,49 @@ pub fn doctor_vault(paths: &VaultPaths) -> Result<DoctorReport, DoctorError> {
     ))
 }
 
+pub fn doctor_fix(paths: &VaultPaths, dry_run: bool) -> Result<DoctorFixReport, DoctorError> {
+    let before = doctor_vault(paths)?;
+    let needs_scaffold = !paths.vulcan_dir().exists()
+        || !paths.config_file().exists()
+        || !paths.cache_db().exists()
+        || !paths.gitignore_file().exists();
+    let needs_scan = needs_scaffold
+        || before.summary.stale_index_rows > 0
+        || before.summary.missing_index_rows > 0;
+    let needs_fts_repair = !needs_scaffold && fts_repair_needed(paths)?;
+    let fixes = planned_fixes(needs_scaffold, needs_scan, needs_fts_repair);
+
+    if dry_run {
+        let issues_before = before.summary.clone();
+        return Ok(DoctorFixReport {
+            dry_run: true,
+            issues_before,
+            issues_after: None,
+            fixes,
+            suggestions: fix_suggestions(&before.summary),
+        });
+    }
+
+    if needs_scaffold {
+        initialize_vault(paths)?;
+    }
+    if needs_scan {
+        crate::scan_vault(paths, crate::ScanMode::Incremental)?;
+    }
+    if needs_fts_repair {
+        repair_fts(paths, &RepairFtsQuery { dry_run: false })?;
+    }
+
+    let after = doctor_vault(paths)?;
+    Ok(DoctorFixReport {
+        dry_run: false,
+        issues_before: before.summary,
+        issues_after: Some(after.summary.clone()),
+        fixes,
+        suggestions: fix_suggestions(&after.summary),
+    })
+}
+
 fn empty_report(on_disk_paths: BTreeSet<String>) -> DoctorReport {
     DoctorReport::new(
         Vec::new(),
@@ -141,6 +218,69 @@ fn empty_report(on_disk_paths: BTreeSet<String>) -> DoctorReport {
         Vec::new(),
         Vec::new(),
     )
+}
+
+fn planned_fixes(
+    needs_scaffold: bool,
+    needs_scan: bool,
+    needs_fts_repair: bool,
+) -> Vec<DoctorFixAction> {
+    let mut fixes = Vec::new();
+    if needs_scaffold {
+        fixes.push(DoctorFixAction {
+            kind: "initialize".to_string(),
+            description: "Create or repair .vulcan scaffolding".to_string(),
+        });
+    }
+    if needs_scan {
+        fixes.push(DoctorFixAction {
+            kind: "scan".to_string(),
+            description: "Refresh the cache from disk".to_string(),
+        });
+    }
+    if needs_fts_repair {
+        fixes.push(DoctorFixAction {
+            kind: "repair_fts".to_string(),
+            description: "Rebuild the full-text search index from cached chunks".to_string(),
+        });
+    }
+    fixes
+}
+
+fn fix_suggestions(summary: &DoctorSummary) -> Vec<String> {
+    let mut suggestions = Vec::new();
+    if summary.unresolved_links > 0 {
+        suggestions.push(
+            "Review unresolved links manually; automatic retargeting is not safe yet.".to_string(),
+        );
+    }
+    if summary.ambiguous_links > 0 {
+        suggestions
+            .push("Disambiguate ambiguous links by using longer or explicit targets.".to_string());
+    }
+    if summary.parse_failures > 0 {
+        suggestions.push(
+            "Fix malformed frontmatter before expecting property queries to be correct."
+                .to_string(),
+        );
+    }
+    if summary.html_links > 0 {
+        suggestions.push("Convert raw HTML links to Markdown or wikilinks if they should participate in the graph.".to_string());
+    }
+    suggestions
+}
+
+fn fts_repair_needed(paths: &VaultPaths) -> Result<bool, DoctorError> {
+    let Some(connection) = open_existing_cache(paths)? else {
+        return Ok(false);
+    };
+    let chunk_rows: i64 =
+        connection.query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))?;
+    let search_rows: i64 =
+        connection.query_row("SELECT COUNT(*) FROM search_chunk_content", [], |row| {
+            row.get(0)
+        })?;
+    Ok(chunk_rows != search_rows)
 }
 
 impl DoctorReport {
@@ -425,7 +565,7 @@ fn detail_byte_range(detail: Option<&Value>) -> Option<DoctorByteRange> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{scan_vault, ScanMode};
+    use crate::{scan_vault, search_vault, ScanMode, SearchQuery};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -583,6 +723,59 @@ mod tests {
         assert_eq!(report.summary.missing_index_rows, 1);
         assert_eq!(report.missing_index_rows, vec!["Home.md".to_string()]);
         assert_eq!(report.summary.stale_index_rows, 0);
+    }
+
+    #[test]
+    fn doctor_fix_dry_run_reports_scaffold_and_scan_without_mutating() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        let report = doctor_fix(&paths, true).expect("doctor fix dry run should succeed");
+
+        assert!(report.dry_run);
+        assert_eq!(report.fixes.len(), 2);
+        assert!(!paths.vulcan_dir().exists());
+    }
+
+    #[test]
+    fn doctor_fix_repairs_missing_cache_rows_and_search_rows() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        fs::write(vault_root.join("New.md"), "# New\n\nFresh note.\n")
+            .expect("new note should write");
+        let connection = Connection::open(paths.cache_db()).expect("db should open");
+        connection
+            .execute("DELETE FROM search_chunk_content", [])
+            .expect("search rows should delete");
+
+        let report = doctor_fix(&paths, false).expect("doctor fix should succeed");
+
+        assert!(!report.dry_run);
+        assert!(report.fixes.iter().any(|fix| fix.kind == "scan"));
+        assert!(search_vault(
+            &paths,
+            &SearchQuery {
+                text: "Fresh".to_string(),
+                ..SearchQuery::default()
+            }
+        )
+        .expect("search should succeed")
+        .hits
+        .iter()
+        .any(|hit| hit.document_path == "New.md"));
+        assert_eq!(
+            report
+                .issues_after
+                .expect("after summary should be present")
+                .missing_index_rows,
+            0
+        );
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {

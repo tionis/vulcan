@@ -503,7 +503,284 @@
       {
         "about": "Inspect the vault for broken or suspicious state",
         "name": "doctor",
-        "options": [],
+        "options": [
+          {
+            "help": "Apply deterministic local repairs",
+            "id": "fix",
+            "long": "fix",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FIX"
+            ]
+          },
+          {
+            "help": "Report planned repairs without mutating the vault or cache",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Rename a frontmatter property key across notes",
+        "name": "rename-property",
+        "options": [
+          {
+            "help": "Existing property key",
+            "id": "old",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "OLD"
+            ]
+          },
+          {
+            "help": "Replacement property key",
+            "id": "new",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NEW"
+            ]
+          },
+          {
+            "help": "Report planned rewrites without modifying files",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Merge one tag into another across frontmatter and note bodies",
+        "name": "merge-tags",
+        "options": [
+          {
+            "help": "Source tag to replace",
+            "id": "source",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "SOURCE"
+            ]
+          },
+          {
+            "help": "Destination tag to write",
+            "id": "dest",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "DEST"
+            ]
+          },
+          {
+            "help": "Report planned rewrites without modifying files",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Rename an alias inside one note's frontmatter",
+        "name": "rename-alias",
+        "options": [
+          {
+            "help": "Note path, filename, or alias to update",
+            "id": "note",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NOTE"
+            ]
+          },
+          {
+            "help": "Existing alias text",
+            "id": "old",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "OLD"
+            ]
+          },
+          {
+            "help": "Replacement alias text",
+            "id": "new",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NEW"
+            ]
+          },
+          {
+            "help": "Report planned rewrites without modifying files",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Rename a heading and rewrite inbound heading links",
+        "name": "rename-heading",
+        "options": [
+          {
+            "help": "Note path, filename, or alias containing the heading",
+            "id": "note",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NOTE"
+            ]
+          },
+          {
+            "help": "Existing heading text",
+            "id": "old",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "OLD"
+            ]
+          },
+          {
+            "help": "Replacement heading text",
+            "id": "new",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NEW"
+            ]
+          },
+          {
+            "help": "Report planned rewrites without modifying files",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Rename a block reference and rewrite inbound block links",
+        "name": "rename-block-ref",
+        "options": [
+          {
+            "help": "Note path, filename, or alias containing the block reference",
+            "id": "note",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NOTE"
+            ]
+          },
+          {
+            "help": "Existing block reference id without the ^ prefix",
+            "id": "old",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "OLD"
+            ]
+          },
+          {
+            "help": "Replacement block reference id without the ^ prefix",
+            "id": "new",
+            "long": null,
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "NEW"
+            ]
+          },
+          {
+            "help": "Report planned rewrites without modifying files",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
         "subcommands": []
       },
       {
