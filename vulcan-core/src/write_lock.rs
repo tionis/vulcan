@@ -1,6 +1,7 @@
+use crate::paths::ensure_vulcan_dir;
 use crate::VaultPaths;
 use fs2::FileExt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 
 #[derive(Debug)]
 pub struct WriteLockGuard {
@@ -8,7 +9,7 @@ pub struct WriteLockGuard {
 }
 
 pub fn acquire_write_lock(paths: &VaultPaths) -> Result<WriteLockGuard, std::io::Error> {
-    fs::create_dir_all(paths.vulcan_dir())?;
+    ensure_vulcan_dir(paths)?;
     let file = OpenOptions::new()
         .create(true)
         .read(true)
