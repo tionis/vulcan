@@ -192,11 +192,11 @@ pub enum Command {
         #[command(subcommand)]
         command: VectorsCommand,
     },
-    #[command(about = "Move a note and safely rewrite inbound links")]
+    #[command(about = "Move a note or attachment and safely rewrite inbound links")]
     Move {
-        #[arg(help = "Existing source note path")]
+        #[arg(help = "Existing source note or attachment path")]
         source: String,
-        #[arg(help = "Destination note path")]
+        #[arg(help = "Destination note or attachment path")]
         dest: String,
         #[arg(long, help = "Report rewrite changes without moving files")]
         dry_run: bool,

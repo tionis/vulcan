@@ -410,12 +410,12 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] `--dry-run` and `--output json` support for planned fixes
 
 ### 7.3 Attachment graph and asset maintenance
-- [ ] Index attachments as first-class assets in the cache
-- [ ] Track note-to-attachment embed references for images, PDFs, audio, and video
-- [ ] `doctor` checks for broken embeds and orphaned assets
-- [ ] Extend move-safe rewrites to attachment renames and moves
+- [x] Index attachments as first-class assets in the cache
+- [x] Track note-to-attachment embed references for images, PDFs, audio, and video
+- [x] `doctor` checks for broken embeds and orphaned assets
+- [x] Extend move-safe rewrites to attachment renames and moves
 - [ ] Optional text extraction / OCR pipeline for PDFs and images to feed search and vectors
-- [ ] Integration tests with attachment-heavy fixture vaults
+- [x] Integration tests with attachment-heavy fixture vaults
 
 ### 7.4 Saved queries and exports
 - [ ] Persist saved query and report definitions in `.vulcan/`

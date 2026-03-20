@@ -128,6 +128,13 @@ struct FileRewritePlan {
     changes: Vec<LinkChange>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MoveSource {
+    id: String,
+    path: String,
+    extension: String,
+}
+
 pub fn move_note(
     paths: &VaultPaths,
     source_identifier: &str,
@@ -135,8 +142,9 @@ pub fn move_note(
     dry_run: bool,
 ) -> Result<MoveSummary, MoveError> {
     let _lock = acquire_write_lock(paths)?;
-    let source = resolve_note_reference(paths, source_identifier)?;
-    let destination_path = normalize_destination_path(destination)?;
+    let connection = open_existing_cache(paths)?;
+    let source = resolve_move_source(paths, &connection, source_identifier)?;
+    let destination_path = normalize_destination_path(destination, &source.extension)?;
     if source.path == destination_path {
         return Ok(MoveSummary {
             dry_run,
@@ -152,10 +160,9 @@ pub fn move_note(
     }
 
     let config = load_vault_config(paths).config;
-    let connection = open_existing_cache(paths)?;
     let inbound_links = load_inbound_links(&connection, &source.id)?;
-    let note_paths = load_note_paths(&connection)?;
-    let note_paths_after_move = note_paths
+    let document_paths = load_document_paths(&connection)?;
+    let document_paths_after_move = document_paths
         .into_iter()
         .map(|path| {
             if path == source.path {
@@ -170,7 +177,7 @@ pub fn move_note(
         &source.path,
         &destination_path,
         &inbound_links,
-        &note_paths_after_move,
+        &document_paths_after_move,
         &config,
         config.link_resolution,
     )?;
@@ -228,15 +235,78 @@ fn open_existing_cache(paths: &VaultPaths) -> Result<Connection, MoveError> {
     Ok(Connection::open(paths.cache_db())?)
 }
 
-fn normalize_destination_path(destination: &str) -> Result<String, MoveError> {
-    normalize_relative_input_path(
+fn resolve_move_source(
+    paths: &VaultPaths,
+    connection: &Connection,
+    source_identifier: &str,
+) -> Result<MoveSource, MoveError> {
+    if let Ok(source_path) = normalize_relative_input_path(
+        source_identifier,
+        RelativePathOptions {
+            expected_extension: None,
+            append_extension_if_missing: false,
+        },
+    ) {
+        let cached = connection.query_row(
+            "
+            SELECT id, path, extension
+            FROM documents
+            WHERE path = ?1
+            ",
+            params![source_path],
+            |row| {
+                Ok(MoveSource {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    extension: row.get(2)?,
+                })
+            },
+        );
+        match cached {
+            Ok(source) => return Ok(source),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(error) => return Err(MoveError::Sqlite(error)),
+        }
+    }
+
+    let resolved = resolve_note_reference(paths, source_identifier)?;
+    Ok(MoveSource {
+        id: resolved.id,
+        path: resolved.path,
+        extension: "md".to_string(),
+    })
+}
+
+fn normalize_destination_path(
+    destination: &str,
+    source_extension: &str,
+) -> Result<String, MoveError> {
+    let mut normalized = normalize_relative_input_path(
         destination,
         RelativePathOptions {
-            expected_extension: Some("md"),
-            append_extension_if_missing: true,
+            expected_extension: None,
+            append_extension_if_missing: false,
         },
     )
-    .map_err(MoveError::InvalidDestination)
+    .map_err(MoveError::InvalidDestination)?;
+
+    if Path::new(&normalized).extension().is_none() && source_extension != "md" {
+        normalized.push('.');
+        normalized.push_str(source_extension);
+    }
+
+    if source_extension == "md" {
+        normalize_relative_input_path(
+            &normalized,
+            RelativePathOptions {
+                expected_extension: Some("md"),
+                append_extension_if_missing: true,
+            },
+        )
+        .map_err(MoveError::InvalidDestination)
+    } else {
+        Ok(normalized)
+    }
 }
 
 fn load_inbound_links(
@@ -263,9 +333,8 @@ fn load_inbound_links(
     rows.collect::<Result<Vec<_>, _>>().map_err(MoveError::from)
 }
 
-fn load_note_paths(connection: &Connection) -> Result<Vec<String>, MoveError> {
-    let mut statement =
-        connection.prepare("SELECT path FROM documents WHERE extension = 'md' ORDER BY path")?;
+fn load_document_paths(connection: &Connection) -> Result<Vec<String>, MoveError> {
+    let mut statement = connection.prepare("SELECT path FROM documents ORDER BY path")?;
     let rows = statement.query_map([], |row| row.get(0))?;
 
     rows.collect::<Result<Vec<_>, _>>().map_err(MoveError::from)
@@ -276,7 +345,7 @@ fn plan_rewrites(
     source_path: &str,
     destination_path: &str,
     inbound_links: &[CachedInboundLink],
-    note_paths_after_move: &[String],
+    document_paths_after_move: &[String],
     config: &crate::VaultConfig,
     resolution_mode: LinkResolutionMode,
 ) -> Result<Vec<FileRewritePlan>, MoveError> {
@@ -316,7 +385,7 @@ fn plan_rewrites(
                 raw_link,
                 &output_path,
                 destination_path,
-                note_paths_after_move,
+                document_paths_after_move,
                 resolution_mode,
                 config.link_style,
             );
@@ -349,29 +418,23 @@ fn rewrite_link(
     link: &RawLink,
     source_path: &str,
     destination_path: &str,
-    note_paths_after_move: &[String],
+    document_paths_after_move: &[String],
     resolution_mode: LinkResolutionMode,
     preferred_style: LinkStylePreference,
 ) -> String {
     let Some(original_target) = link.target_path_candidate.as_deref() else {
         return link.raw_text.clone();
     };
-    let original_has_markdown_extension = Path::new(original_target)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    let target_style = target_path_style(destination_path, original_target);
     let rewritten_target = match resolution_mode {
-        LinkResolutionMode::Absolute => {
-            format_target_path(destination_path, original_has_markdown_extension)
-        }
+        LinkResolutionMode::Absolute => format_target_path(destination_path, target_style),
         LinkResolutionMode::Relative => {
             let relative = relative_path_from_source(source_path, destination_path);
-            format_target_path(&relative, original_has_markdown_extension)
+            format_target_path(&relative, target_style)
         }
-        LinkResolutionMode::Shortest => shortest_unique_path(
-            destination_path,
-            note_paths_after_move,
-            original_has_markdown_extension,
-        ),
+        LinkResolutionMode::Shortest => {
+            shortest_unique_path(destination_path, document_paths_after_move, target_style)
+        }
     };
     let suffix = if let Some(heading) = link.target_heading.as_deref() {
         format!("#{heading}")
@@ -417,11 +480,7 @@ fn rewrite_link(
     match preferred_style {
         LinkStylePreference::Wikilink => format!("[[{target}]]"),
         LinkStylePreference::Markdown => {
-            let markdown_target = if original_has_markdown_extension {
-                target
-            } else {
-                format!("{rewritten_target}.md{suffix}")
-            };
+            let markdown_target = markdown_target_path(&rewritten_target, &suffix, target_style);
             format!(
                 "[{}]({markdown_target})",
                 default_markdown_label(link, original_target)
@@ -439,18 +498,54 @@ fn extract_markdown_label(raw_text: &str) -> String {
         .to_string()
 }
 
-fn format_target_path(path: &str, preserve_extension: bool) -> String {
-    if preserve_extension {
-        if Path::new(path)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-        {
-            path.to_string()
-        } else {
-            format!("{path}.md")
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetPathStyle {
+    NoteWithMarkdownExtension,
+    NoteWithoutExtension,
+    Attachment,
+}
+
+fn target_path_style(destination_path: &str, original_target: &str) -> TargetPathStyle {
+    if !Path::new(destination_path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
+        TargetPathStyle::Attachment
+    } else if Path::new(original_target)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
+        TargetPathStyle::NoteWithMarkdownExtension
     } else {
-        path.strip_suffix(".md").unwrap_or(path).to_string()
+        TargetPathStyle::NoteWithoutExtension
+    }
+}
+
+fn format_target_path(path: &str, style: TargetPathStyle) -> String {
+    match style {
+        TargetPathStyle::Attachment => path.to_string(),
+        TargetPathStyle::NoteWithMarkdownExtension => {
+            if Path::new(path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            {
+                path.to_string()
+            } else {
+                format!("{path}.md")
+            }
+        }
+        TargetPathStyle::NoteWithoutExtension => {
+            path.strip_suffix(".md").unwrap_or(path).to_string()
+        }
+    }
+}
+
+fn markdown_target_path(rewritten_target: &str, suffix: &str, style: TargetPathStyle) -> String {
+    match style {
+        TargetPathStyle::Attachment | TargetPathStyle::NoteWithMarkdownExtension => {
+            format!("{rewritten_target}{suffix}")
+        }
+        TargetPathStyle::NoteWithoutExtension => format!("{rewritten_target}.md{suffix}"),
     }
 }
 
@@ -506,33 +601,39 @@ fn component_to_string(component: Component<'_>) -> Option<String> {
 
 fn shortest_unique_path(
     destination_path: &str,
-    note_paths: &[String],
-    preserve_extension: bool,
+    document_paths: &[String],
+    style: TargetPathStyle,
 ) -> String {
-    let destination = strip_markdown_extension(destination_path);
+    let destination = destination_identity(destination_path, style);
     let destination_parts = destination.split('/').collect::<Vec<_>>();
     for suffix_len in 1..=destination_parts.len() {
         let candidate_parts = &destination_parts[destination_parts.len() - suffix_len..];
-        let matches = note_paths
+        let matches = document_paths
             .iter()
-            .filter(|path| path_suffix_matches(path, candidate_parts))
+            .filter(|path| path_suffix_matches(path, candidate_parts, style))
             .count();
         if matches == 1 {
-            return format_target_path(&candidate_parts.join("/"), preserve_extension);
+            return format_target_path(&candidate_parts.join("/"), style);
         }
     }
 
-    format_target_path(destination_path, preserve_extension)
+    format_target_path(destination_path, style)
+}
+
+fn destination_identity(path: &str, style: TargetPathStyle) -> &str {
+    match style {
+        TargetPathStyle::Attachment | TargetPathStyle::NoteWithMarkdownExtension => path,
+        TargetPathStyle::NoteWithoutExtension => strip_markdown_extension(path),
+    }
 }
 
 fn strip_markdown_extension(path: &str) -> &str {
     path.strip_suffix(".md").unwrap_or(path)
 }
 
-fn path_suffix_matches(path: &str, candidate_parts: &[&str]) -> bool {
-    let path_parts = strip_markdown_extension(path)
-        .split('/')
-        .collect::<Vec<_>>();
+fn path_suffix_matches(path: &str, candidate_parts: &[&str], style: TargetPathStyle) -> bool {
+    let identity = destination_identity(path, style);
+    let path_parts = identity.split('/').collect::<Vec<_>>();
     path_parts.ends_with(candidate_parts)
 }
 
@@ -630,9 +731,40 @@ mod tests {
                     "Archive/Alpha.md".to_string(),
                     "Projects/Beta.md".to_string()
                 ],
-                false,
+                TargetPathStyle::NoteWithoutExtension,
             ),
             "Projects/Alpha"
+        );
+    }
+
+    #[test]
+    fn rewrite_link_preserves_attachment_extensions() {
+        let link = RawLink {
+            raw_text: "![Logo](assets/logo.png)".to_string(),
+            link_kind: crate::LinkKind::Embed,
+            display_text: Some("Logo".to_string()),
+            target_path_candidate: Some("assets/logo.png".to_string()),
+            target_heading: None,
+            target_block: None,
+            origin_context: crate::OriginContext::Body,
+            byte_offset: 0,
+            is_note_embed: false,
+        };
+
+        assert_eq!(
+            rewrite_link(
+                &link,
+                "Notes/Guide.md",
+                "media/logo.png",
+                &[
+                    "Home.md".to_string(),
+                    "Notes/Guide.md".to_string(),
+                    "media/logo.png".to_string()
+                ],
+                LinkResolutionMode::Relative,
+                LinkStylePreference::Markdown,
+            ),
+            "![Logo](../media/logo.png)"
         );
     }
 
@@ -766,6 +898,34 @@ mod tests {
                 .expect("doctor should succeed")
                 .summary
                 .unresolved_links,
+            0
+        );
+    }
+
+    #[test]
+    fn move_rewrite_updates_attachment_embeds() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("attachments", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        move_note(&paths, "assets/logo.png", "media/logo.png", false)
+            .expect("attachment move should succeed");
+
+        assert!(!vault_root.join("assets/logo.png").exists());
+        assert!(vault_root.join("media/logo.png").exists());
+        assert!(fs::read_to_string(vault_root.join("Home.md"))
+            .expect("home should be readable")
+            .contains("![[logo.png]]"));
+        assert!(fs::read_to_string(vault_root.join("Notes/Guide.md"))
+            .expect("guide should be readable")
+            .contains("![Logo](logo.png)"));
+        assert_eq!(
+            doctor_vault(&paths)
+                .expect("doctor should succeed")
+                .summary
+                .broken_embeds,
             0
         );
     }

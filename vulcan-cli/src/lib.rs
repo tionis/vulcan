@@ -1324,6 +1324,7 @@ fn print_doctor_report(
                 "- ambiguous link targets: {}",
                 report.summary.ambiguous_links
             );
+            println!("- broken embeds: {}", report.summary.broken_embeds);
             println!("- parse failures: {}", report.summary.parse_failures);
             println!("- stale index rows: {}", report.summary.stale_index_rows);
             println!(
@@ -1331,6 +1332,7 @@ fn print_doctor_report(
                 report.summary.missing_index_rows
             );
             println!("- orphan notes: {}", report.summary.orphan_notes);
+            println!("- orphan assets: {}", report.summary.orphan_assets);
             println!("- HTML links: {}", report.summary.html_links);
 
             if report.summary == zero_summary() {
@@ -1340,10 +1342,12 @@ fn print_doctor_report(
 
             print_link_section("Unresolved links", &report.unresolved_links);
             print_link_section("Ambiguous link targets", &report.ambiguous_links);
+            print_link_section("Broken embeds", &report.broken_embeds);
             print_diagnostic_section("Parse failures", &report.parse_failures);
             print_path_section("Stale index rows", &report.stale_index_rows);
             print_path_section("Missing index rows", &report.missing_index_rows);
             print_path_section("Orphan notes", &report.orphan_notes);
+            print_path_section("Orphan assets", &report.orphan_assets);
             print_diagnostic_section("HTML links", &report.html_links);
             Ok(())
         }
@@ -2365,10 +2369,12 @@ fn zero_summary() -> vulcan_core::DoctorSummary {
     vulcan_core::DoctorSummary {
         unresolved_links: 0,
         ambiguous_links: 0,
+        broken_embeds: 0,
         parse_failures: 0,
         stale_index_rows: 0,
         missing_index_rows: 0,
         orphan_notes: 0,
+        orphan_assets: 0,
         html_links: 0,
     }
 }
