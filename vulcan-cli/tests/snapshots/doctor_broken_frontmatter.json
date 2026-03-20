@@ -1,7 +1,9 @@
 {
   "ambiguous_links": [],
+  "broken_embeds": [],
   "html_links": [],
   "missing_index_rows": [],
+  "orphan_assets": [],
   "orphan_notes": [],
   "parse_failures": [
     {
@@ -13,8 +15,10 @@
   "stale_index_rows": [],
   "summary": {
     "ambiguous_links": 0,
+    "broken_embeds": 0,
     "html_links": 0,
     "missing_index_rows": 0,
+    "orphan_assets": 0,
     "orphan_notes": 0,
     "parse_failures": 1,
     "stale_index_rows": 0,

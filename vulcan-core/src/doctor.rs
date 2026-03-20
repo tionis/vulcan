@@ -67,10 +67,12 @@ pub struct DoctorReport {
     pub summary: DoctorSummary,
     pub unresolved_links: Vec<DoctorLinkIssue>,
     pub ambiguous_links: Vec<DoctorLinkIssue>,
+    pub broken_embeds: Vec<DoctorLinkIssue>,
     pub parse_failures: Vec<DoctorDiagnosticIssue>,
     pub stale_index_rows: Vec<String>,
     pub missing_index_rows: Vec<String>,
     pub orphan_notes: Vec<String>,
+    pub orphan_assets: Vec<String>,
     pub html_links: Vec<DoctorDiagnosticIssue>,
 }
 
@@ -78,10 +80,12 @@ pub struct DoctorReport {
 pub struct DoctorSummary {
     pub unresolved_links: usize,
     pub ambiguous_links: usize,
+    pub broken_embeds: usize,
     pub parse_failures: usize,
     pub stale_index_rows: usize,
     pub missing_index_rows: usize,
     pub orphan_notes: usize,
+    pub orphan_assets: usize,
     pub html_links: usize,
 }
 
@@ -153,14 +157,19 @@ pub fn doctor_vault(paths: &VaultPaths) -> Result<DoctorReport, DoctorError> {
     let reconciliation = reconcile_paths(&indexed_documents, &on_disk_paths);
     let sections = classify_diagnostics(load_diagnostics(&connection)?, &path_by_id);
     let orphan_notes = load_orphan_notes(&connection, &indexed_documents, &reconciliation.on_disk)?;
+    let broken_embeds = load_broken_embeds(&connection)?;
+    let orphan_assets =
+        load_orphan_assets(&connection, &indexed_documents, &reconciliation.on_disk)?;
 
     Ok(DoctorReport::new(
         sections.unresolved_links,
         sections.ambiguous_links,
+        broken_embeds,
         sections.parse_failures,
         reconciliation.stale_index_rows,
         reconciliation.missing_index_rows,
         orphan_notes,
+        orphan_assets,
         sections.html_links,
     ))
 }
@@ -214,7 +223,9 @@ fn empty_report(on_disk_paths: BTreeSet<String>) -> DoctorReport {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         on_disk_paths.into_iter().collect(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
     )
@@ -254,6 +265,11 @@ fn fix_suggestions(summary: &DoctorSummary) -> Vec<String> {
             "Review unresolved links manually; automatic retargeting is not safe yet.".to_string(),
         );
     }
+    if summary.broken_embeds > 0 {
+        suggestions.push(
+            "Repair broken attachment embeds or restore the missing asset files.".to_string(),
+        );
+    }
     if summary.ambiguous_links > 0 {
         suggestions
             .push("Disambiguate ambiguous links by using longer or explicit targets.".to_string());
@@ -284,31 +300,38 @@ fn fts_repair_needed(paths: &VaultPaths) -> Result<bool, DoctorError> {
 }
 
 impl DoctorReport {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         unresolved_links: Vec<DoctorLinkIssue>,
         ambiguous_links: Vec<DoctorLinkIssue>,
+        broken_embeds: Vec<DoctorLinkIssue>,
         parse_failures: Vec<DoctorDiagnosticIssue>,
         stale_index_rows: Vec<String>,
         missing_index_rows: Vec<String>,
         orphan_notes: Vec<String>,
+        orphan_assets: Vec<String>,
         html_links: Vec<DoctorDiagnosticIssue>,
     ) -> Self {
         Self {
             summary: DoctorSummary {
                 unresolved_links: unresolved_links.len(),
                 ambiguous_links: ambiguous_links.len(),
+                broken_embeds: broken_embeds.len(),
                 parse_failures: parse_failures.len(),
                 stale_index_rows: stale_index_rows.len(),
                 missing_index_rows: missing_index_rows.len(),
                 orphan_notes: orphan_notes.len(),
+                orphan_assets: orphan_assets.len(),
                 html_links: html_links.len(),
             },
             unresolved_links,
             ambiguous_links,
+            broken_embeds,
             parse_failures,
             stale_index_rows,
             missing_index_rows,
             orphan_notes,
+            orphan_assets,
             html_links,
         }
     }
@@ -423,6 +446,93 @@ fn load_orphan_notes(
         .collect::<Vec<_>>();
     orphan_notes.sort();
     Ok(orphan_notes)
+}
+
+fn load_broken_embeds(connection: &Connection) -> Result<Vec<DoctorLinkIssue>, DoctorError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT source.path, links.target_path_candidate
+        FROM links
+        JOIN documents AS source ON source.id = links.source_document_id
+        WHERE links.link_kind = 'embed'
+          AND links.resolved_target_id IS NULL
+          AND links.target_path_candidate IS NOT NULL
+        ORDER BY source.path, links.byte_offset
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(DoctorLinkIssue {
+            document_path: Some(row.get(0)?),
+            message: format!("Broken embed target: {}", row.get::<_, String>(1)?),
+            target: row.get(1)?,
+            matches: Vec::new(),
+        })
+    })?;
+
+    let issues = rows
+        .filter_map(Result::ok)
+        .filter(|issue| {
+            issue
+                .target
+                .as_deref()
+                .is_some_and(is_attachment_target_candidate)
+        })
+        .collect::<Vec<_>>();
+    Ok(issues)
+}
+
+fn load_orphan_assets(
+    connection: &Connection,
+    indexed_documents: &[IndexedDocument],
+    paths_on_disk: &HashSet<String>,
+) -> Result<Vec<String>, DoctorError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT DISTINCT resolved_target_id
+        FROM links
+        WHERE link_kind = 'embed'
+          AND resolved_target_id IS NOT NULL
+        ",
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let referenced_asset_ids = rows.collect::<Result<HashSet<_>, _>>()?;
+
+    let mut orphan_assets = indexed_documents
+        .iter()
+        .filter(|document| document.extension != "md" && document.extension != "base")
+        .filter(|document| paths_on_disk.contains(&document.path))
+        .filter(|document| !referenced_asset_ids.contains(&document.id))
+        .map(|document| document.path.clone())
+        .collect::<Vec<_>>();
+    orphan_assets.sort();
+    Ok(orphan_assets)
+}
+
+fn is_attachment_target_candidate(target: &str) -> bool {
+    target
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|extension| {
+            matches!(
+                extension.as_str(),
+                "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "webp"
+                    | "svg"
+                    | "pdf"
+                    | "mp3"
+                    | "wav"
+                    | "ogg"
+                    | "m4a"
+                    | "mp4"
+                    | "mov"
+                    | "avi"
+                    | "mkv"
+            )
+        })
 }
 
 struct DiagnosticSections {
@@ -585,10 +695,12 @@ mod tests {
             DoctorSummary {
                 unresolved_links: 0,
                 ambiguous_links: 0,
+                broken_embeds: 0,
                 parse_failures: 0,
                 stale_index_rows: 0,
                 missing_index_rows: 0,
                 orphan_notes: 0,
+                orphan_assets: 0,
                 html_links: 0,
             }
         );
@@ -596,7 +708,7 @@ mod tests {
 
     #[test]
     fn doctor_reports_zero_issues_on_clean_fixtures() {
-        for fixture in ["basic", "move-rewrite"] {
+        for fixture in ["basic", "move-rewrite", "attachments"] {
             let temp_dir = TempDir::new().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
             copy_fixture_vault(fixture, &vault_root);
@@ -610,10 +722,12 @@ mod tests {
                 DoctorSummary {
                     unresolved_links: 0,
                     ambiguous_links: 0,
+                    broken_embeds: 0,
                     parse_failures: 0,
                     stale_index_rows: 0,
                     missing_index_rows: 0,
                     orphan_notes: 0,
+                    orphan_assets: 0,
                     html_links: 0,
                 },
                 "fixture {fixture} should be doctor-clean"
@@ -708,6 +822,36 @@ mod tests {
         assert_eq!(rescanned_report.missing_index_rows, Vec::<String>::new());
         assert_eq!(rescanned_report.orphan_notes, vec!["Beta.md".to_string()]);
         assert!(rescanned_report.html_links.is_empty());
+    }
+
+    #[test]
+    fn doctor_reports_broken_embeds_and_orphan_assets() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("attachments", &vault_root);
+        fs::write(
+            vault_root.join("Broken.md"),
+            "# Broken\n\n![[assets/missing.png]]\n",
+        )
+        .expect("broken note should be written");
+        fs::write(vault_root.join("assets/orphan.jpg"), "orphan asset")
+            .expect("orphan asset should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = doctor_vault(&paths).expect("doctor should succeed");
+
+        assert_eq!(report.summary.broken_embeds, 1);
+        assert_eq!(report.summary.orphan_assets, 1);
+        assert_eq!(
+            report.broken_embeds[0].document_path.as_deref(),
+            Some("Broken.md")
+        );
+        assert_eq!(
+            report.broken_embeds[0].target.as_deref(),
+            Some("assets/missing.png")
+        );
+        assert_eq!(report.orphan_assets, vec!["assets/orphan.jpg".to_string()]);
     }
 
     #[test]

@@ -551,11 +551,11 @@
         ]
       },
       {
-        "about": "Move a note and safely rewrite inbound links",
+        "about": "Move a note or attachment and safely rewrite inbound links",
         "name": "move",
         "options": [
           {
-            "help": "Existing source note path",
+            "help": "Existing source note or attachment path",
             "id": "source",
             "long": null,
             "possible_values": [],
@@ -566,7 +566,7 @@
             ]
           },
           {
-            "help": "Destination note path",
+            "help": "Destination note or attachment path",
             "id": "dest",
             "long": null,
             "possible_values": [],
@@ -1037,8 +1037,10 @@
   },
   "doctor": {
     "ambiguous_links": [],
+    "broken_embeds": [],
     "html_links": [],
     "missing_index_rows": [],
+    "orphan_assets": [],
     "orphan_notes": [],
     "parse_failures": [
       {
@@ -1050,8 +1052,10 @@
     "stale_index_rows": [],
     "summary": {
       "ambiguous_links": 0,
+      "broken_embeds": 0,
       "html_links": 0,
       "missing_index_rows": 0,
+      "orphan_assets": 0,
       "orphan_notes": 0,
       "parse_failures": 1,
       "stale_index_rows": 0,

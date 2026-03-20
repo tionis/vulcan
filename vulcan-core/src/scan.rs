@@ -2073,13 +2073,14 @@ mod tests {
         }
     }
 
-    fn fixture_names() -> [&'static str; 6] {
+    fn fixture_names() -> [&'static str; 7] {
         [
             "basic",
             "ambiguous-links",
             "mixed-properties",
             "broken-frontmatter",
             "move-rewrite",
+            "attachments",
             "bases",
         ]
     }
