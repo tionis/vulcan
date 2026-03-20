@@ -173,20 +173,78 @@ This is necessary because safe rewrites during file moves depend on resolved tar
 
 ### Markdown parsing and live patching strategy
 
-For the Rust implementation, prefer `pulldown-cmark` as the canonical parser for indexing and rewrite operations, with `Options::ENABLE_WIKILINKS` and `Options::ENABLE_GFM` enabled where appropriate. Current `pulldown-cmark` explicitly supports Obsidian-style wikilinks, supports GFM blockquote tags such as `[!NOTE]`, and exposes `into_offset_iter()` so the parser can return source byte ranges together with events.[13]
+For the Rust implementation, prefer `pulldown-cmark` as the canonical parser for indexing and rewrite operations. Current `pulldown-cmark` (0.13.1) explicitly supports Obsidian-style wikilinks, supports GFM blockquote tags such as `[!NOTE]`, and exposes `into_offset_iter()` so the parser can return source byte ranges together with events.[13]
 
 Those source ranges are the key reason to prefer it as the core parser for a CLI that needs safe rewrites. The rewrite engine should operate on semantic token spans rather than regex replacement or full document re-rendering.
 
-Recommended approach:
+Enable the following `pulldown-cmark` options:
 
-- Parse Markdown into events plus source ranges.
-- Run a small Obsidian-specific semantic pass over the parse output to classify callouts, embeds, block references, and any other OFM constructs that matter to indexing or rewriting.
+- `ENABLE_WIKILINKS` — wikilinks (`[[target]]`, `[[target|display]]`)
+- `ENABLE_GFM` — tables, strikethrough, task lists
+- `ENABLE_MATH` — inline (`$...$`) and display (`$$...$$`) math, preventing misparsing of `$` as regular text
+- `ENABLE_FOOTNOTES` — footnotes can contain links that must be tracked in the graph
+- `ENABLE_YAML_STYLE_METADATA_BLOCKS` — emits a `MetadataBlock` event for frontmatter, avoiding the need to pre-strip `---` delimiters before parsing
+
+pulldown-cmark emits wikilinks as `Tag::Link` or `Tag::Image` events with `LinkType::WikiLink { has_pothole: bool }`, where `has_pothole` indicates whether pipe syntax was used. Heading subpaths (`#heading`), block references (`#^block-id`), and note-vs-image embed classification are not handled natively and must be addressed by a supplementary Obsidian semantic pass. See `docs/investigations/pulldown_cmark_wikilinks.md` for the full gap analysis.
+
+### Parser pipeline architecture
+
+The parser pipeline uses a two-stage design that preserves byte-accurate offsets for link rewriting while producing clean text for FTS indexing. The core tension is that rewriting needs offsets into the *original* source, while indexing needs text with comments stripped and markers removed. Pre-processing the source before parsing would invalidate offsets; tracking comment state through the event stream is fragile. The solution is a pre-scan.
+
+#### Stage 0: Comment region pre-scan
+
+Before invoking pulldown-cmark, scan the raw source bytes for `%%` pairs (Obsidian comment delimiters) and record their byte ranges as comment regions in a sorted `Vec<Range<usize>>`. This is a simple linear scan — `%%` is an unambiguous delimiter. Checking whether a byte offset falls inside a comment is then a binary search.
+
+#### Stage 1: pulldown-cmark event stream
+
+Parse the unmodified source with all options enabled and `into_offset_iter()` for byte ranges. Because the source is unmodified, all offsets are valid for rewriting.
+
+#### Stage 2: Single-pass semantic processor
+
+Walk the event stream once, maintaining a small state machine. For each event, the processor does three things simultaneously:
+
+**a) Extract graph entities (using original byte offsets):**
+
+- **Links:** For every `WikiLink` event, split `dest_url` on `#` to extract `(target_path, subpath)`. If the subpath starts with `^`, classify as block reference; otherwise heading reference. For `Tag::Image` with `WikiLink` link type, distinguish note embeds from image embeds by checking file extension. Classify `obsidian://` URIs as external links.
+- **Block refs:** Track the preceding block-level element. When a standalone paragraph matches `^[a-zA-Z0-9-]+`, record the block ID and associate it with the preceding block's byte range. (Obsidian places block IDs as bare paragraphs *after* the block they label.)
+- **Headings:** Record level, text, byte offset.
+- **Tags:** Match `#[a-zA-Z0-9/_-]+` in `Text` events to support nested tag hierarchies (`#tag/subtag`).
+- **HTML link detection:** Flag `<a href` and `<img src` patterns in `Html`/`InlineHtml` events for `doctor` diagnostic reporting.
+
+**b) Build clean chunk text (with comments and markers stripped):**
+
+- If the current event's byte range overlaps a comment region from Stage 0, suppress the text content. This prevents private `%%comment%%` content from leaking into chunks, FTS, and embeddings.
+- Strip `==` highlight markers from text content (keep the highlighted text itself).
+- Accumulate text into chunk buffers, splitting at heading boundaries per the chunking strategy.
+
+**c) Extract frontmatter:**
+
+- On `MetadataBlock` event, capture raw YAML text. Parse with `serde_yaml` for the canonical layer. Preserve the raw text for lossless roundtrip.
+
+The public API is a single function returning a `ParsedDocument` struct that contains frontmatter, headings, block refs, links, tags, aliases, chunk texts, and diagnostics. The indexer never touches pulldown-cmark directly.
+
+```
+vulcan-core/src/parser/
+    mod.rs              -- public parse_document() entry point
+    options.rs          -- pulldown-cmark option configuration
+    comment_scanner.rs  -- Stage 0: find %% comment regions
+    semantic_pass.rs    -- Stage 2: event stream processor
+    link_classifier.rs  -- dest_url splitting, subpath detection, obsidian:// handling
+    tag_extractor.rs    -- inline tag regex matching
+    block_ref.rs        -- block ID detection, preceding-block association
+    types.rs            -- ParsedDocument, RawLink, RawHeading, RawBlockRef, RawTag, etc.
+```
+
+### Move-safe rewrite approach
+
 - Persist both raw token text and resolved target identity.
 - During a move or rename, query inbound references by resolved target document id, re-parse only the affected source files, and rewrite only the destination segment of each affected link.
 - Preserve original style choices such as wikilink vs Markdown-link syntax, embed marker, display text/alias, and heading or block suffix.
 - Apply edits from the end of the file toward the start so offsets remain valid while patching.
 
 For callouts specifically, treat them as blockquotes with Obsidian semantics rather than as a wholly separate document form. Obsidian defines a callout by placing `[!type]` on the first line of a blockquote, and callouts can contain ordinary Markdown and internal links.[14]
+
+### Parser alternatives
 
 `comrak` is the main alternative: it also supports source positions, front matter, GitHub-style alerts, and wikilinks.[15] However, `comrak` produces a full AST that must be materialized before patching, whereas `pulldown-cmark`'s event stream allows the rewrite engine to stream through a file, collect only the spans that need editing, and patch them in place without allocating a tree for the entire document. For rewrite-heavy operations across many files, this difference matters. `comrak` remains a reasonable choice if a richer AST is needed for other analysis passes, but it is secondary for the move-safe rewrite path.
 
