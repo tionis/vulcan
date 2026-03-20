@@ -10,6 +10,8 @@ pub const TABLES_TO_CLEAR: &[&str] = &[
     "property_values",
     "properties",
     "property_catalog",
+    "vector_clusters",
+    "vector_index_state",
     "search_chunk_content",
     "chunks",
     "diagnostics",
@@ -202,6 +204,35 @@ pub fn apply_schema_v5(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
     Ok(())
 }
 
+pub fn apply_schema_v6(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS vector_index_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            provider_name TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            normalized INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS vector_clusters (
+            provider_name TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            cluster_id INTEGER NOT NULL,
+            cluster_label TEXT NOT NULL,
+            chunk_id TEXT NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+            PRIMARY KEY (provider_name, model_name, dimensions, chunk_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_vector_clusters_model_cluster
+            ON vector_clusters(provider_name, model_name, dimensions, cluster_id);
+        ",
+    )?;
+
+    Ok(())
+}
+
 fn create_search_schema(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     transaction.execute_batch(
         "
@@ -277,6 +308,8 @@ fn create_search_schema(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
 }
 
 pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch("DROP TABLE IF EXISTS vectors;")?;
+
     for table_name in TABLES_TO_CLEAR {
         let statement = format!("DELETE FROM {table_name}");
         transaction.execute(&statement, [])?;

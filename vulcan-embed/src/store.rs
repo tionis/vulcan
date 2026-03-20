@@ -40,6 +40,8 @@ pub trait VectorStore {
 
     fn replace_model(&mut self, model: &StoredModel) -> Result<(), String>;
 
+    fn load_vectors(&self) -> Result<Vec<StoredVector>, String>;
+
     fn load_hashes(&self) -> Result<HashMap<String, String>, String>;
 
     fn upsert(&mut self, vectors: &[StoredVector]) -> Result<(), String>;

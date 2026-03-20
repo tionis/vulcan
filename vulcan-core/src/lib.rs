@@ -12,6 +12,7 @@ pub mod properties;
 pub mod resolver;
 pub mod scan;
 pub mod search;
+pub mod vector;
 pub mod write_lock;
 
 pub use bases::{
@@ -51,7 +52,11 @@ pub use resolver::{
 };
 pub use scan::{detect_document_kind, scan_vault, DocumentKind, ScanError, ScanMode, ScanSummary};
 pub use search::{search_vault, SearchError, SearchHit, SearchQuery, SearchReport};
+pub use vector::{
+    index_vectors, query_vector_neighbors, VectorError, VectorIndexError, VectorIndexQuery,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
+};
 
 pub const PARSER_VERSION: u32 = 2;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;

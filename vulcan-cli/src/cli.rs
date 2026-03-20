@@ -12,6 +12,22 @@ pub enum BasesCommand {
     Eval { file: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SearchMode {
+    Keyword,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum VectorsCommand {
+    Index,
+    Neighbors {
+        query: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
     Init,
@@ -27,6 +43,8 @@ pub enum Command {
     },
     Search {
         query: String,
+        #[arg(long, value_enum, default_value_t = SearchMode::Keyword)]
+        mode: SearchMode,
         #[arg(long)]
         tag: Option<String>,
         #[arg(long = "path-prefix")]
@@ -47,6 +65,10 @@ pub enum Command {
     Bases {
         #[command(subcommand)]
         command: BasesCommand,
+    },
+    Vectors {
+        #[command(subcommand)]
+        command: VectorsCommand,
     },
     Move {
         source: String,
@@ -73,6 +95,9 @@ pub struct Cli {
 
     #[arg(long, global = true, value_delimiter = ',')]
     pub fields: Option<Vec<String>>,
+
+    #[arg(long, global = true)]
+    pub provider: Option<String>,
 
     #[arg(long, global = true)]
     pub limit: Option<usize>,

@@ -96,6 +96,14 @@ impl VectorStore for SqliteVecStore<'_> {
             .map_err(|error| format!("failed to collect vector hashes: {error}"))
     }
 
+    fn load_vectors(&self) -> Result<Vec<StoredVector>, String> {
+        if !vector_table_exists(self.connection)? {
+            return Ok(Vec::new());
+        }
+
+        load_stored_vectors(self.connection)
+    }
+
     fn upsert(&mut self, vectors: &[StoredVector]) -> Result<(), String> {
         if vectors.is_empty() {
             return Ok(());

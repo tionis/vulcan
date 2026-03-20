@@ -2,7 +2,10 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
+use std::thread;
 use tempfile::TempDir;
 use vulcan_core::{CacheDatabase, VaultPaths};
 
@@ -21,6 +24,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("notes"))
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("search"))
+            .and(predicate::str::contains("vectors"))
             .and(predicate::str::contains("move"))
             .and(predicate::str::contains("doctor")),
     );
@@ -462,6 +466,109 @@ fn search_json_output_matches_snapshot() {
 }
 
 #[test]
+fn vectors_index_and_neighbors_json_output_work_end_to_end() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let server = MockEmbeddingServer::spawn();
+    write_embedding_config(&vault_root, &server.base_url());
+    run_scan(&vault_root);
+
+    let mut index_command = Command::cargo_bin("vulcan").expect("binary should build");
+    let index_assert = index_command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "vectors",
+            "index",
+        ])
+        .assert()
+        .success();
+    let index_json = parse_stdout_json(&index_assert);
+
+    assert_eq!(index_json["indexed"], 4);
+    assert_eq!(index_json["failed"], 0);
+
+    let mut neighbors_command = Command::cargo_bin("vulcan").expect("binary should build");
+    let neighbors_assert = neighbors_command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,distance",
+            "--limit",
+            "1",
+            "vectors",
+            "neighbors",
+            "dashboard",
+        ])
+        .assert()
+        .success();
+    let neighbor_rows = parse_stdout_json_lines(&neighbors_assert);
+
+    assert_eq!(neighbor_rows.len(), 1);
+    assert_eq!(neighbor_rows[0]["document_path"], "Home.md");
+    server.shutdown();
+}
+
+#[test]
+fn search_hybrid_json_output_combines_vector_and_keyword_results() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let server = MockEmbeddingServer::spawn();
+    write_embedding_config(&vault_root, &server.base_url());
+    run_scan(&vault_root);
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "vectors",
+            "index",
+        ])
+        .assert()
+        .success();
+
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+    let assert = command
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,mode",
+            "--limit",
+            "2",
+            "search",
+            "dashboard",
+            "--mode",
+            "hybrid",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["mode"], "hybrid");
+    assert_eq!(rows[0]["document_path"], "Home.md");
+    server.shutdown();
+}
+
+#[test]
 fn scan_json_output_matches_snapshot() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -650,5 +757,157 @@ fn copy_dir_recursive(source: &Path, destination: &Path) {
             }
             fs::copy(entry.path(), target).expect("file should be copied");
         }
+    }
+}
+
+fn write_embedding_config(vault_root: &Path, base_url: &str) {
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config directory should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{base_url}\"\nmodel = \"fixture\"\nmax_batch_size = 8\nmax_concurrency = 1\n"
+        ),
+    )
+    .expect("embedding config should be written");
+}
+
+struct MockEmbeddingServer {
+    address: String,
+    shutdown_tx: std::sync::mpsc::Sender<()>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl MockEmbeddingServer {
+    fn spawn() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should support nonblocking mode");
+        let address = listener
+            .local_addr()
+            .expect("listener should expose its local address");
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+
+        let handle = thread::spawn(move || loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
+
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_request(&mut stream);
+                    let inputs = request
+                        .body
+                        .get("input")
+                        .and_then(Value::as_array)
+                        .expect("request should include input");
+                    let body = serde_json::json!({
+                        "data": inputs.iter().enumerate().map(|(index, input)| {
+                            serde_json::json!({
+                                "index": index,
+                                "embedding": embedding_for_input(input.as_str().unwrap_or_default()),
+                            })
+                        }).collect::<Vec<_>>(),
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("response should write");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("unexpected mock server error: {error}"),
+            }
+        });
+
+        Self {
+            address: format!("http://{address}/v1"),
+            shutdown_tx,
+            handle: Some(handle),
+        }
+    }
+
+    fn base_url(&self) -> String {
+        self.address.clone()
+    }
+
+    fn shutdown(mut self) {
+        let _ = self.shutdown_tx.send(());
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("mock server should join");
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CapturedRequest {
+    body: Value,
+}
+
+fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
+    let mut buffer = Vec::new();
+    let mut header_end = None;
+
+    loop {
+        let mut chunk = [0_u8; 1024];
+        let bytes_read = stream.read(&mut chunk).expect("request should be readable");
+        if bytes_read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+        if let Some(position) = find_subslice(&buffer, b"\r\n\r\n") {
+            header_end = Some(position + 4);
+            break;
+        }
+    }
+
+    let header_end = header_end.expect("request should contain headers");
+    let header_text = String::from_utf8(buffer[..header_end].to_vec()).expect("utf8 headers");
+    let content_length = header_text
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .and_then(|value| value.trim().parse::<usize>().ok())
+        })
+        .expect("request should include content length");
+    let mut body_bytes = buffer[header_end..].to_vec();
+    while body_bytes.len() < content_length {
+        let mut chunk = vec![0_u8; content_length - body_bytes.len()];
+        let bytes_read = stream
+            .read(chunk.as_mut_slice())
+            .expect("body should be readable");
+        if bytes_read == 0 {
+            break;
+        }
+        body_bytes.extend_from_slice(&chunk[..bytes_read]);
+    }
+
+    CapturedRequest {
+        body: serde_json::from_slice(&body_bytes).expect("request body should parse"),
+    }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn embedding_for_input(input: &str) -> Vec<f32> {
+    if input.contains("dashboard") || input.contains("Home links") {
+        vec![1.0, 0.0]
+    } else if input.contains("Bob") || input.contains("ownership") {
+        vec![0.0, 1.0]
+    } else if input.contains("Alpha") || input.contains("Project") {
+        vec![0.75, 0.25]
+    } else {
+        vec![0.5, 0.5]
     }
 }
