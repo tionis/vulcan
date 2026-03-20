@@ -164,6 +164,26 @@ mod tests {
     }
 
     #[test]
+    fn markdown_links_with_nonbreaking_spaces_do_not_panic() {
+        let parsed = parse_document(
+            "Prelude\u{00a0}text [Doc](docs/\u{00a0}name.md#Section)",
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.links.len(), 1);
+        assert_eq!(parsed.links[0].link_kind, LinkKind::Markdown);
+        assert_eq!(
+            parsed.links[0].raw_text,
+            "[Doc](docs/\u{00a0}name.md#Section)"
+        );
+        assert_eq!(
+            parsed.links[0].target_path_candidate.as_deref(),
+            Some("docs/\u{00a0}name.md")
+        );
+        assert_eq!(parsed.links[0].target_heading.as_deref(), Some("Section"));
+    }
+
+    #[test]
     fn empty_files_and_unclosed_wikilinks_are_safe() {
         let empty = parse_document("", &VaultConfig::default());
         let broken = parse_document("Text [[oops", &VaultConfig::default());
