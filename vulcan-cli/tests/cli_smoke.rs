@@ -21,6 +21,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("scan"))
             .and(predicate::str::contains("rebuild"))
             .and(predicate::str::contains("repair"))
+            .and(predicate::str::contains("watch"))
             .and(predicate::str::contains("links"))
             .and(predicate::str::contains("backlinks"))
             .and(predicate::str::contains("notes"))

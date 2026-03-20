@@ -1,3 +1,4 @@
+use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePathOptions};
 use crate::{query_notes, NoteQuery, NoteRecord, PropertyError, VaultPaths};
 use serde::Serialize;
 use serde_json::Value;
@@ -5,11 +6,10 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::path::{Component, Path};
 
 #[derive(Debug)]
 pub enum BasesError {
-    InvalidPath(String),
+    InvalidPath(RelativePathError),
     Io(std::io::Error),
     Property(PropertyError),
     Yaml(serde_yaml::Error),
@@ -18,7 +18,7 @@ pub enum BasesError {
 impl Display for BasesError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidPath(path) => write!(formatter, "invalid base file path: {path}"),
+            Self::InvalidPath(error) => write!(formatter, "invalid base file path: {error}"),
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Property(error) => write!(formatter, "{error}"),
             Self::Yaml(error) => write!(formatter, "{error}"),
@@ -32,7 +32,7 @@ impl Error for BasesError {
             Self::Io(error) => Some(error),
             Self::Property(error) => Some(error),
             Self::Yaml(error) => Some(error),
-            Self::InvalidPath(_) => None,
+            Self::InvalidPath(error) => Some(error),
         }
     }
 }
@@ -432,26 +432,14 @@ fn is_simple_property_expression(expression: &str) -> bool {
 }
 
 fn normalize_base_path(path: &str) -> Result<String, BasesError> {
-    if path.is_empty()
-        || path.chars().any(char::is_control)
-        || !Path::new(path)
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("base"))
-        || Path::new(path)
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::RootDir))
-    {
-        return Err(BasesError::InvalidPath(path.to_string()));
-    }
-
-    Ok(Path::new(path)
-        .components()
-        .filter_map(|component| match component {
-            Component::CurDir => None,
-            other => Some(other.as_os_str().to_string_lossy().into_owned()),
-        })
-        .collect::<Vec<_>>()
-        .join("/"))
+    normalize_relative_input_path(
+        path,
+        RelativePathOptions {
+            expected_extension: Some("base"),
+            append_extension_if_missing: false,
+        },
+    )
+    .map_err(BasesError::InvalidPath)
 }
 
 #[cfg(test)]

@@ -52,6 +52,10 @@ pub enum Command {
         #[command(subcommand)]
         command: RepairCommand,
     },
+    Watch {
+        #[arg(long, default_value_t = 250)]
+        debounce_ms: u64,
+    },
     Scan {
         #[arg(long)]
         full: bool,

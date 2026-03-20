@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub const VULCAN_DIR_NAME: &str = ".vulcan";
 pub const CACHE_DB_NAME: &str = "cache.db";
@@ -7,6 +7,44 @@ pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const GITIGNORE_FILE_NAME: &str = ".gitignore";
 pub const DEFAULT_ATTACHMENT_FOLDER: &str = ".";
 const DEFAULT_VULCAN_GITIGNORE: &str = "*\n!.gitignore\n!config.toml\n";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelativePathOptions {
+    pub expected_extension: Option<&'static str>,
+    pub append_extension_if_missing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelativePathError {
+    path: String,
+    expected_extension: Option<&'static str>,
+}
+
+impl RelativePathError {
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+impl std::fmt::Display for RelativePathError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.expected_extension {
+            Some(extension) => write!(
+                formatter,
+                "expected a relative .{extension} path without control characters or traversal: {}",
+                self.path
+            ),
+            None => write!(
+                formatter,
+                "expected a relative path without control characters or traversal: {}",
+                self.path
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RelativePathError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VaultPaths {
@@ -74,6 +112,60 @@ pub(crate) fn ensure_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error
     Ok(())
 }
 
+pub fn normalize_relative_input_path(
+    path: &str,
+    options: RelativePathOptions,
+) -> Result<String, RelativePathError> {
+    if path.is_empty() || path.chars().any(char::is_control) {
+        return Err(RelativePathError {
+            path: path.to_string(),
+            expected_extension: options.expected_extension,
+        });
+    }
+
+    let mut parts = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                return Err(RelativePathError {
+                    path: path.to_string(),
+                    expected_extension: options.expected_extension,
+                });
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        return Err(RelativePathError {
+            path: path.to_string(),
+            expected_extension: options.expected_extension,
+        });
+    }
+
+    let mut normalized = parts.join("/");
+    if let Some(expected_extension) = options.expected_extension {
+        if options.append_extension_if_missing && Path::new(&normalized).extension().is_none() {
+            normalized.push('.');
+            normalized.push_str(expected_extension);
+        }
+
+        if !Path::new(&normalized)
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(expected_extension))
+        {
+            return Err(RelativePathError {
+                path: path.to_string(),
+                expected_extension: options.expected_extension,
+            });
+        }
+    }
+
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +227,57 @@ mod tests {
             fs::read_to_string(paths.gitignore_file()).expect("gitignore should remain readable"),
             "custom\n"
         );
+    }
+
+    #[test]
+    fn normalize_relative_input_path_rejects_traversal_and_controls() {
+        for invalid in ["../outside.md", "/absolute.md", "bad\nname.md", ""] {
+            assert!(normalize_relative_input_path(
+                invalid,
+                RelativePathOptions {
+                    expected_extension: Some("md"),
+                    append_extension_if_missing: true,
+                }
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn normalize_relative_input_path_normalizes_and_appends_extensions() {
+        assert_eq!(
+            normalize_relative_input_path(
+                "./notes/alpha",
+                RelativePathOptions {
+                    expected_extension: Some("md"),
+                    append_extension_if_missing: true,
+                }
+            )
+            .expect("path should normalize"),
+            "notes/alpha.md"
+        );
+        assert_eq!(
+            normalize_relative_input_path(
+                "./views/release.base",
+                RelativePathOptions {
+                    expected_extension: Some("base"),
+                    append_extension_if_missing: false,
+                }
+            )
+            .expect("path should normalize"),
+            "views/release.base"
+        );
+    }
+
+    #[test]
+    fn normalize_relative_input_path_rejects_wrong_extension() {
+        assert!(normalize_relative_input_path(
+            "release.md",
+            RelativePathOptions {
+                expected_extension: Some("base"),
+                append_extension_if_missing: false,
+            }
+        )
+        .is_err());
     }
 }

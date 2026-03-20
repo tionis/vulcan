@@ -14,6 +14,7 @@ pub mod resolver;
 pub mod scan;
 pub mod search;
 pub mod vector;
+pub mod watch;
 pub mod write_lock;
 
 pub use bases::{
@@ -63,6 +64,7 @@ pub use vector::{
     VectorDuplicatesQuery, VectorDuplicatesReport, VectorError, VectorIndexError, VectorIndexQuery,
     VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
 };
+pub use watch::{watch_vault, WatchError, WatchOptions, WatchReport};
 
 pub const PARSER_VERSION: u32 = 2;
 pub const EXTRACTION_VERSION: u32 = 1;
