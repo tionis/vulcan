@@ -203,10 +203,10 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Roundtrip test: move a file, move it back, assert original link text restored
 
 ### 2.3 Write serialization
-- [ ] Application-level write lock (file lock or advisory lock on the DB)
-- [ ] CLI commands acquire write lock before mutating; watcher queues events during lock
-- [ ] `busy_timeout` as backstop
-- [ ] Test: concurrent scan + move produces correct final state
+- [x] Application-level write lock (file lock or advisory lock on the DB)
+- [~] CLI commands acquire write lock before mutating; watcher queues events during lock
+- [x] `busy_timeout` as backstop
+- [x] Test: concurrent scan + move produces correct final state
 
 ---
 

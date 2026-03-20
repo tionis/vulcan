@@ -12,6 +12,7 @@ license = "MIT OR Apache-2.0"
 assert_cmd = "2.1.1"
 blake3 = "1.8.2"
 clap = { version = "4.5.49", features = ["derive", "string"] }
+fs2 = "0.4.3"
 ignore = "0.4.25"
 notify = "8.2.0"
 predicates = "3.1.3"
