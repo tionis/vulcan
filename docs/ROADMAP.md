@@ -332,10 +332,10 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Integration test: hybrid search returns results from both FTS and vector paths
 
 ### 5.6 Duplicate detection and clustering
-- [ ] `vectors duplicates` command: find chunk pairs above a similarity threshold
-- [ ] `cluster` command: run clustering in application code (k-means or HDBSCAN), persist cluster ids and labels back to cache
-- [ ] Clustering is a derived artifact, not a source of truth
-- [ ] `--output json` for both commands
+- [x] `vectors duplicates` command: find chunk pairs above a similarity threshold
+- [x] `cluster` command: run clustering in application code (k-means or HDBSCAN), persist cluster ids and labels back to cache
+- [x] Clustering is a derived artifact, not a source of truth
+- [x] `--output json` for both commands
 
 ---
 

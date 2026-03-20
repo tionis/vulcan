@@ -18,7 +18,7 @@ pub enum SearchMode {
     Hybrid,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+#[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum VectorsCommand {
     Index,
     Neighbors {
@@ -26,9 +26,13 @@ pub enum VectorsCommand {
         #[arg(long)]
         note: Option<String>,
     },
+    Duplicates {
+        #[arg(long, default_value_t = 0.95)]
+        threshold: f32,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+#[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Command {
     Init,
     Scan {
@@ -65,6 +69,10 @@ pub enum Command {
     Bases {
         #[command(subcommand)]
         command: BasesCommand,
+    },
+    Cluster {
+        #[arg(long, default_value_t = 8)]
+        clusters: usize,
     },
     Vectors {
         #[command(subcommand)]
