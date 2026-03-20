@@ -387,6 +387,88 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 
 ---
 
+## Phase 7: Post-v1 workflow features
+
+**Goal:** Extend Vulcan from a high-quality indexing/query engine into a stronger vault-maintenance and automation tool, while keeping the vault as source of truth and keeping expensive work explicit.
+
+**Depends on:** Phase 6 complete. Individual tracks can ship independently once the cache, rewrite engine, and diagnostics surface are stable.
+
+### 7.1 Metadata and taxonomy refactors
+- [ ] `rename-property <old> <new>` command with `--dry-run`
+- [ ] `merge-tags <source> <dest>` command with safe frontmatter and body rewrites
+- [ ] `rename-alias <note> <old> <new>` command or alias-normalization helper
+- [ ] `rename-heading <note> <old> <new>` with safe inbound `#heading` link rewrites
+- [ ] `rename-block-ref <note> <old> <new>` with safe inbound `#^block` link rewrites
+- [ ] Preserve roundtrip-safe formatting when rewriting frontmatter properties and note bodies
+- [ ] Integration tests for property, tag, and alias refactors
+
+### 7.2 Doctor auto-fix
+- [ ] `doctor --fix` mode for deterministic, safe repairs
+- [ ] Repair stale cache/index mismatches via targeted rebuild or repair flows
+- [ ] Repair missing `.vulcan/` scaffolding and other recoverable local state
+- [ ] Optional link-style normalization and safe unresolved-link remediation suggestions
+- [ ] `--dry-run` and `--output json` support for planned fixes
+
+### 7.3 Attachment graph and asset maintenance
+- [ ] Index attachments as first-class assets in the cache
+- [ ] Track note-to-attachment embed references for images, PDFs, audio, and video
+- [ ] `doctor` checks for broken embeds and orphaned assets
+- [ ] Extend move-safe rewrites to attachment renames and moves
+- [ ] Optional text extraction / OCR pipeline for PDFs and images to feed search and vectors
+- [ ] Integration tests with attachment-heavy fixture vaults
+
+### 7.4 Saved queries and exports
+- [ ] Persist saved query and report definitions in `.vulcan/`
+- [ ] Export `search`, `notes`, and `bases eval` results as CSV and JSONL
+- [ ] Non-interactive batch mode for scheduled reports and automation
+- [ ] Snapshot tests for saved-query and export output formats
+
+### 7.5 Local API and daemon mode
+- [ ] `serve` command exposing cache-backed local APIs (HTTP, JSON-RPC, or MCP)
+- [ ] Reuse the watcher and write-lock pipeline to keep served results fresh
+- [ ] Safe local-only defaults for bind address and authentication model
+- [ ] Integration tests for repeated query workloads without repeated CLI startup
+
+### 7.6 Advanced vector operations
+- [ ] `vectors repair` / `vectors rebuild` commands with model migration support
+- [ ] Background-safe vector indexing queue with explicit operator control
+- [ ] Cluster labeling and summaries derived from representative chunks
+- [ ] Semantic recommendation surface such as `related <note>`
+- [ ] Benchmarks for large-vault vector maintenance and migration flows
+
+### 7.7 Graph analysis and reporting
+- [ ] `graph path <from> <to>` shortest-path query
+- [ ] `graph hubs`, `graph dead-ends`, `graph components`, and MOC-candidate reports
+- [ ] Orphan/staleness trend reporting over time
+- [ ] Vault analytics reports: note counts, link density, tag/property usage, stale-note summaries
+- [ ] `--output json` and integration tests for graph analysis commands
+
+### 7.8 Search ergonomics
+- [ ] User-friendly phrase/operator query parsing on top of raw FTS syntax
+- [ ] `search --explain` for ranking/debug output
+- [ ] Fuzzy matching / typo tolerance
+- [ ] Richer property predicates and multi-filter composition
+
+### 7.9 Link suggestions and bulk rewrites
+- [ ] Unlinked mention detection with candidate target suggestions
+- [ ] Optional mention-to-link conversion workflow with `--dry-run`
+- [ ] Bulk query-driven rewrite commands with previewable before/after output
+- [ ] Duplicate-title, alias, and merge-candidate suggestion reports
+
+### 7.10 Cache maintenance and change reporting
+- [ ] `cache inspect`, `cache verify`, and `cache vacuum` commands
+- [ ] Performance and size diagnostics for cache, FTS, and vector indexes
+- [ ] Change reports since last scan or checkpoint for notes, links, properties, and embeddings
+- [ ] Integration tests for maintenance and reporting flows
+
+### 7.11 Import, export, and automation
+- [ ] Broader export surfaces for graph data, reports, and static search indexes
+- [ ] CSV export support for more list/query commands beyond the initial report set
+- [ ] Scriptable automation hooks for saved reports, repairs, and CI runs
+- [ ] Non-interactive machine-oriented exit codes for automation workflows
+
+---
+
 ## Dependency graph
 
 ```
@@ -396,7 +478,9 @@ Phase 1 (Core indexing)
   └── Phase 4 (Properties/Bases)
                                     ↘
                                Phase 6 (Hardening) ← all phases
+                                                     ↓
+                               Phase 7 (Post-v1 workflow features)
 ```
 
 After Phase 1, Phases 2/3/4 can proceed in parallel.
-Phase 5 requires Phase 3. Phase 6 follows all others.
+Phase 5 requires Phase 3. Phase 6 follows all others. Phase 7 is a post-v1 backlog that can be split into independent tracks after Phase 6.
