@@ -11,9 +11,10 @@ use std::io;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use vulcan_core::{
-    doctor_vault, initialize_vault, query_backlinks, query_links, scan_vault, BacklinkRecord,
-    BacklinksReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport, InitSummary,
-    OutgoingLinkRecord, OutgoingLinksReport, ScanMode, ScanSummary, VaultPaths,
+    doctor_vault, initialize_vault, move_note, query_backlinks, query_links, scan_vault,
+    BacklinkRecord, BacklinksReport, DoctorDiagnosticIssue, DoctorLinkIssue, DoctorReport,
+    InitSummary, MoveSummary, OutgoingLinkRecord, OutgoingLinksReport, ScanMode, ScanSummary,
+    VaultPaths,
 };
 
 #[derive(Debug)]
@@ -91,6 +92,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Init => {
             let summary = initialize_vault(&paths).map_err(CliError::operation)?;
             print_init_summary(cli.output, &summary)?;
+            Ok(())
+        }
+        Command::Move {
+            ref source,
+            ref dest,
+            dry_run,
+        } => {
+            let summary = move_note(&paths, source, dest, dry_run).map_err(CliError::operation)?;
+            print_move_summary(cli.output, &summary)?;
             Ok(())
         }
         Command::Links { ref note } => {
@@ -227,6 +237,39 @@ fn print_scan_summary(output: OutputFormat, summary: &ScanSummary) {
         OutputFormat::Json => {
             print_json(summary).expect("scan summary JSON serialization should succeed");
         }
+    }
+}
+
+fn print_move_summary(output: OutputFormat, summary: &MoveSummary) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if summary.dry_run {
+                println!(
+                    "Dry run: move {} -> {}",
+                    summary.source_path, summary.destination_path
+                );
+            } else {
+                println!(
+                    "Moved {} -> {}",
+                    summary.source_path, summary.destination_path
+                );
+            }
+
+            if summary.rewritten_files.is_empty() {
+                println!("No link rewrites.");
+                return Ok(());
+            }
+
+            for file in &summary.rewritten_files {
+                println!("- {}", file.path);
+                for change in &file.changes {
+                    println!("  {} -> {}", change.before, change.after);
+                }
+            }
+
+            Ok(())
+        }
+        OutputFormat::Json => print_json(summary),
     }
 }
 
@@ -534,6 +577,14 @@ mod tests {
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
             .expect("cli should parse");
+        let move_command = Cli::try_parse_from([
+            "vulcan",
+            "move",
+            "Projects/Alpha.md",
+            "Archive/Alpha.md",
+            "--dry-run",
+        ])
+        .expect("cli should parse");
 
         assert_eq!(
             links.command,
@@ -545,6 +596,14 @@ mod tests {
             backlinks.command,
             Command::Backlinks {
                 note: "Projects/Alpha".to_string()
+            }
+        );
+        assert_eq!(
+            move_command.command,
+            Command::Move {
+                source: "Projects/Alpha.md".to_string(),
+                dest: "Archive/Alpha.md".to_string(),
+                dry_run: true
             }
         );
     }
