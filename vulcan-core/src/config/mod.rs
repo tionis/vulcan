@@ -27,6 +27,12 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r#"# Vulcan configuration
 # max_batch_size = 32
 # max_input_tokens = 8192
 # max_concurrency = 4
+
+# [extraction]
+# command = "sh"
+# args = ["-c", "case \"$2\" in pdf) pdftotext \"$1\" - ;; png|jpg|jpeg|webp) tesseract \"$1\" stdout ;; *) exit 0 ;; esac", "sh", "{path}", "{extension}"]
+# extensions = ["pdf", "png", "jpg", "jpeg", "webp"]
+# max_output_bytes = 262144
 "#;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +98,30 @@ impl EmbeddingProviderConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentExtractionConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_attachment_extraction_extensions")]
+    pub extensions: Vec<String>,
+    pub max_output_bytes: Option<usize>,
+}
+
+impl AttachmentExtractionConfig {
+    #[must_use]
+    pub fn supports_extension(&self, extension: &str) -> bool {
+        self.extensions
+            .iter()
+            .any(|configured| configured.eq_ignore_ascii_case(extension))
+    }
+
+    #[must_use]
+    pub fn max_output_bytes(&self) -> usize {
+        self.max_output_bytes.unwrap_or(256 * 1024).max(1024)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultConfig {
     pub chunking: ChunkingConfig,
     pub link_resolution: LinkResolutionMode,
@@ -100,6 +130,7 @@ pub struct VaultConfig {
     pub strict_line_breaks: bool,
     pub property_types: BTreeMap<String, String>,
     pub embedding: Option<EmbeddingProviderConfig>,
+    pub extraction: Option<AttachmentExtractionConfig>,
 }
 
 impl Default for VaultConfig {
@@ -112,6 +143,7 @@ impl Default for VaultConfig {
             strict_line_breaks: false,
             property_types: BTreeMap::new(),
             embedding: None,
+            extraction: None,
         }
     }
 }
@@ -133,6 +165,7 @@ struct PartialVulcanConfig {
     chunking: Option<PartialChunkingConfig>,
     links: Option<PartialLinksConfig>,
     embedding: Option<EmbeddingProviderConfig>,
+    extraction: Option<AttachmentExtractionConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -164,6 +197,15 @@ struct ObsidianAppConfig {
 #[must_use]
 pub fn default_config_template() -> &'static str {
     DEFAULT_CONFIG_TEMPLATE
+}
+
+fn default_attachment_extraction_extensions() -> Vec<String> {
+    [
+        "pdf", "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
+    ]
+    .into_iter()
+    .map(ToOwned::to_owned)
+    .collect()
 }
 
 pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error> {
@@ -350,6 +392,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
     if let Some(embedding) = overrides.embedding {
         config.embedding = Some(embedding);
     }
+    if let Some(extraction) = overrides.extraction {
+        config.extraction = Some(extraction);
+    }
 }
 
 fn normalize_attachment_folder(path: &str) -> PathBuf {
@@ -455,6 +500,12 @@ normalized = false
 max_batch_size = 8
 max_input_tokens = 2048
 max_concurrency = 2
+
+[extraction]
+command = "sh"
+args = ["-c", "cat \"$1.txt\"", "sh", "{path}"]
+extensions = ["pdf", "png"]
+max_output_bytes = 4096
 "#,
         )
         .expect("vulcan config should be written");
@@ -486,6 +537,15 @@ max_concurrency = 2
                 .expect("embedding config should be present")
                 .provider_name(),
             "openai-compatible"
+        );
+        assert_eq!(
+            loaded
+                .config
+                .extraction
+                .as_ref()
+                .expect("extraction config should be present")
+                .extensions,
+            vec!["pdf".to_string(), "png".to_string()]
         );
     }
 

@@ -414,7 +414,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Track note-to-attachment embed references for images, PDFs, audio, and video
 - [x] `doctor` checks for broken embeds and orphaned assets
 - [x] Extend move-safe rewrites to attachment renames and moves
-- [ ] Optional text extraction / OCR pipeline for PDFs and images to feed search and vectors
+- [x] Optional text extraction / OCR pipeline for PDFs and images to feed search and vectors
 - [x] Integration tests with attachment-heavy fixture vaults
 
 ### 7.4 Saved queries and exports
