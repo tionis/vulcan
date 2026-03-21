@@ -24,8 +24,9 @@ pub mod watch;
 pub mod write_lock;
 
 pub use bases::{
-    evaluate_base_file, BasesColumn, BasesDiagnostic, BasesError, BasesEvalReport,
-    BasesEvaluatedView, BasesGroupBy, BasesRow,
+    bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,
+    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesColumn, BasesDiagnostic, BasesError,
+    BasesEvalReport, BasesEvaluatedView, BasesGroupBy, BasesRow, BasesViewEditReport,
 };
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{
