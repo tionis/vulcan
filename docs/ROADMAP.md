@@ -399,7 +399,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] `rename-alias <note> <old> <new>` command or alias-normalization helper
 - [x] `rename-heading <note> <old> <new>` with safe inbound `#heading` link rewrites
 - [x] `rename-block-ref <note> <old> <new>` with safe inbound `#^block` link rewrites
-- [~] Preserve roundtrip-safe formatting when rewriting frontmatter properties and note bodies
+- [x] Preserve roundtrip-safe formatting when rewriting frontmatter properties and note bodies
   Current gap: rewrites are semantically correct, but formatting can still be normalized in ways that users notice.
   Required scope: preserve unrelated frontmatter ordering, comments, quoting style, list indentation/flow style where possible, and avoid unnecessary body-text churn outside the targeted edit.
   Acceptance target: moving or renaming one property/link should produce a minimal diff that is stable across repeated runs.
