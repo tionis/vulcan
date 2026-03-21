@@ -308,6 +308,16 @@ pub enum VectorsCommand {
         #[command(flatten)]
         export: ExportArgs,
     },
+    #[command(about = "List all stored embedding models in the vector index")]
+    Models {
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "Drop a stored embedding model and its vectors")]
+    DropModel {
+        #[arg(help = "Cache key of the model to drop (see `vectors models`)")]
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

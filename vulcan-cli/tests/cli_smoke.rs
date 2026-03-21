@@ -3234,6 +3234,7 @@ fn build_command_snapshot() -> Value {
         let mut json = parse_stdout_json(&assert);
         json["elapsed_seconds"] = serde_json::json!(0.0);
         json["rate_per_second"] = serde_json::json!(0.0);
+        json["endpoint_url"] = serde_json::json!("http://127.0.0.1:0/v1/embeddings");
         json
     };
     let vectors_neighbors_json = {

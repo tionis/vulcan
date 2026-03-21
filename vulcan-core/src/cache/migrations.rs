@@ -63,6 +63,7 @@ impl MigrationRegistry {
             Migration::new(5, "add property storage tables", schema::apply_schema_v5),
             Migration::new(6, "add vector cache state tables", schema::apply_schema_v6),
             Migration::new(7, "add checkpoint history tables", schema::apply_schema_v7),
+            Migration::new(8, "add multi-model vector registry", schema::apply_schema_v8),
         ])
     }
 

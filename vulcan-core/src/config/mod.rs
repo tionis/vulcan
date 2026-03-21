@@ -27,6 +27,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r#"# Vulcan configuration
 # max_batch_size = 32
 # max_input_tokens = 8192
 # max_concurrency = 4
+# cache_key = "openai-compatible:text-embedding-3-small"  # optional; override to keep vectors when switching endpoints
 
 # [extraction]
 # command = "sh"
@@ -88,12 +89,22 @@ pub struct EmbeddingProviderConfig {
     pub max_batch_size: Option<usize>,
     pub max_input_tokens: Option<usize>,
     pub max_concurrency: Option<usize>,
+    pub cache_key: Option<String>,
 }
 
 impl EmbeddingProviderConfig {
     #[must_use]
     pub fn provider_name(&self) -> &str {
         self.provider.as_deref().unwrap_or("openai-compatible")
+    }
+
+    #[must_use]
+    pub fn effective_cache_key(&self) -> String {
+        if let Some(key) = &self.cache_key {
+            key.clone()
+        } else {
+            format!("{}:{}", self.provider_name(), self.model)
+        }
     }
 }
 

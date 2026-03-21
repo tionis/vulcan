@@ -24,9 +24,10 @@ use std::time::{Duration, Instant};
 use vulcan_core::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace,
     bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
-    evaluate_base_file, execute_query_report, export_static_search_index,
+    drop_vector_model, evaluate_base_file, execute_query_report, export_static_search_index,
     index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
-    link_mentions, list_checkpoints, list_saved_reports, load_saved_report, merge_tags, move_note,
+    link_mentions, list_checkpoints, list_saved_reports, list_vector_models, load_saved_report,
+    merge_tags, move_note,
     query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
     query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
     query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
@@ -50,7 +51,7 @@ use vulcan_core::{
     VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
     VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
     VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
-    VectorRepairReport, WatchOptions, WatchReport,
+    VectorRepairReport, StoredModelInfo, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -240,18 +241,21 @@ struct VectorIndexProgressReporter {
     started_at: Instant,
     last_batches_completed: usize,
     prepared: bool,
+    verbose: bool,
 }
 
 impl VectorIndexProgressReporter {
-    fn new(use_color: bool) -> Self {
+    fn new(use_color: bool, verbose: bool) -> Self {
         Self {
             palette: AnsiPalette::new(use_color),
             started_at: Instant::now(),
             last_batches_completed: 0,
             prepared: false,
+            verbose,
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn record(&mut self, progress: &VectorIndexProgress) {
         match progress.phase {
             VectorIndexPhase::Preparing => {
@@ -259,6 +263,33 @@ impl VectorIndexProgressReporter {
                     return;
                 }
                 self.prepared = true;
+                if self.verbose {
+                    eprintln!(
+                        "{} {}:{}",
+                        self.palette.dim("Provider:"),
+                        progress.provider_name,
+                        progress.model_name
+                    );
+                    eprintln!(
+                        "{} {}",
+                        self.palette.dim("Endpoint:"),
+                        progress.endpoint_url
+                    );
+                    let key_status = match (&progress.api_key_env, progress.api_key_set) {
+                        (Some(env_var), true) => format!("set (from ${env_var})"),
+                        (Some(env_var), false) => format!("NOT SET (expected ${env_var})"),
+                        (None, _) => "none configured".to_string(),
+                    };
+                    eprintln!(
+                        "{} {}",
+                        self.palette.dim("API key: "),
+                        if progress.api_key_set {
+                            key_status
+                        } else {
+                            self.palette.red(&key_status).clone()
+                        }
+                    );
+                }
                 if progress.pending == 0 {
                     eprintln!(
                         "{} for {}:{} {}",
@@ -304,6 +335,29 @@ impl VectorIndexProgressReporter {
                     );
                     self.last_batches_completed = progress.batches_completed;
                 }
+                if !progress.batch_failures.is_empty() {
+                    let deduped = dedup_failure_messages(&progress.batch_failures);
+                    if self.verbose {
+                        for (message, count) in &deduped {
+                            eprintln!(
+                                "  {} {} {}",
+                                self.palette.red("FAIL"),
+                                message,
+                                self.palette.dim(&format!("({count} chunks)"))
+                            );
+                        }
+                    } else if progress.batches_completed == 1 {
+                        let (message, count) = &deduped[0];
+                        eprintln!(
+                            "  {} {} {}",
+                            self.palette.red("FAIL"),
+                            message,
+                            self.palette.dim(&format!(
+                                "({count} chunks, use --verbose to see all failures)"
+                            ))
+                        );
+                    }
+                }
             }
             VectorIndexPhase::Completed => {
                 if progress.dry_run {
@@ -329,6 +383,21 @@ impl VectorIndexProgressReporter {
             }
         }
     }
+}
+
+fn dedup_failure_messages(failures: &[(String, String, String)]) -> Vec<(&str, usize)> {
+    let mut seen = Vec::new();
+    for (_, _, message) in failures {
+        if let Some((_, count)) = seen
+            .iter_mut()
+            .find(|(m, _): &&mut (&str, usize)| *m == message)
+        {
+            *count += 1;
+        } else {
+            seen.push((message.as_str(), 1));
+        }
+    }
+    seen
 }
 
 fn color_enabled_for_terminal(is_tty: bool) -> bool {
@@ -1807,13 +1876,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Vectors { ref command } => match command {
             VectorsCommand::Index { dry_run } => {
+                let verbose = cli.verbose;
                 let mut progress = (cli.output == OutputFormat::Human)
-                    .then(|| VectorIndexProgressReporter::new(use_stderr_color));
+                    .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbose));
                 let report = index_vectors_with_progress(
                     &paths,
                     &VectorIndexQuery {
                         provider: cli.provider.clone(),
                         dry_run: *dry_run,
+                        verbose,
                     },
                     |event| {
                         if let Some(progress) = progress.as_mut() {
@@ -1827,7 +1898,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             VectorsCommand::Repair { dry_run } => {
                 let mut progress = (cli.output == OutputFormat::Human)
-                    .then(|| VectorIndexProgressReporter::new(use_stderr_color));
+                    .then(|| VectorIndexProgressReporter::new(use_stderr_color, false));
                 let report = repair_vectors_with_progress(
                     &paths,
                     &VectorRepairQuery {
@@ -1845,7 +1916,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             VectorsCommand::Rebuild { dry_run } => {
                 let mut progress = (cli.output == OutputFormat::Human)
-                    .then(|| VectorIndexProgressReporter::new(use_stderr_color));
+                    .then(|| VectorIndexProgressReporter::new(use_stderr_color, false));
                 let report = rebuild_vectors_with_progress(
                     &paths,
                     &VectorRebuildQuery {
@@ -1869,13 +1940,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     print_vector_queue_report(cli.output, &report)
                 }
                 VectorQueueCommand::Run { dry_run } => {
+                    let verbose = cli.verbose;
                     let mut progress = (cli.output == OutputFormat::Human)
-                        .then(|| VectorIndexProgressReporter::new(use_stderr_color));
+                        .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbose));
                     let report = index_vectors_with_progress(
                         &paths,
                         &VectorIndexQuery {
                             provider: cli.provider.clone(),
                             dry_run: *dry_run,
+                            verbose,
                         },
                         |event| {
                             if let Some(progress) = progress.as_mut() {
@@ -1970,6 +2043,41 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     use_stdout_color,
                     export.as_ref(),
                 )?;
+                Ok(())
+            }
+            VectorsCommand::Models { export } => {
+                let models =
+                    list_vector_models(&paths).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
+                print_vector_models_report(
+                    cli.output,
+                    &models,
+                    stdout_is_tty,
+                    use_stdout_color,
+                    export.as_ref(),
+                )?;
+                Ok(())
+            }
+            VectorsCommand::DropModel { key } => {
+                let dropped =
+                    drop_vector_model(&paths, key).map_err(CliError::operation)?;
+                if dropped {
+                    if cli.output == OutputFormat::Json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"dropped": true, "cache_key": key})
+                        );
+                    } else {
+                        eprintln!("Dropped model: {key}");
+                    }
+                } else if cli.output == OutputFormat::Json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"dropped": false, "cache_key": key})
+                    );
+                } else {
+                    eprintln!("No model found with cache key: {key}");
+                }
                 Ok(())
             }
         },
@@ -2670,6 +2778,61 @@ fn print_vector_duplicates_report(
         OutputFormat::Json => {
             export_rows(&rows, list_controls.fields.as_deref(), export)?;
             print_json_lines(rows, list_controls.fields.as_deref())
+        }
+    }
+}
+
+fn print_vector_models_report(
+    output: OutputFormat,
+    models: &[StoredModelInfo],
+    stdout_is_tty: bool,
+    use_color: bool,
+    export: Option<&ResolvedExport>,
+) -> Result<(), CliError> {
+    let rows: Vec<Value> = models
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "cache_key": m.cache_key,
+                "provider": m.provider_name,
+                "model": m.model_name,
+                "dimensions": m.dimensions,
+                "normalized": m.normalized,
+                "chunks": m.chunk_count,
+                "active": m.is_active,
+            })
+        })
+        .collect();
+
+    match output {
+        OutputFormat::Human => {
+            let palette = AnsiPalette::new(use_color);
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Vector models"));
+            }
+            if models.is_empty() {
+                println!("No stored models.");
+                return Ok(());
+            }
+            for model in models {
+                let active_marker = if model.is_active { " (active)" } else { "" };
+                println!(
+                    "{}{}\n  provider: {}  model: {}  dimensions: {}  normalized: {}  chunks: {}",
+                    palette.bold(&model.cache_key),
+                    active_marker,
+                    model.provider_name,
+                    model.model_name,
+                    model.dimensions,
+                    model.normalized,
+                    model.chunk_count,
+                );
+            }
+            export_rows(&rows, None, export)?;
+            Ok(())
+        }
+        OutputFormat::Json => {
+            export_rows(&rows, None, export)?;
+            print_json_lines(rows, None)
         }
     }
 }

@@ -210,13 +210,18 @@ fn execute_embedding_request(
     let status = response.status();
     if !status.is_success() {
         let retryable = status.as_u16() == 429 || status.is_server_error();
-        let message = response.text().unwrap_or_else(|_| String::new());
-        let error_message = if message.trim().is_empty() {
+        let body = response
+            .bytes()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
+        let error_message = if body.trim().is_empty() {
             format!("embeddings request failed with HTTP {}", status.as_u16())
         } else {
             format!(
-                "embeddings request failed with HTTP {}: {message}",
-                status.as_u16()
+                "embeddings request failed with HTTP {} ({} bytes): {}",
+                status.as_u16(),
+                body.len(),
+                body
             )
         };
         return Err(if retryable {
@@ -395,6 +400,35 @@ mod tests {
                 .iter()
                 .any(|header| header == "authorization: bearer secret"));
         }
+    }
+
+    #[test]
+    fn error_response_body_is_preserved_in_full() {
+        let error_body = r#"{"error":"Upstream error: Spread syntax requires an iterable, not null or undefined. Check the ...args spread in handler(). Additional debug context: the request payload was well-formed but the upstream worker crashed before producing embeddings."}"#;
+        let server = MockServer::spawn(vec![MockResponse::json(502, error_body)], 1);
+        let provider = OpenAICompatibleProvider::new(OpenAICompatibleConfig {
+            base_url: server.base_url(),
+            max_batch_size: 1,
+            max_concurrency: 1,
+            max_retries: 1,
+            retry_base_delay: Duration::from_millis(1),
+            ..OpenAICompatibleConfig::default()
+        })
+        .expect("provider should build");
+
+        let results = provider.embed_batch(&[EmbeddingInput {
+            id: Ulid::new(),
+            text: "test".to_string(),
+        }]);
+
+        assert_eq!(results.len(), 1);
+        let error = results[0].as_ref().unwrap_err();
+        assert!(
+            error.message.contains(error_body),
+            "full error body should be preserved, got: {}",
+            error.message
+        );
+        assert_eq!(error.status_code, Some(502));
     }
 
     fn request_inputs(request: &CapturedRequest) -> Vec<String> {
