@@ -15,6 +15,9 @@ use vulcan_embed::{
     SqliteVecStore, StoredModel, StoredVector, VectorQuery, VectorStore,
 };
 
+// Re-export for CLI consumers.
+pub use vulcan_embed::StoredModelInfo;
+
 #[derive(Debug)]
 pub enum VectorError {
     CacheMissing,
@@ -124,6 +127,7 @@ pub type ClusterError = VectorError;
 pub struct VectorIndexQuery {
     pub provider: Option<String>,
     pub dry_run: bool,
+    pub verbose: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -131,6 +135,9 @@ pub struct VectorIndexReport {
     pub dry_run: bool,
     pub provider_name: String,
     pub model_name: String,
+    pub endpoint_url: String,
+    pub api_key_env: Option<String>,
+    pub api_key_set: bool,
     pub dimensions: usize,
     pub batch_size: usize,
     pub max_concurrency: usize,
@@ -141,6 +148,8 @@ pub struct VectorIndexReport {
     pub rebuilt_index: bool,
     pub elapsed_seconds: f64,
     pub rate_per_second: f64,
+    /// Per-failure details: (path, chunk ID, error message).
+    pub failure_details: Vec<(String, String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -156,6 +165,9 @@ pub struct VectorIndexProgress {
     pub dry_run: bool,
     pub provider_name: String,
     pub model_name: String,
+    pub endpoint_url: String,
+    pub api_key_env: Option<String>,
+    pub api_key_set: bool,
     pub batch_size: usize,
     pub max_concurrency: usize,
     pub phase: VectorIndexPhase,
@@ -166,6 +178,8 @@ pub struct VectorIndexProgress {
     pub failed: usize,
     pub batches_completed: usize,
     pub total_batches: usize,
+    /// Failures from the most recent batch: (path, chunk ID, error message).
+    pub batch_failures: Vec<(String, String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -361,13 +375,18 @@ pub fn index_vectors_with_progress<F>(
 where
     F: FnMut(VectorIndexProgress),
 {
-    let provider = load_embedding_provider(paths, query.provider.as_deref())?;
+    let loaded = load_embedding_provider(paths, query.provider.as_deref())?;
+    let provider = loaded.provider;
+    let cache_key = loaded.cache_key;
     let provider_metadata = provider.metadata();
     let started_at = Instant::now();
     let mut report = VectorIndexReport {
         dry_run: query.dry_run,
         provider_name: provider_metadata.provider_name.clone(),
         model_name: provider_metadata.model_name.clone(),
+        endpoint_url: loaded.endpoint_url,
+        api_key_env: loaded.api_key_env,
+        api_key_set: loaded.api_key_set,
         dimensions: provider_metadata.dimensions,
         batch_size: provider_metadata.max_batch_size.max(1),
         max_concurrency: provider_metadata.max_concurrency.max(1),
@@ -378,6 +397,7 @@ where
         rebuilt_index: false,
         elapsed_seconds: 0.0,
         rate_per_second: 0.0,
+        failure_details: Vec::new(),
     };
     let batch_size = report.batch_size;
     let max_concurrency = report.max_concurrency;
@@ -391,7 +411,7 @@ where
         let store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
         let chunks = load_indexable_chunks(connection)?;
         let active_model = store.current_model().map_err(VectorError::Store)?;
-        let requested_model = provider_model_from_metadata(&provider.metadata());
+        let requested_model = provider_model_from_metadata(&cache_key, &provider.metadata());
         let model_matches = active_model
             .as_ref()
             .is_some_and(|model| same_model(model, &requested_model));
@@ -423,6 +443,9 @@ where
                 dry_run: report.dry_run,
                 provider_name: report.provider_name.clone(),
                 model_name: report.model_name.clone(),
+                endpoint_url: report.endpoint_url.clone(),
+                api_key_env: report.api_key_env.clone(),
+                api_key_set: report.api_key_set,
                 batch_size,
                 max_concurrency,
                 phase: VectorIndexPhase::Completed,
@@ -433,6 +456,7 @@ where
                 failed: 0,
                 batches_completed: 0,
                 total_batches: report.batches,
+                batch_failures: Vec::new(),
             });
             return Ok(report);
         }
@@ -468,6 +492,9 @@ where
                 dry_run: report.dry_run,
                 provider_name: report.provider_name.clone(),
                 model_name: report.model_name.clone(),
+                endpoint_url: report.endpoint_url.clone(),
+                api_key_env: report.api_key_env.clone(),
+                api_key_set: report.api_key_set,
                 batch_size,
                 max_concurrency,
                 phase: VectorIndexPhase::Preparing,
@@ -478,6 +505,7 @@ where
                 failed: 0,
                 batches_completed: 0,
                 total_batches: planned_batches.unwrap_or(0),
+                batch_failures: Vec::new(),
             });
         }
 
@@ -519,6 +547,7 @@ where
         )?;
         if let Some(dimensions) = successful_dimension {
             let model = StoredModel {
+                cache_key: cache_key.clone(),
                 provider_name: provider.metadata().provider_name.clone(),
                 model_name: provider.metadata().model_name.clone(),
                 dimensions,
@@ -536,7 +565,8 @@ where
         }
 
         let mut vectors = Vec::new();
-        let mut failures = Vec::new();
+        let mut diagnostic_failures = Vec::new();
+        let mut batch_failures = Vec::new();
 
         for (chunk, result) in pending_chunks.iter().zip(results) {
             let Some(current_chunk) = fresh_chunks.get(&chunk.chunk_id) else {
@@ -561,10 +591,15 @@ where
                 }
                 Err(error) => {
                     report.failed += 1;
-                    failures.push((
-                        current_chunk.document_id.clone(),
+                    batch_failures.push((
+                        current_chunk.document_path.clone(),
                         chunk.chunk_id.clone(),
                         error.message,
+                    ));
+                    diagnostic_failures.push((
+                        current_chunk.document_id.clone(),
+                        chunk.chunk_id.clone(),
+                        batch_failures.last().unwrap().2.clone(),
                     ));
                 }
             }
@@ -580,13 +615,20 @@ where
             &fresh_chunks,
             &provider.metadata().provider_name,
             &provider.metadata().model_name,
-            &failures,
+            &diagnostic_failures,
         )?;
+
+        report
+            .failure_details
+            .extend(batch_failures.iter().cloned());
 
         on_progress(VectorIndexProgress {
             dry_run: report.dry_run,
             provider_name: report.provider_name.clone(),
             model_name: report.model_name.clone(),
+            endpoint_url: report.endpoint_url.clone(),
+            api_key_env: report.api_key_env.clone(),
+            api_key_set: report.api_key_set,
             batch_size,
             max_concurrency,
             phase: VectorIndexPhase::Embedding,
@@ -597,6 +639,7 @@ where
             failed: report.failed,
             batches_completed: report.batches,
             total_batches: planned_batches.unwrap_or(report.batches),
+            batch_failures,
         });
     }
 
@@ -605,6 +648,9 @@ where
         dry_run: report.dry_run,
         provider_name: report.provider_name.clone(),
         model_name: report.model_name.clone(),
+        endpoint_url: report.endpoint_url.clone(),
+        api_key_env: report.api_key_env.clone(),
+        api_key_set: report.api_key_set,
         batch_size,
         max_concurrency,
         phase: VectorIndexPhase::Completed,
@@ -615,6 +661,7 @@ where
         failed: report.failed,
         batches_completed: report.batches,
         total_batches: planned_batches.unwrap_or(report.batches),
+        batch_failures: Vec::new(),
     });
 
     Ok(report)
@@ -643,6 +690,27 @@ pub fn inspect_vector_queue(
         stale_vectors: status.stale_chunk_ids.len(),
         model_mismatch: status.model_mismatch,
     })
+}
+
+pub fn list_vector_models(
+    paths: &VaultPaths,
+) -> Result<Vec<vulcan_embed::StoredModelInfo>, VectorError> {
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
+    store.list_models().map_err(VectorError::Store)
+}
+
+pub fn drop_vector_model(paths: &VaultPaths, cache_key: &str) -> Result<bool, VectorError> {
+    let _lock = acquire_write_lock(paths)?;
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let mut store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
+    let dropped = store.drop_model(cache_key).map_err(VectorError::Store)?;
+    if dropped {
+        clear_cluster_rows(connection, None)?;
+    }
+    Ok(dropped)
 }
 
 pub fn repair_vectors(
@@ -686,6 +754,7 @@ where
                 &VectorIndexQuery {
                     provider: query.provider.clone(),
                     dry_run: false,
+                    verbose: false,
                 },
                 &mut on_progress,
             )?);
@@ -737,6 +806,9 @@ where
             dry_run: true,
             provider_name: status.provider_name,
             model_name: status.model_name,
+            endpoint_url: String::new(),
+            api_key_env: None,
+            api_key_set: false,
             dimensions: status
                 .active_model
                 .as_ref()
@@ -750,6 +822,7 @@ where
             rebuilt_index: true,
             elapsed_seconds: 0.0,
             rate_per_second: 0.0,
+            failure_details: Vec::new(),
         });
     }
 
@@ -759,6 +832,7 @@ where
         &VectorIndexQuery {
             provider: query.provider.clone(),
             dry_run: false,
+            verbose: false,
         },
         &mut on_progress,
     )?;
@@ -836,7 +910,8 @@ pub fn query_vector_neighbors(
         ));
     }
 
-    let provider = load_embedding_provider(paths, query.provider.as_deref())?;
+    let loaded = load_embedding_provider(paths, query.provider.as_deref())?;
+    let provider = loaded.provider;
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
@@ -844,7 +919,7 @@ pub fn query_vector_neighbors(
         .current_model()
         .map_err(VectorError::Store)?
         .ok_or(VectorError::MissingVectorIndex)?;
-    let requested_model = provider_model_from_metadata(&provider.metadata());
+    let requested_model = provider_model_from_metadata(&loaded.cache_key, &provider.metadata());
     if active_model.provider_name != requested_model.provider_name
         || active_model.model_name != requested_model.model_name
     {
@@ -921,7 +996,8 @@ pub fn vector_duplicates(
     paths: &VaultPaths,
     query: &VectorDuplicatesQuery,
 ) -> Result<VectorDuplicatesReport, VectorDuplicatesError> {
-    let provider = load_embedding_provider(paths, query.provider.as_deref())?;
+    let loaded = load_embedding_provider(paths, query.provider.as_deref())?;
+    let provider = loaded.provider;
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
@@ -929,7 +1005,7 @@ pub fn vector_duplicates(
         .current_model()
         .map_err(VectorError::Store)?
         .ok_or(VectorError::MissingVectorIndex)?;
-    validate_active_model(&active_model, &provider)?;
+    validate_active_model(&active_model, &loaded.cache_key, &provider)?;
 
     let vectors = store.load_vectors().map_err(VectorError::Store)?;
     let chunks = load_chunks_by_ids(
@@ -1169,14 +1245,26 @@ fn load_embedding_config(
     Ok(config)
 }
 
+struct LoadedProvider {
+    provider: OpenAICompatibleProvider,
+    cache_key: String,
+    endpoint_url: String,
+    api_key_env: Option<String>,
+    api_key_set: bool,
+}
+
 fn load_embedding_provider(
     paths: &VaultPaths,
     requested_provider: Option<&str>,
-) -> Result<OpenAICompatibleProvider, VectorError> {
+) -> Result<LoadedProvider, VectorError> {
     let config = load_embedding_config(paths, requested_provider)?;
 
+    let cache_key = config.effective_cache_key();
+    let api_key_env = config.api_key_env.clone();
     let api_key = resolve_api_key(&config)?;
-    OpenAICompatibleProvider::new(OpenAICompatibleConfig {
+    let api_key_set = api_key.is_some();
+    let endpoint_url = format!("{}/embeddings", config.base_url.trim_end_matches('/'));
+    let provider = OpenAICompatibleProvider::new(OpenAICompatibleConfig {
         provider_name: config.provider_name().to_string(),
         base_url: config.base_url.clone(),
         api_key,
@@ -1187,7 +1275,14 @@ fn load_embedding_provider(
         max_concurrency: config.max_concurrency.unwrap_or(4),
         ..OpenAICompatibleConfig::default()
     })
-    .map_err(VectorError::Provider)
+    .map_err(VectorError::Provider)?;
+    Ok(LoadedProvider {
+        provider,
+        cache_key,
+        endpoint_url,
+        api_key_env,
+        api_key_set,
+    })
 }
 
 fn finalize_index_report(report: &mut VectorIndexReport, started_at: Instant) {
@@ -1202,9 +1297,10 @@ fn finalize_index_report(report: &mut VectorIndexReport, started_at: Instant) {
 
 fn validate_active_model(
     active_model: &StoredModel,
+    cache_key: &str,
     provider: &OpenAICompatibleProvider,
 ) -> Result<(), VectorError> {
-    let requested_model = provider_model_from_metadata(&provider.metadata());
+    let requested_model = provider_model_from_metadata(cache_key, &provider.metadata());
     if active_model.provider_name != requested_model.provider_name
         || active_model.model_name != requested_model.model_name
     {
@@ -1253,8 +1349,12 @@ fn open_existing_cache(paths: &VaultPaths) -> Result<CacheDatabase, VectorError>
     CacheDatabase::open(paths).map_err(VectorError::from)
 }
 
-fn provider_model_from_metadata(metadata: &vulcan_embed::ModelMetadata) -> StoredModel {
+fn provider_model_from_metadata(
+    cache_key: &str,
+    metadata: &vulcan_embed::ModelMetadata,
+) -> StoredModel {
     StoredModel {
+        cache_key: cache_key.to_string(),
         provider_name: metadata.provider_name.clone(),
         model_name: metadata.model_name.clone(),
         dimensions: metadata.dimensions,
@@ -1264,6 +1364,7 @@ fn provider_model_from_metadata(metadata: &vulcan_embed::ModelMetadata) -> Store
 
 fn configured_model_from_config(config: &EmbeddingProviderConfig) -> StoredModel {
     StoredModel {
+        cache_key: config.effective_cache_key(),
         provider_name: config.provider_name().to_string(),
         model_name: config.model.clone(),
         dimensions: 0,
@@ -1272,8 +1373,7 @@ fn configured_model_from_config(config: &EmbeddingProviderConfig) -> StoredModel
 }
 
 fn same_model(left: &StoredModel, right: &StoredModel) -> bool {
-    left.provider_name == right.provider_name
-        && left.model_name == right.model_name
+    left.cache_key == right.cache_key
         && left.normalized == right.normalized
         && (left.dimensions == right.dimensions || right.dimensions == 0)
 }
@@ -1287,7 +1387,9 @@ fn delete_vector_chunks(paths: &VaultPaths, chunk_ids: &[String]) -> Result<(), 
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let mut store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
-    store.delete_chunks(chunk_ids).map_err(VectorError::Store)?;
+    store
+        .delete_chunks_all_models(chunk_ids)
+        .map_err(VectorError::Store)?;
     clear_cluster_rows(connection, None)?;
     Ok(())
 }
@@ -1296,12 +1398,12 @@ fn clear_vector_index(paths: &VaultPaths) -> Result<(), VectorError> {
     let _lock = acquire_write_lock(paths)?;
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
-    connection.execute_batch(
-        "
-        DROP TABLE IF EXISTS vectors;
-        DELETE FROM vector_index_state;
-        ",
-    )?;
+    let mut store = SqliteVecStore::new(connection).map_err(VectorError::Store)?;
+    if let Some(model) = store.current_model().map_err(VectorError::Store)? {
+        store
+            .drop_model(&model.cache_key)
+            .map_err(VectorError::Store)?;
+    }
     clear_cluster_rows(connection, None)?;
     Ok(())
 }
@@ -1827,6 +1929,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");
@@ -1835,6 +1938,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("second vector index should succeed");
@@ -1863,6 +1967,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");
@@ -1905,6 +2010,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");
@@ -1946,6 +2052,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");
@@ -1980,6 +2087,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");
@@ -2030,6 +2138,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: true,
+                verbose: false,
             },
         )
         .expect("dry-run vector index should succeed");
@@ -2062,6 +2171,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
             |progress| events.push(progress),
         )
@@ -2098,6 +2208,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");
@@ -2145,6 +2256,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");
@@ -2186,6 +2298,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");
@@ -2221,6 +2334,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");
@@ -2288,6 +2402,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
+                verbose: false,
             },
         )
         .expect("vector index should succeed");

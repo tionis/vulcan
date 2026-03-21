@@ -106,18 +106,19 @@ pub use suggestions::{
     SuggestionError,
 };
 pub use vector::{
-    cluster_vectors, index_vectors, index_vectors_with_progress, inspect_vector_queue,
-    query_related_notes, query_vector_neighbors, rebuild_vectors, rebuild_vectors_with_progress,
-    repair_vectors, repair_vectors_with_progress, vector_duplicates, ClusterAssignment,
+    cluster_vectors, drop_vector_model, index_vectors, index_vectors_with_progress,
+    inspect_vector_queue, list_vector_models, query_related_notes, query_vector_neighbors,
+    rebuild_vectors, rebuild_vectors_with_progress, repair_vectors, repair_vectors_with_progress,
+    vector_duplicates, ClusterAssignment,
     ClusterDocumentCount, ClusterError, ClusterQuery, ClusterReport, ClusterSummary,
     RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, VectorDuplicatePair,
     VectorDuplicatesError, VectorDuplicatesQuery, VectorDuplicatesReport, VectorError,
     VectorIndexError, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport,
     VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport,
-    VectorRebuildQuery, VectorRepairQuery, VectorRepairReport,
+    VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, StoredModelInfo,
 };
 pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchReport};
 
 pub const PARSER_VERSION: u32 = 4;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;

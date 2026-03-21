@@ -12,6 +12,7 @@ pub const TABLES_TO_CLEAR: &[&str] = &[
     "property_catalog",
     "vector_clusters",
     "vector_index_state",
+    "vector_model_registry",
     "search_chunk_content",
     "chunks",
     "diagnostics",
@@ -358,7 +359,37 @@ fn create_search_schema(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
     Ok(())
 }
 
+pub fn apply_schema_v8(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS vector_model_registry (
+            cache_key TEXT PRIMARY KEY,
+            table_name TEXT NOT NULL UNIQUE,
+            provider_name TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            normalized INTEGER NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        ",
+    )?;
+
+    Ok(())
+}
+
 pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    // Drop all namespaced vector tables and the legacy table.
+    let vector_tables: Vec<String> = {
+        let mut statement = transaction.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'vectors_%'",
+        )?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for table in &vector_tables {
+        transaction.execute_batch(&format!("DROP TABLE IF EXISTS [{table}]"))?;
+    }
     transaction.execute_batch("DROP TABLE IF EXISTS vectors;")?;
 
     for table_name in TABLES_TO_CLEAR {

@@ -2323,6 +2323,56 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "List all stored embedding models in the vector index",
+            "name": "models",
+            "options": [
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Drop a stored embedding model and its vectors",
+            "name": "drop-model",
+            "options": [
+              {
+                "help": "Cache key of the model to drop (see `vectors models`)",
+                "id": "key",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "KEY"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },
@@ -3385,12 +3435,16 @@
     }
   ],
   "vectors_index": {
+    "api_key_env": null,
+    "api_key_set": false,
     "batch_size": 8,
     "batches": 1,
     "dimensions": 2,
     "dry_run": false,
     "elapsed_seconds": 0.0,
+    "endpoint_url": "http://127.0.0.1:0/v1/embeddings",
     "failed": 0,
+    "failure_details": [],
     "indexed": 4,
     "max_concurrency": 1,
     "model_name": "fixture",
