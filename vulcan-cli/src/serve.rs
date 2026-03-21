@@ -487,6 +487,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "FSEvents does not reliably deliver events in CI"
+    )]
     fn serve_watch_refreshes_search_results() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
