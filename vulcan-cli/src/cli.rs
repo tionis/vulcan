@@ -813,6 +813,45 @@ pub enum Command {
         #[command(subcommand)]
         command: CacheCommand,
     },
+    #[command(
+        about = "Run a query using the human DSL or a JSON payload",
+        after_help = "\
+Query DSL syntax:
+  from notes
+    [where <field> <op> <value> [and <field> <op> <value>...]]
+    [select <field>[,<field>...]]
+    [order by <field> [desc|asc]]
+    [limit <n>]
+    [offset <n>]
+
+JSON payload (--json flag):
+  {\"source\":\"notes\",\"predicates\":[{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"done\"}],
+   \"sort\":{\"field\":\"file.mtime\",\"descending\":true},\"limit\":10}
+
+Operators:  = | > | >= | < | <= | starts_with | contains
+            (JSON: eq | gt | gte | lt | lte | starts_with | contains)
+
+Examples:
+  vulcan query 'from notes where status = done order by file.mtime desc limit 10'
+  vulcan query 'from notes where tags contains sprint and reviewed = true'
+  vulcan query --json '{\"source\":\"notes\",\"predicates\":[{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"done\"}]}'
+  vulcan query --explain 'from notes where status = backlog'"
+    )]
+    Query {
+        #[arg(
+            help = "DSL query string; e.g. 'from notes where status = done order by file.mtime desc'"
+        )]
+        dsl: Option<String>,
+        #[arg(
+            long,
+            help = "JSON query payload; mutually exclusive with the positional DSL argument"
+        )]
+        json: Option<String>,
+        #[arg(long, help = "Print the parsed query AST alongside the results")]
+        explain: bool,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
     #[command(about = "Describe the CLI schema and command surface")]
     Describe,
     #[command(about = "Generate shell completion scripts")]
