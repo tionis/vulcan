@@ -525,6 +525,36 @@ fn backlinks_json_output_lists_sources() {
 }
 
 #[test]
+fn note_commands_without_arguments_fail_cleanly_in_non_interactive_mode() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault_root_str, "--output", "json", "links"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "missing note; provide a note identifier or run interactively",
+        ));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault_root_str, "--output", "json", "related"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "missing note; provide a note identifier or run interactively",
+        ));
+}
+
+#[test]
 fn links_json_output_supports_fields_limit_and_offset() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

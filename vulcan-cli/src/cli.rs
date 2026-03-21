@@ -49,7 +49,7 @@ pub enum BasesCommand {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Open a read-only interactive TUI for a .base file")]
+    #[command(about = "Open an interactive TUI for a .base file")]
     Tui {
         #[arg(help = "Vault-relative path to the .base file to inspect")]
         file: String,
@@ -112,8 +112,10 @@ pub enum VectorsCommand {
     },
     #[command(about = "Recommend semantically related notes for one note")]
     Related {
-        #[arg(help = "Note path, filename, or alias to use as the seed note")]
-        note: String,
+        #[arg(
+            help = "Note path, filename, or alias to use as the seed note; omit in a TTY session to pick interactively"
+        )]
+        note: Option<String>,
         #[command(flatten)]
         export: ExportArgs,
     },
@@ -420,15 +422,19 @@ pub enum Command {
     },
     #[command(about = "List outgoing links for a note")]
     Links {
-        #[arg(help = "Note path, filename, or alias to inspect")]
-        note: String,
+        #[arg(
+            help = "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively"
+        )]
+        note: Option<String>,
         #[command(flatten)]
         export: ExportArgs,
     },
     #[command(about = "List inbound links pointing at a note")]
     Backlinks {
-        #[arg(help = "Note path, filename, or alias to inspect")]
-        note: String,
+        #[arg(
+            help = "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively"
+        )]
+        note: Option<String>,
         #[command(flatten)]
         export: ExportArgs,
     },
@@ -546,8 +552,10 @@ pub enum Command {
     },
     #[command(about = "Recommend semantically related notes for one note")]
     Related {
-        #[arg(help = "Note path, filename, or alias to use as the seed note")]
-        note: String,
+        #[arg(
+            help = "Note path, filename, or alias to use as the seed note; omit in a TTY session to pick interactively"
+        )]
+        note: Option<String>,
         #[command(flatten)]
         export: ExportArgs,
     },

@@ -473,14 +473,14 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [ ] Add a compact human query DSL for ad hoc vault querying without exposing raw SQL
 - [ ] Add stable JSON query payloads for agents and automation that map directly to the internal query model
 - [ ] Add query-driven mutation workflows on top of the same model instead of overloading `.base` files as the write API
-- [ ] Add a TTY-only fuzzy selector and disambiguation UI for missing or ambiguous note arguments
-- [ ] Never auto-prompt in non-interactive mode or when `--output json` is active
-- [ ] Expand `bases tui <file.base>` beyond read-only inspection into a richer interactive workflow
-- [ ] Hide the Bases TUI diagnostics panel by default and make it toggleable for debugging or view-authoring work
-- [ ] Extend the detail pane to show both structured row details and a file preview
-- [ ] Add a full-screen preview mode for the selected note
-- [ ] Add note/property editing in the TUI through the same validated mutation engine used by CLI commands
-- [ ] Consider an optional external-editor handoff for full-file editing from the TUI
+- [~] Add a TTY-only fuzzy selector and disambiguation UI for missing or ambiguous note arguments
+- [x] Never auto-prompt in non-interactive mode or when `--output json` is active
+- [x] Expand `bases tui <file.base>` beyond read-only inspection into a richer interactive workflow
+- [x] Hide the Bases TUI diagnostics panel by default and make it toggleable for debugging or view-authoring work
+- [x] Extend the detail pane to show both structured row details and a file preview
+- [x] Add a full-screen preview mode for the selected note
+- [x] Add note/property editing in the TUI through the same validated mutation engine used by CLI commands
+- [x] Add an optional external-editor handoff for note and `.base` editing from the TUI
 - [ ] Add future Bases view-management workflows: create, delete, rename, and edit views with validation and live result preview
 
 ---

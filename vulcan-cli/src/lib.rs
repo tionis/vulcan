@@ -1,5 +1,6 @@
 mod bases_tui;
 mod cli;
+mod note_picker;
 mod serve;
 
 pub use cli::{
@@ -29,24 +30,24 @@ use vulcan_core::{
     query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
     query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
     rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, repair_vectors_with_progress, save_saved_report, scan_vault_with_progress,
-    search_vault, suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache,
-    watch_vault, BacklinkRecord, BacklinksReport, BasesEvalReport, CacheInspectReport,
-    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
-    ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport,
-    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphTrendsReport, InitSummary,
-    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
-    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, RebuildQuery,
-    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
-    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
-    VectorRepairReport, WatchOptions, WatchReport,
+    repair_fts, repair_vectors_with_progress, resolve_note_reference, save_saved_report,
+    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
+    vector_duplicates, verify_cache, watch_vault, BacklinkRecord, BacklinksReport, BasesEvalReport,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DuplicateSuggestionsReport, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, RebuildQuery, RebuildReport, RefactorReport, RelatedNoteHit,
+    RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
+    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -484,6 +485,40 @@ fn path_to_string(path: &Path) -> Result<String, CliError> {
         .ok_or_else(|| CliError::operation("export paths must be valid UTF-8"))
 }
 
+fn interactive_note_selection_allowed(cli: &Cli, stdout_is_tty: bool) -> bool {
+    cli.output == OutputFormat::Human && stdout_is_tty && io::stdin().is_terminal()
+}
+
+fn resolve_note_argument(
+    paths: &VaultPaths,
+    identifier: Option<&str>,
+    interactive: bool,
+    prompt: &str,
+) -> Result<String, CliError> {
+    match identifier {
+        Some(identifier) => match resolve_note_reference(paths, identifier) {
+            Ok(_) => Ok(identifier.to_string()),
+            Err(GraphQueryError::AmbiguousIdentifier { matches, .. }) if interactive => {
+                note_picker::pick_note(paths, Some(identifier), Some(&matches))
+                    .map_err(CliError::operation)?
+                    .ok_or_else(|| CliError::operation(format!("cancelled {prompt} selection")))
+            }
+            Err(GraphQueryError::NoteNotFound { .. }) if interactive => {
+                note_picker::pick_note(paths, Some(identifier), None)
+                    .map_err(CliError::operation)?
+                    .ok_or_else(|| CliError::operation(format!("cancelled {prompt} selection")))
+            }
+            Err(error) => Err(CliError::operation(error)),
+        },
+        None if interactive => note_picker::pick_note(paths, None, None)
+            .map_err(CliError::operation)?
+            .ok_or_else(|| CliError::operation(format!("cancelled {prompt} selection"))),
+        None => Err(CliError::operation(format!(
+            "missing {prompt}; provide a note identifier or run interactively"
+        ))),
+    }
+}
+
 fn saved_export_format(format: ExportFormat) -> SavedExportFormat {
     match format {
         ExportFormat::Csv => SavedExportFormat::Csv,
@@ -899,13 +934,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let stderr_is_tty = io::stderr().is_terminal();
     let use_stdout_color = color_enabled_for_terminal(stdout_is_tty);
     let use_stderr_color = color_enabled_for_terminal(stderr_is_tty);
+    let interactive_note_selection = interactive_note_selection_allowed(cli, stdout_is_tty);
 
     match cli.command {
         Command::Backlinks {
             ref note,
             ref export,
         } => {
-            let report = query_backlinks(&paths, note).map_err(CliError::operation)?;
+            let note =
+                resolve_note_argument(&paths, note.as_deref(), interactive_note_selection, "note")?;
+            let report = query_backlinks(&paths, &note).map_err(CliError::operation)?;
             let export = resolve_cli_export(export)?;
             print_backlinks_report(
                 cli.output,
@@ -1003,7 +1041,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             BasesCommand::Tui { file } => {
                 let report = evaluate_base_file(&paths, file).map_err(CliError::operation)?;
                 if cli.output == OutputFormat::Human && stdout_is_tty && io::stdin().is_terminal() {
-                    bases_tui::run_bases_tui(&report).map_err(CliError::operation)
+                    bases_tui::run_bases_tui(&paths, file, &report).map_err(CliError::operation)
                 } else {
                     print_bases_report(
                         cli.output,
@@ -1045,11 +1083,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref note,
             ref export,
         } => {
+            let note =
+                resolve_note_argument(&paths, note.as_deref(), interactive_note_selection, "note")?;
             let report = query_related_notes(
                 &paths,
                 &RelatedNotesQuery {
                     provider: cli.provider.clone(),
-                    note: note.clone(),
+                    note,
                     limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
                 },
             )
@@ -1226,7 +1266,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref note,
             ref export,
         } => {
-            let report = query_links(&paths, note).map_err(CliError::operation)?;
+            let note =
+                resolve_note_argument(&paths, note.as_deref(), interactive_note_selection, "note")?;
+            let report = query_links(&paths, &note).map_err(CliError::operation)?;
             let export = resolve_cli_export(export)?;
             print_links_report(
                 cli.output,
@@ -1657,12 +1699,22 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 note,
                 export,
             } => {
+                let resolved_note = if note.is_some() || query.is_none() {
+                    Some(resolve_note_argument(
+                        &paths,
+                        note.as_deref(),
+                        interactive_note_selection && query.is_none(),
+                        "note",
+                    )?)
+                } else {
+                    None
+                };
                 let report = query_vector_neighbors(
                     &paths,
                     &VectorNeighborsQuery {
                         provider: cli.provider.clone(),
                         text: query.clone(),
-                        note: note.clone(),
+                        note: resolved_note,
                         limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
                     },
                 )
@@ -1679,11 +1731,17 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 Ok(())
             }
             VectorsCommand::Related { note, export } => {
+                let note = resolve_note_argument(
+                    &paths,
+                    note.as_deref(),
+                    interactive_note_selection,
+                    "note",
+                )?;
                 let report = query_related_notes(
                     &paths,
                     &RelatedNotesQuery {
                         provider: cli.provider.clone(),
-                        note: note.clone(),
+                        note,
                         limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
                     },
                 )
@@ -4595,8 +4653,10 @@ mod tests {
             Cli::try_parse_from(["vulcan", "export", "search-index", "--pretty"])
                 .expect("cli should parse");
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
+        let links_picker = Cli::try_parse_from(["vulcan", "links"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
             .expect("cli should parse");
+        let related_picker = Cli::try_parse_from(["vulcan", "related"]).expect("cli should parse");
         let search = Cli::try_parse_from([
             "vulcan",
             "search",
@@ -4813,14 +4873,21 @@ mod tests {
         assert_eq!(
             links.command,
             Command::Links {
-                note: "Home".to_string(),
+                note: Some("Home".to_string()),
+                export: ExportArgs::default(),
+            }
+        );
+        assert_eq!(
+            links_picker.command,
+            Command::Links {
+                note: None,
                 export: ExportArgs::default(),
             }
         );
         assert_eq!(
             backlinks.command,
             Command::Backlinks {
-                note: "Projects/Alpha".to_string(),
+                note: Some("Projects/Alpha".to_string()),
                 export: ExportArgs::default(),
             }
         );
@@ -4929,7 +4996,7 @@ mod tests {
             vector_related.command,
             Command::Vectors {
                 command: VectorsCommand::Related {
-                    note: "Home".to_string(),
+                    note: Some("Home".to_string()),
                     export: ExportArgs::default(),
                 },
             }
@@ -4954,7 +5021,14 @@ mod tests {
         assert_eq!(
             related.command,
             Command::Related {
-                note: "Home".to_string(),
+                note: Some("Home".to_string()),
+                export: ExportArgs::default(),
+            }
+        );
+        assert_eq!(
+            related_picker.command,
+            Command::Related {
+                note: None,
                 export: ExportArgs::default(),
             }
         );
