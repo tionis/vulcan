@@ -63,7 +63,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Indexing: init, scan, rebuild, repair, watch, serve",
             ))
             .and(predicate::str::contains(
-                "Graph and Query: links, backlinks, graph, search, notes, bases, suggest",
+                "Graph and Query: links, backlinks, graph, search, notes, query, bases, suggest",
             ))
             .and(predicate::str::contains(
                 "Semantic: vectors, cluster, related",
@@ -72,7 +72,10 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Reports and Automation: saved, checkpoint, changes, batch, export, automation",
             ))
             .and(predicate::str::contains(
-                "Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions",
+                "Mutations: update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
+            ))
+            .and(predicate::str::contains(
+                "Maintenance: move, doctor, cache, link-mentions, rewrite, describe, completions",
             ))
             .and(predicate::str::contains("User guide: docs/cli.md"))
             .and(predicate::str::contains("Machine-readable schema: vulcan describe")),
@@ -2414,6 +2417,182 @@ fn query_command_results_match_notes_command() {
     assert_eq!(
         query_paths, notes_paths,
         "query DSL and notes --where should return identical results"
+    );
+}
+
+#[test]
+fn update_command_sets_property_on_matching_notes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "update",
+            "--where",
+            "status = backlog",
+            "--key",
+            "reviewed",
+            "--value",
+            "true",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Applied"));
+
+    let backlog_content =
+        fs::read_to_string(vault_root.join("Backlog.md")).expect("Backlog.md should be readable");
+    assert!(
+        backlog_content.contains("reviewed: true"),
+        "backlog note should have reviewed: true after update"
+    );
+
+    let done_content =
+        fs::read_to_string(vault_root.join("Done.md")).expect("Done.md should be readable");
+    assert!(
+        done_content.contains("reviewed: true"),
+        "done note should be unchanged (already true)"
+    );
+}
+
+#[test]
+fn update_command_dry_run_does_not_modify_files() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let original =
+        fs::read_to_string(vault_root.join("Backlog.md")).expect("Backlog.md should be readable");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "update",
+            "--where",
+            "status = backlog",
+            "--key",
+            "priority",
+            "--value",
+            "high",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dry run"));
+
+    let after =
+        fs::read_to_string(vault_root.join("Backlog.md")).expect("Backlog.md should be readable");
+    assert_eq!(original, after, "dry run should not modify the file");
+}
+
+#[test]
+fn unset_command_removes_property_from_matching_notes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "unset",
+            "--where",
+            "status = backlog",
+            "--key",
+            "estimate",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Applied"));
+
+    let backlog_content =
+        fs::read_to_string(vault_root.join("Backlog.md")).expect("Backlog.md should be readable");
+    assert!(
+        !backlog_content.contains("estimate:"),
+        "estimate property should be removed from backlog note"
+    );
+
+    let done_content =
+        fs::read_to_string(vault_root.join("Done.md")).expect("Done.md should be readable");
+    assert!(
+        done_content.contains("estimate:"),
+        "done note should be unaffected"
+    );
+}
+
+#[test]
+fn unset_command_dry_run_does_not_modify_files() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let original =
+        fs::read_to_string(vault_root.join("Done.md")).expect("Done.md should be readable");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "unset",
+            "--where",
+            "status = done",
+            "--key",
+            "estimate",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dry run"));
+
+    let after =
+        fs::read_to_string(vault_root.join("Done.md")).expect("Done.md should be readable");
+    assert_eq!(original, after, "dry run should not modify the file");
+}
+
+#[test]
+fn update_command_json_output_includes_mutation_report() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "update",
+            "--where",
+            "status = backlog",
+            "--key",
+            "flagged",
+            "--value",
+            "true",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["key"], "flagged");
+    assert_eq!(json["value"], "true");
+    assert!(
+        json["filters"].as_array().is_some(),
+        "JSON output should include filters"
     );
 }
 

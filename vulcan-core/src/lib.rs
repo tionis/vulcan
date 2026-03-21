@@ -78,8 +78,9 @@ pub use query::{
     QuerySource, QueryValue,
 };
 pub use refactor::{
-    merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property, set_note_property,
-    RefactorChange, RefactorError, RefactorFileReport, RefactorReport,
+    bulk_set_property, merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property,
+    set_note_property, BulkMutationReport, RefactorChange, RefactorError, RefactorFileReport,
+    RefactorReport,
 };
 pub use resolver::{
     resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverLink,

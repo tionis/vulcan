@@ -5,10 +5,11 @@ use std::path::PathBuf;
 const ROOT_AFTER_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
-  Graph and Query: links, backlinks, graph, search, notes, bases, suggest
+  Graph and Query: links, backlinks, graph, search, notes, query, bases, suggest
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
-  Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions
+  Mutations: update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
+  Maintenance: move, doctor, cache, link-mentions, rewrite, describe, completions
 
 Docs:
   User guide: docs/cli.md
@@ -756,6 +757,52 @@ pub enum Command {
             help = "Return exit code 2 when the final doctor summary still reports issues"
         )]
         fail_on_issues: bool,
+    },
+    #[command(
+        about = "Set a frontmatter property on notes selected by query filters",
+        after_help = "\
+Filter syntax:
+  Repeat --where to combine filters with AND.
+  Form: <field> <operator> <value>
+
+Examples:
+  vulcan update --where 'status = draft' --key status --value done --dry-run
+  vulcan update --where 'tags contains wip' --key reviewed --value true
+  vulcan update --where 'file.path starts_with \"Archive/\"' --key archived --value true"
+    )]
+    Update {
+        #[arg(
+            long = "where",
+            help = "Filter expression such as `status = draft`; repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(long, help = "Frontmatter property key to set")]
+        key: String,
+        #[arg(long, help = "New value for the property (YAML scalar or quoted string)")]
+        value: String,
+        #[arg(long, help = "Report planned changes without modifying files")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Remove a frontmatter property from notes selected by query filters",
+        after_help = "\
+Filter syntax:
+  Repeat --where to combine filters with AND.
+
+Examples:
+  vulcan unset --where 'status = draft' --key draft_notes --dry-run
+  vulcan unset --where 'file.path starts_with \"Archive/\"' --key due"
+    )]
+    Unset {
+        #[arg(
+            long = "where",
+            help = "Filter expression such as `status = draft`; repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(long, help = "Frontmatter property key to remove")]
+        key: String,
+        #[arg(long, help = "Report planned removals without modifying files")]
+        dry_run: bool,
     },
     #[command(about = "Rename a frontmatter property key across notes")]
     RenameProperty {
