@@ -3433,6 +3433,8 @@ fn resolve_vault_root(vault: &PathBuf) -> Result<PathBuf, CliError> {
 struct CliDescribeReport {
     name: String,
     about: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after_help: Option<String>,
     version: Option<String>,
     global_options: Vec<CliArgDescribe>,
     commands: Vec<CliCommandDescribe>,
@@ -3442,6 +3444,8 @@ struct CliDescribeReport {
 struct CliCommandDescribe {
     name: String,
     about: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after_help: Option<String>,
     options: Vec<CliArgDescribe>,
     subcommands: Vec<CliCommandDescribe>,
 }
@@ -3466,6 +3470,7 @@ fn describe_cli() -> CliDescribeReport {
     CliDescribeReport {
         name,
         about: command.get_about().map(ToString::to_string),
+        after_help: command.get_after_help().map(ToString::to_string),
         version: command.get_version().map(ToString::to_string),
         global_options: command
             .get_arguments()
@@ -3480,6 +3485,7 @@ fn describe_command(command: &clap::Command) -> CliCommandDescribe {
     CliCommandDescribe {
         name: command.get_name().to_string(),
         about: command.get_about().map(ToString::to_string),
+        after_help: command.get_after_help().map(ToString::to_string),
         options: command
             .get_arguments()
             .filter(|argument| !argument.is_global_set())
