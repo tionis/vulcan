@@ -2,13 +2,126 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use std::path::PathBuf;
 
-const COMMAND_GROUPS_HELP: &str = "\
+const ROOT_AFTER_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
   Graph and Query: links, backlinks, graph, search, notes, bases, suggest
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
-  Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions";
+  Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions
+
+Docs:
+  User guide: docs/cli.md
+  Query/filter reference: vulcan notes --help and vulcan search --help
+  Machine-readable schema: vulcan describe";
+
+const NOTES_COMMAND_AFTER_HELP: &str = "\
+Sort keys:
+  Any property key, or one of file.path, file.name, file.ext, file.mtime
+
+\
+Filter syntax:
+  Repeat --where to combine filters with AND.
+  Form: <field> <operator> <value>
+  There is no OR or parenthesized filter syntax in --where today.
+
+Fields:
+  <property-key>
+  file.path | file.name | file.ext | file.mtime
+
+Operators:
+  = | > | >= | < | <=
+  starts_with   text fields only
+  contains      list properties only
+
+Values:
+  text: done, \"In Progress\", 'Rule Index'
+  booleans: true, false
+  null: null
+  numbers: 42, 3.5
+  dates: 2026-03-01 or 2026-03-01T09:30:00Z
+  file.mtime: integer milliseconds since the Unix epoch
+
+Examples:
+  vulcan notes --where 'status = done'
+  vulcan notes --where 'tags contains sprint'
+  vulcan notes --where 'file.path starts_with \"Projects/\"' --sort due";
+
+const SEARCH_COMMAND_AFTER_HELP: &str = "\
+Search query syntax:
+  plain terms are ANDed: dashboard status
+  quoted phrases stay together: \"owned by\"
+  use `or` between positive terms: dashboard or summary
+  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"
+  inline filters on unquoted positive terms:
+    tag:index
+    path:People/
+    has:status
+    property:status
+
+Notes:
+  Use --where for typed property filters and list membership.
+  Use --raw-query to pass SQLite FTS5 syntax through unchanged.
+
+\
+Filter syntax:
+  Repeat --where to combine filters with AND.
+  Form: <field> <operator> <value>
+  There is no OR or parenthesized filter syntax in --where today.
+
+Fields:
+  <property-key>
+  file.path | file.name | file.ext | file.mtime
+
+Operators:
+  = | > | >= | < | <=
+  starts_with   text fields only
+  contains      list properties only
+
+Values:
+  text: done, \"In Progress\", 'Rule Index'
+  booleans: true, false
+  null: null
+  numbers: 42, 3.5
+  dates: 2026-03-01 or 2026-03-01T09:30:00Z
+  file.mtime: integer milliseconds since the Unix epoch
+
+Examples:
+  vulcan search 'dashboard \"release notes\" -draft'
+  vulcan search 'tag:index path:People/ owned'
+  vulcan search dashboard --where 'reviewed = true'";
+
+const REWRITE_COMMAND_AFTER_HELP: &str = "\
+Scope selection:
+  rewrite does a literal find/replace over notes selected by --where filters.
+  Repeat --where to combine filters with AND.
+
+\
+Filter syntax:
+  Repeat --where to combine filters with AND.
+  Form: <field> <operator> <value>
+  There is no OR or parenthesized filter syntax in --where today.
+
+Fields:
+  <property-key>
+  file.path | file.name | file.ext | file.mtime
+
+Operators:
+  = | > | >= | < | <=
+  starts_with   text fields only
+  contains      list properties only
+
+Values:
+  text: done, \"In Progress\", 'Rule Index'
+  booleans: true, false
+  null: null
+  numbers: 42, 3.5
+  dates: 2026-03-01 or 2026-03-01T09:30:00Z
+  file.mtime: integer milliseconds since the Unix epoch
+
+Examples:
+  vulcan rewrite --where 'status = draft' --find TODO --replace DONE --dry-run
+  vulcan rewrite --where 'file.path starts_with \"Projects/\"' --find alpha --replace beta";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -229,15 +342,20 @@ pub enum SavedCommand {
         #[arg(help = "Saved report name")]
         name: String,
     },
-    #[command(about = "Persist a saved search definition in .vulcan/reports")]
+    #[command(
+        about = "Persist a saved search definition in .vulcan/reports",
+        after_help = SEARCH_COMMAND_AFTER_HELP
+    )]
     Search {
         #[arg(help = "Saved report name")]
         name: String,
-        #[arg(help = "Full-text query string")]
+        #[arg(
+            help = "Full-text query string; supports phrases, `or`, `-term`, and inline tag:/path:/has: filters"
+        )]
         query: String,
         #[arg(
             long = "where",
-            help = "Typed property filter, repeatable and combined with AND"
+            help = "Typed property filter such as `status = done`; repeatable and combined with AND"
         )]
         filters: Vec<String>,
         #[arg(
@@ -274,13 +392,22 @@ pub enum SavedCommand {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Persist a saved property query definition in .vulcan/reports")]
+    #[command(
+        about = "Persist a saved property query definition in .vulcan/reports",
+        after_help = NOTES_COMMAND_AFTER_HELP
+    )]
     Notes {
         #[arg(help = "Saved report name")]
         name: String,
-        #[arg(long = "where", help = "Filter expression, repeatable")]
+        #[arg(
+            long = "where",
+            help = "Filter expression such as `status = done`; repeatable and combined with AND"
+        )]
         filters: Vec<String>,
-        #[arg(long, help = "Property or field to sort by")]
+        #[arg(
+            long,
+            help = "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by"
+        )]
         sort: Option<String>,
         #[arg(long, help = "Sort descending instead of ascending")]
         desc: bool,
@@ -443,13 +570,18 @@ pub enum Command {
         #[command(subcommand)]
         command: GraphCommand,
     },
-    #[command(about = "Search indexed note content")]
+    #[command(
+        about = "Search indexed note content",
+        after_help = SEARCH_COMMAND_AFTER_HELP
+    )]
     Search {
-        #[arg(help = "Full-text query string")]
+        #[arg(
+            help = "Full-text query string; supports phrases, `or`, `-term`, and inline tag:/path:/has: filters"
+        )]
         query: String,
         #[arg(
             long = "where",
-            help = "Typed property filter, repeatable and combined with AND"
+            help = "Typed property filter such as `status = done`; repeatable and combined with AND"
         )]
         filters: Vec<String>,
         #[arg(
@@ -483,11 +615,20 @@ pub enum Command {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Query notes by typed properties")]
+    #[command(
+        about = "Query notes by typed properties",
+        after_help = NOTES_COMMAND_AFTER_HELP
+    )]
     Notes {
-        #[arg(long = "where", help = "Filter expression, repeatable")]
+        #[arg(
+            long = "where",
+            help = "Filter expression such as `status = done`; repeatable and combined with AND"
+        )]
         filters: Vec<String>,
-        #[arg(long, help = "Property or field to sort by")]
+        #[arg(
+            long,
+            help = "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by"
+        )]
         sort: Option<String>,
         #[arg(long, help = "Sort descending instead of ascending")]
         desc: bool,
@@ -580,9 +721,15 @@ pub enum Command {
         #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
     },
-    #[command(about = "Apply a literal find/replace across notes selected by filters")]
+    #[command(
+        about = "Apply a literal find/replace across notes selected by filters",
+        after_help = REWRITE_COMMAND_AFTER_HELP
+    )]
     Rewrite {
-        #[arg(long = "where", help = "Typed property filter, repeatable")]
+        #[arg(
+            long = "where",
+            help = "Typed property filter such as `status = done`; repeatable and combined with AND"
+        )]
         filters: Vec<String>,
         #[arg(long, help = "Literal text to find")]
         find: String,
@@ -677,7 +824,7 @@ pub enum Command {
     version,
     about = "Headless CLI for Obsidian-style vaults and Markdown directories",
     long_about = None,
-    after_help = COMMAND_GROUPS_HELP
+    after_help = ROOT_AFTER_HELP
 )]
 pub struct Cli {
     #[arg(

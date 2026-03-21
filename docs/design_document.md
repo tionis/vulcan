@@ -4,6 +4,8 @@
 **Implementation brief for the engineering agent**  
 Date: 19 March 2026
 
+User-facing CLI usage, filter syntax, and examples are documented separately in `docs/cli.md`. This document focuses on architecture and design decisions.
+
 > **Recommended direction:** Build a single-binary CLI in Rust, treat the vault as the source of truth, use SQLite as a rebuildable graph/content/property cache, and add vector search as a second derived index. Prioritize correctness of link semantics, incremental invalidation, and property normalization over feature breadth.
 
 ## Decision summary

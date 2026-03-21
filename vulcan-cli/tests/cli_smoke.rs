@@ -73,8 +73,57 @@ fn help_mentions_global_flags_and_core_commands() {
             ))
             .and(predicate::str::contains(
                 "Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions",
-            )),
+            ))
+            .and(predicate::str::contains("User guide: docs/cli.md"))
+            .and(predicate::str::contains("Machine-readable schema: vulcan describe")),
     );
+}
+
+#[test]
+fn notes_help_documents_filter_syntax() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["notes", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Filter syntax:")
+                .and(predicate::str::contains(
+                    "Repeat --where to combine filters with AND.",
+                ))
+                .and(predicate::str::contains(
+                    "file.path | file.name | file.ext | file.mtime",
+                ))
+                .and(predicate::str::contains(
+                    "contains      list properties only",
+                ))
+                .and(predicate::str::contains(
+                    "vulcan notes --where 'status = done'",
+                )),
+        );
+}
+
+#[test]
+fn search_help_documents_query_and_filter_syntax() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["search", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Search query syntax:")
+                .and(predicate::str::contains(
+                    "plain terms are ANDed: dashboard status",
+                ))
+                .and(predicate::str::contains("tag:index"))
+                .and(predicate::str::contains(
+                    "Use --raw-query to pass SQLite FTS5 syntax through unchanged.",
+                ))
+                .and(predicate::str::contains("Filter syntax:"))
+                .and(predicate::str::contains(
+                    "vulcan search dashboard --where 'reviewed = true'",
+                )),
+        );
 }
 
 #[test]
@@ -2144,11 +2193,23 @@ fn describe_json_output_exposes_runtime_command_schema() {
     let json = parse_stdout_json(&assert);
 
     assert_eq!(json["name"], "vulcan");
+    assert!(json["after_help"]
+        .as_str()
+        .expect("after_help should be a string")
+        .contains("User guide: docs/cli.md"));
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")
         .iter()
         .any(|command| command["name"] == "repair"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .find(|command| command["name"] == "notes")
+        .and_then(|command| command["after_help"].as_str())
+        .expect("notes after_help should be present")
+        .contains("Filter syntax:"));
 }
 
 #[test]

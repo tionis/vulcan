@@ -108,6 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, bases, suggest\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -584,10 +585,11 @@
       },
       {
         "about": "Search indexed note content",
+        "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n\nNotes:\n  Use --where for typed property filters and list membership.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search dashboard --where 'reviewed = true'",
         "name": "search",
         "options": [
           {
-            "help": "Full-text query string",
+            "help": "Full-text query string; supports phrases, `or`, `-term`, and inline tag:/path:/has: filters",
             "id": "query",
             "long": null,
             "possible_values": [],
@@ -598,7 +600,7 @@
             ]
           },
           {
-            "help": "Typed property filter, repeatable and combined with AND",
+            "help": "Typed property filter such as `status = done`; repeatable and combined with AND",
             "id": "filters",
             "long": "where",
             "possible_values": [],
@@ -738,10 +740,11 @@
       },
       {
         "about": "Query notes by typed properties",
+        "after_help": "Sort keys:\n  Any property key, or one of file.path, file.name, file.ext, file.mtime\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan notes --where 'status = done'\n  vulcan notes --where 'tags contains sprint'\n  vulcan notes --where 'file.path starts_with \"Projects/\"' --sort due",
         "name": "notes",
         "options": [
           {
-            "help": "Filter expression, repeatable",
+            "help": "Filter expression such as `status = done`; repeatable and combined with AND",
             "id": "filters",
             "long": "where",
             "possible_values": [],
@@ -752,7 +755,7 @@
             ]
           },
           {
-            "help": "Property or field to sort by",
+            "help": "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by",
             "id": "sort",
             "long": "sort",
             "possible_values": [],
@@ -985,6 +988,7 @@
           },
           {
             "about": "Persist a saved search definition in .vulcan/reports",
+            "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n\nNotes:\n  Use --where for typed property filters and list membership.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search dashboard --where 'reviewed = true'",
             "name": "search",
             "options": [
               {
@@ -999,7 +1003,7 @@
                 ]
               },
               {
-                "help": "Full-text query string",
+                "help": "Full-text query string; supports phrases, `or`, `-term`, and inline tag:/path:/has: filters",
                 "id": "query",
                 "long": null,
                 "possible_values": [],
@@ -1010,7 +1014,7 @@
                 ]
               },
               {
-                "help": "Typed property filter, repeatable and combined with AND",
+                "help": "Typed property filter such as `status = done`; repeatable and combined with AND",
                 "id": "filters",
                 "long": "where",
                 "possible_values": [],
@@ -1147,6 +1151,7 @@
           },
           {
             "about": "Persist a saved property query definition in .vulcan/reports",
+            "after_help": "Sort keys:\n  Any property key, or one of file.path, file.name, file.ext, file.mtime\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan notes --where 'status = done'\n  vulcan notes --where 'tags contains sprint'\n  vulcan notes --where 'file.path starts_with \"Projects/\"' --sort due",
             "name": "notes",
             "options": [
               {
@@ -1161,7 +1166,7 @@
                 ]
               },
               {
-                "help": "Filter expression, repeatable",
+                "help": "Filter expression such as `status = done`; repeatable and combined with AND",
                 "id": "filters",
                 "long": "where",
                 "possible_values": [],
@@ -1172,7 +1177,7 @@
                 ]
               },
               {
-                "help": "Property or field to sort by",
+                "help": "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by",
                 "id": "sort",
                 "long": "sort",
                 "possible_values": [],
@@ -2060,10 +2065,11 @@
       },
       {
         "about": "Apply a literal find/replace across notes selected by filters",
+        "after_help": "Scope selection:\n  rewrite does a literal find/replace over notes selected by --where filters.\n  Repeat --where to combine filters with AND.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan rewrite --where 'status = draft' --find TODO --replace DONE --dry-run\n  vulcan rewrite --where 'file.path starts_with \"Projects/\"' --find alpha --replace beta",
         "name": "rewrite",
         "options": [
           {
-            "help": "Typed property filter, repeatable",
+            "help": "Typed property filter such as `status = done`; repeatable and combined with AND",
             "id": "filters",
             "long": "where",
             "possible_values": [],
