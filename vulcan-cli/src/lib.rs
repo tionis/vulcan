@@ -2338,7 +2338,7 @@ fn print_query_report(
                     "notes": rows,
                 });
                 export_rows(
-                    &[payload.clone()],
+                    std::slice::from_ref(&payload),
                     list_controls.fields.as_deref(),
                     export,
                 )?;

@@ -199,7 +199,7 @@ pub fn rename_property(
                     after: new_key.to_string(),
                 }],
             ))
-        })?;
+        });
 
         let result = if surgical_result.is_some() {
             surgical_result
@@ -245,7 +245,7 @@ pub fn merge_tags(
             surgical_edit_key_value_block(yaml, "tags", |tags_value| {
                 merge_frontmatter_tags_value(tags_value, &source_tag, &destination_tag)
             })
-        })?;
+        });
 
         let fm_result = if surgical_result.is_some() {
             surgical_result
@@ -303,7 +303,7 @@ pub fn rename_alias(
             rename_frontmatter_alias_value(aliases_value, &path, old_alias, new_alias)
                 .unwrap_or_default()
         })
-    })?;
+    });
 
     let alias_result = if surgical.is_some() {
         surgical
@@ -669,7 +669,7 @@ fn try_surgical_set_in_yaml(
     let prev_mapping: YamlValue = serde_yaml::from_str(key_block).ok()?;
     let prev_value = prev_mapping
         .as_mapping()?
-        .get(&YamlValue::String(key.to_string()))?
+        .get(YamlValue::String(key.to_string()))?
         .clone();
 
     if let Some(new_value) = value {
@@ -1262,19 +1262,9 @@ fn find_yaml_key_span(yaml: &str, key: &str) -> Option<(usize, usize)> {
         pos += line.len();
         let line_body = line.trim_end_matches('\n').trim_end_matches('\r');
 
-        if span_start.is_none() {
-            if is_top_level_key_line(line_body, key) {
-                span_start = Some(line_start);
-                let after_colon = line_body[key.len() + 1..].trim();
-                if !after_colon.is_empty() {
-                    // Inline scalar value: span is this single line.
-                    return Some((line_start, pos));
-                }
-                // Block value: accumulate continuation lines below.
-            }
-        } else {
+        if let Some(start) = span_start {
             if line_body.is_empty() {
-                return Some((span_start.unwrap(), line_start));
+                return Some((start, line_start));
             }
             let first_char = line.chars().next().unwrap_or(' ');
             if first_char == ' ' || first_char == '\t' {
@@ -1283,8 +1273,16 @@ fn find_yaml_key_span(yaml: &str, key: &str) -> Option<(usize, usize)> {
                 // Bare sequence entry at column 0.
             } else {
                 // New top-level key, comment, or end of frontmatter.
-                return Some((span_start.unwrap(), line_start));
+                return Some((start, line_start));
             }
+        } else if is_top_level_key_line(line_body, key) {
+            span_start = Some(line_start);
+            let after_colon = line_body[key.len() + 1..].trim();
+            if !after_colon.is_empty() {
+                // Inline scalar value: span is this single line.
+                return Some((line_start, pos));
+            }
+            // Block value: accumulate continuation lines below.
         }
     }
 
@@ -1331,6 +1329,7 @@ fn format_scalar_yaml_value(value: &YamlValue) -> Option<String> {
 /// Format a key-value block for insertion into raw frontmatter YAML.
 /// Returns `None` for nested mapping values (caller should fall back to full round-trip).
 fn format_yaml_kv_block(key: &str, value: &YamlValue) -> Option<String> {
+    use std::fmt::Write as _;
     match value {
         YamlValue::Null | YamlValue::Bool(_) | YamlValue::Number(_) | YamlValue::String(_) => {
             let v = format_scalar_yaml_value(value)?;
@@ -1347,11 +1346,10 @@ fn format_yaml_kv_block(key: &str, value: &YamlValue) -> Option<String> {
                         .ok()
                         .map(|s| s.trim_end().to_string())
                 })?;
-                block.push_str(&format!("- {item_str}\n"));
+                writeln!(block, "- {item_str}").ok();
             }
             Some(block)
         }
-        YamlValue::Mapping(_) => None,
         _ => None,
     }
 }
@@ -1419,35 +1417,31 @@ where
 fn plan_surgical_frontmatter_edit<F>(
     source: &str,
     edit_fn: F,
-) -> Result<Option<(TextEdit, Vec<RefactorChange>)>, RefactorError>
+) -> Option<(TextEdit, Vec<RefactorChange>)>
 where
     F: FnOnce(&str) -> Option<(String, Vec<RefactorChange>)>,
 {
-    let Some(block) = find_frontmatter_block(source) else {
-        return Ok(None);
-    };
+    let block = find_frontmatter_block(source)?;
     let raw_yaml = &source[block.yaml_start..block.yaml_end];
 
-    let Some((new_yaml, changes)) = edit_fn(raw_yaml) else {
-        return Ok(None);
-    };
+    let (new_yaml, changes) = edit_fn(raw_yaml)?;
     if changes.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let new_frontmatter = format!("---\n{new_yaml}---\n");
     if new_frontmatter == source[block.full_start..block.full_end] {
-        return Ok(None);
+        return None;
     }
 
-    Ok(Some((
+    Some((
         TextEdit {
             start: block.full_start,
             end: block.full_end,
             replacement: new_frontmatter,
         },
         changes,
-    )))
+    ))
 }
 
 fn parse_property_value(value: Option<&str>) -> Result<Option<YamlValue>, RefactorError> {
@@ -1815,7 +1809,6 @@ mod tests {
     #[test]
     fn rename_property_diff_is_minimal() {
         // After surgical rename, only the key line should change; all other bytes are identical.
-        let source = "---\n# top comment\nstatus: active\nestimate: 8\nrelated:\n  - '[[Done]]'\n---\n# Body\n";
         let old_yaml = "# top comment\nstatus: active\nestimate: 8\nrelated:\n  - '[[Done]]'\n";
         let new_yaml =
             surgical_rename_key(old_yaml, "status", "phase").expect("should rename");
