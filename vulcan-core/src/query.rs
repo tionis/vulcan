@@ -2,7 +2,7 @@
 /// human DSL / JSON query payloads.
 ///
 /// Design constraints:
-/// - Do not expose raw SQLite schema or SQL as the long-term public contract.
+/// - Do not expose raw `SQLite` schema or SQL as the long-term public contract.
 /// - Machine-readable JSON must round-trip cleanly with the AST.
 /// - The AST must be a superset of the existing `NoteQuery` filter string format.
 use std::fmt::{self, Display, Formatter};
@@ -127,6 +127,7 @@ pub struct QueryPredicate {
 
 impl QueryPredicate {
     /// Render back to the legacy filter string format understood by `build_note_filter_clause`.
+    #[must_use]
     pub fn to_filter_string(&self) -> String {
         let value_str = match &self.value {
             QueryValue::Null => "null".to_string(),
@@ -153,17 +154,12 @@ pub struct QuerySort {
 }
 
 /// Field projection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueryProjection {
+    #[default]
     All,
     Fields(Vec<String>),
-}
-
-impl Default for QueryProjection {
-    fn default() -> Self {
-        Self::All
-    }
 }
 
 /// The canonical query AST.
@@ -182,6 +178,7 @@ pub struct QueryAst {
     pub offset: usize,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(n: &usize) -> bool {
     *n == 0
 }
@@ -375,7 +372,7 @@ impl<'a> DslParser<'a> {
     }
 
     fn peek_lower(&self) -> Option<String> {
-        self.peek().map(|s| s.to_ascii_lowercase())
+        self.peek().map(str::to_ascii_lowercase)
     }
 
     fn consume(&mut self) -> Option<&str> {
@@ -460,14 +457,9 @@ impl<'a> DslParser<'a> {
     fn parse_predicate_list(&mut self) -> Result<Vec<QueryPredicate>, QueryError> {
         let mut predicates = Vec::new();
         predicates.push(self.parse_predicate()?);
-        loop {
-            match self.peek_lower().as_deref() {
-                Some("and") => {
-                    self.consume();
-                    predicates.push(self.parse_predicate()?);
-                }
-                _ => break,
-            }
+        while let Some("and") = self.peek_lower().as_deref() {
+            self.consume();
+            predicates.push(self.parse_predicate()?);
         }
         Ok(predicates)
     }
@@ -542,14 +534,14 @@ impl<'a> DslParser<'a> {
             .to_string();
         let descending = matches!(
             self.peek_lower().as_deref(),
-            Some("desc") | Some("descending")
+            Some("desc" | "descending")
         );
-        if descending {
-            self.consume();
-        } else if matches!(
-            self.peek_lower().as_deref(),
-            Some("asc") | Some("ascending")
-        ) {
+        if descending
+            || matches!(
+                self.peek_lower().as_deref(),
+                Some("asc" | "ascending")
+            )
+        {
             self.consume();
         }
         Ok(QuerySort { field, descending })
