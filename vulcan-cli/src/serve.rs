@@ -525,14 +525,15 @@ mod tests {
         .expect("updated note should be written");
 
         let mut refreshed = None;
-        for _ in 0..200 {
-            let candidate = get_json(handle.addr(), "/search?q=moonshot", None);
-            let hits = candidate["result"]["hits"]
-                .as_array()
-                .expect("hits should be an array");
-            if !hits.is_empty() {
-                refreshed = Some(candidate);
-                break;
+        for _ in 0..100 {
+            if let Some(candidate) = try_get_json(handle.addr(), "/search?q=moonshot", None) {
+                let hits = candidate["result"]["hits"]
+                    .as_array()
+                    .expect("hits should be an array");
+                if !hits.is_empty() {
+                    refreshed = Some(candidate);
+                    break;
+                }
             }
             thread::sleep(Duration::from_millis(100));
         }
@@ -594,6 +595,22 @@ mod tests {
                 fs::copy(entry.path(), target).expect("file should be copied");
             }
         }
+    }
+
+    fn try_get_json(addr: SocketAddr, path: &str, token: Option<&str>) -> Option<Value> {
+        let mut stream = TcpStream::connect(addr).ok()?;
+        let mut request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+        if let Some(token) = token {
+            request.push_str("X-Vulcan-Token: ");
+            request.push_str(token);
+            request.push_str("\r\n");
+        }
+        request.push_str("\r\n");
+        stream.write_all(request.as_bytes()).ok()?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response).ok()?;
+        let body = response.split("\r\n\r\n").nth(1)?;
+        serde_json::from_str(body).ok()
     }
 
     fn get_json(addr: SocketAddr, path: &str, token: Option<&str>) -> Value {

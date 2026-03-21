@@ -2386,7 +2386,12 @@ mod tests {
 
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let request = read_request(&mut stream);
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                            .expect("read timeout should be configurable");
+                        let Some(request) = read_request_fallible(&mut stream) else {
+                            continue;
+                        };
                         let inputs = request
                             .body
                             .get("input")
@@ -2453,16 +2458,17 @@ mod tests {
         body: Value,
     }
 
-    fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
+    fn read_request_fallible(stream: &mut std::net::TcpStream) -> Option<CapturedRequest> {
         let mut buffer = Vec::new();
         let mut header_end = None;
 
         loop {
             let mut chunk = [0_u8; 1024];
-            let bytes_read = stream.read(&mut chunk).expect("request should read");
-            if bytes_read == 0 {
-                break;
-            }
+            let bytes_read = match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => return None,
+            };
             buffer.extend_from_slice(&chunk[..bytes_read]);
             if let Some(position) = find_subslice(&buffer, b"\r\n\r\n") {
                 header_end = Some(position + 4);
@@ -2470,29 +2476,27 @@ mod tests {
             }
         }
 
-        let header_end = header_end.expect("request should contain headers");
-        let header_text = String::from_utf8(buffer[..header_end].to_vec()).expect("utf8 headers");
-        let content_length = header_text
-            .lines()
-            .find_map(|line| {
-                line.to_ascii_lowercase()
-                    .strip_prefix("content-length:")
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-            })
-            .expect("request should include content length");
+        let header_end = header_end?;
+        let header_text = String::from_utf8(buffer[..header_end].to_vec()).ok()?;
+        let content_length = header_text.lines().find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .and_then(|value| value.trim().parse::<usize>().ok())
+        })?;
         let mut body_bytes = buffer[header_end..].to_vec();
         while body_bytes.len() < content_length {
             let mut chunk = vec![0_u8; content_length - body_bytes.len()];
-            let bytes_read = stream.read(chunk.as_mut_slice()).expect("body should read");
-            if bytes_read == 0 {
-                break;
-            }
+            let bytes_read = match stream.read(chunk.as_mut_slice()) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => return None,
+            };
             body_bytes.extend_from_slice(&chunk[..bytes_read]);
         }
 
-        CapturedRequest {
-            body: serde_json::from_slice(&body_bytes).expect("body should parse"),
-        }
+        Some(CapturedRequest {
+            body: serde_json::from_slice(&body_bytes).ok()?,
+        })
     }
 
     fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
