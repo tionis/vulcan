@@ -163,6 +163,11 @@ fn run_server_loop(
     while !shutdown.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // Accepted streams may inherit the listener's non-blocking mode
+                // on some platforms (macOS). Switch to blocking with a timeout so
+                // that read_request can reliably receive the full request.
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let response = match read_request(&mut stream) {
                     Ok(request) => route_request(paths, options, state, &request),
                     Err(error) => Response::error(400, error),
