@@ -262,11 +262,11 @@
         "name": "links",
         "options": [
           {
-            "help": "Note path, filename, or alias to inspect",
+            "help": "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively",
             "id": "note",
             "long": null,
             "possible_values": [],
-            "required": true,
+            "required": false,
             "short": null,
             "value_names": [
               "NOTE"
@@ -305,11 +305,11 @@
         "name": "backlinks",
         "options": [
           {
-            "help": "Note path, filename, or alias to inspect",
+            "help": "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively",
             "id": "note",
             "long": null,
             "possible_values": [],
-            "required": true,
+            "required": false,
             "short": null,
             "value_names": [
               "NOTE"
@@ -853,7 +853,7 @@
             "subcommands": []
           },
           {
-            "about": "Open a read-only interactive TUI for a .base file",
+            "about": "Open an interactive TUI for a .base file",
             "name": "tui",
             "options": [
               {
@@ -1701,11 +1701,11 @@
         "name": "related",
         "options": [
           {
-            "help": "Note path, filename, or alias to use as the seed note",
+            "help": "Note path, filename, or alias to use as the seed note; omit in a TTY session to pick interactively",
             "id": "note",
             "long": null,
             "possible_values": [],
-            "required": true,
+            "required": false,
             "short": null,
             "value_names": [
               "NOTE"
@@ -1900,11 +1900,11 @@
             "name": "related",
             "options": [
               {
-                "help": "Note path, filename, or alias to use as the seed note",
+                "help": "Note path, filename, or alias to use as the seed note; omit in a TTY session to pick interactively",
                 "id": "note",
                 "long": null,
                 "possible_values": [],
-                "required": true,
+                "required": false,
                 "short": null,
                 "value_names": [
                   "NOTE"

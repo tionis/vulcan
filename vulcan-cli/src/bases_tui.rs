@@ -11,19 +11,31 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
+use std::fs;
 use std::io;
+use std::process::Command as ProcessCommand;
 use std::time::Duration;
-use vulcan_core::{BasesEvalReport, BasesEvaluatedView, BasesRow};
+use vulcan_core::{
+    evaluate_base_file, scan_vault, set_note_property, BasesEvalReport, BasesEvaluatedView,
+    BasesRow, ScanMode, VaultPaths,
+};
 
 const MAX_TABLE_COLUMNS: usize = 5;
+const DETAIL_PREVIEW_LINES: usize = 12;
+const PREVIEW_SCROLL_STEP: u16 = 8;
 
-pub fn run_bases_tui(report: &BasesEvalReport) -> Result<(), io::Error> {
+pub fn run_bases_tui(
+    paths: &VaultPaths,
+    base_file: &str,
+    report: &BasesEvalReport,
+) -> Result<(), io::Error> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let mut state = BasesTuiState::new(report.clone());
+    terminal.hide_cursor()?;
+    let mut state = BasesTuiState::new(paths.clone(), base_file.to_string(), report.clone());
 
     let result = run_event_loop(&mut terminal, &mut state);
 
@@ -49,8 +61,38 @@ fn run_event_loop(
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            if !state.handle_key(key) {
-                break;
+            match state.handle_key(key) {
+                TuiAction::Continue => {}
+                TuiAction::Quit => break,
+                TuiAction::OpenBaseEditor => {
+                    let path = state.paths.vault_root().join(&state.base_file);
+                    let edit_result = with_terminal_suspended(terminal, || open_in_editor(&path));
+                    match edit_result {
+                        Ok(()) => {
+                            if let Err(error) = state.reload_report() {
+                                state.set_status(error);
+                            } else {
+                                state.set_status(format!("Reloaded {}.", state.base_file));
+                            }
+                        }
+                        Err(error) => state.set_status(error.to_string()),
+                    }
+                }
+                TuiAction::OpenSelectedNoteEditor(path) => {
+                    let absolute = state.paths.vault_root().join(&path);
+                    let edit_result =
+                        with_terminal_suspended(terminal, || open_in_editor(&absolute));
+                    match edit_result {
+                        Ok(()) => {
+                            if let Err(error) = state.refresh_after_note_edit() {
+                                state.set_status(error);
+                            } else {
+                                state.set_status(format!("Updated {path}."));
+                            }
+                        }
+                        Err(error) => state.set_status(error.to_string()),
+                    }
+                }
             }
         }
     }
@@ -59,35 +101,65 @@ fn run_event_loop(
 }
 
 fn draw(frame: &mut Frame<'_>, state: &BasesTuiState) {
+    if state.preview_expanded {
+        draw_preview_screen(frame, state);
+    } else {
+        draw_standard_screen(frame, state);
+    }
+
+    match state.input_mode {
+        InputMode::Normal => {}
+        InputMode::Search => draw_search_overlay(frame, state),
+        InputMode::EditProperty => draw_property_overlay(frame, state),
+    }
+}
+
+fn draw_standard_screen(frame: &mut Frame<'_>, state: &BasesTuiState) {
+    let footer_height = if state.show_diagnostics { 7 } else { 6 };
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(12),
-            Constraint::Length(7),
+            Constraint::Length(footer_height),
         ])
         .split(frame.area());
 
     draw_tabs(frame, state, layout[0]);
     draw_body(frame, state, layout[1]);
     draw_footer(frame, state, layout[2]);
+}
 
-    if state.search_mode {
-        draw_search_overlay(frame, state);
-    }
+fn draw_preview_screen(frame: &mut Frame<'_>, state: &BasesTuiState) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(12),
+            Constraint::Length(5),
+        ])
+        .split(frame.area());
+
+    draw_tabs(frame, state, layout[0]);
+    draw_full_preview(frame, state, layout[1]);
+    draw_preview_status(frame, state, layout[2]);
 }
 
 fn draw_tabs(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
-    let titles = state
-        .report
-        .views
-        .iter()
-        .map(|view| Line::from(view.name.clone().unwrap_or_else(|| view.view_type.clone())))
-        .collect::<Vec<_>>();
+    let titles = if state.report.views.is_empty() {
+        vec![Line::from("No Views")]
+    } else {
+        state
+            .report
+            .views
+            .iter()
+            .map(|view| Line::from(view.name.clone().unwrap_or_else(|| view.view_type.clone())))
+            .collect::<Vec<_>>()
+    };
     let tabs = Tabs::new(titles)
         .block(
             Block::default()
-                .title("Bases TUI")
+                .title(format!("Bases TUI: {}", state.base_file))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
         )
@@ -96,14 +168,18 @@ fn draw_tabs(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )
-        .select(state.active_view);
+        .select(
+            state
+                .active_view
+                .min(state.report.views.len().saturating_sub(1)),
+        );
     frame.render_widget(tabs, area);
 }
 
 fn draw_body(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
     let layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
         .split(area);
 
     draw_table(frame, state, layout[0]);
@@ -134,12 +210,12 @@ fn draw_table(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
 }
 
 fn draw_detail(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
-    let content = if let Some(row) = state.selected_row() {
-        selected_row_lines(row, state.active_view())
-    } else {
-        vec![Line::from("No rows.")]
-    };
-    let detail = Paragraph::new(content)
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(area);
+
+    let detail = Paragraph::new(state.selected_row_lines())
         .block(
             Block::default()
                 .title("Detail")
@@ -147,15 +223,56 @@ fn draw_detail(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .wrap(Wrap { trim: false });
-    frame.render_widget(detail, area);
+    frame.render_widget(detail, layout[0]);
+
+    let preview_title = state
+        .preview
+        .path
+        .as_deref()
+        .map_or_else(|| "Preview".to_string(), |path| format!("Preview: {path}"));
+    let preview = Paragraph::new(state.preview_excerpt_lines(DETAIL_PREVIEW_LINES))
+        .block(
+            Block::default()
+                .title(preview_title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(preview, layout[1]);
+}
+
+fn draw_full_preview(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
+    let preview_title = state
+        .preview
+        .path
+        .as_deref()
+        .map_or_else(|| "Preview".to_string(), |path| format!("Preview: {path}"));
+    let preview = Paragraph::new(state.preview_full_lines())
+        .block(
+            Block::default()
+                .title(preview_title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((state.preview_scroll, 0));
+    frame.render_widget(preview, area);
 }
 
 fn draw_footer(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
-    let layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(area);
+    if state.show_diagnostics {
+        let layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .split(area);
+        draw_diagnostics(frame, state, layout[0]);
+        draw_status(frame, state, layout[1]);
+    } else {
+        draw_status(frame, state, area);
+    }
+}
 
+fn draw_diagnostics(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
     let diagnostics = if state.report.diagnostics.is_empty() {
         vec![Line::from("No diagnostics.")]
     } else {
@@ -185,37 +302,66 @@ fn draw_footer(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .wrap(Wrap { trim: false });
-    frame.render_widget(diagnostics, layout[0]);
+    frame.render_widget(diagnostics, area);
+}
 
-    let status = Paragraph::new(vec![
+fn draw_status(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
+    let mut lines = vec![
         Line::from(format!(
-            "Rows: {}  Selected: {}",
+            "Rows: {}  Selected: {}  Diagnostics: {}",
             state.filtered_rows().len(),
-            state.selected_row.map_or(0, |index| index + 1)
+            state.selected_row.map_or(0, |index| index + 1),
+            if state.show_diagnostics {
+                "shown"
+            } else {
+                "hidden"
+            }
         )),
         Line::from(format!(
-            "Group mode: {}",
-            if state.group_mode { "on" } else { "off" }
-        )),
-        Line::from(format!(
-            "Filter: {}",
+            "Group mode: {}  Filter: {}",
+            if state.group_mode { "on" } else { "off" },
             if state.search.is_empty() {
                 "<none>"
             } else {
                 state.search.as_str()
             }
         )),
-        Line::from("Keys: q quit, / filter, g group, tab next view"),
-        Line::from("      arrows/jk move, backtab prev view"),
-    ])
-    .block(
-        Block::default()
-            .title("Status")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
-    )
-    .wrap(Wrap { trim: false });
-    frame.render_widget(status, layout[1]);
+        Line::from("Keys: q quit, / filter, g group, d diagnostics, Enter preview"),
+        Line::from("      e edit property, o edit note, b edit .base, tab next view"),
+    ];
+    if let Some(message) = state.status_message.as_deref() {
+        lines.push(Line::from(message.to_string()));
+    }
+
+    let status = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title("Status")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(status, area);
+}
+
+fn draw_preview_status(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
+    let mut lines = vec![
+        Line::from("Preview keys: Esc close, j/k scroll, PgUp/PgDn page"),
+        Line::from("              e edit property, o edit note, b edit .base"),
+    ];
+    if let Some(message) = state.status_message.as_deref() {
+        lines.push(Line::from(message.to_string()));
+    }
+
+    let status = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title("Preview")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(status, area);
 }
 
 fn draw_search_overlay(frame: &mut Frame<'_>, state: &BasesTuiState) {
@@ -224,6 +370,18 @@ fn draw_search_overlay(frame: &mut Frame<'_>, state: &BasesTuiState) {
     let input = Paragraph::new(state.search.clone()).block(
         Block::default()
             .title("Filter (/ to edit, Enter to apply, Esc to cancel)")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+    frame.render_widget(input, area);
+}
+
+fn draw_property_overlay(frame: &mut Frame<'_>, state: &BasesTuiState) {
+    let area = centered_rect(frame.area(), 70, 4);
+    frame.render_widget(Clear, area);
+    let input = Paragraph::new(state.property_input.clone()).block(
+        Block::default()
+            .title("Edit property (key=value, empty value removes)")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow)),
     );
@@ -250,18 +408,84 @@ fn centered_rect(area: Rect, width_percent: u16, height: u16) -> Rect {
     horizontal[1]
 }
 
+fn with_terminal_suspended<F>(
+    terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
+    operation: F,
+) -> Result<(), io::Error>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    let operation_result = operation();
+
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    enable_raw_mode()?;
+    terminal.hide_cursor()?;
+    terminal.clear()?;
+
+    operation_result.map_err(io::Error::other)
+}
+
+fn open_in_editor(path: &std::path::Path) -> Result<(), String> {
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .or_else(|| std::env::var("EDITOR").ok())
+        .unwrap_or_else(|| "vi".to_string());
+    let status = ProcessCommand::new(&editor)
+        .arg(path)
+        .status()
+        .map_err(|error| format!("failed to launch editor `{editor}`: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("editor `{editor}` exited with status {status}"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    Normal,
+    Search,
+    EditProperty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TuiAction {
+    Continue,
+    Quit,
+    OpenSelectedNoteEditor(String),
+    OpenBaseEditor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreviewContent {
+    path: Option<String>,
+    lines: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 struct BasesTuiState {
+    paths: VaultPaths,
+    base_file: String,
     report: BasesEvalReport,
     active_view: usize,
     selected_row: Option<usize>,
     search: String,
-    search_mode: bool,
+    input_mode: InputMode,
+    property_input: String,
     group_mode: bool,
+    show_diagnostics: bool,
+    preview_expanded: bool,
+    preview_scroll: u16,
+    preview: PreviewContent,
+    status_message: Option<String>,
 }
 
 impl BasesTuiState {
-    fn new(report: BasesEvalReport) -> Self {
+    fn new(paths: VaultPaths, base_file: String, report: BasesEvalReport) -> Self {
         let group_mode = report
             .views
             .first()
@@ -272,26 +496,38 @@ impl BasesTuiState {
             .first()
             .filter(|view| !view.rows.is_empty())
             .map(|_| 0);
-        Self {
+        let mut state = Self {
+            paths,
+            base_file,
             report,
             active_view: 0,
             selected_row,
             search: String::new(),
-            search_mode: false,
+            input_mode: InputMode::Normal,
+            property_input: String::new(),
             group_mode,
-        }
+            show_diagnostics: false,
+            preview_expanded: false,
+            preview_scroll: 0,
+            preview: PreviewContent {
+                path: None,
+                lines: vec!["No preview available.".to_string()],
+            },
+            status_message: None,
+        };
+        state.refresh_preview();
+        state
     }
 
-    fn active_view(&self) -> &BasesEvaluatedView {
-        &self.report.views[self.active_view]
+    fn active_view(&self) -> Option<&BasesEvaluatedView> {
+        self.report.views.get(self.active_view)
     }
 
     fn filtered_rows(&self) -> Vec<usize> {
         let query = self.search.trim().to_lowercase();
         self.active_view()
-            .rows
-            .iter()
-            .enumerate()
+            .into_iter()
+            .flat_map(|view| view.rows.iter().enumerate())
             .filter(|(_, row)| {
                 query.is_empty() || row_search_text(row).to_lowercase().contains(&query)
             })
@@ -303,53 +539,134 @@ impl BasesTuiState {
         let rows = self.filtered_rows();
         self.selected_row
             .and_then(|index| rows.get(index).copied())
-            .and_then(|index| self.active_view().rows.get(index))
+            .and_then(|index| self.active_view().and_then(|view| view.rows.get(index)))
     }
 
-    fn handle_key(&mut self, key: KeyEvent) -> bool {
-        if self.search_mode {
-            return self.handle_search_key(key);
+    fn selected_row_path(&self) -> Option<String> {
+        self.selected_row().map(|row| row.document_path.clone())
+    }
+
+    fn set_status(&mut self, message: impl Into<String>) {
+        self.status_message = Some(message.into());
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> TuiAction {
+        match self.input_mode {
+            InputMode::Search => {
+                self.handle_search_key(key);
+                return TuiAction::Continue;
+            }
+            InputMode::EditProperty => {
+                self.handle_property_key(key);
+                return TuiAction::Continue;
+            }
+            InputMode::Normal => {}
+        }
+
+        if self.preview_expanded {
+            return self.handle_preview_key(key);
         }
 
         match key.code {
-            KeyCode::Char('q') => false,
+            KeyCode::Char('q') => TuiAction::Quit,
             KeyCode::Tab => {
                 self.next_view();
-                true
+                TuiAction::Continue
             }
             KeyCode::BackTab => {
                 self.previous_view();
-                true
+                TuiAction::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.move_selection(1);
-                true
+                TuiAction::Continue
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_selection(-1);
-                true
+                TuiAction::Continue
             }
             KeyCode::Char('/') => {
-                self.search_mode = true;
-                true
+                self.input_mode = InputMode::Search;
+                TuiAction::Continue
             }
             KeyCode::Char('g') => {
-                if self.active_view().group_by.is_some() {
+                if self
+                    .active_view()
+                    .and_then(|view| view.group_by.as_ref())
+                    .is_some()
+                {
                     self.group_mode = !self.group_mode;
                 }
-                true
+                TuiAction::Continue
             }
-            _ => true,
+            KeyCode::Char('d') => {
+                self.show_diagnostics = !self.show_diagnostics;
+                TuiAction::Continue
+            }
+            KeyCode::Enter => {
+                self.preview_expanded = self.selected_row().is_some();
+                TuiAction::Continue
+            }
+            KeyCode::Char('e') => {
+                if self.selected_row().is_some() {
+                    self.property_input.clear();
+                    self.input_mode = InputMode::EditProperty;
+                } else {
+                    self.set_status("No selected row to edit.");
+                }
+                TuiAction::Continue
+            }
+            KeyCode::Char('o') => self.selected_row_path().map_or_else(
+                || {
+                    self.set_status("No selected note to edit.");
+                    TuiAction::Continue
+                },
+                TuiAction::OpenSelectedNoteEditor,
+            ),
+            KeyCode::Char('b') => TuiAction::OpenBaseEditor,
+            _ => TuiAction::Continue,
         }
     }
 
-    fn handle_search_key(&mut self, key: KeyEvent) -> bool {
+    fn handle_preview_key(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.preview_expanded = false;
+            }
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_preview(1),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_preview(-1),
+            KeyCode::PageDown => self.scroll_preview(i32::from(PREVIEW_SCROLL_STEP)),
+            KeyCode::PageUp => self.scroll_preview(-i32::from(PREVIEW_SCROLL_STEP)),
+            KeyCode::Char('e') => {
+                if self.selected_row().is_some() {
+                    self.property_input.clear();
+                    self.input_mode = InputMode::EditProperty;
+                } else {
+                    self.set_status("No selected row to edit.");
+                }
+            }
+            KeyCode::Char('o') => {
+                return self.selected_row_path().map_or_else(
+                    || {
+                        self.set_status("No selected note to edit.");
+                        TuiAction::Continue
+                    },
+                    TuiAction::OpenSelectedNoteEditor,
+                );
+            }
+            KeyCode::Char('b') => return TuiAction::OpenBaseEditor,
+            _ => {}
+        }
+        TuiAction::Continue
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
-                self.search_mode = false;
+                self.input_mode = InputMode::Normal;
             }
             KeyCode::Enter => {
-                self.search_mode = false;
+                self.input_mode = InputMode::Normal;
                 self.clamp_selection();
             }
             KeyCode::Backspace => {
@@ -362,7 +679,27 @@ impl BasesTuiState {
             }
             _ => {}
         }
-        true
+    }
+
+    fn handle_property_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Enter => {
+                if let Err(error) = self.apply_property_edit() {
+                    self.set_status(error);
+                }
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.property_input.pop();
+            }
+            KeyCode::Char(character) => {
+                self.property_input.push(character);
+            }
+            _ => {}
+        }
     }
 
     fn next_view(&mut self) {
@@ -370,7 +707,10 @@ impl BasesTuiState {
             return;
         }
         self.active_view = (self.active_view + 1) % self.report.views.len();
-        self.group_mode = self.active_view().group_by.is_some();
+        self.group_mode = self
+            .active_view()
+            .and_then(|view| view.group_by.as_ref())
+            .is_some();
         self.clamp_selection();
     }
 
@@ -383,7 +723,10 @@ impl BasesTuiState {
         } else {
             self.active_view - 1
         };
-        self.group_mode = self.active_view().group_by.is_some();
+        self.group_mode = self
+            .active_view()
+            .and_then(|view| view.group_by.as_ref())
+            .is_some();
         self.clamp_selection();
     }
 
@@ -391,6 +734,7 @@ impl BasesTuiState {
         let row_count = self.filtered_rows().len();
         if row_count == 0 {
             self.selected_row = None;
+            self.refresh_preview();
             return;
         }
 
@@ -403,6 +747,7 @@ impl BasesTuiState {
         }
         .min(row_count - 1);
         self.selected_row = Some(next);
+        self.refresh_preview();
     }
 
     fn clamp_selection(&mut self) {
@@ -412,10 +757,13 @@ impl BasesTuiState {
         } else {
             Some(self.selected_row.unwrap_or(0).min(row_count - 1))
         };
+        self.refresh_preview();
     }
 
     fn table_rows(&self) -> (Vec<String>, Vec<Vec<String>>, Option<usize>) {
-        let view = self.active_view();
+        let Some(view) = self.active_view() else {
+            return (vec!["Path".to_string()], Vec::new(), None);
+        };
         let filtered = self.filtered_rows();
         let mut headers = Vec::new();
         let mut keys = Vec::new();
@@ -458,55 +806,208 @@ impl BasesTuiState {
 
         (headers, rows, self.selected_row)
     }
-}
 
-fn selected_row_lines(row: &BasesRow, view: &BasesEvaluatedView) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Path: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(row.document_path.clone()),
-        ]),
-        Line::from(vec![
-            Span::styled("File: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("{}.{}", row.file_name, row.file_ext)),
-        ]),
-    ];
+    fn selected_row_lines(&self) -> Vec<Line<'static>> {
+        let Some(row) = self.selected_row() else {
+            return vec![Line::from("No rows.")];
+        };
+        let Some(view) = self.active_view() else {
+            return vec![Line::from("No active view.")];
+        };
 
-    if let Some(group_value) = row.group_value.as_ref() {
-        lines.push(Line::from(vec![
-            Span::styled("Group: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(render_value(group_value)),
-        ]));
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Cells",
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    )));
-    for column in &view.columns {
-        lines.push(Line::from(format!(
-            "{}: {}",
-            column.display_name,
-            table_cell_value(row, &column.key)
-        )));
-    }
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("Path: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(row.document_path.clone()),
+            ]),
+            Line::from(vec![
+                Span::styled("File: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(format!("{}.{}", row.file_name, row.file_ext)),
+            ]),
+        ];
 
-    if !row.formulas.is_empty() {
+        if let Some(group_value) = row.group_value.as_ref() {
+            lines.push(Line::from(vec![
+                Span::styled("Group: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(render_value(group_value)),
+            ]));
+        }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Formulas",
+            "Cells",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )));
-        for (key, value) in &row.formulas {
-            lines.push(Line::from(format!("{key}: {}", render_value(value))));
+        for column in &view.columns {
+            lines.push(Line::from(format!(
+                "{}: {}",
+                column.display_name,
+                table_cell_value(row, &column.key)
+            )));
+        }
+
+        if !row.formulas.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Formulas",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            for (key, value) in &row.formulas {
+                lines.push(Line::from(format!("{key}: {}", render_value(value))));
+            }
+        }
+
+        lines
+    }
+
+    fn preview_excerpt_lines(&self, limit: usize) -> Vec<Line<'static>> {
+        self.preview
+            .lines
+            .iter()
+            .take(limit)
+            .map(|line| Line::from(line.clone()))
+            .collect()
+    }
+
+    fn preview_full_lines(&self) -> Vec<Line<'static>> {
+        self.preview
+            .lines
+            .iter()
+            .map(|line| Line::from(line.clone()))
+            .collect()
+    }
+
+    fn refresh_preview(&mut self) {
+        self.preview_scroll = 0;
+        self.preview = self.selected_row_path().map_or(
+            PreviewContent {
+                path: None,
+                lines: vec!["No preview available.".to_string()],
+            },
+            |path| PreviewContent {
+                lines: load_preview_lines(&self.paths, &path),
+                path: Some(path),
+            },
+        );
+    }
+
+    fn scroll_preview(&mut self, delta: i32) {
+        if delta.is_negative() {
+            self.preview_scroll = self
+                .preview_scroll
+                .saturating_sub(u16::try_from(delta.unsigned_abs()).unwrap_or(u16::MAX));
+        } else {
+            self.preview_scroll = self
+                .preview_scroll
+                .saturating_add(u16::try_from(delta).unwrap_or(u16::MAX));
         }
     }
 
-    lines
+    fn refresh_after_note_edit(&mut self) -> Result<(), String> {
+        scan_vault(&self.paths, ScanMode::Incremental).map_err(|error| error.to_string())?;
+        self.reload_report()
+    }
+
+    fn reload_report(&mut self) -> Result<(), String> {
+        let current_view = self.active_view().map(|view| {
+            (
+                view.name.clone(),
+                view.view_type.clone(),
+                view.group_by.is_some(),
+            )
+        });
+        let selected_path = self.selected_row_path();
+        let report =
+            evaluate_base_file(&self.paths, &self.base_file).map_err(|error| error.to_string())?;
+        self.report = report;
+        self.active_view = current_view
+            .and_then(|(name, view_type, _)| {
+                self.report
+                    .views
+                    .iter()
+                    .position(|view| view.name == name && view.view_type == view_type)
+            })
+            .unwrap_or(0);
+        self.group_mode = self
+            .active_view()
+            .and_then(|view| view.group_by.as_ref())
+            .is_some();
+        self.selected_row = selected_path
+            .as_deref()
+            .and_then(|path| {
+                self.active_view().and_then(|view| {
+                    let filtered = self.filtered_rows();
+                    filtered
+                        .iter()
+                        .position(|index| view.rows[*index].document_path == path)
+                })
+            })
+            .or_else(|| {
+                self.active_view()
+                    .filter(|view| !view.rows.is_empty())
+                    .map(|_| 0)
+            });
+        self.refresh_preview();
+        Ok(())
+    }
+
+    fn apply_property_edit(&mut self) -> Result<(), String> {
+        let Some(note_path) = self.selected_row_path() else {
+            return Err("No selected note to edit.".to_string());
+        };
+        let (key, value) = parse_property_edit_input(&self.property_input)?;
+        let report = set_note_property(&self.paths, &note_path, &key, value.as_deref(), false)
+            .map_err(|error| error.to_string())?;
+        self.reload_report()?;
+        if value.is_some() {
+            if report.files.is_empty() {
+                self.set_status(format!("No changes for `{key}` in {note_path}."));
+            } else {
+                self.set_status(format!("Updated `{key}` in {note_path}."));
+            }
+        } else if report.files.is_empty() {
+            self.set_status(format!("`{key}` was already absent in {note_path}."));
+        } else {
+            self.set_status(format!("Removed `{key}` from {note_path}."));
+        }
+        self.property_input.clear();
+        Ok(())
+    }
+}
+
+fn parse_property_edit_input(input: &str) -> Result<(String, Option<String>), String> {
+    let Some((key, raw_value)) = input.split_once('=') else {
+        return Err("expected property edit in the form `key=value`".to_string());
+    };
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("property key must not be empty".to_string());
+    }
+    if key.chars().any(char::is_control) {
+        return Err("property key must not contain control characters".to_string());
+    }
+    let value = raw_value.trim();
+    Ok((
+        key.to_string(),
+        (!value.is_empty()).then(|| value.to_string()),
+    ))
+}
+
+fn load_preview_lines(paths: &VaultPaths, relative_path: &str) -> Vec<String> {
+    match fs::read_to_string(paths.vault_root().join(relative_path)) {
+        Ok(contents) => {
+            let lines = contents.lines().map(str::to_string).collect::<Vec<_>>();
+            if lines.is_empty() {
+                vec!["<empty file>".to_string()]
+            } else {
+                lines
+            }
+        }
+        Err(error) => vec![format!("Failed to load preview: {error}")],
+    }
 }
 
 fn table_cell_value(row: &BasesRow, key: &str) -> String {
@@ -562,10 +1063,20 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;
+    use tempfile::TempDir;
     use vulcan_core::{BasesColumn, BasesDiagnostic, BasesGroupBy};
 
-    fn sample_report() -> BasesEvalReport {
-        BasesEvalReport {
+    fn sample_state() -> BasesTuiState {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join("Gear")).expect("gear dir should exist");
+        std::fs::write(vault_root.join("Gear/A.md"), "# A\n\nArmor note.\n")
+            .expect("a note should write");
+        std::fs::write(vault_root.join("Gear/B.md"), "# B\n\nWeapons note.\n")
+            .expect("b note should write");
+        std::fs::write(vault_root.join("Gear/C.md"), "# C\n\nRating note.\n")
+            .expect("c note should write");
+        let report = BasesEvalReport {
             file: "Indexes/Gear.base".to_string(),
             views: vec![
                 BasesEvaluatedView {
@@ -645,12 +1156,17 @@ mod tests {
                 path: Some("views.Flat.filters".to_string()),
                 message: "unsupported filter".to_string(),
             }],
-        }
+        };
+
+        let paths = VaultPaths::new(&vault_root);
+        let state = BasesTuiState::new(paths, "Indexes/Gear.base".to_string(), report);
+        std::mem::forget(temp_dir);
+        state
     }
 
     #[test]
     fn state_filters_rows_by_query() {
-        let mut state = BasesTuiState::new(sample_report());
+        let mut state = sample_state();
         state.search = "weapon".to_string();
 
         assert_eq!(state.filtered_rows(), vec![1]);
@@ -665,7 +1181,7 @@ mod tests {
 
     #[test]
     fn state_toggles_group_mode_only_for_grouped_views() {
-        let mut state = BasesTuiState::new(sample_report());
+        let mut state = sample_state();
         assert!(state.group_mode);
 
         state.next_view();
@@ -674,11 +1190,40 @@ mod tests {
 
     #[test]
     fn table_rows_include_group_column_when_enabled() {
-        let state = BasesTuiState::new(sample_report());
+        let state = sample_state();
         let (headers, rows, selected) = state.table_rows();
 
         assert_eq!(headers[0], "Category");
         assert_eq!(rows[0][0], "Armor");
         assert_eq!(selected, Some(0));
+    }
+
+    #[test]
+    fn diagnostics_are_hidden_by_default_and_can_be_toggled() {
+        let mut state = sample_state();
+        assert!(!state.show_diagnostics);
+
+        state.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert!(state.show_diagnostics);
+    }
+
+    #[test]
+    fn preview_loads_selected_note_contents() {
+        let state = sample_state();
+        assert_eq!(state.preview.path.as_deref(), Some("Gear/A.md"));
+        assert!(state.preview.lines.iter().any(|line| line == "# A"));
+    }
+
+    #[test]
+    fn parse_property_edit_input_supports_updates_and_removals() {
+        assert_eq!(
+            parse_property_edit_input("status=done").expect("edit input should parse"),
+            ("status".to_string(), Some("done".to_string()))
+        );
+        assert_eq!(
+            parse_property_edit_input("status=").expect("edit input should parse"),
+            ("status".to_string(), None)
+        );
+        assert!(parse_property_edit_input("=").is_err());
     }
 }

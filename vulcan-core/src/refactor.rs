@@ -24,6 +24,9 @@ pub enum RefactorError {
         value: String,
     },
     Graph(GraphQueryError),
+    InvalidFrontmatterRoot {
+        path: String,
+    },
     Io(std::io::Error),
     MissingLinkSpan {
         path: String,
@@ -52,6 +55,12 @@ impl Display for RefactorError {
                 write!(formatter, "{path} already contains {kind} '{value}'")
             }
             Self::Graph(error) => write!(formatter, "{error}"),
+            Self::InvalidFrontmatterRoot { path } => {
+                write!(
+                    formatter,
+                    "{path} has non-mapping frontmatter; cannot edit properties"
+                )
+            }
             Self::Io(error) => write!(formatter, "{error}"),
             Self::MissingLinkSpan { path, byte_offset } => write!(
                 formatter,
@@ -75,7 +84,8 @@ impl Error for RefactorError {
             Self::Scan(error) => Some(error),
             Self::Sqlite(error) => Some(error),
             Self::Yaml(error) => Some(error),
-            Self::AmbiguousTarget { .. }
+            Self::InvalidFrontmatterRoot { .. }
+            | Self::AmbiguousTarget { .. }
             | Self::DuplicateTarget { .. }
             | Self::MissingLinkSpan { .. }
             | Self::MissingTarget { .. } => None,
@@ -274,6 +284,32 @@ pub fn rename_alias(
     finalize_refactor(paths, dry_run, "rename_alias", vec![plan])
 }
 
+pub fn set_note_property(
+    paths: &VaultPaths,
+    note_identifier: &str,
+    key: &str,
+    value: Option<&str>,
+    dry_run: bool,
+) -> Result<RefactorReport, RefactorError> {
+    let _lock = acquire_write_lock(paths)?;
+    let note = resolve_note_reference(paths, note_identifier)?;
+    let path = note.path;
+    let source = fs::read_to_string(paths.vault_root().join(&path))?;
+    let desired_value = parse_property_value(value)?;
+
+    let Some((edit, changes)) =
+        plan_set_note_property_replacement(&source, &path, key, desired_value.as_ref())?
+    else {
+        return finalize_refactor(paths, dry_run, "set_note_property", Vec::new());
+    };
+
+    let Some(plan) = build_file_plan(&path, &source, &[edit], changes) else {
+        return finalize_refactor(paths, dry_run, "set_note_property", Vec::new());
+    };
+
+    finalize_refactor(paths, dry_run, "set_note_property", vec![plan])
+}
+
 pub fn rename_heading(
     paths: &VaultPaths,
     note_identifier: &str,
@@ -426,6 +462,51 @@ where
             replacement,
         },
         changes,
+    )))
+}
+
+fn plan_set_note_property_replacement(
+    source: &str,
+    path: &str,
+    key: &str,
+    value: Option<&YamlValue>,
+) -> Result<Option<(TextEdit, Vec<RefactorChange>)>, RefactorError> {
+    if let Some(block) = find_frontmatter_block(source) {
+        let raw_yaml = &source[block.yaml_start..block.yaml_end];
+        let mut frontmatter = serde_yaml::from_str::<YamlValue>(raw_yaml)?;
+        let changes = set_frontmatter_property(&mut frontmatter, path, key, value)?;
+        if changes.is_empty() {
+            return Ok(None);
+        }
+
+        let replacement = format_frontmatter_block_or_remove(&frontmatter)?;
+        return Ok(Some((
+            TextEdit {
+                start: block.full_start,
+                end: block.full_end,
+                replacement,
+            },
+            changes,
+        )));
+    }
+
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(YamlValue::String(key.to_string()), value.clone());
+    let replacement = format_frontmatter_block(&YamlValue::Mapping(mapping))?;
+    Ok(Some((
+        TextEdit {
+            start: 0,
+            end: 0,
+            replacement,
+        },
+        vec![RefactorChange {
+            before: format!("{key}: <missing>"),
+            after: format!("{key}: {}", summarize_yaml_value(value)),
+        }],
     )))
 }
 
@@ -603,6 +684,44 @@ fn rename_frontmatter_alias(
     }
 
     Ok(changes)
+}
+
+fn set_frontmatter_property(
+    frontmatter: &mut YamlValue,
+    path: &str,
+    key: &str,
+    value: Option<&YamlValue>,
+) -> Result<Vec<RefactorChange>, RefactorError> {
+    let Some(mapping) = frontmatter.as_mapping_mut() else {
+        return Err(RefactorError::InvalidFrontmatterRoot {
+            path: path.to_string(),
+        });
+    };
+
+    let key_value = YamlValue::String(key.to_string());
+    let previous = mapping.get(&key_value).cloned();
+    if let Some(value) = value {
+        if previous.as_ref() == Some(value) {
+            return Ok(Vec::new());
+        }
+        mapping.insert(key_value, value.clone());
+        Ok(vec![RefactorChange {
+            before: previous.as_ref().map_or_else(
+                || format!("{key}: <missing>"),
+                |existing| format!("{key}: {}", summarize_yaml_value(existing)),
+            ),
+            after: format!("{key}: {}", summarize_yaml_value(value)),
+        }])
+    } else {
+        let Some(previous) = previous else {
+            return Ok(Vec::new());
+        };
+        mapping.remove(YamlValue::String(key.to_string()));
+        Ok(vec![RefactorChange {
+            before: format!("{key}: {}", summarize_yaml_value(&previous)),
+            after: format!("{key}: <removed>"),
+        }])
+    }
 }
 
 fn find_unique_heading<'a>(
@@ -879,6 +998,32 @@ fn format_frontmatter_block(frontmatter: &YamlValue) -> Result<String, RefactorE
     Ok(format!("---\n{yaml}---\n"))
 }
 
+fn format_frontmatter_block_or_remove(frontmatter: &YamlValue) -> Result<String, RefactorError> {
+    if frontmatter
+        .as_mapping()
+        .is_some_and(serde_yaml::Mapping::is_empty)
+    {
+        Ok(String::new())
+    } else {
+        format_frontmatter_block(frontmatter)
+    }
+}
+
+fn parse_property_value(value: Option<&str>) -> Result<Option<YamlValue>, RefactorError> {
+    let Some(value) = value.map(str::trim) else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(serde_yaml::from_str::<YamlValue>(value)?))
+}
+
+fn summarize_yaml_value(value: &YamlValue) -> String {
+    let rendered = serde_yaml::to_string(value).unwrap_or_else(|_| format!("{value:?}"));
+    rendered.trim().replace('\n', " ")
+}
+
 fn rewrite_link_subpath(
     link: &RawLink,
     new_heading: Option<&str>,
@@ -1078,6 +1223,89 @@ mod tests {
             fs::read_to_string(vault_root.join("Home.md")).expect("home should read"),
             before
         );
+    }
+
+    #[test]
+    fn set_note_property_updates_frontmatter_and_reindexes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = set_note_property(&paths, "Done", "status", Some("shipped"), false)
+            .expect("property update should succeed");
+
+        assert_eq!(report.files.len(), 1);
+        let done = fs::read_to_string(vault_root.join("Done.md")).expect("done note should read");
+        assert!(done.contains("status: shipped"));
+        let notes = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["status = shipped".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .expect("notes query should succeed");
+        assert_eq!(notes.notes.len(), 1);
+        assert_eq!(notes.notes[0].document_path, "Done.md");
+    }
+
+    #[test]
+    fn set_note_property_creates_frontmatter_when_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        fs::write(
+            vault_root.join("Scratch.md"),
+            "# Scratch\n\nNo frontmatter yet.\n",
+        )
+        .expect("scratch note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = set_note_property(&paths, "Scratch", "owner", Some("alice"), false)
+            .expect("property creation should succeed");
+        assert_eq!(report.files.len(), 1);
+        let scratch =
+            fs::read_to_string(vault_root.join("Scratch.md")).expect("scratch should read");
+        assert!(scratch.starts_with("---\nowner: alice\n---\n"));
+        let notes = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["owner = alice".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .expect("notes query should succeed");
+        assert_eq!(notes.notes[0].document_path, "Scratch.md");
+    }
+
+    #[test]
+    fn set_note_property_with_empty_value_removes_property() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        set_note_property(&paths, "Done", "reviewed", Some(""), false)
+            .expect("property removal should succeed");
+
+        let done = fs::read_to_string(vault_root.join("Done.md")).expect("done note should read");
+        assert!(!done.contains("reviewed: true"));
+        let notes = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["reviewed = true".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .expect("notes query should succeed");
+        assert!(notes.notes.is_empty());
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {

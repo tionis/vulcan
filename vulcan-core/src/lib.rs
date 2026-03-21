@@ -37,12 +37,13 @@ pub use doctor::{
     DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
 };
 pub use graph::{
-    query_backlinks, query_graph_analytics, query_graph_components, query_graph_dead_ends,
-    query_graph_hubs, query_graph_moc_candidates, query_graph_path, query_links,
-    resolve_note_reference, BacklinkRecord, BacklinksReport, GraphAnalyticsReport, GraphComponent,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphNodeScore, GraphPathReport, GraphQueryError, LineContext, NamedCount, NoteMatchKind,
-    NoteReference, OutgoingLinkRecord, OutgoingLinksReport, ResolutionStatus,
+    list_note_identities, query_backlinks, query_graph_analytics, query_graph_components,
+    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
+    query_links, resolve_note_reference, BacklinkRecord, BacklinksReport, GraphAnalyticsReport,
+    GraphComponent, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate,
+    GraphMocReport, GraphNodeScore, GraphPathReport, GraphQueryError, LineContext, NamedCount,
+    NoteIdentity, NoteMatchKind, NoteReference, OutgoingLinkRecord, OutgoingLinksReport,
+    ResolutionStatus,
 };
 pub use history::{
     create_checkpoint, list_checkpoints, query_change_report, query_graph_trends, ChangeAnchor,
@@ -71,8 +72,8 @@ pub use properties::{
     PropertyTypeDiagnostic,
 };
 pub use refactor::{
-    merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property, RefactorChange,
-    RefactorError, RefactorFileReport, RefactorReport,
+    merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property, set_note_property,
+    RefactorChange, RefactorError, RefactorFileReport, RefactorReport,
 };
 pub use resolver::{
     resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverLink,

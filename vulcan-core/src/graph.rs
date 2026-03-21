@@ -149,6 +149,13 @@ pub struct NoteReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteIdentity {
+    pub path: String,
+    pub filename: String,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GraphPathReport {
     pub from_path: String,
     pub to_path: String,
@@ -229,6 +236,20 @@ pub fn resolve_note_reference(
         path: note.path,
         matched_by: note.matched_by,
     })
+}
+
+pub fn list_note_identities(paths: &VaultPaths) -> Result<Vec<NoteIdentity>, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+
+    Ok(notes
+        .into_iter()
+        .map(|note| NoteIdentity {
+            path: note.path,
+            filename: note.filename,
+            aliases: note.aliases,
+        })
+        .collect())
 }
 
 pub fn query_links(
@@ -1043,6 +1064,24 @@ mod tests {
             .top_properties
             .iter()
             .any(|property| property.name == "status"));
+    }
+
+    #[test]
+    fn list_note_identities_includes_paths_and_aliases() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let identities = list_note_identities(&paths).expect("listing identities should succeed");
+
+        assert_eq!(identities.len(), 3);
+        assert!(identities.iter().any(|identity| {
+            identity.path == "Home.md"
+                && identity.filename == "Home"
+                && identity.aliases == vec!["Start".to_string()]
+        }));
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {
