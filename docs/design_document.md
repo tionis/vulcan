@@ -38,6 +38,7 @@ The first release should optimize for practical vault engineering tasks instead 
 - Provide fast content lookup: exact search, hybrid search, semantic similarity, near-duplicate detection, clustering, topic exploration.
 - Expose structured querying over note properties and file metadata.
 - Parse and query a useful subset of Obsidian Bases files, which are stored as `.base` YAML files and define views, filters, and formulas.[3][4]
+- Let users treat a vault as a dynamic, queryable document database with saved views, ad hoc queries, and safe edit workflows.
 - Offer an implementation-friendly automation surface for scripts, agents, and shell workflows.
 
 ## 3. Non-goals for the initial implementation
@@ -45,7 +46,7 @@ The first release should optimize for practical vault engineering tasks instead 
 Do not aim for full visual or behavioral parity with the Obsidian desktop app in version 1.
 
 - Perfect rendering parity with every community plugin.
-- Reproducing the entire interactive Bases UI.
+- Reproducing the entire interactive Bases UI in version 1.
 - Supporting arbitrary plugin-defined syntax extensions during initial indexing.
 - Using the cache as the authoritative source for note contents.
 - Building a distributed service before the local architecture is stable.
@@ -342,6 +343,34 @@ Implementation guidance:
 
 Do not hard-wire the evaluator directly to frontmatter blobs. Bases needs access to both note properties and computed file fields.
 
+### Query model beyond version 1
+
+Do not make `.base` syntax the canonical query language for the whole product. Bases should remain the saved view and report layer, while the core query engine should be defined independently.
+
+Recommended direction:
+
+- Define a canonical internal query model or AST that captures source, filters, projections, sort, grouping, pagination, and mutation targets.
+- Compile multiple frontends into that same internal model: convenience CLI flags, a compact human query DSL, stable JSON payloads for agents and automation, and `.base` files.
+- Keep Bases optimized for persisted, shareable views rather than as the only ad hoc query surface.
+- Build future query-driven mutation commands on top of the same model so querying and editing use one semantic layer rather than parallel implementations.
+
+This keeps the cache schema private, avoids exposing raw SQL as a long-term product contract, and lets both humans and agents work against one stable query abstraction.
+
+### Interactive Bases workflows
+
+Post-v1 interactive Bases support should be layered on top of the same query and mutation engine rather than inventing a separate TUI-only model.
+
+Recommended direction:
+
+- Keep diagnostics available, but hide the diagnostics panel by default and make it toggleable for debugging or view-authoring work.
+- Expand the detail pane into a richer inspector that shows both structured row data and a file preview.
+- Support a full-screen preview mode for the selected note so users can inspect more content without leaving the TUI.
+- Add editing in stages: start with note/property edits and other safe structured mutations, then consider broader note editing.
+- If full in-TUI text editing remains too limited for some workflows, allow an optional handoff to an external editor while preserving the same validation and rescan path on return.
+- Treat future Bases-view editing as a higher-level workflow that edits validated view models and writes them back through a serializer, rather than patching `.base` files with ad hoc string edits.
+
+The preferred sequence is to make note and property editing solid before attempting create/delete/rename/edit flows for Bases views themselves.
+
 ## 13. Language and framework recommendations
 
 ### Primary recommendation: Rust
@@ -451,6 +480,7 @@ Recommended guidance:
 - Make machine-readable output a stable product surface, not a debug mode. Support `--output json` on all commands, and prefer line-delimited JSON for streamed or paginated output so agents can process results incrementally.
 - Make the CLI self-describing at runtime. Add a command such as `describe`, `schema`, or `help --json` so an agent can inspect accepted parameters, payload shape, defaults, mutability, and output schema without relying on stale external documentation.
 - Keep human-facing defaults pleasant, but make non-interactive behavior deterministic. Avoid prose-heavy output, spinner-only progress, or prompts that appear unexpectedly when stdout is not a TTY.
+- Treat interactive pickers as TTY-only conveniences, not required control flow. Missing or ambiguous note-like arguments may trigger a built-in fuzzy selector with preview when the session is interactive, but the same command must fail deterministically in non-interactive mode and when `--output json` is active.
 - Expose response-shaping controls for context discipline. Commands that list notes, links, diagnostics, or search hits should support field selection, limits, and streaming pagination so agents do not need to ingest large blobs of irrelevant text.
 - Treat all agent-provided input as untrusted. Validate and reject path traversal, control characters, embedded query fragments in identifiers, malformed percent-encoding, and other inputs that indicate hallucinated or adversarial arguments.
 - Add `--dry-run` anywhere a command mutates the vault or cache. Move, rename, rewrite, delete, repair, and migration-style operations should be previewable before they execute.
