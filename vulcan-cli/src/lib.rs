@@ -23,31 +23,32 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vulcan_core::{
     bulk_replace, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
-    evaluate_base_file, export_static_search_index, index_vectors_with_progress, initialize_vault,
-    inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints, list_saved_reports,
-    load_saved_report, merge_tags, move_note, query_backlinks, query_change_report,
-    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
-    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
-    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
-    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, repair_vectors_with_progress, resolve_note_reference, save_saved_report,
-    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
-    vector_duplicates, verify_cache, watch_vault, BacklinkRecord, BacklinksReport, BasesEvalReport,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DuplicateSuggestionsReport, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, RebuildQuery, RebuildReport, RefactorReport, RelatedNoteHit,
-    RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
-    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
+    evaluate_base_file, execute_query_report, export_static_search_index,
+    index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
+    link_mentions, list_checkpoints, list_saved_reports, load_saved_report, merge_tags, move_note,
+    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
+    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
+    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
+    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
+    resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
+    suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache, watch_vault,
+    BacklinkRecord, BacklinksReport, BasesEvalReport, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, InitSummary, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
+    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery,
+    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
+    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -1311,6 +1312,56 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             Ok(())
         }
+        Command::Query {
+            ref dsl,
+            ref json,
+            explain,
+            ref export,
+        } => {
+            let ast = match (dsl.as_deref(), json.as_deref()) {
+                (Some(_), Some(_)) => {
+                    return Err(CliError::operation(
+                        "provide either a DSL argument or --json, not both",
+                    ))
+                }
+                (Some(dsl), None) => {
+                    QueryAst::from_dsl(dsl).map_err(CliError::operation)?
+                }
+                (None, Some(json)) => {
+                    QueryAst::from_json(json).map_err(CliError::operation)?
+                }
+                (None, None) => {
+                    return Err(CliError::operation(
+                        "provide a DSL query argument or --json payload",
+                    ))
+                }
+            };
+            let report =
+                execute_query_report(&paths, ast).map_err(CliError::operation)?;
+            // Merge DSL-embedded limit/offset with global list controls; global flags win.
+            let effective_controls = ListOutputControls {
+                limit: list_controls
+                    .limit
+                    .or(report.query.limit),
+                offset: if list_controls.offset > 0 {
+                    list_controls.offset
+                } else {
+                    report.query.offset
+                },
+                fields: list_controls.fields.clone(),
+            };
+            let export = resolve_cli_export(export)?;
+            print_query_report(
+                cli.output,
+                &report,
+                explain,
+                &effective_controls,
+                stdout_is_tty,
+                use_stdout_color,
+                export.as_ref(),
+            )?;
+            Ok(())
+        }
         Command::Notes {
             ref filters,
             ref sort,
@@ -2109,6 +2160,82 @@ fn print_notes_report(
         OutputFormat::Json => {
             export_rows(&rows, list_controls.fields.as_deref(), export)?;
             print_json_lines(rows, list_controls.fields.as_deref())
+        }
+    }
+}
+
+fn query_report_rows(report: &QueryReport, notes: &[NoteRecord]) -> Vec<Value> {
+    let query_value =
+        serde_json::to_value(&report.query).unwrap_or(Value::Null);
+    notes
+        .iter()
+        .map(|note| {
+            serde_json::json!({
+                "document_path": note.document_path,
+                "file_name": note.file_name,
+                "file_ext": note.file_ext,
+                "file_mtime": note.file_mtime,
+                "properties": note.properties,
+                "query": query_value,
+            })
+        })
+        .collect()
+}
+
+fn print_query_report(
+    output: OutputFormat,
+    report: &QueryReport,
+    explain: bool,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+    export: Option<&ResolvedExport>,
+) -> Result<(), CliError> {
+    let visible_notes = paginated_items(&report.notes, list_controls);
+    let palette = AnsiPalette::new(use_color);
+    let rows = query_report_rows(report, visible_notes);
+
+    match output {
+        OutputFormat::Human => {
+            if explain || stdout_is_tty {
+                let ast_json = serde_json::to_string_pretty(&report.query)
+                    .unwrap_or_else(|_| "{}".to_string());
+                println!("{}", palette.cyan("Query AST:"));
+                println!("{ast_json}");
+                println!();
+            }
+            if visible_notes.is_empty() {
+                println!("No notes matched.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for note in visible_notes {
+                    print_note(note);
+                }
+            }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            Ok(())
+        }
+        OutputFormat::Json => {
+            if explain {
+                let payload = serde_json::json!({
+                    "query": report.query,
+                    "notes": rows,
+                });
+                export_rows(
+                    &[payload.clone()],
+                    list_controls.fields.as_deref(),
+                    export,
+                )?;
+                print_json(&payload)
+            } else {
+                export_rows(&rows, list_controls.fields.as_deref(), export)?;
+                print_json_lines(rows, list_controls.fields.as_deref())
+            }
         }
     }
 }

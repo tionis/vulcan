@@ -2236,6 +2236,188 @@ fn fish_completions_command_emits_shell_script() {
 }
 
 #[test]
+fn query_command_dsl_returns_matching_notes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    // DSL query: status = backlog
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "query",
+            "from notes where status = backlog",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["document_path"], "Backlog.md");
+}
+
+#[test]
+fn query_command_json_payload_returns_matching_notes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let json_payload =
+        r#"{"source":"notes","predicates":[{"field":"status","operator":"eq","value":"done"}]}"#;
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "query",
+            "--json",
+            json_payload,
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["document_path"], "Done.md");
+}
+
+#[test]
+fn query_command_explain_includes_ast_in_json() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "query",
+            "--explain",
+            "from notes where status = done",
+        ])
+        .assert()
+        .success();
+    let result = parse_stdout_json(&assert);
+    assert!(result.get("query").is_some(), "explain output should include query AST");
+    assert!(result.get("notes").is_some(), "explain output should include notes");
+    assert_eq!(result["query"]["source"], "notes");
+}
+
+#[test]
+fn query_command_dsl_order_and_limit() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "query",
+            "from notes order by file.path limit 1",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+    assert_eq!(rows.len(), 1, "limit 1 should return exactly one note");
+}
+
+#[test]
+fn query_command_rejects_both_dsl_and_json() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "query",
+            "from notes",
+            "--json",
+            r#"{"source":"notes"}"#,
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn query_command_results_match_notes_command() {
+    // Prove equivalence: query DSL and notes --where produce identical results
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let query_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "query",
+            "from notes where status = backlog",
+        ])
+        .assert()
+        .success();
+    let query_paths: Vec<String> = parse_stdout_json_lines(&query_assert)
+        .into_iter()
+        .filter_map(|v| v["document_path"].as_str().map(str::to_string))
+        .collect();
+
+    let notes_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "notes",
+            "--where",
+            "status = backlog",
+        ])
+        .assert()
+        .success();
+    let notes_paths: Vec<String> = parse_stdout_json_lines(&notes_assert)
+        .into_iter()
+        .filter_map(|v| v["document_path"].as_str().map(str::to_string))
+        .collect();
+
+    assert_eq!(
+        query_paths, notes_paths,
+        "query DSL and notes --where should return identical results"
+    );
+}
+
+#[test]
 fn command_json_outputs_match_composite_snapshot() {
     assert_json_snapshot("commands_composite.json", &build_command_snapshot());
 }

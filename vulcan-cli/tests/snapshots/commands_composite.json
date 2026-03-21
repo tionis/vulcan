@@ -2471,6 +2471,75 @@
         ]
       },
       {
+        "about": "Run a query using the human DSL or a JSON payload",
+        "after_help": "Query DSL syntax:\n  from notes\n    [where <field> <op> <value> [and <field> <op> <value>...]]\n    [select <field>[,<field>...]]\n    [order by <field> [desc|asc]]\n    [limit <n>]\n    [offset <n>]\n\nJSON payload (--json flag):\n  {\"source\":\"notes\",\"predicates\":[{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"done\"}],\n   \"sort\":{\"field\":\"file.mtime\",\"descending\":true},\"limit\":10}\n\nOperators:  = | > | >= | < | <= | starts_with | contains\n            (JSON: eq | gt | gte | lt | lte | starts_with | contains)\n\nExamples:\n  vulcan query 'from notes where status = done order by file.mtime desc limit 10'\n  vulcan query 'from notes where tags contains sprint and reviewed = true'\n  vulcan query --json '{\"source\":\"notes\",\"predicates\":[{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"done\"}]}'\n  vulcan query --explain 'from notes where status = backlog'",
+        "name": "query",
+        "options": [
+          {
+            "help": "DSL query string; e.g. 'from notes where status = done order by file.mtime desc'",
+            "id": "dsl",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DSL"
+            ]
+          },
+          {
+            "help": "JSON query payload; mutually exclusive with the positional DSL argument",
+            "id": "json",
+            "long": "json",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "JSON"
+            ]
+          },
+          {
+            "help": "Print the parsed query AST alongside the results",
+            "id": "explain",
+            "long": "explain",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPLAIN"
+            ]
+          },
+          {
+            "help": "Write query rows to a CSV or JSONL file",
+            "id": "export",
+            "long": "export",
+            "possible_values": [
+              "csv",
+              "jsonl"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT"
+            ]
+          },
+          {
+            "help": "Destination file for CSV or JSONL exports",
+            "id": "export_path",
+            "long": "export-path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT_PATH"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Describe the CLI schema and command surface",
         "name": "describe",
         "options": [],

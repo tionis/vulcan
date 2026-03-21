@@ -12,6 +12,7 @@ pub mod move_rewrite;
 pub mod parser;
 pub mod paths;
 pub mod properties;
+pub mod query;
 pub mod refactor;
 pub mod resolver;
 pub mod saved_queries;
@@ -70,6 +71,11 @@ pub use properties::{
     extract_indexed_properties, query_notes, IndexedProperties, IndexedPropertyListItem,
     IndexedPropertyValue, NoteQuery, NoteRecord, NotesReport, PropertyError,
     PropertyTypeDiagnostic,
+};
+pub use query::{
+    execute_query, execute_query_dsl, execute_query_json, execute_query_report, QueryAst,
+    QueryError, QueryOperator, QueryPredicate, QueryProjection, QueryReport, QuerySort,
+    QuerySource, QueryValue,
 };
 pub use refactor::{
     merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property, set_note_property,
