@@ -957,7 +957,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Graph { ref command } => match command {
             GraphCommand::Path { from, to } => {
-                let report = query_graph_path(&paths, from, to).map_err(CliError::operation)?;
+                let from = resolve_note_argument(
+                    &paths,
+                    from.as_deref(),
+                    interactive_note_selection,
+                    "from note",
+                )?;
+                let to = resolve_note_argument(
+                    &paths,
+                    to.as_deref(),
+                    interactive_note_selection,
+                    "to note",
+                )?;
+                let report =
+                    query_graph_path(&paths, &from, &to).map_err(CliError::operation)?;
                 print_graph_path_report(cli.output, &report)
             }
             GraphCommand::Hubs { export } => {
@@ -1181,8 +1194,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref new,
             dry_run,
         } => {
+            let note = resolve_note_argument(
+                &paths,
+                Some(note.as_str()),
+                interactive_note_selection,
+                "note to update",
+            )?;
             let report =
-                rename_alias(&paths, note, old, new, dry_run).map_err(CliError::operation)?;
+                rename_alias(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
@@ -1192,8 +1211,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref new,
             dry_run,
         } => {
+            let note = resolve_note_argument(
+                &paths,
+                Some(note.as_str()),
+                interactive_note_selection,
+                "note containing heading",
+            )?;
             let report =
-                rename_heading(&paths, note, old, new, dry_run).map_err(CliError::operation)?;
+                rename_heading(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
@@ -1203,8 +1228,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref new,
             dry_run,
         } => {
+            let note = resolve_note_argument(
+                &paths,
+                Some(note.as_str()),
+                interactive_note_selection,
+                "note containing block ref",
+            )?;
             let report =
-                rename_block_ref(&paths, note, old, new, dry_run).map_err(CliError::operation)?;
+                rename_block_ref(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
@@ -1353,6 +1384,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Suggest { ref command } => match command {
             SuggestCommand::Mentions { note, export } => {
+                let note = if note.is_none() && interactive_note_selection {
+                    note_picker::pick_note(&paths, None, None)
+                        .map_err(CliError::operation)?
+                } else {
+                    note.clone()
+                };
                 let report =
                     suggest_mentions(&paths, note.as_deref()).map_err(CliError::operation)?;
                 let export = resolve_cli_export(export)?;
@@ -4830,8 +4867,8 @@ mod tests {
             graph_path.command,
             Command::Graph {
                 command: GraphCommand::Path {
-                    from: "Home".to_string(),
-                    to: "Bob".to_string(),
+                    from: Some("Home".to_string()),
+                    to: Some("Bob".to_string()),
                 }
             }
         );
