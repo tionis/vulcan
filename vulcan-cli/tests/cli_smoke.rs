@@ -1347,6 +1347,8 @@ fn saved_reports_can_be_listed_run_and_batched() {
             .success();
         let mut json = parse_stdout_json(&assert);
         replace_string_recursively(&mut json, &vault_root.display().to_string(), "<vault>");
+        // Normalize any remaining backslash path separators (Windows) to forward slashes.
+        replace_string_recursively(&mut json, "\\", "/");
         json
     };
     assert_eq!(batch_json["succeeded"], 2);
@@ -2250,7 +2252,9 @@ fn query_command_dsl_returns_matching_notes() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "--output",
             "json",
             "--fields",
@@ -2279,7 +2283,9 @@ fn query_command_json_payload_returns_matching_notes() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "--output",
             "json",
             "--fields",
@@ -2306,7 +2312,9 @@ fn query_command_explain_includes_ast_in_json() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "--output",
             "json",
             "query",
@@ -2316,8 +2324,14 @@ fn query_command_explain_includes_ast_in_json() {
         .assert()
         .success();
     let result = parse_stdout_json(&assert);
-    assert!(result.get("query").is_some(), "explain output should include query AST");
-    assert!(result.get("notes").is_some(), "explain output should include notes");
+    assert!(
+        result.get("query").is_some(),
+        "explain output should include query AST"
+    );
+    assert!(
+        result.get("notes").is_some(),
+        "explain output should include notes"
+    );
     assert_eq!(result["query"]["source"], "notes");
 }
 
@@ -2332,7 +2346,9 @@ fn query_command_dsl_order_and_limit() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "--output",
             "json",
             "--fields",
@@ -2357,7 +2373,9 @@ fn query_command_rejects_both_dsl_and_json() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "query",
             "from notes",
             "--json",
@@ -2379,7 +2397,9 @@ fn query_command_results_match_notes_command() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "--output",
             "json",
             "--fields",
@@ -2398,7 +2418,9 @@ fn query_command_results_match_notes_command() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "--output",
             "json",
             "--fields",
@@ -2431,7 +2453,9 @@ fn update_command_sets_property_on_matching_notes() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "update",
             "--where",
             "status = backlog",
@@ -2473,7 +2497,9 @@ fn update_command_dry_run_does_not_modify_files() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "update",
             "--where",
             "status = backlog",
@@ -2503,7 +2529,9 @@ fn unset_command_removes_property_from_matching_notes() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "unset",
             "--where",
             "status = backlog",
@@ -2543,7 +2571,9 @@ fn unset_command_dry_run_does_not_modify_files() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "unset",
             "--where",
             "status = done",
@@ -2555,8 +2585,7 @@ fn unset_command_dry_run_does_not_modify_files() {
         .success()
         .stdout(predicate::str::contains("Dry run"));
 
-    let after =
-        fs::read_to_string(vault_root.join("Done.md")).expect("Done.md should be readable");
+    let after = fs::read_to_string(vault_root.join("Done.md")).expect("Done.md should be readable");
     assert_eq!(original, after, "dry run should not modify the file");
 }
 
@@ -2571,7 +2600,9 @@ fn update_command_json_output_includes_mutation_report() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "--output",
             "json",
             "update",
@@ -2607,7 +2638,9 @@ fn bases_view_add_command_creates_view_and_previews_rows() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "bases",
             "view-add",
             "release.base",
@@ -2621,7 +2654,10 @@ fn bases_view_add_command_creates_view_and_previews_rows() {
 
     let contents = fs::read_to_string(vault_root.join("release.base"))
         .expect("release.base should be readable");
-    assert!(contents.contains("Sprint"), "Sprint view should be in the file");
+    assert!(
+        contents.contains("Sprint"),
+        "Sprint view should be in the file"
+    );
 }
 
 #[test]
@@ -2635,7 +2671,9 @@ fn bases_view_delete_command_removes_view() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "bases",
             "view-delete",
             "release.base",
@@ -2646,7 +2684,10 @@ fn bases_view_delete_command_removes_view() {
 
     let contents = fs::read_to_string(vault_root.join("release.base"))
         .expect("release.base should be readable");
-    assert!(!contents.contains("Board"), "Board view should be removed from the file");
+    assert!(
+        !contents.contains("Board"),
+        "Board view should be removed from the file"
+    );
 }
 
 #[test]
@@ -2660,7 +2701,9 @@ fn bases_view_rename_command_renames_view() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "bases",
             "view-rename",
             "release.base",
@@ -2673,8 +2716,14 @@ fn bases_view_rename_command_renames_view() {
 
     let contents = fs::read_to_string(vault_root.join("release.base"))
         .expect("release.base should be readable");
-    assert!(contents.contains("Renamed"), "new name should be in the file");
-    assert!(!contents.contains("Release Table"), "old name should be gone");
+    assert!(
+        contents.contains("Renamed"),
+        "new name should be in the file"
+    );
+    assert!(
+        !contents.contains("Release Table"),
+        "old name should be gone"
+    );
 }
 
 #[test]
@@ -2688,7 +2737,9 @@ fn bases_view_edit_command_adds_filter() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "bases",
             "view-edit",
             "release.base",
@@ -2811,7 +2862,9 @@ fn replace_field_recursively(value: &mut Value, field: &str, replacement: &Value
 
 fn assert_json_snapshot(name: &str, value: &Value) {
     let snapshot_path = snapshot_path(name);
-    let expected = fs::read_to_string(snapshot_path).expect("snapshot should be readable");
+    let expected = fs::read_to_string(snapshot_path)
+        .expect("snapshot should be readable")
+        .replace("\r\n", "\n");
     let actual = serde_json::to_string_pretty(value).expect("json should serialize");
 
     assert_eq!(actual, expected.trim_end_matches('\n'));
@@ -2819,7 +2872,9 @@ fn assert_json_snapshot(name: &str, value: &Value) {
 
 fn assert_json_snapshot_lines(name: &str, values: &[Value]) {
     let snapshot_path = snapshot_path(name);
-    let expected = fs::read_to_string(snapshot_path).expect("snapshot should be readable");
+    let expected = fs::read_to_string(snapshot_path)
+        .expect("snapshot should be readable")
+        .replace("\r\n", "\n");
     let actual = serde_json::to_string_pretty(values).expect("json should serialize");
 
     assert_eq!(actual, expected.trim_end_matches('\n'));
@@ -3378,12 +3433,16 @@ fn build_saved_report_snapshot() -> Value {
             .success();
         let mut json = parse_stdout_json(&assert);
         replace_string_recursively(&mut json, &vault_root.display().to_string(), "<vault>");
+        // Normalize any remaining backslash path separators (Windows) to forward slashes.
+        replace_string_recursively(&mut json, "\\", "/");
         json
     };
     let search_export = fs::read_to_string(vault_root.join("exports/search.jsonl"))
-        .expect("search export should exist");
+        .expect("search export should exist")
+        .replace("\r\n", "\n");
     let bases_export = fs::read_to_string(vault_root.join("exports/release.csv"))
-        .expect("bases export should exist");
+        .expect("bases export should exist")
+        .replace("\r\n", "\n");
 
     serde_json::json!({
         "saved_list": list_json,

@@ -251,7 +251,11 @@ pub fn merge_tags(
             surgical_result
         } else {
             plan_frontmatter_replacement(&source, |frontmatter| {
-                Ok(merge_frontmatter_tags(frontmatter, &source_tag, &destination_tag))
+                Ok(merge_frontmatter_tags(
+                    frontmatter,
+                    &source_tag,
+                    &destination_tag,
+                ))
             })?
         };
 
@@ -1810,8 +1814,7 @@ mod tests {
     fn rename_property_diff_is_minimal() {
         // After surgical rename, only the key line should change; all other bytes are identical.
         let old_yaml = "# top comment\nstatus: active\nestimate: 8\nrelated:\n  - '[[Done]]'\n";
-        let new_yaml =
-            surgical_rename_key(old_yaml, "status", "phase").expect("should rename");
+        let new_yaml = surgical_rename_key(old_yaml, "status", "phase").expect("should rename");
         // Only one line changed
         let changed_lines: Vec<_> = old_yaml
             .lines()
@@ -1840,8 +1843,7 @@ mod tests {
             fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
         set_note_property(&paths, "Backlog", "status", Some("done"), false)
             .expect("set should succeed");
-        let after =
-            fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
+        let after = fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
 
         // Count changed lines (only the `status:` line should differ)
         let before_lines: Vec<_> = before.lines().collect();
@@ -1873,8 +1875,7 @@ mod tests {
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
         set_note_property(&paths, "Backlog", "status", Some("done"), false)
             .expect("first set should succeed");
-        let first =
-            fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
+        let first = fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
 
         // Second identical set should produce no changes
         let report = set_note_property(&paths, "Backlog", "status", Some("done"), false)
@@ -1883,7 +1884,10 @@ mod tests {
             fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
 
         assert_eq!(report.files.len(), 0, "second set should be a no-op");
-        assert_eq!(first, second, "file should be identical after idempotent set");
+        assert_eq!(
+            first, second,
+            "file should be identical after idempotent set"
+        );
     }
 
     #[test]
@@ -1900,18 +1904,22 @@ mod tests {
         )
         .expect("note should write");
 
-        let before =
-            fs::read_to_string(vault_root.join("Note.md")).expect("note should read");
+        let before = fs::read_to_string(vault_root.join("Note.md")).expect("note should read");
         rename_property(&paths, "status", "phase", false).expect("rename should succeed");
-        let after =
-            fs::read_to_string(vault_root.join("Note.md")).expect("note should read");
+        let after = fs::read_to_string(vault_root.join("Note.md")).expect("note should read");
 
         assert!(after.contains("phase: active\n"));
         assert!(!after.contains("status: active\n"));
         // Comments and list values are preserved byte-for-byte
         assert!(after.contains("# status metadata\n"));
-        assert!(after.contains("  - '[[A]]'\n"), "list indent should be preserved");
-        assert!(after.contains("  - '[[B]]'\n"), "list indent should be preserved");
+        assert!(
+            after.contains("  - '[[A]]'\n"),
+            "list indent should be preserved"
+        );
+        assert!(
+            after.contains("  - '[[B]]'\n"),
+            "list indent should be preserved"
+        );
         assert!(after.contains("created: 2026-01-01\n"));
         // Only the key line changed
         let before_lines: Vec<_> = before.lines().collect();

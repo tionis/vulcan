@@ -511,8 +511,7 @@ pub fn bases_view_edit(
         view.filters.extend(patch.add_filters);
     }
     if !patch.remove_filters.is_empty() {
-        view.filters
-            .retain(|f| !patch.remove_filters.contains(f));
+        view.filters.retain(|f| !patch.remove_filters.contains(f));
     }
     if let Some(columns) = patch.set_columns {
         view.columns = columns;
@@ -1558,11 +1557,15 @@ mod tests {
             filters: vec!["status = backlog".to_string()],
             ..Default::default()
         };
-        let report = bases_view_add(&paths, "release.base", spec, false)
-            .expect("view add should succeed");
+        let report =
+            bases_view_add(&paths, "release.base", spec, false).expect("view add should succeed");
 
         // The new view is evaluated
-        assert!(report.eval.views.iter().any(|v| v.name.as_deref() == Some("Sprint")));
+        assert!(report
+            .eval
+            .views
+            .iter()
+            .any(|v| v.name.as_deref() == Some("Sprint")));
 
         // The file on disk was written
         let on_disk =
@@ -1606,13 +1609,15 @@ mod tests {
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
 
-        let report =
-            bases_view_rename(&paths, "release.base", "Release Table", "New Name", false)
-                .expect("view rename should succeed");
+        let report = bases_view_rename(&paths, "release.base", "Release Table", "New Name", false)
+            .expect("view rename should succeed");
 
         let on_disk =
             fs::read_to_string(vault_root.join("release.base")).expect("file should be readable");
-        assert!(on_disk.contains("New Name"), "new name should appear in file");
+        assert!(
+            on_disk.contains("New Name"),
+            "new name should appear in file"
+        );
         assert!(
             !on_disk.contains("Release Table"),
             "old name should be gone"

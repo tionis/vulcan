@@ -532,27 +532,21 @@ impl<'a> DslParser<'a> {
             .consume()
             .ok_or_else(|| QueryError::InvalidDsl("expected field after 'order by'".to_string()))?
             .to_string();
-        let descending = matches!(
-            self.peek_lower().as_deref(),
-            Some("desc" | "descending")
-        );
-        if descending
-            || matches!(
-                self.peek_lower().as_deref(),
-                Some("asc" | "ascending")
-            )
-        {
+        let descending = matches!(self.peek_lower().as_deref(), Some("desc" | "descending"));
+        if descending || matches!(self.peek_lower().as_deref(), Some("asc" | "ascending")) {
             self.consume();
         }
         Ok(QuerySort { field, descending })
     }
 
     fn parse_usize(&mut self, label: &str) -> Result<usize, QueryError> {
-        let tok = self.consume().ok_or_else(|| {
-            QueryError::InvalidDsl(format!("expected number after '{label}'"))
-        })?;
+        let tok = self
+            .consume()
+            .ok_or_else(|| QueryError::InvalidDsl(format!("expected number after '{label}'")))?;
         tok.parse::<usize>().map_err(|_| {
-            QueryError::InvalidDsl(format!("expected positive integer for '{label}', got {tok:?}"))
+            QueryError::InvalidDsl(format!(
+                "expected positive integer for '{label}', got {tok:?}"
+            ))
         })
     }
 }
@@ -601,7 +595,10 @@ mod tests {
         assert_eq!(ast.predicates.len(), 1);
         assert_eq!(ast.predicates[0].field, "status");
         assert_eq!(ast.predicates[0].operator, QueryOperator::Eq);
-        assert_eq!(ast.predicates[0].value, QueryValue::Text("done".to_string()));
+        assert_eq!(
+            ast.predicates[0].value,
+            QueryValue::Text("done".to_string())
+        );
     }
 
     #[test]
@@ -615,8 +612,7 @@ mod tests {
 
     #[test]
     fn dsl_where_multiple_and() {
-        let ast =
-            QueryAst::from_dsl("from notes where status = done and priority > 2").unwrap();
+        let ast = QueryAst::from_dsl("from notes where status = done and priority > 2").unwrap();
         assert_eq!(ast.predicates.len(), 2);
         assert_eq!(ast.predicates[1].field, "priority");
         assert_eq!(ast.predicates[1].operator, QueryOperator::Gt);
@@ -642,8 +638,7 @@ mod tests {
 
     #[test]
     fn dsl_select_fields() {
-        let ast =
-            QueryAst::from_dsl("from notes select file.path, status").unwrap();
+        let ast = QueryAst::from_dsl("from notes select file.path, status").unwrap();
         assert_eq!(
             ast.projection,
             QueryProjection::Fields(vec!["file.path".to_string(), "status".to_string()])
