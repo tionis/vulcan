@@ -400,6 +400,10 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] `rename-heading <note> <old> <new>` with safe inbound `#heading` link rewrites
 - [x] `rename-block-ref <note> <old> <new>` with safe inbound `#^block` link rewrites
 - [~] Preserve roundtrip-safe formatting when rewriting frontmatter properties and note bodies
+  Current gap: rewrites are semantically correct, but formatting can still be normalized in ways that users notice.
+  Required scope: preserve unrelated frontmatter ordering, comments, quoting style, list indentation/flow style where possible, and avoid unnecessary body-text churn outside the targeted edit.
+  Acceptance target: moving or renaming one property/link should produce a minimal diff that is stable across repeated runs.
+  Suggested implementation direction: operate on parsed spans with surgical replacements rather than serializing whole frontmatter blocks whenever feasible.
 - [x] Integration tests for property, tag, and alias refactors
 
 ### 7.2 Doctor auto-fix
@@ -470,10 +474,22 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 
 ### 7.12 Query ergonomics and interactive workflows
 - [ ] Define a canonical query AST shared by `notes`, `search`, `bases`, saved reports, and serve/API handlers
+  Current gap: query semantics are still split across `NoteQuery`, `SearchQuery`, Bases evaluation, and serve handlers.
+  Required scope: source selection, typed predicates, projection/field selection, sort, grouping, pagination, and mutation targets.
+  Constraint: do not expose raw SQLite schema or SQL as the long-term public contract.
 - [ ] Add a compact human query DSL for ad hoc vault querying without exposing raw SQL
+  Recommended first surface: `from notes where ... select ... order by ... limit ...`.
+  Requirement: compile into the canonical AST rather than adding a parallel execution path.
 - [ ] Add stable JSON query payloads for agents and automation that map directly to the internal query model
+  Requirement: machine input must round-trip cleanly with the AST and remain valid in non-interactive mode.
+  Follow-up: extend `describe` or add `help --json` coverage for the JSON query model and supported operators.
 - [ ] Add query-driven mutation workflows on top of the same model instead of overloading `.base` files as the write API
+  Recommended first commands: `update`, `unset`, and targeted list/tag edits.
+  Constraint: always support `--dry-run`, acquire the write lock, reuse the existing refactor/mutation pipeline, and rescan incrementally after apply.
 - [~] Add a TTY-only fuzzy selector and disambiguation UI for missing or ambiguous note arguments
+  Current shipped baseline: picker exists for `links`, `backlinks`, `related`, `vectors related`, and note-backed `vectors neighbors`.
+  Remaining scope: cover the remaining note-identifier workflows such as `graph path`, `rename-alias`, `rename-heading`, `rename-block-ref`, `suggest mentions`, and similar single-note commands where interactive selection is sensible.
+  Constraint: keep the picker built-in; do not require an external `fzf` binary.
 - [x] Never auto-prompt in non-interactive mode or when `--output json` is active
 - [x] Expand `bases tui <file.base>` beyond read-only inspection into a richer interactive workflow
 - [x] Hide the Bases TUI diagnostics panel by default and make it toggleable for debugging or view-authoring work
@@ -482,6 +498,37 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Add note/property editing in the TUI through the same validated mutation engine used by CLI commands
 - [x] Add an optional external-editor handoff for note and `.base` editing from the TUI
 - [ ] Add future Bases view-management workflows: create, delete, rename, and edit views with validation and live result preview
+  Requirement: operate on a parsed/validated view model and write back through a serializer; do not patch `.base` files with ad hoc string replacements.
+  Recommended first scope: create/delete/rename view, edit columns, sort, filters, and group-by.
+  Constraint: preview the resulting row set and diagnostics before save.
+
+#### 7.12 Current implementation baseline
+- The interactive Bases TUI now supports toggleable diagnostics, structured detail, file preview, full-screen preview, frontmatter property edits, and external-editor handoff for notes and `.base` files.
+- A validated property mutation helper exists in core and already reindexes after apply.
+- The interactive note picker is shipped, but only on a subset of single-note commands.
+- The missing work is now mainly about unifying query semantics and extending the interactive surface consistently.
+
+#### 7.12 Recommended implementation order
+1. Introduce the canonical query AST and adapter layer without changing user-facing behavior yet.
+2. Port existing `notes`, Bases evaluation, saved reports, and serve/API handlers onto the AST and prove result equivalence with tests.
+3. Add JSON query payload support and schema/describe output so agents have a stable contract.
+4. Add the human DSL on top of the AST once the execution model is shared.
+5. Add query-driven mutation commands that reuse the same AST plus the existing write-safe refactor pipeline.
+6. Expand picker coverage across the remaining note-identifier commands.
+7. Finish Bases view-management on top of the same parsed model and serializer.
+
+#### 7.12 Suggested file ownership for the next agent
+- Core query model: likely a new module in `vulcan-core/src/` plus adapters in `properties.rs`, `bases.rs`, `saved_queries.rs`, and CLI-side serve wiring in `vulcan-cli/src/serve.rs`.
+- Interactive picker expansion: `vulcan-cli/src/note_picker.rs`, `vulcan-cli/src/cli.rs`, and `vulcan-cli/src/lib.rs`.
+- Bases view editing: `vulcan-core/src/bases.rs` for parsed model + serializer support and `vulcan-cli/src/bases_tui.rs` for the interactive workflow.
+- Query-driven mutation commands: `vulcan-core/src/refactor.rs` or a sibling mutation module, then CLI wiring in `vulcan-cli/src/cli.rs` and `vulcan-cli/src/lib.rs`.
+
+#### 7.12 Acceptance expectations
+- Existing `notes`, `search`, `bases eval`, saved reports, and serve/API behavior must remain stable while being ported to the shared AST.
+- Interactive features must stay optional conveniences only; every command still needs a deterministic non-interactive path.
+- New mutations must preserve current write-lock, dry-run, and incremental-rescan guarantees.
+- Add unit tests for AST parsing/compilation and integration tests proving equivalent results across flags, DSL, JSON, and saved/Bases execution where applicable.
+- Update CLI snapshots and roadmap status with each shipped sub-batch rather than waiting for the whole track to finish.
 
 ---
 
