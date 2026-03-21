@@ -156,7 +156,7 @@ struct FilePlan {
     changes: Vec<RefactorChange>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FrontmatterBlock {
     full_start: usize,
     full_end: usize,
@@ -185,9 +185,31 @@ pub fn rename_property(
         let mut edits = Vec::new();
         let mut changes = Vec::new();
 
-        if let Some((edit, edit_changes)) = plan_frontmatter_replacement(&source, |frontmatter| {
-            rename_frontmatter_property(frontmatter, &path, old_key, new_key)
-        })? {
+        // Try surgical rename (preserves formatting) before falling back to full round-trip.
+        let surgical_result = plan_surgical_frontmatter_edit(&source, |yaml| {
+            // Abort surgical path if new_key already exists (fall back for proper error handling).
+            if old_key != new_key && find_yaml_key_span(yaml, new_key).is_some() {
+                return None;
+            }
+            let new_yaml = surgical_rename_key(yaml, old_key, new_key)?;
+            Some((
+                new_yaml,
+                vec![RefactorChange {
+                    before: old_key.to_string(),
+                    after: new_key.to_string(),
+                }],
+            ))
+        })?;
+
+        let result = if surgical_result.is_some() {
+            surgical_result
+        } else {
+            plan_frontmatter_replacement(&source, |frontmatter| {
+                rename_frontmatter_property(frontmatter, &path, old_key, new_key)
+            })?
+        };
+
+        if let Some((edit, edit_changes)) = result {
             edits.push(edit);
             changes.extend(edit_changes);
         }
@@ -218,13 +240,22 @@ pub fn merge_tags(
         let mut edits = Vec::new();
         let mut changes = Vec::new();
 
-        if let Some((edit, edit_changes)) = plan_frontmatter_replacement(&source, |frontmatter| {
-            Ok(merge_frontmatter_tags(
-                frontmatter,
-                &source_tag,
-                &destination_tag,
-            ))
-        })? {
+        // Try surgical tag edit (only rewrites the `tags:` block, preserves everything else).
+        let surgical_result = plan_surgical_frontmatter_edit(&source, |yaml| {
+            surgical_edit_key_value_block(yaml, "tags", |tags_value| {
+                merge_frontmatter_tags_value(tags_value, &source_tag, &destination_tag)
+            })
+        })?;
+
+        let fm_result = if surgical_result.is_some() {
+            surgical_result
+        } else {
+            plan_frontmatter_replacement(&source, |frontmatter| {
+                Ok(merge_frontmatter_tags(frontmatter, &source_tag, &destination_tag))
+            })?
+        };
+
+        if let Some((edit, edit_changes)) = fm_result {
             edits.push(edit);
             changes.extend(edit_changes);
         }
@@ -266,9 +297,23 @@ pub fn rename_alias(
     let mut edits = Vec::new();
     let mut changes = Vec::new();
 
-    if let Some((edit, edit_changes)) = plan_frontmatter_replacement(&source, |frontmatter| {
-        rename_frontmatter_alias(frontmatter, &path, old_alias, new_alias)
-    })? {
+    // Try surgical alias value edit first; fall back to full round-trip.
+    let surgical = plan_surgical_frontmatter_edit(&source, |yaml| {
+        surgical_edit_key_value_block(yaml, "aliases", |aliases_value| {
+            rename_frontmatter_alias_value(aliases_value, &path, old_alias, new_alias)
+                .unwrap_or_default()
+        })
+    })?;
+
+    let alias_result = if surgical.is_some() {
+        surgical
+    } else {
+        plan_frontmatter_replacement(&source, |frontmatter| {
+            rename_frontmatter_alias(frontmatter, &path, old_alias, new_alias)
+        })?
+    };
+
+    if let Some((edit, edit_changes)) = alias_result {
         edits.push(edit);
         changes.extend(edit_changes);
     }
@@ -560,6 +605,14 @@ fn plan_set_note_property_replacement(
 ) -> Result<Option<(TextEdit, Vec<RefactorChange>)>, RefactorError> {
     if let Some(block) = find_frontmatter_block(source) {
         let raw_yaml = &source[block.yaml_start..block.yaml_end];
+
+        // Attempt surgical set/remove first: only touches the target key.
+        let surgical = try_surgical_set_in_yaml(block, raw_yaml, source, key, value);
+        if surgical.is_some() {
+            return Ok(surgical);
+        }
+
+        // Fall back to full round-trip (handles complex types, new-key append, etc.).
         let mut frontmatter = serde_yaml::from_str::<YamlValue>(raw_yaml)?;
         let changes = set_frontmatter_property(&mut frontmatter, path, key, value)?;
         if changes.is_empty() {
@@ -595,6 +648,66 @@ fn plan_set_note_property_replacement(
             after: format!("{key}: {}", summarize_yaml_value(value)),
         }],
     )))
+}
+
+/// Try a surgical set/remove within a frontmatter block's raw YAML.
+///
+/// Returns `None` (fall back to full round-trip) if:
+/// - the key is not present in the YAML,
+/// - the previous value can't be deserialized for change tracking, or
+/// - `surgical_set_key` / `format_yaml_kv_block` cannot handle the value type.
+fn try_surgical_set_in_yaml(
+    block: FrontmatterBlock,
+    raw_yaml: &str,
+    source: &str,
+    key: &str,
+    value: Option<&YamlValue>,
+) -> Option<(TextEdit, Vec<RefactorChange>)> {
+    // We need the previous value for the change record.
+    let (key_start, _key_end) = find_yaml_key_span(raw_yaml, key)?;
+    let key_block = &raw_yaml[key_start..];
+    let prev_mapping: YamlValue = serde_yaml::from_str(key_block).ok()?;
+    let prev_value = prev_mapping
+        .as_mapping()?
+        .get(&YamlValue::String(key.to_string()))?
+        .clone();
+
+    if let Some(new_value) = value {
+        if prev_value == *new_value {
+            return None; // No change needed; fall through to full round-trip (will also no-op).
+        }
+    }
+
+    let new_yaml = surgical_set_key(raw_yaml, key, value)?;
+    let new_frontmatter = if new_yaml.trim().is_empty() {
+        String::new() // whole block removed
+    } else {
+        format!("---\n{new_yaml}---\n")
+    };
+
+    if new_frontmatter == source[block.full_start..block.full_end] {
+        return None;
+    }
+
+    let change = match value {
+        None => RefactorChange {
+            before: format!("{key}: {}", summarize_yaml_value(&prev_value)),
+            after: format!("{key}: <removed>"),
+        },
+        Some(v) => RefactorChange {
+            before: format!("{key}: {}", summarize_yaml_value(&prev_value)),
+            after: format!("{key}: {}", summarize_yaml_value(v)),
+        },
+    };
+
+    Some((
+        TextEdit {
+            start: block.full_start,
+            end: block.full_end,
+            replacement: new_frontmatter,
+        },
+        vec![change],
+    ))
 }
 
 fn rename_frontmatter_property(
@@ -642,18 +755,13 @@ fn rename_frontmatter_property(
     }])
 }
 
-fn merge_frontmatter_tags(
-    frontmatter: &mut YamlValue,
+/// Merge tags directly within the `tags` *value* (not the whole frontmatter mapping).
+/// Used by the surgical path; the full-round-trip path uses `merge_frontmatter_tags`.
+fn merge_frontmatter_tags_value(
+    tags: &mut YamlValue,
     source_tag: &str,
     destination_tag: &str,
 ) -> Vec<RefactorChange> {
-    let Some(mapping) = frontmatter.as_mapping_mut() else {
-        return Vec::new();
-    };
-    let Some(tags) = mapping.get_mut(YamlValue::String("tags".to_string())) else {
-        return Vec::new();
-    };
-
     let mut changes = Vec::new();
     match tags {
         YamlValue::String(text) => {
@@ -707,23 +815,32 @@ fn merge_frontmatter_tags(
         }
         _ => {}
     }
-
     changes
 }
 
-fn rename_frontmatter_alias(
+fn merge_frontmatter_tags(
     frontmatter: &mut YamlValue,
+    source_tag: &str,
+    destination_tag: &str,
+) -> Vec<RefactorChange> {
+    let Some(mapping) = frontmatter.as_mapping_mut() else {
+        return Vec::new();
+    };
+    let Some(tags) = mapping.get_mut(YamlValue::String("tags".to_string())) else {
+        return Vec::new();
+    };
+
+    merge_frontmatter_tags_value(tags, source_tag, destination_tag)
+}
+
+/// Rename an alias within the `aliases` *value* (not the whole frontmatter mapping).
+/// Used by the surgical path.  Returns `Err` for duplicates so the surgical path can abort.
+fn rename_frontmatter_alias_value(
+    aliases: &mut YamlValue,
     path: &str,
     old_alias: &str,
     new_alias: &str,
 ) -> Result<Vec<RefactorChange>, RefactorError> {
-    let Some(mapping) = frontmatter.as_mapping_mut() else {
-        return Ok(Vec::new());
-    };
-    let Some(aliases) = mapping.get_mut(YamlValue::String("aliases".to_string())) else {
-        return Ok(Vec::new());
-    };
-
     let mut changes = Vec::new();
     match aliases {
         YamlValue::String(text) => {
@@ -769,8 +886,22 @@ fn rename_frontmatter_alias(
         }
         _ => {}
     }
-
     Ok(changes)
+}
+
+fn rename_frontmatter_alias(
+    frontmatter: &mut YamlValue,
+    path: &str,
+    old_alias: &str,
+    new_alias: &str,
+) -> Result<Vec<RefactorChange>, RefactorError> {
+    let Some(mapping) = frontmatter.as_mapping_mut() else {
+        return Ok(Vec::new());
+    };
+    let Some(aliases) = mapping.get_mut(YamlValue::String("aliases".to_string())) else {
+        return Ok(Vec::new());
+    };
+    rename_frontmatter_alias_value(aliases, path, old_alias, new_alias)
 }
 
 fn set_frontmatter_property(
@@ -1096,6 +1227,229 @@ fn format_frontmatter_block_or_remove(frontmatter: &YamlValue) -> Result<String,
     }
 }
 
+// === Surgical YAML frontmatter editing ===
+//
+// These functions edit only the targeted key within a frontmatter block, preserving
+// all other keys byte-for-byte (ordering, comments, quoting style, list indentation).
+
+/// Returns true if `line` (possibly with a trailing newline) is a top-level YAML mapping entry
+/// for `key` — i.e., it begins exactly with `key:` followed by a space, tab, newline, or nothing.
+fn is_top_level_key_line(line: &str, key: &str) -> bool {
+    let Some(rest) = line.strip_prefix(key) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(':') else {
+        return false;
+    };
+    rest.is_empty()
+        || rest.starts_with(' ')
+        || rest.starts_with('\t')
+        || rest == "\n"
+        || rest == "\r\n"
+}
+
+/// Find the byte range `[start, end)` of a top-level key's block in raw YAML frontmatter.
+///
+/// The span covers the key line plus all continuation lines (indented lines and bare
+/// sequence entries `- item` at column 0).  Blank lines and new top-level keys end the span.
+/// Returns `None` if the key is not present.
+fn find_yaml_key_span(yaml: &str, key: &str) -> Option<(usize, usize)> {
+    let mut pos = 0usize;
+    let mut span_start: Option<usize> = None;
+
+    for line in yaml.split_inclusive('\n') {
+        let line_start = pos;
+        pos += line.len();
+        let line_body = line.trim_end_matches('\n').trim_end_matches('\r');
+
+        if span_start.is_none() {
+            if is_top_level_key_line(line_body, key) {
+                span_start = Some(line_start);
+                let after_colon = line_body[key.len() + 1..].trim();
+                if !after_colon.is_empty() {
+                    // Inline scalar value: span is this single line.
+                    return Some((line_start, pos));
+                }
+                // Block value: accumulate continuation lines below.
+            }
+        } else {
+            if line_body.is_empty() {
+                return Some((span_start.unwrap(), line_start));
+            }
+            let first_char = line.chars().next().unwrap_or(' ');
+            if first_char == ' ' || first_char == '\t' {
+                // Indented continuation.
+            } else if line_body.starts_with("- ") || line_body == "-" {
+                // Bare sequence entry at column 0.
+            } else {
+                // New top-level key, comment, or end of frontmatter.
+                return Some((span_start.unwrap(), line_start));
+            }
+        }
+    }
+
+    span_start.map(|start| (start, pos))
+}
+
+/// Rename a top-level key in raw YAML frontmatter, preserving all other formatting byte-for-byte.
+/// Returns `None` if the key was not found.
+fn surgical_rename_key(yaml: &str, old_key: &str, new_key: &str) -> Option<String> {
+    let mut result = String::with_capacity(yaml.len() + new_key.len());
+    let mut found = false;
+
+    for line in yaml.split_inclusive('\n') {
+        if !found {
+            let line_body = line.trim_end_matches('\n').trim_end_matches('\r');
+            if is_top_level_key_line(line_body, old_key) {
+                // Replace just the key name; keep the colon and everything after.
+                let after_key = &line[old_key.len()..];
+                result.push_str(new_key);
+                result.push_str(after_key);
+                found = true;
+                continue;
+            }
+        }
+        result.push_str(line);
+    }
+
+    found.then_some(result)
+}
+
+/// Serialize a YAML value as a compact inline form suitable for `key: <result>`.
+/// Returns `None` for complex types (nested mappings) that need full serialization.
+fn format_scalar_yaml_value(value: &YamlValue) -> Option<String> {
+    match value {
+        YamlValue::Null => Some("null".to_string()),
+        YamlValue::Bool(b) => Some(b.to_string()),
+        YamlValue::Number(_) | YamlValue::String(_) => serde_yaml::to_string(value)
+            .ok()
+            .map(|s| s.trim_end().to_string()),
+        _ => None,
+    }
+}
+
+/// Format a key-value block for insertion into raw frontmatter YAML.
+/// Returns `None` for nested mapping values (caller should fall back to full round-trip).
+fn format_yaml_kv_block(key: &str, value: &YamlValue) -> Option<String> {
+    match value {
+        YamlValue::Null | YamlValue::Bool(_) | YamlValue::Number(_) | YamlValue::String(_) => {
+            let v = format_scalar_yaml_value(value)?;
+            Some(format!("{key}: {v}\n"))
+        }
+        YamlValue::Sequence(seq) => {
+            if seq.is_empty() {
+                return Some(format!("{key}: []\n"));
+            }
+            let mut block = format!("{key}:\n");
+            for item in seq {
+                let item_str = format_scalar_yaml_value(item).or_else(|| {
+                    serde_yaml::to_string(item)
+                        .ok()
+                        .map(|s| s.trim_end().to_string())
+                })?;
+                block.push_str(&format!("- {item_str}\n"));
+            }
+            Some(block)
+        }
+        YamlValue::Mapping(_) => None,
+        _ => None,
+    }
+}
+
+/// Surgically set or remove a key in raw YAML frontmatter.
+/// Preserves all other keys byte-for-byte.  Returns `None` when:
+/// - the key is not present (for removal),
+/// - the key is not present and the value is being set (caller should append),
+/// - or the value type is too complex for surgical formatting.
+fn surgical_set_key(yaml: &str, key: &str, value: Option<&YamlValue>) -> Option<String> {
+    let (span_start, span_end) = find_yaml_key_span(yaml, key)?;
+    let before = &yaml[..span_start];
+    let after = &yaml[span_end..];
+
+    match value {
+        None => Some(format!("{before}{after}")),
+        Some(v) => {
+            let new_block = format_yaml_kv_block(key, v)?;
+            Some(format!("{before}{new_block}{after}"))
+        }
+    }
+}
+
+/// Apply a surgical edit to a specific property key's value block in raw frontmatter YAML.
+///
+/// `edit_fn` receives a mutable reference to the deserialized *value* of `key_property` and
+/// should return the `RefactorChange` list.  The value is re-formatted surgically and only
+/// that block is replaced; all other keys are preserved byte-for-byte.
+///
+/// Returns `None` (fall back to full round-trip) if:
+/// - the key is absent,
+/// - YAML parsing fails,
+/// - or `format_yaml_kv_block` cannot handle the resulting value type.
+fn surgical_edit_key_value_block<F>(
+    yaml: &str,
+    key_property: &str,
+    edit_fn: F,
+) -> Option<(String, Vec<RefactorChange>)>
+where
+    F: FnOnce(&mut YamlValue) -> Vec<RefactorChange>,
+{
+    let (key_start, key_end) = find_yaml_key_span(yaml, key_property)?;
+    let key_block = &yaml[key_start..key_end];
+
+    // Parse just this key's block as a mini YAML mapping.
+    let mut mini: YamlValue = serde_yaml::from_str(key_block).ok()?;
+    let key_yaml = YamlValue::String(key_property.to_string());
+    let value = mini.as_mapping_mut()?.get_mut(&key_yaml)?;
+
+    let changes = edit_fn(value);
+    if changes.is_empty() {
+        return None;
+    }
+
+    let new_block = format_yaml_kv_block(key_property, value)?;
+    let new_yaml = format!("{}{}{}", &yaml[..key_start], new_block, &yaml[key_end..]);
+    Some((new_yaml, changes))
+}
+
+/// Generic surgical frontmatter edit driver.
+///
+/// Calls `edit_fn` with the raw YAML string extracted from the frontmatter block.
+/// `edit_fn` should return `(new_yaml, changes)` or `None` to abort the surgical path.
+/// On success returns a `TextEdit` spanning the full frontmatter block and the change list.
+fn plan_surgical_frontmatter_edit<F>(
+    source: &str,
+    edit_fn: F,
+) -> Result<Option<(TextEdit, Vec<RefactorChange>)>, RefactorError>
+where
+    F: FnOnce(&str) -> Option<(String, Vec<RefactorChange>)>,
+{
+    let Some(block) = find_frontmatter_block(source) else {
+        return Ok(None);
+    };
+    let raw_yaml = &source[block.yaml_start..block.yaml_end];
+
+    let Some((new_yaml, changes)) = edit_fn(raw_yaml) else {
+        return Ok(None);
+    };
+    if changes.is_empty() {
+        return Ok(None);
+    }
+
+    let new_frontmatter = format!("---\n{new_yaml}---\n");
+    if new_frontmatter == source[block.full_start..block.full_end] {
+        return Ok(None);
+    }
+
+    Ok(Some((
+        TextEdit {
+            start: block.full_start,
+            end: block.full_end,
+            replacement: new_frontmatter,
+        },
+        changes,
+    )))
+}
+
 fn parse_property_value(value: Option<&str>) -> Result<Option<YamlValue>, RefactorError> {
     let Some(value) = value.map(str::trim) else {
         return Ok(None);
@@ -1393,6 +1747,188 @@ mod tests {
         )
         .expect("notes query should succeed");
         assert!(notes.notes.is_empty());
+    }
+
+    // === Surgical editing unit tests ===
+
+    #[test]
+    fn surgical_rename_preserves_all_other_formatting() {
+        let yaml = "# comment\nstatus: active\n# another comment\nestimate: 8\nreviewed: false\nrelated:\n- item1\n- item2\n";
+        let result = surgical_rename_key(yaml, "status", "phase").expect("should rename");
+        // Key name changed
+        assert!(result.contains("phase: active\n"));
+        assert!(!result.contains("status: active\n"));
+        // All other lines preserved byte-for-byte
+        assert!(result.contains("# comment\n"));
+        assert!(result.contains("# another comment\n"));
+        assert!(result.contains("estimate: 8\n"));
+        assert!(result.contains("reviewed: false\n"));
+        assert!(result.contains("related:\n"));
+        assert!(result.contains("- item1\n"));
+        assert!(result.contains("- item2\n"));
+    }
+
+    #[test]
+    fn surgical_rename_returns_none_when_key_absent() {
+        let yaml = "status: active\nestimate: 8\n";
+        assert!(surgical_rename_key(yaml, "nonexistent", "new").is_none());
+    }
+
+    #[test]
+    fn surgical_set_scalar_preserves_other_keys() {
+        let yaml = "status: backlog\nestimate: 8\n# note below\nreviewed: false\n";
+        let new_value = YamlValue::String("done".to_string());
+        let result = surgical_set_key(yaml, "status", Some(&new_value)).expect("should set");
+        assert!(result.contains("status: done\n"));
+        assert!(!result.contains("status: backlog\n"));
+        // Other keys byte-for-byte
+        assert!(result.contains("estimate: 8\n"));
+        assert!(result.contains("# note below\n"));
+        assert!(result.contains("reviewed: false\n"));
+    }
+
+    #[test]
+    fn surgical_remove_key_leaves_others_intact() {
+        let yaml = "status: backlog\nestimate: 8\nreviewed: false\n";
+        let result = surgical_set_key(yaml, "estimate", None).expect("should remove");
+        assert!(!result.contains("estimate:"));
+        assert!(result.contains("status: backlog\n"));
+        assert!(result.contains("reviewed: false\n"));
+    }
+
+    #[test]
+    fn surgical_set_block_list_replaces_only_that_key() {
+        let yaml = "status: backlog\nrelated:\n- item1\n- item2\nreviewed: false\n";
+        let new_value = YamlValue::Sequence(vec![
+            YamlValue::String("new1".to_string()),
+            YamlValue::String("new2".to_string()),
+        ]);
+        let result = surgical_set_key(yaml, "related", Some(&new_value)).expect("should set");
+        assert!(result.contains("related:\n"));
+        assert!(result.contains("- new1\n"));
+        assert!(result.contains("- new2\n"));
+        assert!(!result.contains("- item1\n"));
+        assert!(result.contains("status: backlog\n"));
+        assert!(result.contains("reviewed: false\n"));
+    }
+
+    #[test]
+    fn rename_property_diff_is_minimal() {
+        // After surgical rename, only the key line should change; all other bytes are identical.
+        let source = "---\n# top comment\nstatus: active\nestimate: 8\nrelated:\n  - '[[Done]]'\n---\n# Body\n";
+        let old_yaml = "# top comment\nstatus: active\nestimate: 8\nrelated:\n  - '[[Done]]'\n";
+        let new_yaml =
+            surgical_rename_key(old_yaml, "status", "phase").expect("should rename");
+        // Only one line changed
+        let changed_lines: Vec<_> = old_yaml
+            .lines()
+            .zip(new_yaml.lines())
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(
+            changed_lines.len(),
+            1,
+            "surgical rename should change exactly one line"
+        );
+        assert_eq!(changed_lines[0].0, "status: active");
+        assert_eq!(changed_lines[0].1, "phase: active");
+    }
+
+    #[test]
+    fn set_note_property_produces_minimal_diff_for_scalar() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let before =
+            fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
+        set_note_property(&paths, "Backlog", "status", Some("done"), false)
+            .expect("set should succeed");
+        let after =
+            fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
+
+        // Count changed lines (only the `status:` line should differ)
+        let before_lines: Vec<_> = before.lines().collect();
+        let after_lines: Vec<_> = after.lines().collect();
+        assert_eq!(
+            before_lines.len(),
+            after_lines.len(),
+            "surgical set should not change the number of lines"
+        );
+        let changed: Vec<_> = before_lines
+            .iter()
+            .zip(after_lines.iter())
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(
+            changed.len(),
+            1,
+            "only the status line should change: {changed:?}"
+        );
+    }
+
+    #[test]
+    fn repeated_set_property_is_stable() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        set_note_property(&paths, "Backlog", "status", Some("done"), false)
+            .expect("first set should succeed");
+        let first =
+            fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
+
+        // Second identical set should produce no changes
+        let report = set_note_property(&paths, "Backlog", "status", Some("done"), false)
+            .expect("second set should succeed");
+        let second =
+            fs::read_to_string(vault_root.join("Backlog.md")).expect("backlog should read");
+
+        assert_eq!(report.files.len(), 0, "second set should be a no-op");
+        assert_eq!(first, second, "file should be identical after idempotent set");
+    }
+
+    #[test]
+    fn rename_property_preserves_comments_and_list_formatting() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        let paths = VaultPaths::new(&vault_root);
+        fs::create_dir_all(&vault_root).expect("vault dir should create");
+
+        // Write a note with a comment and a list property
+        fs::write(
+            vault_root.join("Note.md"),
+            "---\n# status metadata\nstatus: active\nrelated:\n  - '[[A]]'\n  - '[[B]]'\ncreated: 2026-01-01\n---\n# Body\n",
+        )
+        .expect("note should write");
+
+        let before =
+            fs::read_to_string(vault_root.join("Note.md")).expect("note should read");
+        rename_property(&paths, "status", "phase", false).expect("rename should succeed");
+        let after =
+            fs::read_to_string(vault_root.join("Note.md")).expect("note should read");
+
+        assert!(after.contains("phase: active\n"));
+        assert!(!after.contains("status: active\n"));
+        // Comments and list values are preserved byte-for-byte
+        assert!(after.contains("# status metadata\n"));
+        assert!(after.contains("  - '[[A]]'\n"), "list indent should be preserved");
+        assert!(after.contains("  - '[[B]]'\n"), "list indent should be preserved");
+        assert!(after.contains("created: 2026-01-01\n"));
+        // Only the key line changed
+        let before_lines: Vec<_> = before.lines().collect();
+        let after_lines: Vec<_> = after.lines().collect();
+        let changed: Vec<_> = before_lines
+            .iter()
+            .zip(after_lines.iter())
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(changed.len(), 1, "only the key line should change");
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {
