@@ -354,22 +354,22 @@
             "name": "path",
             "options": [
               {
-                "help": "Starting note path, filename, or alias",
+                "help": "Starting note path, filename, or alias; omit in a TTY session to pick interactively",
                 "id": "from",
                 "long": null,
                 "possible_values": [],
-                "required": true,
+                "required": false,
                 "short": null,
                 "value_names": [
                   "FROM"
                 ]
               },
               {
-                "help": "Destination note path, filename, or alias",
+                "help": "Destination note path, filename, or alias; omit in a TTY session to pick interactively",
                 "id": "to",
                 "long": null,
                 "possible_values": [],
-                "required": true,
+                "required": false,
                 "short": null,
                 "value_names": [
                   "TO"

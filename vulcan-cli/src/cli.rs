@@ -258,10 +258,14 @@ pub enum RepairCommand {
 pub enum GraphCommand {
     #[command(about = "Find the shortest resolved-link path between two notes")]
     Path {
-        #[arg(help = "Starting note path, filename, or alias")]
-        from: String,
-        #[arg(help = "Destination note path, filename, or alias")]
-        to: String,
+        #[arg(
+            help = "Starting note path, filename, or alias; omit in a TTY session to pick interactively"
+        )]
+        from: Option<String>,
+        #[arg(
+            help = "Destination note path, filename, or alias; omit in a TTY session to pick interactively"
+        )]
+        to: Option<String>,
     },
     #[command(about = "List notes with the highest combined link degree")]
     Hubs {
