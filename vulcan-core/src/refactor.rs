@@ -310,6 +310,93 @@ pub fn set_note_property(
     finalize_refactor(paths, dry_run, "set_note_property", vec![plan])
 }
 
+/// Apply a property set or unset to all notes that match the given query filters.
+///
+/// - `key`: the frontmatter property key to write
+/// - `value`: the new value as a YAML-compatible string; `None` removes the property
+/// - `dry_run`: if true, compute and return planned changes without writing files
+///
+/// Acquires the write lock once and runs one incremental reindex after all edits.
+pub fn bulk_set_property(
+    paths: &VaultPaths,
+    filters: &[String],
+    key: &str,
+    value: Option<&str>,
+    dry_run: bool,
+) -> Result<BulkMutationReport, RefactorError> {
+    let _lock = acquire_write_lock(paths)?;
+
+    let matching_paths = query_matching_paths(paths, filters)?;
+    let desired_value = parse_property_value(value)?;
+    let mut plans = Vec::new();
+
+    for path in &matching_paths {
+        let source = fs::read_to_string(paths.vault_root().join(path))?;
+        let Some((edit, changes)) =
+            plan_set_note_property_replacement(&source, path, key, desired_value.as_ref())?
+        else {
+            continue;
+        };
+        if let Some(plan) = build_file_plan(path, &source, &[edit], changes) {
+            plans.push(plan);
+        }
+    }
+
+    let action = if value.is_some() {
+        "bulk_update"
+    } else {
+        "bulk_unset"
+    };
+    let inner = finalize_refactor(paths, dry_run, action, plans)?;
+    Ok(BulkMutationReport {
+        dry_run,
+        action: inner.action.clone(),
+        filters: filters.to_vec(),
+        key: key.to_string(),
+        value: value.map(str::to_string),
+        files: inner.files,
+    })
+}
+
+/// Fetch the vault-relative paths of all notes matching the given `--where` filters.
+fn query_matching_paths(
+    paths: &VaultPaths,
+    filters: &[String],
+) -> Result<Vec<String>, RefactorError> {
+    use crate::properties::{query_notes, NoteQuery, PropertyError};
+
+    let report = query_notes(
+        paths,
+        &NoteQuery {
+            filters: filters.to_vec(),
+            sort_by: None,
+            sort_descending: false,
+        },
+    )
+    .map_err(|e| match e {
+        PropertyError::CacheMissing => RefactorError::Io(std::io::Error::other(
+            "cache is missing; run `vulcan scan` first",
+        )),
+        other => RefactorError::Io(std::io::Error::other(other.to_string())),
+    })?;
+    Ok(report.notes.into_iter().map(|n| n.document_path).collect())
+}
+
+/// Result of a query-driven bulk property mutation.
+#[derive(Debug, Clone, Serialize)]
+pub struct BulkMutationReport {
+    pub dry_run: bool,
+    pub action: String,
+    /// Filters that selected the affected notes.
+    pub filters: Vec<String>,
+    /// The property key that was set or unset.
+    pub key: String,
+    /// The new value (`None` means the property was removed).
+    pub value: Option<String>,
+    /// Per-file change details.
+    pub files: Vec<crate::refactor::RefactorFileReport>,
+}
+
 pub fn rename_heading(
     paths: &VaultPaths,
     note_identifier: &str,

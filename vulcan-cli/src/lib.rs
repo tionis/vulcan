@@ -22,8 +22,8 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vulcan_core::{
-    bulk_replace, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
-    evaluate_base_file, execute_query_report, export_static_search_index,
+    bulk_replace, bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix,
+    doctor_vault, evaluate_base_file, execute_query_report, export_static_search_index,
     index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
     link_mentions, list_checkpoints, list_saved_reports, load_saved_report, merge_tags, move_note,
     query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
@@ -33,22 +33,22 @@ use vulcan_core::{
     rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
     resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
     suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache, watch_vault,
-    BacklinkRecord, BacklinksReport, BasesEvalReport, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, InitSummary, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
-    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery,
-    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
-    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
-    VectorRepairReport, WatchOptions, WatchReport,
+    BacklinkRecord, BacklinksReport, BasesEvalReport, BulkMutationReport, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
+    ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport,
+    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary,
+    NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
+    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorReport, RelatedNoteHit,
+    RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
+    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -1361,6 +1361,25 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 export.as_ref(),
             )?;
             Ok(())
+        }
+        Command::Update {
+            ref filters,
+            ref key,
+            ref value,
+            dry_run,
+        } => {
+            let report = bulk_set_property(&paths, filters, key, Some(value.as_str()), dry_run)
+                .map_err(CliError::operation)?;
+            print_bulk_mutation_report(cli.output, &report)
+        }
+        Command::Unset {
+            ref filters,
+            ref key,
+            dry_run,
+        } => {
+            let report =
+                bulk_set_property(&paths, filters, key, None, dry_run).map_err(CliError::operation)?;
+            print_bulk_mutation_report(cli.output, &report)
         }
         Command::Notes {
             ref filters,
@@ -2939,6 +2958,37 @@ fn print_refactor_report(output: OutputFormat, report: &RefactorReport) -> Resul
                 println!("- {}", file.path);
                 for change in &file.changes {
                     println!("  {} -> {}", change.before, change.after);
+                }
+            }
+
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_bulk_mutation_report(
+    output: OutputFormat,
+    report: &BulkMutationReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!("Dry run for {}", report.action);
+            } else {
+                println!("Applied {}", report.action);
+            }
+
+            if report.files.is_empty() {
+                println!("No files changed.");
+                return Ok(());
+            }
+
+            for file in &report.files {
+                if file.changes.is_empty() {
+                    println!("- {} (no change)", file.path);
+                } else {
+                    println!("- {}", file.path);
                 }
             }
 

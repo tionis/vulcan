@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, bases, suggest\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Maintenance: move, doctor, cache, link-mentions, rewrite, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, query, bases, suggest\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -2162,6 +2162,105 @@
             "short": null,
             "value_names": [
               "FAIL_ON_ISSUES"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Set a frontmatter property on notes selected by query filters",
+        "after_help": "Filter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n\nExamples:\n  vulcan update --where 'status = draft' --key status --value done --dry-run\n  vulcan update --where 'tags contains wip' --key reviewed --value true\n  vulcan update --where 'file.path starts_with \"Archive/\"' --key archived --value true",
+        "name": "update",
+        "options": [
+          {
+            "help": "Filter expression such as `status = draft`; repeatable and combined with AND",
+            "id": "filters",
+            "long": "where",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILTERS"
+            ]
+          },
+          {
+            "help": "Frontmatter property key to set",
+            "id": "key",
+            "long": "key",
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "KEY"
+            ]
+          },
+          {
+            "help": "New value for the property (YAML scalar or quoted string)",
+            "id": "value",
+            "long": "value",
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "VALUE"
+            ]
+          },
+          {
+            "help": "Report planned changes without modifying files",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Remove a frontmatter property from notes selected by query filters",
+        "after_help": "Filter syntax:\n  Repeat --where to combine filters with AND.\n\nExamples:\n  vulcan unset --where 'status = draft' --key draft_notes --dry-run\n  vulcan unset --where 'file.path starts_with \"Archive/\"' --key due",
+        "name": "unset",
+        "options": [
+          {
+            "help": "Filter expression such as `status = draft`; repeatable and combined with AND",
+            "id": "filters",
+            "long": "where",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILTERS"
+            ]
+          },
+          {
+            "help": "Frontmatter property key to remove",
+            "id": "key",
+            "long": "key",
+            "possible_values": [],
+            "required": true,
+            "short": null,
+            "value_names": [
+              "KEY"
+            ]
+          },
+          {
+            "help": "Report planned removals without modifying files",
+            "id": "dry_run",
+            "long": "dry-run",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DRY_RUN"
             ]
           }
         ],
