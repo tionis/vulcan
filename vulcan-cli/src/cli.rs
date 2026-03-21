@@ -842,7 +842,10 @@ Examples:
         filters: Vec<String>,
         #[arg(long, help = "Frontmatter property key to set")]
         key: String,
-        #[arg(long, help = "New value for the property (YAML scalar or quoted string)")]
+        #[arg(
+            long,
+            help = "New value for the property (YAML scalar or quoted string)"
+        )]
         value: String,
         #[arg(long, help = "Report planned changes without modifying files")]
         dry_run: bool,

@@ -972,8 +972,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     interactive_note_selection,
                     "to note",
                 )?;
-                let report =
-                    query_graph_path(&paths, &from, &to).map_err(CliError::operation)?;
+                let report = query_graph_path(&paths, &from, &to).map_err(CliError::operation)?;
                 print_graph_path_report(cli.output, &report)
             }
             GraphCommand::Hubs { export } => {
@@ -1142,7 +1141,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             Some(s.to_string())
                         }
                     }),
-                    set_sort_descending: if sort.is_some() { Some(*sort_desc) } else { None },
+                    set_sort_descending: if sort.is_some() {
+                        Some(*sort_desc)
+                    } else {
+                        None
+                    },
                     set_group_by: group_by.as_deref().map(|p| {
                         if p.is_empty() {
                             None
@@ -1416,25 +1419,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "provide either a DSL argument or --json, not both",
                     ))
                 }
-                (Some(dsl), None) => {
-                    QueryAst::from_dsl(dsl).map_err(CliError::operation)?
-                }
-                (None, Some(json)) => {
-                    QueryAst::from_json(json).map_err(CliError::operation)?
-                }
+                (Some(dsl), None) => QueryAst::from_dsl(dsl).map_err(CliError::operation)?,
+                (None, Some(json)) => QueryAst::from_json(json).map_err(CliError::operation)?,
                 (None, None) => {
                     return Err(CliError::operation(
                         "provide a DSL query argument or --json payload",
                     ))
                 }
             };
-            let report =
-                execute_query_report(&paths, ast).map_err(CliError::operation)?;
+            let report = execute_query_report(&paths, ast).map_err(CliError::operation)?;
             // Merge DSL-embedded limit/offset with global list controls; global flags win.
             let effective_controls = ListOutputControls {
-                limit: list_controls
-                    .limit
-                    .or(report.query.limit),
+                limit: list_controls.limit.or(report.query.limit),
                 offset: if list_controls.offset > 0 {
                     list_controls.offset
                 } else {
@@ -1469,8 +1465,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref key,
             dry_run,
         } => {
-            let report =
-                bulk_set_property(&paths, filters, key, None, dry_run).map_err(CliError::operation)?;
+            let report = bulk_set_property(&paths, filters, key, None, dry_run)
+                .map_err(CliError::operation)?;
             print_bulk_mutation_report(cli.output, &report)
         }
         Command::Notes {
@@ -1547,8 +1543,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Suggest { ref command } => match command {
             SuggestCommand::Mentions { note, export } => {
                 let note = if note.is_none() && interactive_note_selection {
-                    note_picker::pick_note(&paths, None, None)
-                        .map_err(CliError::operation)?
+                    note_picker::pick_note(&paths, None, None).map_err(CliError::operation)?
                 } else {
                     note.clone()
                 };
@@ -2276,8 +2271,7 @@ fn print_notes_report(
 }
 
 fn query_report_rows(report: &QueryReport, notes: &[NoteRecord]) -> Vec<Value> {
-    let query_value =
-        serde_json::to_value(&report.query).unwrap_or(Value::Null);
+    let query_value = serde_json::to_value(&report.query).unwrap_or(Value::Null);
     notes
         .iter()
         .map(|note| {

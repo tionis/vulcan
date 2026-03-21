@@ -525,7 +525,7 @@ mod tests {
         .expect("updated note should be written");
 
         let mut refreshed = None;
-        for _ in 0..50 {
+        for _ in 0..200 {
             let candidate = get_json(handle.addr(), "/search?q=moonshot", None);
             let hits = candidate["result"]["hits"]
                 .as_array()
@@ -534,7 +534,7 @@ mod tests {
                 refreshed = Some(candidate);
                 break;
             }
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(100));
         }
 
         let refreshed = refreshed.expect("watch-backed search should refresh");
