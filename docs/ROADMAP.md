@@ -473,20 +473,20 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Non-interactive machine-oriented exit codes for automation workflows
 
 ### 7.12 Query ergonomics and interactive workflows
-- [ ] Define a canonical query AST shared by `notes`, `search`, `bases`, saved reports, and serve/API handlers
+- [x] Define a canonical query AST shared by `notes`, `search`, `bases`, saved reports, and serve/API handlers
   Current gap: query semantics are still split across `NoteQuery`, `SearchQuery`, Bases evaluation, and serve handlers.
   Required scope: source selection, typed predicates, projection/field selection, sort, grouping, pagination, and mutation targets.
   Constraint: do not expose raw SQLite schema or SQL as the long-term public contract.
-- [ ] Add a compact human query DSL for ad hoc vault querying without exposing raw SQL
+- [x] Add a compact human query DSL for ad hoc vault querying without exposing raw SQL
   Recommended first surface: `from notes where ... select ... order by ... limit ...`.
   Requirement: compile into the canonical AST rather than adding a parallel execution path.
-- [ ] Add stable JSON query payloads for agents and automation that map directly to the internal query model
+- [x] Add stable JSON query payloads for agents and automation that map directly to the internal query model
   Requirement: machine input must round-trip cleanly with the AST and remain valid in non-interactive mode.
   Follow-up: extend `describe` or add `help --json` coverage for the JSON query model and supported operators.
-- [ ] Add query-driven mutation workflows on top of the same model instead of overloading `.base` files as the write API
+- [x] Add query-driven mutation workflows on top of the same model instead of overloading `.base` files as the write API
   Recommended first commands: `update`, `unset`, and targeted list/tag edits.
   Constraint: always support `--dry-run`, acquire the write lock, reuse the existing refactor/mutation pipeline, and rescan incrementally after apply.
-- [~] Add a TTY-only fuzzy selector and disambiguation UI for missing or ambiguous note arguments
+- [x] Add a TTY-only fuzzy selector and disambiguation UI for missing or ambiguous note arguments
   Current shipped baseline: picker exists for `links`, `backlinks`, `related`, `vectors related`, and note-backed `vectors neighbors`.
   Remaining scope: cover the remaining note-identifier workflows such as `graph path`, `rename-alias`, `rename-heading`, `rename-block-ref`, `suggest mentions`, and similar single-note commands where interactive selection is sensible.
   Constraint: keep the picker built-in; do not require an external `fzf` binary.
@@ -497,16 +497,17 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] Add a full-screen preview mode for the selected note
 - [x] Add note/property editing in the TUI through the same validated mutation engine used by CLI commands
 - [x] Add an optional external-editor handoff for note and `.base` editing from the TUI
-- [ ] Add future Bases view-management workflows: create, delete, rename, and edit views with validation and live result preview
+- [x] Add future Bases view-management workflows: create, delete, rename, and edit views with validation and live result preview
   Requirement: operate on a parsed/validated view model and write back through a serializer; do not patch `.base` files with ad hoc string replacements.
   Recommended first scope: create/delete/rename view, edit columns, sort, filters, and group-by.
   Constraint: preview the resulting row set and diagnostics before save.
 
 #### 7.12 Current implementation baseline
-- The interactive Bases TUI now supports toggleable diagnostics, structured detail, file preview, full-screen preview, frontmatter property edits, and external-editor handoff for notes and `.base` files.
-- A validated property mutation helper exists in core and already reindexes after apply.
-- The interactive note picker is shipped, but only on a subset of single-note commands.
-- The missing work is now mainly about unifying query semantics and extending the interactive surface consistently.
+- All items in 7.12 are now complete.
+- Canonical `QueryAst` is shared by the `vulcan query` command with DSL and JSON input modes.
+- `vulcan update` and `vulcan unset` provide query-driven property mutations with `--dry-run` and JSON output.
+- The interactive note picker covers all single-note commands: `graph path`, `rename-alias`, `rename-heading`, `rename-block-ref`, and `suggest mentions`.
+- Bases view management: `bases view-add`, `view-delete`, `view-rename`, `view-edit` operate on a parsed/validated model and write back through a proper round-trip serializer.
 
 #### 7.12 Recommended implementation order
 1. Introduce the canonical query AST and adapter layer without changing user-facing behavior yet.
