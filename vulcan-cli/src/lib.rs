@@ -22,8 +22,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vulcan_core::{
-    bulk_replace, bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix,
-    doctor_vault, evaluate_base_file, execute_query_report, export_static_search_index,
+    bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace,
+    bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
+    evaluate_base_file, execute_query_report, export_static_search_index,
     index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
     link_mentions, list_checkpoints, list_saved_reports, load_saved_report, merge_tags, move_note,
     query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
@@ -33,22 +34,23 @@ use vulcan_core::{
     rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
     resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
     suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache, watch_vault,
-    BacklinkRecord, BacklinksReport, BasesEvalReport, BulkMutationReport, CacheInspectReport,
-    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
-    ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport,
-    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary,
-    NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
-    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorReport, RelatedNoteHit,
-    RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
-    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
+    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport,
+    BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, InitSummary, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
+    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery,
+    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
+    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -1066,6 +1068,96 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         None,
                     )
                 }
+            }
+            BasesCommand::ViewAdd {
+                ref file,
+                ref name,
+                ref filters,
+                ref column,
+                ref sort,
+                sort_desc,
+                ref group_by,
+                group_desc,
+                dry_run,
+            } => {
+                let spec = BaseViewSpec {
+                    name: Some(name.clone()),
+                    view_type: "table".to_string(),
+                    filters: filters.clone(),
+                    sort_by: sort.clone(),
+                    sort_descending: *sort_desc,
+                    columns: column.clone(),
+                    group_by: group_by.as_deref().map(|p| BaseViewGroupBy {
+                        property: p.to_string(),
+                        descending: *group_desc,
+                    }),
+                };
+                let report =
+                    bases_view_add(&paths, file, spec, *dry_run).map_err(CliError::operation)?;
+                print_bases_view_edit_report(cli.output, &report)
+            }
+            BasesCommand::ViewDelete {
+                ref file,
+                ref name,
+                dry_run,
+            } => {
+                let report =
+                    bases_view_delete(&paths, file, name, *dry_run).map_err(CliError::operation)?;
+                print_bases_view_edit_report(cli.output, &report)
+            }
+            BasesCommand::ViewRename {
+                ref file,
+                ref old_name,
+                ref new_name,
+                dry_run,
+            } => {
+                let report = bases_view_rename(&paths, file, old_name, new_name, *dry_run)
+                    .map_err(CliError::operation)?;
+                print_bases_view_edit_report(cli.output, &report)
+            }
+            BasesCommand::ViewEdit {
+                ref file,
+                ref name,
+                ref add_filters,
+                ref remove_filters,
+                ref column,
+                ref sort,
+                sort_desc,
+                ref group_by,
+                group_desc,
+                dry_run,
+            } => {
+                let patch = BaseViewPatch {
+                    add_filters: add_filters.clone(),
+                    remove_filters: remove_filters.clone(),
+                    set_columns: if column.is_empty() {
+                        None
+                    } else {
+                        Some(column.clone())
+                    },
+                    set_sort: sort.as_deref().map(|s| {
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s.to_string())
+                        }
+                    }),
+                    set_sort_descending: if sort.is_some() { Some(*sort_desc) } else { None },
+                    set_group_by: group_by.as_deref().map(|p| {
+                        if p.is_empty() {
+                            None
+                        } else {
+                            Some(BaseViewGroupBy {
+                                property: p.to_string(),
+                                descending: *group_desc,
+                            })
+                        }
+                    }),
+                    ..Default::default()
+                };
+                let report = bases_view_edit(&paths, file, name, patch, *dry_run)
+                    .map_err(CliError::operation)?;
+                print_bases_view_edit_report(cli.output, &report)
             }
         },
         Command::Cluster {
@@ -2687,6 +2779,32 @@ fn print_bases_report(
                 print_json(report)
             }
         }
+    }
+}
+
+fn print_bases_view_edit_report(
+    output: OutputFormat,
+    report: &BasesViewEditReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!("Dry run: {}", report.action);
+            } else {
+                println!("{}", report.action);
+            }
+            println!(
+                "{} views, {} diagnostics",
+                report.eval.views.len(),
+                report.eval.diagnostics.len()
+            );
+            for diag in &report.eval.diagnostics {
+                let path = diag.path.as_deref().unwrap_or("(root)");
+                println!("  warning [{path}]: {}", diag.message);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
     }
 }
 

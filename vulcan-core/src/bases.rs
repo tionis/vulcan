@@ -106,6 +106,447 @@ pub struct BasesRow {
     pub group_value: Option<Value>,
 }
 
+// ── View-spec public structs ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BaseViewSpec {
+    pub name: Option<String>,
+    pub view_type: String,
+    pub filters: Vec<String>,
+    pub sort_by: Option<String>,
+    pub sort_descending: bool,
+    pub columns: Vec<String>,
+    pub group_by: Option<BaseViewGroupBy>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BaseViewGroupBy {
+    pub property: String,
+    pub descending: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BaseViewPatch {
+    pub set_filters: Option<Vec<String>>,
+    pub add_filters: Vec<String>,
+    pub remove_filters: Vec<String>,
+    pub set_columns: Option<Vec<String>>,
+    pub set_sort: Option<Option<String>>,
+    pub set_sort_descending: Option<bool>,
+    pub set_group_by: Option<Option<BaseViewGroupBy>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BasesViewEditReport {
+    pub file: String,
+    pub action: String,
+    pub dry_run: bool,
+    pub eval: BasesEvalReport,
+}
+
+// ── Serializer ───────────────────────────────────────────────────────────────
+
+fn serialize_base_file(parsed: &ParsedBaseFile) -> Result<String, BasesError> {
+    let mut root = serde_yaml::Mapping::new();
+
+    // source: omit if "notes" and there are filters or views (default implied)
+    // include if non-notes source
+    if parsed.source != "notes" {
+        root.insert(
+            serde_yaml::Value::String("source".to_string()),
+            serde_yaml::Value::String(parsed.source.clone()),
+        );
+    }
+
+    // filters
+    if !parsed.filters.is_empty() {
+        let seq: serde_yaml::Sequence = parsed
+            .filters
+            .iter()
+            .map(|f| serde_yaml::Value::String(f.clone()))
+            .collect();
+        root.insert(
+            serde_yaml::Value::String("filters".to_string()),
+            serde_yaml::Value::Sequence(seq),
+        );
+    }
+
+    // properties
+    if !parsed.property_display_names.is_empty() {
+        let mut props = serde_yaml::Mapping::new();
+        for (key, display_name) in &parsed.property_display_names {
+            let mut def = serde_yaml::Mapping::new();
+            def.insert(
+                serde_yaml::Value::String("displayName".to_string()),
+                serde_yaml::Value::String(display_name.clone()),
+            );
+            props.insert(
+                serde_yaml::Value::String(key.clone()),
+                serde_yaml::Value::Mapping(def),
+            );
+        }
+        root.insert(
+            serde_yaml::Value::String("properties".to_string()),
+            serde_yaml::Value::Mapping(props),
+        );
+    }
+
+    // views
+    if !parsed.views.is_empty() {
+        let seq: serde_yaml::Sequence = parsed.views.iter().map(serialize_view).collect();
+        root.insert(
+            serde_yaml::Value::String("views".to_string()),
+            serde_yaml::Value::Sequence(seq),
+        );
+    }
+
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(root)).map_err(BasesError::Yaml)
+}
+
+fn serialize_view(view: &ParsedBaseView) -> serde_yaml::Value {
+    let mut m = serde_yaml::Mapping::new();
+
+    if let Some(name) = &view.name {
+        m.insert(
+            serde_yaml::Value::String("name".to_string()),
+            serde_yaml::Value::String(name.clone()),
+        );
+    }
+
+    m.insert(
+        serde_yaml::Value::String("type".to_string()),
+        serde_yaml::Value::String(view.view_type.clone()),
+    );
+
+    if !view.filters.is_empty() {
+        let seq: serde_yaml::Sequence = view
+            .filters
+            .iter()
+            .map(|f| serde_yaml::Value::String(f.clone()))
+            .collect();
+        m.insert(
+            serde_yaml::Value::String("filters".to_string()),
+            serde_yaml::Value::Sequence(seq),
+        );
+    }
+
+    if !view.columns.is_empty() {
+        let seq: serde_yaml::Sequence = view
+            .columns
+            .iter()
+            .map(|c| serde_yaml::Value::String(c.clone()))
+            .collect();
+        m.insert(
+            serde_yaml::Value::String("order".to_string()),
+            serde_yaml::Value::Sequence(seq),
+        );
+    }
+
+    if let Some(sort_by) = &view.sort_by {
+        let sort_val = if view.sort_descending {
+            let mut sort_map = serde_yaml::Mapping::new();
+            sort_map.insert(
+                serde_yaml::Value::String("by".to_string()),
+                serde_yaml::Value::String(sort_by.clone()),
+            );
+            sort_map.insert(
+                serde_yaml::Value::String("desc".to_string()),
+                serde_yaml::Value::Bool(true),
+            );
+            serde_yaml::Value::Mapping(sort_map)
+        } else {
+            serde_yaml::Value::String(sort_by.clone())
+        };
+        m.insert(serde_yaml::Value::String("sort".to_string()), sort_val);
+    }
+
+    if let Some(group_by) = &view.group_by {
+        let mut gb_map = serde_yaml::Mapping::new();
+        gb_map.insert(
+            serde_yaml::Value::String("property".to_string()),
+            serde_yaml::Value::String(group_by.property.clone()),
+        );
+        gb_map.insert(
+            serde_yaml::Value::String("direction".to_string()),
+            serde_yaml::Value::String(if group_by.descending {
+                "desc".to_string()
+            } else {
+                "asc".to_string()
+            }),
+        );
+        m.insert(
+            serde_yaml::Value::String("groupBy".to_string()),
+            serde_yaml::Value::Mapping(gb_map),
+        );
+    }
+
+    if !view.formulas.is_empty() {
+        let mut formulas_map = serde_yaml::Mapping::new();
+        for (name, expr) in &view.formulas {
+            formulas_map.insert(
+                serde_yaml::Value::String(name.clone()),
+                serde_yaml::Value::String(expr.clone()),
+            );
+        }
+        m.insert(
+            serde_yaml::Value::String("formulas".to_string()),
+            serde_yaml::Value::Mapping(formulas_map),
+        );
+    }
+
+    serde_yaml::Value::Mapping(m)
+}
+
+// ── Conversion helpers ────────────────────────────────────────────────────────
+
+fn spec_to_parsed_view(spec: BaseViewSpec) -> ParsedBaseView {
+    let view_type = if spec.view_type.is_empty() {
+        "table".to_string()
+    } else {
+        spec.view_type
+    };
+    ParsedBaseView {
+        name: spec.name,
+        view_type,
+        filters: spec.filters,
+        sort_by: spec.sort_by,
+        sort_descending: spec.sort_descending,
+        columns: spec.columns,
+        group_by: spec.group_by.map(|g| ParsedBaseGroupBy {
+            property: g.property,
+            descending: g.descending,
+        }),
+        formulas: BTreeMap::new(),
+    }
+}
+
+#[allow(dead_code)]
+fn parsed_view_to_spec(view: &ParsedBaseView) -> BaseViewSpec {
+    BaseViewSpec {
+        name: view.name.clone(),
+        view_type: view.view_type.clone(),
+        filters: view.filters.clone(),
+        sort_by: view.sort_by.clone(),
+        sort_descending: view.sort_descending,
+        columns: view.columns.clone(),
+        group_by: view.group_by.as_ref().map(|g| BaseViewGroupBy {
+            property: g.property.clone(),
+            descending: g.descending,
+        }),
+    }
+}
+
+// ── Evaluate from string helper ───────────────────────────────────────────────
+
+fn evaluate_base_from_yaml(
+    paths: &VaultPaths,
+    normalized: &str,
+    yaml: &str,
+) -> Result<BasesEvalReport, BasesError> {
+    let parsed = parse_base_file(yaml)?;
+    let ParsedBaseFile {
+        source: parsed_source,
+        filters: base_filters,
+        property_display_names,
+        views: parsed_views,
+        diagnostics: parsed_diagnostics,
+    } = parsed;
+    let mut diagnostics = parsed_diagnostics;
+    let mut views = Vec::new();
+
+    if parsed_source != "notes" {
+        diagnostics.push(BasesDiagnostic {
+            path: Some("source".to_string()),
+            message: "unsupported base source; only `notes` is implemented".to_string(),
+        });
+    }
+
+    for view in parsed_views {
+        if let Some(evaluated_view) = evaluate_base_view(
+            paths,
+            &base_filters,
+            &property_display_names,
+            view,
+            &mut diagnostics,
+        )? {
+            views.push(evaluated_view);
+        }
+    }
+
+    Ok(BasesEvalReport {
+        file: normalized.to_string(),
+        views,
+        diagnostics,
+    })
+}
+
+// ── Mutation functions ────────────────────────────────────────────────────────
+
+pub fn bases_view_add(
+    paths: &VaultPaths,
+    relative_path: &str,
+    spec: BaseViewSpec,
+    dry_run: bool,
+) -> Result<BasesViewEditReport, BasesError> {
+    let normalized = normalize_base_path(relative_path)?;
+    let file_path = paths.vault_root().join(&normalized);
+    let source = fs::read_to_string(&file_path)?;
+    let mut parsed = parse_base_file(&source)?;
+
+    let view_name = spec.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
+    let action = format!("Added view '{view_name}' to {normalized}");
+    parsed.views.push(spec_to_parsed_view(spec));
+
+    let yaml = serialize_base_file(&parsed)?;
+
+    if !dry_run {
+        let _lock = crate::write_lock::acquire_write_lock(paths).map_err(BasesError::Io)?;
+        fs::write(&file_path, &yaml)?;
+    }
+
+    let eval = evaluate_base_from_yaml(paths, &normalized, &yaml)?;
+    Ok(BasesViewEditReport {
+        file: normalized,
+        action,
+        dry_run,
+        eval,
+    })
+}
+
+pub fn bases_view_delete(
+    paths: &VaultPaths,
+    relative_path: &str,
+    name: &str,
+    dry_run: bool,
+) -> Result<BasesViewEditReport, BasesError> {
+    let normalized = normalize_base_path(relative_path)?;
+    let file_path = paths.vault_root().join(&normalized);
+    let source = fs::read_to_string(&file_path)?;
+    let mut parsed = parse_base_file(&source)?;
+
+    let pos = parsed
+        .views
+        .iter()
+        .position(|v| v.name.as_deref() == Some(name))
+        .ok_or_else(|| BasesError::Io(std::io::Error::other(format!("view not found: {name}"))))?;
+
+    parsed.views.remove(pos);
+    let action = format!("Deleted view '{name}' from {normalized}");
+    let yaml = serialize_base_file(&parsed)?;
+
+    if !dry_run {
+        let _lock = crate::write_lock::acquire_write_lock(paths).map_err(BasesError::Io)?;
+        fs::write(&file_path, &yaml)?;
+    }
+
+    let eval = evaluate_base_from_yaml(paths, &normalized, &yaml)?;
+    Ok(BasesViewEditReport {
+        file: normalized,
+        action,
+        dry_run,
+        eval,
+    })
+}
+
+pub fn bases_view_rename(
+    paths: &VaultPaths,
+    relative_path: &str,
+    old_name: &str,
+    new_name: &str,
+    dry_run: bool,
+) -> Result<BasesViewEditReport, BasesError> {
+    let normalized = normalize_base_path(relative_path)?;
+    let file_path = paths.vault_root().join(&normalized);
+    let source = fs::read_to_string(&file_path)?;
+    let mut parsed = parse_base_file(&source)?;
+
+    let view = parsed
+        .views
+        .iter_mut()
+        .find(|v| v.name.as_deref() == Some(old_name))
+        .ok_or_else(|| {
+            BasesError::Io(std::io::Error::other(format!("view not found: {old_name}")))
+        })?;
+
+    view.name = Some(new_name.to_string());
+    let action = format!("Renamed view '{old_name}' to '{new_name}' in {normalized}");
+    let yaml = serialize_base_file(&parsed)?;
+
+    if !dry_run {
+        let _lock = crate::write_lock::acquire_write_lock(paths).map_err(BasesError::Io)?;
+        fs::write(&file_path, &yaml)?;
+    }
+
+    let eval = evaluate_base_from_yaml(paths, &normalized, &yaml)?;
+    Ok(BasesViewEditReport {
+        file: normalized,
+        action,
+        dry_run,
+        eval,
+    })
+}
+
+pub fn bases_view_edit(
+    paths: &VaultPaths,
+    relative_path: &str,
+    name: &str,
+    patch: BaseViewPatch,
+    dry_run: bool,
+) -> Result<BasesViewEditReport, BasesError> {
+    let normalized = normalize_base_path(relative_path)?;
+    let file_path = paths.vault_root().join(&normalized);
+    let source = fs::read_to_string(&file_path)?;
+    let mut parsed = parse_base_file(&source)?;
+
+    let view = parsed
+        .views
+        .iter_mut()
+        .find(|v| v.name.as_deref() == Some(name))
+        .ok_or_else(|| BasesError::Io(std::io::Error::other(format!("view not found: {name}"))))?;
+
+    if let Some(filters) = patch.set_filters {
+        view.filters = filters;
+    }
+    if !patch.add_filters.is_empty() {
+        view.filters.extend(patch.add_filters);
+    }
+    if !patch.remove_filters.is_empty() {
+        view.filters
+            .retain(|f| !patch.remove_filters.contains(f));
+    }
+    if let Some(columns) = patch.set_columns {
+        view.columns = columns;
+    }
+    if let Some(sort) = patch.set_sort {
+        view.sort_by = sort;
+    }
+    if let Some(sort_desc) = patch.set_sort_descending {
+        view.sort_descending = sort_desc;
+    }
+    if let Some(group_by) = patch.set_group_by {
+        view.group_by = group_by.map(|g| ParsedBaseGroupBy {
+            property: g.property,
+            descending: g.descending,
+        });
+    }
+
+    let action = format!("Edited view '{name}' in {normalized}");
+    let yaml = serialize_base_file(&parsed)?;
+
+    if !dry_run {
+        let _lock = crate::write_lock::acquire_write_lock(paths).map_err(BasesError::Io)?;
+        fs::write(&file_path, &yaml)?;
+    }
+
+    let eval = evaluate_base_from_yaml(paths, &normalized, &yaml)?;
+    Ok(BasesViewEditReport {
+        file: normalized,
+        action,
+        dry_run,
+        eval,
+    })
+}
+
 pub fn evaluate_base_file(
     paths: &VaultPaths,
     relative_path: &str,
@@ -1068,5 +1509,144 @@ mod tests {
                 fs::copy(entry.path(), target).expect("file should be copied");
             }
         }
+    }
+
+    #[test]
+    fn serialize_and_round_trip_empty_file() {
+        let minimal = "views:\n  - name: Simple\n    type: table\n";
+        let parsed = parse_base_file(minimal).expect("parse should succeed");
+        let yaml = serialize_base_file(&parsed).expect("serialize should succeed");
+        let re_parsed = parse_base_file(&yaml).expect("re-parse should succeed");
+
+        assert_eq!(parsed.source, re_parsed.source);
+        assert_eq!(parsed.filters, re_parsed.filters);
+        assert_eq!(parsed.views.len(), re_parsed.views.len());
+        assert_eq!(parsed.views[0].name, re_parsed.views[0].name);
+        assert_eq!(parsed.views[0].view_type, re_parsed.views[0].view_type);
+    }
+
+    #[test]
+    fn serialize_and_round_trip_full_file() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/vaults/bases/release.base");
+        let source = fs::read_to_string(&fixture).expect("fixture should be readable");
+        let parsed = parse_base_file(&source).expect("parse should succeed");
+        let yaml = serialize_base_file(&parsed).expect("serialize should succeed");
+        let re_parsed = parse_base_file(&yaml).expect("re-parse should succeed");
+
+        assert_eq!(parsed.views.len(), re_parsed.views.len());
+        for (original, roundtripped) in parsed.views.iter().zip(re_parsed.views.iter()) {
+            assert_eq!(original.name, roundtripped.name);
+            assert_eq!(original.filters, roundtripped.filters);
+            assert_eq!(original.columns, roundtripped.columns);
+            assert_eq!(original.group_by, roundtripped.group_by);
+        }
+        assert_eq!(parsed.filters, re_parsed.filters);
+    }
+
+    #[test]
+    fn bases_view_add_creates_new_view() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("bases", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let spec = BaseViewSpec {
+            name: Some("Sprint".to_string()),
+            view_type: "table".to_string(),
+            filters: vec!["status = backlog".to_string()],
+            ..Default::default()
+        };
+        let report = bases_view_add(&paths, "release.base", spec, false)
+            .expect("view add should succeed");
+
+        // The new view is evaluated
+        assert!(report.eval.views.iter().any(|v| v.name.as_deref() == Some("Sprint")));
+
+        // The file on disk was written
+        let on_disk =
+            fs::read_to_string(vault_root.join("release.base")).expect("file should be readable");
+        assert!(on_disk.contains("Sprint"));
+    }
+
+    #[test]
+    fn bases_view_delete_removes_named_view() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("bases", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report = bases_view_delete(&paths, "release.base", "Board", false)
+            .expect("view delete should succeed");
+
+        let on_disk =
+            fs::read_to_string(vault_root.join("release.base")).expect("file should be readable");
+        assert!(
+            !on_disk.contains("Board"),
+            "Board view should be removed from the file"
+        );
+        // Release Table view should still be in the eval (it's valid table type)
+        assert!(
+            report
+                .eval
+                .views
+                .iter()
+                .any(|v| v.name.as_deref() == Some("Release Table")),
+            "Release Table should still exist"
+        );
+    }
+
+    #[test]
+    fn bases_view_rename_changes_view_name() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("bases", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report =
+            bases_view_rename(&paths, "release.base", "Release Table", "New Name", false)
+                .expect("view rename should succeed");
+
+        let on_disk =
+            fs::read_to_string(vault_root.join("release.base")).expect("file should be readable");
+        assert!(on_disk.contains("New Name"), "new name should appear in file");
+        assert!(
+            !on_disk.contains("Release Table"),
+            "old name should be gone"
+        );
+        assert!(
+            report
+                .eval
+                .views
+                .iter()
+                .any(|v| v.name.as_deref() == Some("New Name")),
+            "renamed view should appear in eval"
+        );
+    }
+
+    #[test]
+    fn bases_view_edit_patches_view_filters() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("bases", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let patch = BaseViewPatch {
+            add_filters: vec!["reviewed = true".to_string()],
+            ..Default::default()
+        };
+        let _report = bases_view_edit(&paths, "release.base", "Release Table", patch, false)
+            .expect("view edit should succeed");
+
+        let on_disk =
+            fs::read_to_string(vault_root.join("release.base")).expect("file should be readable");
+        assert!(
+            on_disk.contains("reviewed = true"),
+            "added filter should appear in file"
+        );
     }
 }

@@ -2597,6 +2597,117 @@ fn update_command_json_output_includes_mutation_report() {
 }
 
 #[test]
+fn bases_view_add_command_creates_view_and_previews_rows() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("bases", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "bases",
+            "view-add",
+            "release.base",
+            "Sprint",
+            "--filter",
+            "status = backlog",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Sprint"));
+
+    let contents = fs::read_to_string(vault_root.join("release.base"))
+        .expect("release.base should be readable");
+    assert!(contents.contains("Sprint"), "Sprint view should be in the file");
+}
+
+#[test]
+fn bases_view_delete_command_removes_view() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("bases", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "bases",
+            "view-delete",
+            "release.base",
+            "Board",
+        ])
+        .assert()
+        .success();
+
+    let contents = fs::read_to_string(vault_root.join("release.base"))
+        .expect("release.base should be readable");
+    assert!(!contents.contains("Board"), "Board view should be removed from the file");
+}
+
+#[test]
+fn bases_view_rename_command_renames_view() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("bases", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "bases",
+            "view-rename",
+            "release.base",
+            "Release Table",
+            "Renamed",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Renamed"));
+
+    let contents = fs::read_to_string(vault_root.join("release.base"))
+        .expect("release.base should be readable");
+    assert!(contents.contains("Renamed"), "new name should be in the file");
+    assert!(!contents.contains("Release Table"), "old name should be gone");
+}
+
+#[test]
+fn bases_view_edit_command_adds_filter() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("bases", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "bases",
+            "view-edit",
+            "release.base",
+            "Release Table",
+            "--add-filter",
+            "reviewed = true",
+        ])
+        .assert()
+        .success();
+
+    let contents = fs::read_to_string(vault_root.join("release.base"))
+        .expect("release.base should be readable");
+    assert!(
+        contents.contains("reviewed = true"),
+        "added filter should be in the file"
+    );
+}
+
+#[test]
 fn command_json_outputs_match_composite_snapshot() {
     assert_json_snapshot("commands_composite.json", &build_command_snapshot());
 }

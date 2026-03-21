@@ -872,6 +872,344 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Add a new view to a .base file",
+            "name": "view-add",
+            "options": [
+              {
+                "help": "Vault-relative path to the .base file",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "Name for the new view",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Filter expression; repeatable",
+                "id": "filters",
+                "long": "filter",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILTERS"
+                ]
+              },
+              {
+                "help": "Column key to show; repeatable (sets column order)",
+                "id": "column",
+                "long": "column",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COLUMN"
+                ]
+              },
+              {
+                "help": "Property key to sort by",
+                "id": "sort",
+                "long": "sort",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SORT"
+                ]
+              },
+              {
+                "help": "Sort descending instead of ascending",
+                "id": "sort_desc",
+                "long": "sort-desc",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SORT_DESC"
+                ]
+              },
+              {
+                "help": "Property key to group rows by",
+                "id": "group_by",
+                "long": "group-by",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP_BY"
+                ]
+              },
+              {
+                "help": "Group descending instead of ascending",
+                "id": "group_desc",
+                "long": "group-desc",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP_DESC"
+                ]
+              },
+              {
+                "help": "Preview the view without writing changes",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Delete a view from a .base file",
+            "name": "view-delete",
+            "options": [
+              {
+                "help": "Vault-relative path to the .base file",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "Name of the view to delete",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Preview without writing changes",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Rename a view in a .base file",
+            "name": "view-rename",
+            "options": [
+              {
+                "help": "Vault-relative path to the .base file",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "Current view name",
+                "id": "old_name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "OLD_NAME"
+                ]
+              },
+              {
+                "help": "Replacement view name",
+                "id": "new_name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NEW_NAME"
+                ]
+              },
+              {
+                "help": "Preview without writing changes",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Edit a view in a .base file",
+            "name": "view-edit",
+            "options": [
+              {
+                "help": "Vault-relative path to the .base file",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "Name of the view to edit",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Append a filter expression",
+                "id": "add_filters",
+                "long": "add-filter",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ADD_FILTERS"
+                ]
+              },
+              {
+                "help": "Remove a filter expression",
+                "id": "remove_filters",
+                "long": "remove-filter",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOVE_FILTERS"
+                ]
+              },
+              {
+                "help": "Set column order (repeatable)",
+                "id": "column",
+                "long": "column",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COLUMN"
+                ]
+              },
+              {
+                "help": "Set the sort property (empty string to clear)",
+                "id": "sort",
+                "long": "sort",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SORT"
+                ]
+              },
+              {
+                "help": "Set sort direction to descending",
+                "id": "sort_desc",
+                "long": "sort-desc",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SORT_DESC"
+                ]
+              },
+              {
+                "help": "Set group-by property (empty string to clear)",
+                "id": "group_by",
+                "long": "group-by",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP_BY"
+                ]
+              },
+              {
+                "help": "Set group-by direction to descending",
+                "id": "group_desc",
+                "long": "group-desc",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP_DESC"
+                ]
+              },
+              {
+                "help": "Preview changes without writing",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },

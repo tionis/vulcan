@@ -168,6 +168,70 @@ pub enum BasesCommand {
         #[arg(help = "Vault-relative path to the .base file to inspect")]
         file: String,
     },
+    #[command(about = "Add a new view to a .base file")]
+    ViewAdd {
+        #[arg(help = "Vault-relative path to the .base file")]
+        file: String,
+        #[arg(help = "Name for the new view")]
+        name: String,
+        #[arg(long = "filter", help = "Filter expression; repeatable")]
+        filters: Vec<String>,
+        #[arg(long, help = "Column key to show; repeatable (sets column order)")]
+        column: Vec<String>,
+        #[arg(long, help = "Property key to sort by")]
+        sort: Option<String>,
+        #[arg(long, help = "Sort descending instead of ascending")]
+        sort_desc: bool,
+        #[arg(long, help = "Property key to group rows by")]
+        group_by: Option<String>,
+        #[arg(long, help = "Group descending instead of ascending")]
+        group_desc: bool,
+        #[arg(long, help = "Preview the view without writing changes")]
+        dry_run: bool,
+    },
+    #[command(about = "Delete a view from a .base file")]
+    ViewDelete {
+        #[arg(help = "Vault-relative path to the .base file")]
+        file: String,
+        #[arg(help = "Name of the view to delete")]
+        name: String,
+        #[arg(long, help = "Preview without writing changes")]
+        dry_run: bool,
+    },
+    #[command(about = "Rename a view in a .base file")]
+    ViewRename {
+        #[arg(help = "Vault-relative path to the .base file")]
+        file: String,
+        #[arg(help = "Current view name")]
+        old_name: String,
+        #[arg(help = "Replacement view name")]
+        new_name: String,
+        #[arg(long, help = "Preview without writing changes")]
+        dry_run: bool,
+    },
+    #[command(about = "Edit a view in a .base file")]
+    ViewEdit {
+        #[arg(help = "Vault-relative path to the .base file")]
+        file: String,
+        #[arg(help = "Name of the view to edit")]
+        name: String,
+        #[arg(long = "add-filter", help = "Append a filter expression")]
+        add_filters: Vec<String>,
+        #[arg(long = "remove-filter", help = "Remove a filter expression")]
+        remove_filters: Vec<String>,
+        #[arg(long, help = "Set column order (repeatable)")]
+        column: Vec<String>,
+        #[arg(long, help = "Set the sort property (empty string to clear)")]
+        sort: Option<String>,
+        #[arg(long, help = "Set sort direction to descending")]
+        sort_desc: bool,
+        #[arg(long, help = "Set group-by property (empty string to clear)")]
+        group_by: Option<String>,
+        #[arg(long, help = "Set group-by direction to descending")]
+        group_desc: bool,
+        #[arg(long, help = "Preview changes without writing")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
