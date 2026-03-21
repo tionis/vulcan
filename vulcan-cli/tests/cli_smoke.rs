@@ -3516,6 +3516,12 @@ impl MockEmbeddingServer {
 
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .expect("stream should support blocking mode");
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .expect("read timeout should be configurable");
                     let request = read_request(&mut stream);
                     let inputs = request
                         .body
