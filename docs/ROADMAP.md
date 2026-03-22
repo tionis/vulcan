@@ -540,6 +540,11 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 **Depends on:** Phase 7 complete.
 **Design refs:** Existing `note_picker.rs` (fuzzy picker), `bases_tui.rs` (TUI infrastructure + `open_in_editor` + `with_terminal_suspended`), `serve.rs` (watcher integration).
 
+**Design decisions:**
+- **Keybinding: `q` no longer quits the picker.** The existing note picker uses both `Esc` and `q` to cancel. Since `edit` and `browse` require typing search queries, `q` must be a normal character. Change to `Esc`-only across all picker/TUI contexts (note picker, browse TUI). This is a minor breaking change.
+- **Browse TUI ships incrementally in layers:** (1) edit loop only, (2) `Ctrl-F` full-text search, (3) action hotkeys, (4) remaining modes. Each layer is independently shippable.
+- **TUI testing strategy:** Test state machine transitions on `BrowseState`/`NotePickerState` directly (no terminal). Use `ratatui::TestBackend` for render assertions on layout and content. Manual testing for interactive flows.
+
 ### 8.1 `edit` command — open note in `$EDITOR`
 
 Open a note for editing directly from the CLI, with picker fallback for disambiguation.
@@ -549,6 +554,7 @@ vulcan edit [note]           # open specific note, or picker if omitted
 vulcan edit --new [path]     # create new note, open in editor
 ```
 
+- [ ] **Keybinding fix:** change note picker quit from `Esc | q` to `Esc`-only, so `q` can be typed in search queries
 - [ ] `vulcan edit <note>`: resolve note by path/filename/alias, open in `$VISUAL`/`$EDITOR`/`vi`
 - [ ] If `<note>` is ambiguous or omitted: spawn the existing note picker TUI, Enter opens selected note in editor
 - [ ] `vulcan edit --new <path>`: create a new empty note (or from template if 8.5 is implemented), open in editor
@@ -593,12 +599,27 @@ vulcan browse
 - [ ] Footer keybinding hints update to reflect current mode
 - [ ] Resize-safe layout (reuse `ratatui` constraint-based layout)
 
+**Incremental shipping layers:**
+1. **Layer 1 — Edit loop:** Picker → editor → picker with rescan. Minimal viable `browse`.
+2. **Layer 2 — Full-text search:** Add `Ctrl-F` mode with FTS5 results and snippet preview.
+3. **Layer 3 — Action hotkeys:** `m` (move), `b` (backlinks), `l` (links), `n` (new note).
+4. **Layer 4 — Remaining modes and actions:** `Ctrl-T` (tag filter), `Ctrl-P` (property filter), `d` (doctor), `g` (git log), `o` (open bases TUI).
+
+Each layer is independently shippable and testable.
+
 **Implementation notes:**
 - Extend `NotePickerState` with a `mode: BrowseMode` enum (`Fuzzy`, `FullText`, `Tag`, `Property`) that controls filtering logic and preview rendering
 - The browse TUI lives in a new `vulcan-cli/src/browse_tui.rs` module
 - Reuse `note_picker.rs` types and fuzzy scoring; the browse TUI is a superset of the picker
 - For FTS mode, call `search_vault()` from `vulcan-core` and map results to the same `(score, NoteIdentity)` display format
 - For backlinks/links views, call `query_backlinks()`/`query_links()` and display as a navigable list that can be drilled into
+
+**Testing strategy:**
+- Unit tests for `BrowseState` transitions: mode switching, selection persistence across mode changes, query state reset behavior
+- Unit tests for action dispatch: verify correct `vulcan-core` calls for move, backlinks, links, etc.
+- `ratatui::TestBackend` render tests: verify layout adapts to terminal size, correct pane content for each mode, keybinding hints update per mode
+- Integration tests: spin up a temp vault, exercise the edit loop programmatically (mock editor via `EDITOR=true`), verify cache is updated after edit
+- Fuzzy scoring tests already exist in `note_picker.rs`; extend for new filter modes
 
 ### 8.3 Auto-commit
 
@@ -806,7 +827,8 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
 ### 9.6 Implementation notes
 
-- The existing `serve.rs` single-vault server can be kept as-is for backwards compatibility, or deprecated in favor of `vulcan daemon start` with a single vault registered
+- **`serve` becomes a lightweight shim over daemon internals.** The existing `vulcan serve` command is kept for single-vault convenience but refactored to use the same router and handler code as the daemon. Internally it registers the current vault as the sole vault and starts the daemon in single-vault mode. This ensures API consistency between `serve` and `daemon` without maintaining two codepaths.
+- **Daemon dependencies (axum, tokio) are included unconditionally.** If compile time or binary size becomes a problem, they can be moved behind a `--features daemon` cargo feature flag later, but start without the complexity.
 - Response format matches existing `--output json` format from CLI commands — the daemon serializes the same report structs
 - Rate limiting and request logging via tower middleware
 - CORS headers configurable for WebUI integration (Phase 12)
