@@ -533,6 +533,552 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 
 ---
 
+## Phase 8: CLI Refinements
+
+**Goal:** Improve the interactive CLI experience with direct note editing, a persistent browser TUI, auto-commit integration, and quality-of-life commands. These features make vulcan a practical daily-driver tool for vault maintenance, not just a query/analysis engine.
+
+**Depends on:** Phase 7 complete.
+**Design refs:** Existing `note_picker.rs` (fuzzy picker), `bases_tui.rs` (TUI infrastructure + `open_in_editor` + `with_terminal_suspended`), `serve.rs` (watcher integration).
+
+### 8.1 `edit` command — open note in `$EDITOR`
+
+Open a note for editing directly from the CLI, with picker fallback for disambiguation.
+
+```
+vulcan edit [note]           # open specific note, or picker if omitted
+vulcan edit --new [path]     # create new note, open in editor
+```
+
+- [ ] `vulcan edit <note>`: resolve note by path/filename/alias, open in `$VISUAL`/`$EDITOR`/`vi`
+- [ ] If `<note>` is ambiguous or omitted: spawn the existing note picker TUI, Enter opens selected note in editor
+- [ ] `vulcan edit --new <path>`: create a new empty note (or from template if 8.5 is implemented), open in editor
+- [ ] After editor exits: run an incremental rescan of the edited file to update the cache
+- [ ] If auto-commit is enabled (8.3): commit the change after rescan
+- [ ] Reuse `open_in_editor()` and `with_terminal_suspended()` from `bases_tui.rs` — extract these into a shared `editor.rs` utility module in `vulcan-cli/src/`
+- [ ] Non-interactive fallback: if not a TTY, print an error rather than spawning a picker
+- [ ] Integration test: create a temp vault, run `edit --new`, verify file exists and cache is updated
+
+### 8.2 `browse` command — persistent note browser TUI
+
+A persistent TUI session that acts as a lightweight terminal Obsidian. The user searches, previews, edits, and navigates notes without leaving the TUI.
+
+```
+vulcan browse
+```
+
+**Core loop:**
+- [ ] Start in the note picker view (extend existing `NotePickerState` from `note_picker.rs`)
+- [ ] Enter opens selected note in `$EDITOR`; on editor exit, return to picker with previous query and selection preserved
+- [ ] After each editor exit: incremental rescan of the edited file, refresh the note list
+- [ ] If auto-commit is enabled (8.3): commit after each editor session
+
+**Search mode hotkeys** (toggled in the picker's input bar):
+- [ ] Default / `/`: fuzzy path/alias/filename filter (current behavior)
+- [ ] `Ctrl-F`: full-text search mode — query runs against FTS5, results replace the note list, preview pane shows matching snippets with highlighted terms instead of raw file content
+- [ ] `Ctrl-T`: tag filter mode — type a tag name, fuzzy-match against all indexed tags, show notes matching the selected tag
+- [ ] `Ctrl-P`: property filter mode — type a property predicate (reuse the existing `where` filter syntax from `NoteQuery`), filter notes by property values
+
+**Action hotkeys on the selected note:**
+- [ ] `e` or `Enter`: edit in `$EDITOR` (as above)
+- [ ] `m`: move/rename — inline prompt for destination path, runs the move-rewrite engine, refreshes note list
+- [ ] `b`: switch to a backlinks view for the selected note (list of linking notes with context, navigable)
+- [ ] `l`: switch to an outgoing links view for the selected note
+- [ ] `d`: run doctor on this specific note, show diagnostics in a temporary pane
+- [ ] `n`: create new note — prompt for path, open in editor, return to picker
+- [ ] `g`: show git log for this file (if vault is a git repo), displayed in a scrollable pane
+- [ ] `o`: if the selected file is a `.base` file, open it in the bases TUI (`bases tui`)
+
+**UI details:**
+- [ ] Status bar at bottom: vault name, total note count, filtered count, last scan timestamp, current search mode indicator
+- [ ] Footer keybinding hints update to reflect current mode
+- [ ] Resize-safe layout (reuse `ratatui` constraint-based layout)
+
+**Implementation notes:**
+- Extend `NotePickerState` with a `mode: BrowseMode` enum (`Fuzzy`, `FullText`, `Tag`, `Property`) that controls filtering logic and preview rendering
+- The browse TUI lives in a new `vulcan-cli/src/browse_tui.rs` module
+- Reuse `note_picker.rs` types and fuzzy scoring; the browse TUI is a superset of the picker
+- For FTS mode, call `search_vault()` from `vulcan-core` and map results to the same `(score, NoteIdentity)` display format
+- For backlinks/links views, call `query_backlinks()`/`query_links()` and display as a navigable list that can be drilled into
+
+### 8.3 Auto-commit
+
+Automatically commit vault changes to git after vulcan-initiated mutations. Off by default.
+
+**Config in `.vulcan/config.toml`:**
+
+```toml
+[git]
+# Enable auto-commit after vault-mutating operations (default: false)
+auto_commit = false
+
+# What triggers a commit:
+# - "mutation": commit after vulcan-initiated writes (move, update, unset,
+#   rename-*, merge-tags, link-mentions, edit, browse edits)
+# - "scan": also commit when scan detects external changes
+trigger = "mutation"
+
+# Commit message template. Variables: {action}, {files}, {count}
+# {action} = the vulcan command name (e.g. "move", "update", "edit")
+# {files} = comma-separated changed files (truncated to 5, with "+N more")
+# {count} = total number of files changed
+message = "vulcan {action}: {files}"
+
+# Scope of files to commit:
+# - "vulcan-only": only commit files that vulcan actually modified
+# - "all": stage and commit ALL uncommitted changes in the vault
+scope = "vulcan-only"
+
+# Paths to always exclude from auto-commits (in addition to .vulcan/)
+# exclude = [".obsidian/workspace.json", ".obsidian/workspace-mobile.json"]
+```
+
+- [ ] Add `[git]` section to `VaultConfig` with `GitConfig` struct: `auto_commit: bool`, `trigger: GitTrigger`, `message: String`, `scope: GitScope`, `exclude: Vec<String>`
+- [ ] Add `[git]` section to `DEFAULT_CONFIG_TEMPLATE` (commented out, with defaults shown)
+- [ ] New module `vulcan-core/src/git.rs`:
+  - `is_git_repo(vault_root) -> bool`: check for `.git` directory or `git rev-parse --git-dir`
+  - `auto_commit(paths, config, action, changed_files) -> Result<AutoCommitReport>`: stage files, create commit
+  - `git_log(vault_root, file_path, limit) -> Result<Vec<GitLogEntry>>`: file history for browse TUI
+  - `git_status(vault_root) -> Result<GitStatusReport>`: uncommitted changes summary
+  - Shell out to `git` CLI (not libgit2) to keep dependencies light
+  - Exclude `.vulcan/` and configured exclude paths from staging
+- [ ] `AutoCommitReport` struct: `committed: bool`, `message: String`, `files: Vec<String>`, `sha: Option<String>`
+- [ ] Call `auto_commit()` after successful execution of mutating commands: `move`, `update`, `unset`, `rename-property`, `merge-tags`, `rename-alias`, `rename-heading`, `rename-block-ref`, `link-mentions`, `rewrite`, `edit`, and browse TUI edits
+- [ ] `--no-commit` flag on all mutating CLI commands to suppress auto-commit for one invocation
+- [ ] If `auto_commit = true` but vault is not a git repo: emit a warning diagnostic, do not error
+- [ ] If `trigger = "scan"`: also commit after `scan` and `watch` detect and process external changes
+- [ ] Integration test: enable auto-commit in config, run a mutation, verify git log shows the commit with expected message
+
+### 8.4 Additional CLI commands
+
+#### 8.4.1 `diff` — single-note change view
+
+```
+vulcan diff [note] [--since <checkpoint>]
+```
+
+- [ ] Show what changed in a specific note since last scan, checkpoint, or git HEAD
+- [ ] If git is available: show `git diff` for the file, rendered with context
+- [ ] If no git: fall back to comparing current content against cached content hash (show "changed" / "unchanged" / "new")
+- [ ] `--output json` support
+- [ ] Builds on existing `changes` command but focused on a single note with richer output
+
+#### 8.4.2 `inbox` — quick capture
+
+```
+vulcan inbox <text>
+vulcan inbox --file <path>     # append file contents
+echo "idea" | vulcan inbox -   # read from stdin
+```
+
+- [ ] Append text to a configurable inbox note
+- [ ] Config in `.vulcan/config.toml`:
+  ```toml
+  [inbox]
+  path = "Inbox.md"         # relative to vault root
+  format = "- {text}"       # template for each entry; supports {text}, {date}, {time}, {datetime}
+  timestamp = true           # prepend ISO timestamp to each entry
+  heading = "## Inbox"       # optional: append under this heading (create if missing)
+  ```
+- [ ] Create the inbox note if it doesn't exist
+- [ ] Incremental rescan after append
+- [ ] Auto-commit if enabled
+- [ ] `--output json` returns `{ "path": "Inbox.md", "appended": true }`
+
+#### 8.4.3 `template` — create note from template
+
+```
+vulcan template [name] [--path <output-path>]
+vulcan template --list
+```
+
+- [ ] Templates stored in `.vulcan/templates/` as regular markdown files
+- [ ] Template variables: `{{title}}` (derived from output path), `{{date}}`, `{{time}}`, `{{datetime}}`, `{{uuid}}`
+- [ ] `--list` shows available templates
+- [ ] If `--path` is omitted, prompt for path (or use template's own filename with date prefix)
+- [ ] After creation: open in `$EDITOR` if TTY, then rescan
+- [ ] Auto-commit if enabled
+
+#### 8.4.4 `open` — open note in Obsidian
+
+```
+vulcan open [note]
+```
+
+- [ ] Open a note in the Obsidian desktop app via `obsidian://open?vault=<name>&file=<path>` URI
+- [ ] Vault name derived from folder name or `.obsidian/` config
+- [ ] Uses `xdg-open` (Linux), `open` (macOS), or `start` (Windows) to launch the URI
+- [ ] Note resolution follows the same path/filename/alias/picker logic as other commands
+- [ ] Useful for quickly jumping from CLI analysis to visual Obsidian editing
+
+---
+
+## Phase 9: Multi-Vault Daemon
+
+**Goal:** A long-running process that serves multiple vaults over a proper REST API. The CLI can connect to it instead of opening the cache directly, eliminating per-command startup cost and enabling multi-vault workflows.
+
+**Depends on:** Phase 7 complete. Independent of Phase 8 (can be developed in parallel).
+**Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
+
+### 9.1 Architecture decisions
+
+The daemon extends the existing architecture rather than replacing it:
+
+- **Same binary**: `vulcan daemon start/stop/status/config` — keeps deployment simple, shares all deps
+- **HTTP framework**: `axum` replaces the hand-rolled `TcpListener` server. Provides async request handling, tower middleware (auth, CORS, logging, compression), and WebSocket support for live updates.
+- **Async boundary**: `vulcan-core` stays synchronous (SQLite is inherently sync). The daemon wraps core calls in `tokio::task::spawn_blocking`. This avoids an async rewrite of the entire core.
+- **New crate**: `vulcan-daemon` (lib) — contains the axum router, middleware, vault registry, and daemon lifecycle. `vulcan-cli` depends on it for the `daemon` subcommand.
+
+### 9.2 Vault registry
+
+```toml
+# ~/.config/vulcan/daemon.toml
+bind = "127.0.0.1:3210"
+
+[[vault]]
+id = "personal"
+path = "/home/user/vaults/personal"
+token = "$argon2id$v=19$..."  # hashed
+
+[[vault]]
+id = "work"
+path = "/home/user/vaults/work"
+token = "$argon2id$v=19$..."
+read_only = true  # no mutation endpoints
+```
+
+- [ ] Vault registry config at `~/.config/vulcan/daemon.toml` (XDG_CONFIG_HOME respected)
+- [ ] Each vault entry: `id` (short name, URL-safe), `path`, `token` (argon2 hashed), optional `read_only` flag
+- [ ] `vulcan daemon config add <id> <path>` — register a vault, generate and display a token
+- [ ] `vulcan daemon config remove <id>` — unregister a vault
+- [ ] `vulcan daemon config list` — show registered vaults (paths, IDs, status)
+- [ ] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
+- [ ] Vault auto-discovery: optionally scan a directory for vaults (e.g., `scan_dir = "/home/user/vaults"`)
+
+### 9.3 REST API
+
+All endpoints are namespaced by vault ID: `/{vault_id}/...`
+
+**Read endpoints** (map 1:1 to existing CLI commands):
+- [ ] `GET /{id}/search?q=...` — full-text and hybrid search
+- [ ] `GET /{id}/notes?where=...&sort=...` — property query
+- [ ] `GET /{id}/notes/{path}` — single note metadata + content
+- [ ] `GET /{id}/links/{path}` — outgoing links
+- [ ] `GET /{id}/backlinks/{path}` — inbound links
+- [ ] `GET /{id}/graph/stats` — graph analytics
+- [ ] `GET /{id}/graph/path?from=...&to=...` — shortest path
+- [ ] `GET /{id}/graph/hubs`, `/dead-ends`, `/components` — graph analysis
+- [ ] `GET /{id}/vectors/neighbors?q=...` — vector similarity
+- [ ] `GET /{id}/vectors/related?note=...` — related notes
+- [ ] `GET /{id}/vectors/models` — list embedding models
+- [ ] `GET /{id}/bases/{file}` — evaluate a bases view
+- [ ] `GET /{id}/doctor` — vault diagnostics
+- [ ] `GET /{id}/query?dsl=...` or `POST /{id}/query` with JSON body — ad hoc query
+
+**Write endpoints:**
+- [ ] `POST /{id}/notes` — create a note (body: `{ "path": "...", "content": "..." }`)
+- [ ] `PATCH /{id}/notes/{path}` — update properties or content
+- [ ] `DELETE /{id}/notes/{path}` — delete a note
+- [ ] `POST /{id}/move` — move/rename with link rewriting (`{ "source": "...", "destination": "..." }`)
+- [ ] `POST /{id}/update` — bulk property update (`{ "where": [...], "set": { "key": "value" } }`)
+- [ ] `POST /{id}/inbox` — quick capture (like `vulcan inbox`)
+- [ ] `POST /{id}/scan` — trigger incremental rescan
+- [ ] `POST /{id}/vectors/index` — trigger embedding indexing
+
+**Daemon management:**
+- [ ] `GET /health` — daemon health, vault statuses
+- [ ] `GET /vaults` — list registered vaults with status
+- [ ] Auth: per-vault `Authorization: Bearer <token>` header, validated against argon2 hash
+
+### 9.4 Per-vault watcher
+
+- [ ] Each registered vault gets its own file watcher thread (reuse `watch_vault_until`)
+- [ ] Watcher keeps cache fresh automatically — API queries always return current data
+- [ ] Watcher errors are surfaced via `/health` and `/{id}/health` endpoints
+- [ ] Graceful shutdown: daemon stop signals all watchers to terminate
+
+### 9.5 CLI daemon integration
+
+- [ ] `vulcan daemon start` — start the daemon (foreground or `--detach` for background)
+- [ ] `vulcan daemon stop` — send shutdown signal
+- [ ] `vulcan daemon status` — show running state, registered vaults, uptime
+- [ ] `vulcan --daemon` flag or `VULCAN_DAEMON_URL` env var on any CLI command: route the command through the daemon's REST API instead of direct SQLite access. Same UX, daemon does the work.
+- [ ] Transparent fallback: if daemon is not running, fall back to direct mode with a warning
+
+### 9.6 Implementation notes
+
+- The existing `serve.rs` single-vault server can be kept as-is for backwards compatibility, or deprecated in favor of `vulcan daemon start` with a single vault registered
+- Response format matches existing `--output json` format from CLI commands — the daemon serializes the same report structs
+- Rate limiting and request logging via tower middleware
+- CORS headers configurable for WebUI integration (Phase 12)
+
+---
+
+## Phase 10: Git Auto-Versioning (Daemon-Level)
+
+**Goal:** Automatic version history for vault content managed by the daemon. Extends the per-vault auto-commit from Phase 8.3 to daemon-managed vaults with richer history APIs.
+
+**Depends on:** Phase 8.3 (git module in vulcan-core), Phase 9 (daemon).
+
+### 10.1 Daemon-level git integration
+
+- [ ] On vault registration: detect if vault is a git repo, optionally `git init` if configured
+- [ ] Configurable commit strategy per vault in `daemon.toml`:
+  ```toml
+  [[vault]]
+  id = "personal"
+  path = "/home/user/vaults/personal"
+  [vault.git]
+  auto_commit = true
+  strategy = "batched"  # "per-write", "batched", or "manual"
+  batch_interval_seconds = 300  # for "batched" strategy
+  message = "vault: {files}"
+  ```
+- [ ] `per-write`: commit immediately after each mutation (same as Phase 8.3)
+- [ ] `batched`: accumulate changes, commit every N seconds (daemon timer thread)
+- [ ] `manual`: no auto-commit, but history endpoints still work if vault has git
+
+### 10.2 History API endpoints
+
+- [ ] `GET /{id}/history/{path}` — git log for a specific file (author, date, message, sha)
+- [ ] `GET /{id}/history/{path}/{sha}` — file content at a specific commit
+- [ ] `GET /{id}/diff/{path}?from={sha}&to={sha}` — diff between two versions
+- [ ] `GET /{id}/diff` — uncommitted changes in the vault
+- [ ] `GET /{id}/history` — recent commits across the whole vault
+
+### 10.3 Branch management (optional)
+
+- [ ] Daemon works on a configurable branch (default: current branch)
+- [ ] `POST /{id}/git/snapshot` — create a named tag/branch for a point-in-time snapshot
+- [ ] Integrate with existing `checkpoint` command for cache-level + git-level snapshots
+
+---
+
+## Phase 11: Sync Integration
+
+**Goal:** Pluggable sync backends so vaults stay current across devices. The daemon orchestrates sync alongside watching and versioning.
+
+**Depends on:** Phase 9 (daemon), Phase 10 (git versioning for conflict-aware sync).
+
+### 11.1 Sync backend trait
+
+```rust
+trait SyncBackend: Send + Sync {
+    fn start(&mut self, vault_path: &Path) -> Result<()>;
+    fn stop(&mut self) -> Result<()>;
+    fn status(&self) -> SyncStatus;  // Idle, Syncing, Error(String)
+    fn trigger(&mut self) -> Result<()>;  // Force a sync cycle
+}
+```
+
+- [ ] Define the trait in a new `vulcan-sync` crate (or module in `vulcan-daemon`)
+- [ ] `SyncStatus` enum: `Idle`, `Syncing { progress: Option<f32> }`, `Error(String)`, `Disabled`
+
+### 11.2 Obsidian headless sync backend
+
+- [ ] Spawn and manage the `obsidian-headless` process as a subprocess
+- [ ] Config in `daemon.toml`:
+  ```toml
+  [[vault]]
+  id = "personal"
+  [vault.sync]
+  backend = "obsidian-headless"
+  binary = "/usr/local/bin/obsidian-headless"  # path to binary
+  # Additional obsidian-headless-specific config
+  ```
+- [ ] Monitor process health, restart on crash
+- [ ] Forward sync status to daemon health endpoint
+
+### 11.3 Git remote sync backend
+
+- [ ] Pull/push on schedule or on trigger
+- [ ] Config: `remote`, `branch`, `pull_interval_seconds`, `auto_push`
+- [ ] Merge strategy: fast-forward only by default, configurable
+- [ ] Conflict detection: if pull results in merge conflicts, surface as diagnostics (do not auto-resolve)
+
+### 11.4 Passive sync backend
+
+- [ ] For Syncthing, Dropbox, iCloud, etc. — the sync tool runs independently
+- [ ] The daemon just watches for file changes (already handled by the watcher)
+- [ ] Sync status is always "external" — daemon doesn't control it
+- [ ] Useful for users who already have sync set up and just want the daemon's API layer
+
+### 11.5 Sync API endpoints
+
+- [ ] `GET /{id}/sync/status` — current sync state
+- [ ] `POST /{id}/sync/trigger` — force a sync cycle
+- [ ] `GET /{id}/sync/conflicts` — list files with unresolved conflicts (if applicable)
+
+---
+
+## Phase 12: WebUI — Admin and Browse
+
+**Goal:** A web interface for managing the daemon, browsing vaults, and monitoring sync. Read-only initially, leveraging the existing JSON API.
+
+**Depends on:** Phase 9 (daemon REST API).
+
+### 12.1 Architecture
+
+- [ ] Served by the daemon itself at a configurable path (e.g., `GET /ui/...`)
+- [ ] Static SPA assets embedded in the binary at compile time (e.g., `rust-embed` or `include_dir`)
+- [ ] Alternatively: separate frontend repo that builds to static files, daemon serves them
+- [ ] Framework choice: lightweight (Svelte, Solid, or vanilla + htmx) — TBD at implementation time
+- [ ] Auth: reuse daemon token auth, with a login page for browser sessions (cookie or localStorage token)
+
+### 12.2 Admin panel
+
+- [ ] Vault list with status indicators (online, syncing, error, indexing)
+- [ ] Register/unregister vaults
+- [ ] Per-vault config editing (sync settings, git settings, embedding config)
+- [ ] Daemon health dashboard: uptime, memory, active watchers, recent errors
+- [ ] Token management: generate, revoke, copy
+
+### 12.3 Vault browser
+
+- [ ] Note list with search (uses `/search` API)
+- [ ] Note detail view: rendered markdown, frontmatter properties, backlinks, outgoing links
+- [ ] Graph visualization: interactive node-link diagram (uses `/graph/*` APIs)
+- [ ] Tag cloud / tag browser
+- [ ] Property explorer: browse notes by property values
+- [ ] Bases view rendering: display evaluated bases views as tables
+
+---
+
+## Phase 13: WebUI — Write and Collaborate
+
+**Goal:** Turn the web browser into an editor for vault content.
+
+**Depends on:** Phase 12 (read-only WebUI), Phase 9 (write API endpoints).
+
+### 13.1 Note editor
+
+- [ ] Markdown editor component (CodeMirror, Monaco, or Milkdown — TBD)
+- [ ] Live preview (split-pane or toggle)
+- [ ] Wikilink autocomplete (uses `/notes` API for suggestions)
+- [ ] Tag autocomplete
+- [ ] Frontmatter property editor (structured form UI, not raw YAML editing)
+- [ ] Save triggers `PATCH /{id}/notes/{path}`, which rescans and optionally commits
+
+### 13.2 Note management
+
+- [ ] Create new notes (with optional template selection)
+- [ ] Move/rename notes (with link rewriting preview)
+- [ ] Delete notes (with broken-link impact preview)
+- [ ] Inbox quick-capture widget
+
+### 13.3 History and diff
+
+- [ ] Git diff viewer for pending uncommitted changes
+- [ ] File history timeline (uses `/history` API from Phase 10)
+- [ ] Side-by-side diff between versions
+- [ ] Restore previous version
+
+### 13.4 Activity feed
+
+- [ ] Recent changes across the vault (from `changes` API)
+- [ ] Sync activity log
+- [ ] Auto-commit log
+
+---
+
+## Phase 14: Extensibility and Integrations
+
+**Goal:** Let vaults define custom behaviors and expose integration points for external tools.
+
+**Depends on:** Phase 9 (daemon API).
+
+### 14.1 Webhook system
+
+- [ ] Vault config defines triggers and HTTP callbacks:
+  ```toml
+  [[webhooks]]
+  event = "note.changed"      # note.changed, note.created, note.deleted, tag.added, scan.complete
+  url = "https://example.com/hook"
+  secret = "..."              # HMAC signing secret
+  filter = "path:Projects/*"  # optional: only fire for matching notes
+  ```
+- [ ] Daemon fires webhooks asynchronously after events
+- [ ] Retry with exponential backoff on failure
+- [ ] Webhook delivery log accessible via API
+
+### 14.2 Telegram bot integration
+
+- [ ] Per-vault Telegram bot configuration:
+  ```toml
+  [vault.telegram]
+  bot_token_env = "TELEGRAM_BOT_TOKEN"
+  chat_id = "123456"
+  commands = ["search", "inbox", "daily"]
+  ```
+- [ ] `/search <query>` — search the vault, return top results
+- [ ] `/inbox <text>` — append to inbox note
+- [ ] `/daily` — create or open today's daily note
+- [ ] Implemented as a daemon plugin module
+
+### 14.3 Custom API endpoints
+
+- [ ] Vault config can define additional routes:
+  ```toml
+  [[endpoints]]
+  path = "/inbox"
+  method = "POST"
+  action = "inbox"  # maps to built-in action
+
+  [[endpoints]]
+  path = "/daily"
+  method = "POST"
+  action = "template"
+  template = "daily"
+  ```
+- [ ] Actions are a fixed set of built-in operations (inbox, template, update, etc.)
+- [ ] This is intentionally not a plugin/scripting system — keeps the security surface small
+
+### 14.4 Plugin trait (future)
+
+- [ ] Rust trait for daemon plugins: `on_event`, `register_routes`, `on_startup`, `on_shutdown`
+- [ ] Plugins compiled into the binary (feature flags) or loaded as dynamic libraries
+- [ ] This is a future direction — start with the webhook and built-in endpoint system first
+
+---
+
+## Phase 15: Wiki Mode
+
+**Goal:** A polished, public-facing wiki served from an Obsidian vault. Read-optimized with optional auth for editing.
+
+**Depends on:** Phase 12 (WebUI browse), Phase 13 (WebUI write).
+
+### 15.1 Public read mode
+
+- [ ] Unauthenticated read access to rendered vault content
+- [ ] Rendered Markdown with Obsidian-compatible features: callouts, embeds, math (KaTeX), wikilinks resolved to wiki URLs, mermaid diagrams, code highlighting
+- [ ] Navigation: sidebar with folder tree, tag-based browsing, graph explorer
+- [ ] Search: full FTS + vector hybrid search exposed in the UI
+- [ ] Home page: configurable (default: note named `Home.md` or `index.md`)
+- [ ] SEO: server-rendered HTML, meta tags, sitemap generation
+
+### 15.2 Wiki-specific rendering
+
+- [ ] Wikilinks rendered as clickable links to other wiki pages
+- [ ] Embeds rendered inline (images, other notes, blocks)
+- [ ] Backlinks section at the bottom of each page
+- [ ] Table of contents generated from headings
+- [ ] Breadcrumb navigation from folder path
+
+### 15.3 Theming and branding
+
+- [ ] Configurable per-vault theme (CSS custom properties)
+- [ ] Custom header/footer HTML
+- [ ] Logo and favicon configuration
+- [ ] Light/dark mode toggle
+
+### 15.4 Access control
+
+- [ ] Public read / authenticated write (default)
+- [ ] Fully public (no auth)
+- [ ] Fully private (auth required for read and write)
+- [ ] Per-folder or per-tag visibility rules (future)
+
+---
+
 ## Dependency graph
 
 ```
@@ -544,7 +1090,41 @@ Phase 1 (Core indexing)
                                Phase 6 (Hardening) ← all phases
                                                      ↓
                                Phase 7 (Post-v1 workflow features)
+                                    ↓                         ↓
+                          Phase 8 (CLI refinements)   Phase 9 (Multi-vault daemon)
+                            ↓                           ↓             ↓
+                          8.3 ──────────→ Phase 10 (Git versioning)  Phase 12 (WebUI browse)
+                                            ↓                         ↓
+                                    Phase 11 (Sync)           Phase 13 (WebUI write)
+                                                                ↓
+                                    Phase 14 (Extensibility) ← Phase 9
+                                                                ↓
+                                                        Phase 15 (Wiki mode)
 ```
 
-After Phase 1, Phases 2/3/4 can proceed in parallel.
-Phase 5 requires Phase 3. Phase 6 follows all others. Phase 7 is a post-v1 backlog that can be split into independent tracks after Phase 6.
+Phases 8 and 9 can proceed in parallel after Phase 7.
+Phase 10 requires 8.3 (git module) and 9 (daemon). Phase 11 requires 9 and 10.
+Phase 12 requires 9. Phase 13 requires 12 and 9's write endpoints.
+Phase 14 requires 9. Phase 15 requires 12 and 13.
+
+---
+
+## New crates (Phases 9+)
+
+| Crate | Type | Purpose |
+|-------|------|---------|
+| `vulcan-daemon` | lib | axum router, middleware, vault registry, daemon lifecycle |
+| `vulcan-sync` | lib | Sync backend trait and implementations (obsidian-headless, git remote, passive) |
+
+The `vulcan-cli` binary gains the `daemon` subcommand group by depending on `vulcan-daemon`.
+The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) and `vulcan-sync` (for sync backends).
+
+## Key dependencies to add (Phases 9+)
+
+| Dependency | Purpose | Phase |
+|------------|---------|-------|
+| `axum` | HTTP framework for daemon | 9 |
+| `tokio` | Async runtime for axum | 9 |
+| `tower-http` | CORS, compression, logging middleware | 9 |
+| `argon2` | Token hashing | 9 |
+| `rust-embed` or `include_dir` | Embed static WebUI assets | 12 |
