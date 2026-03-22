@@ -974,22 +974,25 @@ trait SyncBackend: Send + Sync {
 
 ### 13.1 Note editor
 
-**Document model: Automerge.** Use `automerge` (Rust-native CRDT library) as the underlying document model for the editor, even for single-user editing. This provides:
-- Built-in undo/redo and change history at the document level
-- Offline-capable editing that merges cleanly when reconnecting
-- Phase 15 live collaboration becomes "add peers to the Automerge doc" rather than a rewrite
-- Local-first architecture: the browser can own its Automerge doc and sync to the server, rather than requiring constant connectivity
+**Automerge for live editing sessions.** Use `automerge` (Rust-native CRDT library) for real-time collaborative editing and ephemeral editing sessions. Automerge is scoped to the WebUI editing layer — it does **not** replace git as the versioning backend. The on-disk `.md` files remain the vault source of truth.
 
-The editor surface (CodeMirror or ProseMirror) binds to the Automerge text type. The server materializes Automerge doc state → `.md` file on disk → git commit. The Automerge doc is the live editing truth; the `.md` file remains the vault source of truth for all non-editor access (CLI, search, indexing).
+**Architecture:**
+- The editor surface (CodeMirror or ProseMirror) binds to an Automerge text type for the duration of an editing session
+- On save: Automerge doc state is materialized → `.md` file on disk → incremental rescan → git commit (if auto-commit enabled)
+- On editor open: `.md` file content is loaded into a fresh Automerge doc (or resumed from a persisted session)
+- Automerge docs are ephemeral by default — they exist while a note is being edited and are discarded after materialization. Optional session persistence in `.vulcan/` for crash recovery.
+- Phase 15 live collaboration adds multi-peer sync on top of this same Automerge doc, without changing the materialization pipeline
 
-- [ ] Integrate `automerge` as the document model for note editing
-- [ ] Markdown editor component (CodeMirror or ProseMirror with Automerge binding — TBD)
+**Design decision: git stays the versioning backend.** Automerge provides excellent real-time collaboration and offline merge, but the vault's canonical history remains in git. This avoids a dual source-of-truth problem — on-disk files are always authoritative for CLI, Obsidian, search, and indexing. Automerge is a transient editing layer, not a storage layer.
+
+- [ ] Integrate `automerge` for ephemeral editing sessions (one Automerge doc per actively-edited note)
+- [ ] Markdown editor component (CodeMirror or ProseMirror with Automerge text binding — TBD)
 - [ ] Live preview (split-pane or toggle)
 - [ ] Wikilink autocomplete (uses `/notes` API for suggestions)
 - [ ] Tag autocomplete
 - [ ] Frontmatter property editor (structured form UI, not raw YAML editing)
-- [ ] Save / materialization: flush Automerge doc state to disk via `PATCH /{id}/notes/{path}`, which rescans and optionally commits
-- [ ] Automerge doc persistence: store Automerge binary docs alongside the cache (in `.vulcan/`) for session recovery and fast reload
+- [ ] Materialization pipeline: flush Automerge doc state to disk via `PATCH /{id}/notes/{path}`, which rescans and optionally commits
+- [ ] Optional session persistence: store Automerge binary doc in `.vulcan/` for crash recovery, discard after successful materialization
 
 ### 13.2 Note management
 
@@ -1077,14 +1080,9 @@ The editor surface (CodeMirror or ProseMirror) binds to the Automerge text type.
 
 **Goal:** A polished, public-facing wiki served from an Obsidian vault. Read-optimized with optional auth for editing. Supports real-time collaborative editing via Automerge CRDTs.
 
-**Depends on:** Phase 12 (WebUI browse), Phase 13 (WebUI write, Automerge document model).
+**Depends on:** Phase 12 (WebUI browse), Phase 13 (WebUI write, Automerge editing sessions).
 
-**Key technology: Automerge.** The `automerge` crate (Rust-native, MIT-licensed) provides:
-- CRDT-based text collaboration — multiple users editing the same note simultaneously with automatic conflict-free merging
-- Full document history built into the CRDT (complements git history with finer-grained operation-level tracking)
-- Rust-native with first-class WASM support — the same `automerge` code runs server-side (native) and client-side (wasm32)
-- Automerge sync protocol for efficient peer-to-peer document synchronization over WebSockets
-- CRDT app data support for structured data beyond text (properties, tags, metadata), enabling future local-first app architectures
+**Automerge in Phase 15:** Phase 13 introduces Automerge for ephemeral single-user editing sessions. Phase 15 extends this to multi-user real-time collaboration by adding the Automerge sync protocol over WebSockets. The on-disk `.md` files and git remain the canonical store and versioning backend — Automerge is the live collaboration layer, not a replacement for git.
 
 ### 15.1 Public read mode
 
@@ -1122,7 +1120,7 @@ The editor surface (CodeMirror or ProseMirror) binds to the Automerge text type.
 Real-time multi-user editing using Automerge CRDTs, building on the Automerge document model introduced in Phase 13.
 
 - [ ] WebSocket endpoint `WS /{id}/collab/{path}` — joins an Automerge sync session for a note
-- [ ] Server manages Automerge documents: one doc per actively-edited note, loaded from persisted binary state or materialized from `.md` on first open
+- [ ] Server manages Automerge documents: one doc per actively-edited note, loaded from `.md` content on first open (or resumed from crash-recovery state)
 - [ ] Automerge sync protocol over WebSocket: clients exchange sync messages to converge on shared state
 - [ ] Presence awareness: cursor positions and user identifiers broadcast to all connected peers
 - [ ] Materialization pipeline: periodically (and on last-editor-disconnect) flush Automerge doc state → `.md` file → incremental rescan → optional git commit
@@ -1132,15 +1130,14 @@ Real-time multi-user editing using Automerge CRDTs, building on the Automerge do
 
 ### 15.6 Local-first and WASM (future direction)
 
-Automerge's WASM support enables a local-first architecture where the client can operate independently of the server.
+Automerge compiles to `wasm32`, enabling browser-side editing without a live server connection.
 
 - [ ] Compile `automerge` to `wasm32` for browser-side document operations
-- [ ] Client-side Automerge doc: browser owns the document, syncs to server when online
-- [ ] Offline support: edits persist in browser storage (IndexedDB/OPFS), sync on reconnect
+- [ ] Client-side Automerge doc: browser owns the editing doc, syncs to server when online
+- [ ] Offline support: edits persist in browser storage (IndexedDB/OPFS), merge on reconnect via Automerge sync protocol
 - [ ] Potential: compile `vulcan-core` query engine to WASM for client-side search and graph queries (requires abstracting storage away from `rusqlite` — significant effort, evaluate when the use case is clear)
-- [ ] Potential: CRDT app data for structured vault metadata (properties, tags, bases views) — enables collaborative property editing and real-time bases view updates
 
-**Note:** `vulcan-core` currently depends on `rusqlite(bundled)` and `sqlite-vec`, which do not compile to `wasm32`. A WASM client would need a different storage backend (IndexedDB, OPFS, or pure Automerge storage). This is a Phase 15+ concern — do not architect for it prematurely.
+**Note:** Files on disk and git remain the canonical store even in a local-first model — the browser's Automerge doc is an ephemeral editing session that materializes back to the server. `vulcan-core` depends on `rusqlite(bundled)` and `sqlite-vec`, which do not compile to `wasm32`; a WASM query engine would need a different storage backend. This is a future direction — do not architect for it prematurely.
 
 ---
 
