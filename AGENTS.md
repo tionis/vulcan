@@ -50,6 +50,9 @@ Daemon (planned):
 - `tower-http` for middleware (CORS, compression, logging)
 - `argon2` for token hashing
 
+WebUI / Wiki (planned):
+- `automerge` for CRDT-based collaborative editing document model (Rust-native, also compiles to WASM)
+
 ## Parser pipeline
 
 The parser has a two-stage design (see design doc §8 for full detail):
