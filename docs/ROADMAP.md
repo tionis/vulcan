@@ -746,6 +746,7 @@ The daemon extends the existing architecture rather than replacing it:
 
 - **Same binary**: `vulcan daemon start/stop/status/config` — keeps deployment simple, shares all deps
 - **HTTP framework**: `axum` replaces the hand-rolled `TcpListener` server. Provides async request handling, tower middleware (auth, CORS, logging, compression), and WebSocket support for live updates.
+- **WebSocket-ready architecture**: Design the router module structure so that adding WebSocket upgrade endpoints (e.g., `/ws/{vault_id}/...`) is straightforward. Phase 15 will use WebSockets for real-time collaborative editing via Automerge sync protocol. No WebSocket code ships in Phase 9, but handlers should not assume pure request/response.
 - **Async boundary**: `vulcan-core` stays synchronous (SQLite is inherently sync). The daemon wraps core calls in `tokio::task::spawn_blocking`. This avoids an async rewrite of the entire core.
 - **New crate**: `vulcan-daemon` (lib) — contains the axum router, middleware, vault registry, and daemon lifecycle. `vulcan-cli` depends on it for the `daemon` subcommand.
 
@@ -973,12 +974,22 @@ trait SyncBackend: Send + Sync {
 
 ### 13.1 Note editor
 
-- [ ] Markdown editor component (CodeMirror, Monaco, or Milkdown — TBD)
+**Document model: Automerge.** Use `automerge` (Rust-native CRDT library) as the underlying document model for the editor, even for single-user editing. This provides:
+- Built-in undo/redo and change history at the document level
+- Offline-capable editing that merges cleanly when reconnecting
+- Phase 15 live collaboration becomes "add peers to the Automerge doc" rather than a rewrite
+- Local-first architecture: the browser can own its Automerge doc and sync to the server, rather than requiring constant connectivity
+
+The editor surface (CodeMirror or ProseMirror) binds to the Automerge text type. The server materializes Automerge doc state → `.md` file on disk → git commit. The Automerge doc is the live editing truth; the `.md` file remains the vault source of truth for all non-editor access (CLI, search, indexing).
+
+- [ ] Integrate `automerge` as the document model for note editing
+- [ ] Markdown editor component (CodeMirror or ProseMirror with Automerge binding — TBD)
 - [ ] Live preview (split-pane or toggle)
 - [ ] Wikilink autocomplete (uses `/notes` API for suggestions)
 - [ ] Tag autocomplete
 - [ ] Frontmatter property editor (structured form UI, not raw YAML editing)
-- [ ] Save triggers `PATCH /{id}/notes/{path}`, which rescans and optionally commits
+- [ ] Save / materialization: flush Automerge doc state to disk via `PATCH /{id}/notes/{path}`, which rescans and optionally commits
+- [ ] Automerge doc persistence: store Automerge binary docs alongside the cache (in `.vulcan/`) for session recovery and fast reload
 
 ### 13.2 Note management
 
@@ -1064,9 +1075,16 @@ trait SyncBackend: Send + Sync {
 
 ## Phase 15: Wiki Mode
 
-**Goal:** A polished, public-facing wiki served from an Obsidian vault. Read-optimized with optional auth for editing.
+**Goal:** A polished, public-facing wiki served from an Obsidian vault. Read-optimized with optional auth for editing. Supports real-time collaborative editing via Automerge CRDTs.
 
-**Depends on:** Phase 12 (WebUI browse), Phase 13 (WebUI write).
+**Depends on:** Phase 12 (WebUI browse), Phase 13 (WebUI write, Automerge document model).
+
+**Key technology: Automerge.** The `automerge` crate (Rust-native, MIT-licensed) provides:
+- CRDT-based text collaboration — multiple users editing the same note simultaneously with automatic conflict-free merging
+- Full document history built into the CRDT (complements git history with finer-grained operation-level tracking)
+- Rust-native with first-class WASM support — the same `automerge` code runs server-side (native) and client-side (wasm32)
+- Automerge sync protocol for efficient peer-to-peer document synchronization over WebSockets
+- CRDT app data support for structured data beyond text (properties, tags, metadata), enabling future local-first app architectures
 
 ### 15.1 Public read mode
 
@@ -1099,6 +1117,31 @@ trait SyncBackend: Send + Sync {
 - [ ] Fully private (auth required for read and write)
 - [ ] Per-folder or per-tag visibility rules (future)
 
+### 15.5 Live collaborative editing
+
+Real-time multi-user editing using Automerge CRDTs, building on the Automerge document model introduced in Phase 13.
+
+- [ ] WebSocket endpoint `WS /{id}/collab/{path}` — joins an Automerge sync session for a note
+- [ ] Server manages Automerge documents: one doc per actively-edited note, loaded from persisted binary state or materialized from `.md` on first open
+- [ ] Automerge sync protocol over WebSocket: clients exchange sync messages to converge on shared state
+- [ ] Presence awareness: cursor positions and user identifiers broadcast to all connected peers
+- [ ] Materialization pipeline: periodically (and on last-editor-disconnect) flush Automerge doc state → `.md` file → incremental rescan → optional git commit
+- [ ] Conflict-free by design: Automerge CRDTs guarantee convergence without manual conflict resolution
+- [ ] Graceful degradation: if WebSocket disconnects, client continues editing locally; changes merge on reconnect
+- [ ] Editor integration: the CodeMirror/ProseMirror binding from Phase 13 already uses Automerge — collaboration adds the sync layer on top
+
+### 15.6 Local-first and WASM (future direction)
+
+Automerge's WASM support enables a local-first architecture where the client can operate independently of the server.
+
+- [ ] Compile `automerge` to `wasm32` for browser-side document operations
+- [ ] Client-side Automerge doc: browser owns the document, syncs to server when online
+- [ ] Offline support: edits persist in browser storage (IndexedDB/OPFS), sync on reconnect
+- [ ] Potential: compile `vulcan-core` query engine to WASM for client-side search and graph queries (requires abstracting storage away from `rusqlite` — significant effort, evaluate when the use case is clear)
+- [ ] Potential: CRDT app data for structured vault metadata (properties, tags, bases views) — enables collaborative property editing and real-time bases view updates
+
+**Note:** `vulcan-core` currently depends on `rusqlite(bundled)` and `sqlite-vec`, which do not compile to `wasm32`. A WASM client would need a different storage backend (IndexedDB, OPFS, or pure Automerge storage). This is a Phase 15+ concern — do not architect for it prematurely.
+
 ---
 
 ## Dependency graph
@@ -1117,17 +1160,20 @@ Phase 1 (Core indexing)
                             ↓                           ↓             ↓
                           8.3 ──────────→ Phase 10 (Git versioning)  Phase 12 (WebUI browse)
                                             ↓                         ↓
-                                    Phase 11 (Sync)           Phase 13 (WebUI write)
+                                    Phase 11 (Sync)           Phase 13 (WebUI write + Automerge)
                                                                 ↓
                                     Phase 14 (Extensibility) ← Phase 9
                                                                 ↓
-                                                        Phase 15 (Wiki mode)
+                                                        Phase 15 (Wiki + live collab)
+                                                                ↓
+                                                        15.6 (Local-first / WASM) [future]
 ```
 
 Phases 8 and 9 can proceed in parallel after Phase 7.
 Phase 10 requires 8.3 (git module) and 9 (daemon). Phase 11 requires 9 and 10.
-Phase 12 requires 9. Phase 13 requires 12 and 9's write endpoints.
-Phase 14 requires 9. Phase 15 requires 12 and 13.
+Phase 12 requires 9. Phase 13 requires 12 and 9's write endpoints. Phase 13 introduces Automerge as the document model.
+Phase 14 requires 9. Phase 15 requires 12 and 13 (including the Automerge foundation from 13 for live collaboration).
+Phase 15.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 
 ---
 
@@ -1149,4 +1195,5 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `tokio` | Async runtime for axum | 9 |
 | `tower-http` | CORS, compression, logging middleware | 9 |
 | `argon2` | Token hashing | 9 |
+| `automerge` | CRDT document model for collaborative editing | 13 |
 | `rust-embed` or `include_dir` | Embed static WebUI assets | 12 |
