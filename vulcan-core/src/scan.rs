@@ -1550,66 +1550,35 @@ fn resolve_all_links(
     let links = load_resolver_links(transaction)?;
     let index = ResolverIndex::build(&documents);
 
-    // Resolve all links in memory first, then batch-write to DB.
+    let mut update_statement = transaction
+        .prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
+    let mut diag_statement = transaction.prepare_cached(
+        "
+        INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+        VALUES (?1, ?2, 'unresolved_link', ?3, ?4, ?5)
+        ",
+    )?;
     let timestamp = current_timestamp()?;
-    let mut resolutions: Vec<(String, Option<String>)> = Vec::with_capacity(links.len());
-    let mut diagnostics: Vec<(String, String, String, String)> = Vec::new();
-
     for link in &links {
         let resolution = index.resolve(&link.resolver_link, mode);
-        resolutions.push((link.id.clone(), resolution.resolved_target_id));
+        // Only UPDATE links that actually resolved — unresolved and external links
+        // already have NULL from the INSERT, so writing NULL again is wasted work.
+        if resolution.resolved_target_id.is_some() {
+            update_statement
+                .execute(params![link.id, resolution.resolved_target_id])?;
+        }
 
         if let Some(problem) = resolution.problem {
-            diagnostics.push((
-                link.resolver_link.source_document_id.clone(),
-                resolution_problem_message(&problem, &link.resolver_link),
-                serde_json::to_string(&resolution_problem_detail(&problem, &link.resolver_link))
-                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
-                timestamp.clone(),
-            ));
-        }
-    }
-
-    // Batch UPDATE using a temp table + single UPDATE...FROM.
-    transaction.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS _link_resolutions (
-            link_id TEXT NOT NULL,
-            resolved_id TEXT
-        )",
-    )?;
-    transaction.execute("DELETE FROM _link_resolutions", [])?;
-
-    {
-        let mut insert_stmt = transaction.prepare_cached(
-            "INSERT INTO _link_resolutions (link_id, resolved_id) VALUES (?1, ?2)",
-        )?;
-        for (link_id, resolved_id) in &resolutions {
-            insert_stmt.execute(params![link_id, resolved_id])?;
-        }
-    }
-
-    transaction.execute_batch(
-        "UPDATE links SET resolved_target_id = (
-            SELECT resolved_id FROM _link_resolutions WHERE link_id = links.id
-        ) WHERE id IN (SELECT link_id FROM _link_resolutions)",
-    )?;
-    transaction.execute_batch("DROP TABLE IF EXISTS _link_resolutions")?;
-
-    // Insert diagnostics.
-    {
-        let mut diag_statement = transaction.prepare_cached(
-            "
-            INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
-            VALUES (?1, ?2, 'unresolved_link', ?3, ?4, ?5)
-            ",
-        )?;
-        for (source_id, message, detail, ts) in &diagnostics {
             diag_statement.execute(params![
                 Ulid::new().to_string(),
-                source_id,
-                message,
-                detail,
-                ts,
+                link.resolver_link.source_document_id,
+                resolution_problem_message(&problem, &link.resolver_link),
+                serde_json::to_string(&resolution_problem_detail(
+                    &problem,
+                    &link.resolver_link
+                ))
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                &timestamp,
             ])?;
         }
     }
