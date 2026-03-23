@@ -4,7 +4,9 @@ mod schema;
 
 pub use error::CacheError;
 pub use migrations::{Migration, MigrationRegistry};
-pub(crate) use schema::rebuild_search_index;
+pub(crate) use schema::{
+    drop_fts_triggers, rebuild_fts_index, rebuild_search_index, restore_fts_triggers,
+};
 
 use crate::paths::{ensure_vulcan_dir, VaultPaths};
 use crate::{EXTRACTION_VERSION, PARSER_VERSION};
@@ -95,6 +97,10 @@ impl CacheDatabase {
 fn configure_connection(connection: &Connection) -> Result<(), CacheError> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "synchronous", "NORMAL")?;
+    connection.pragma_update(None, "cache_size", -16_000)?; // 16 MB
+    connection.pragma_update(None, "mmap_size", 67_108_864)?; // 64 MB
+    connection.pragma_update(None, "temp_store", "MEMORY")?;
     connection.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))?;
     Ok(())
 }

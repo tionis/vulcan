@@ -274,6 +274,54 @@ pub fn apply_schema_v7(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
     Ok(())
 }
 
+/// Drop the FTS sync triggers to avoid per-row tokenization during bulk writes.
+/// Call `restore_fts_triggers` + `rebuild_search_index` after the bulk write completes.
+pub(crate) fn drop_fts_triggers(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        DROP TRIGGER IF EXISTS search_chunk_content_ai;
+        DROP TRIGGER IF EXISTS search_chunk_content_ad;
+        DROP TRIGGER IF EXISTS search_chunk_content_au;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Recreate the FTS sync triggers after a bulk write. Call `rebuild_search_index` first.
+pub(crate) fn restore_fts_triggers(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TRIGGER IF NOT EXISTS search_chunk_content_ai AFTER INSERT ON search_chunk_content BEGIN
+            INSERT INTO search_chunks_fts(rowid, content, document_title, aliases, headings)
+            VALUES (new.id, new.content, new.document_title, new.aliases, new.headings);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS search_chunk_content_ad AFTER DELETE ON search_chunk_content BEGIN
+            INSERT INTO search_chunks_fts(search_chunks_fts, rowid, content, document_title, aliases, headings)
+            VALUES ('delete', old.id, old.content, old.document_title, old.aliases, old.headings);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS search_chunk_content_au AFTER UPDATE ON search_chunk_content BEGIN
+            INSERT INTO search_chunks_fts(search_chunks_fts, rowid, content, document_title, aliases, headings)
+            VALUES ('delete', old.id, old.content, old.document_title, old.aliases, old.headings);
+            INSERT INTO search_chunks_fts(rowid, content, document_title, aliases, headings)
+            VALUES (new.id, new.content, new.document_title, new.aliases, new.headings);
+        END;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Rebuild only the FTS5 index from the already-correct `search_chunk_content` table.
+/// Use this after bulk writes with triggers disabled — the content table is already up to date,
+/// so we only need to re-sync the FTS virtual table.
+pub(crate) fn rebuild_fts_index(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "INSERT INTO search_chunks_fts(search_chunks_fts) VALUES ('rebuild');",
+    )?;
+    Ok(())
+}
+
 pub(crate) fn rebuild_search_index(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     transaction.execute_batch(
         "
