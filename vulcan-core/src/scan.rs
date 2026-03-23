@@ -2,7 +2,9 @@ use crate::cache::{drop_fts_triggers, rebuild_fts_index, restore_fts_triggers, C
 use crate::extraction::extract_attachment_chunks;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
 use crate::properties::{extract_indexed_properties, rebuild_property_catalog, IndexedProperties};
-use crate::resolver::{resolve_link, LinkResolutionProblem, ResolverDocument, ResolverLink};
+use crate::resolver::{
+    LinkResolutionProblem, ResolverDocument, ResolverIndex, ResolverLink,
+};
 use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
 use ignore::WalkBuilder;
@@ -1530,6 +1532,7 @@ fn resolve_all_links(
 
     let documents = load_resolver_documents(transaction)?;
     let links = load_resolver_links(transaction)?;
+    let index = ResolverIndex::build(&documents);
 
     let mut update_statement = transaction
         .prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
@@ -1540,7 +1543,7 @@ fn resolve_all_links(
         ",
     )?;
     for link in links {
-        let resolution = resolve_link(&documents, &link.resolver_link, mode);
+        let resolution = index.resolve(&link.resolver_link, mode);
         update_statement.execute(params![link.id, resolution.resolved_target_id])?;
 
         if let Some(problem) = resolution.problem {

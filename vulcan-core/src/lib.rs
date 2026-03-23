@@ -84,7 +84,8 @@ pub use refactor::{
     RefactorReport,
 };
 pub use resolver::{
-    resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverLink,
+    resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverIndex,
+    ResolverLink,
 };
 pub use saved_queries::{
     list_saved_reports, load_saved_report, normalize_saved_report_name, report_definition_path,
