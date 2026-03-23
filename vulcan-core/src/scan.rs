@@ -1,4 +1,4 @@
-use crate::cache::CacheError;
+use crate::cache::{drop_fts_triggers, rebuild_fts_index, restore_fts_triggers, CacheError};
 use crate::extraction::extract_attachment_chunks;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
 use crate::properties::{extract_indexed_properties, rebuild_property_catalog, IndexedProperties};
@@ -281,6 +281,8 @@ where
             let deleted_count = deleted_paths.len();
             let prepared = prepare_full_scan_documents(&discovered, &config)?;
             database.rebuild_with(|transaction| -> Result<ScanSummary, ScanError> {
+                // Disable FTS triggers — we'll rebuild the index in one pass at the end.
+                drop_fts_triggers(transaction)?;
                 emit_scan_progress(
                     on_progress,
                     ScanProgress {
@@ -344,6 +346,8 @@ where
                     },
                 );
                 resolve_all_links(transaction, config.link_resolution)?;
+                rebuild_fts_index(transaction)?;
+                restore_fts_triggers(transaction)?;
 
                 let summary = ScanSummary {
                     mode,
@@ -371,6 +375,8 @@ where
         }
         ScanMode::Incremental => {
             database.with_transaction(|transaction| -> Result<ScanSummary, ScanError> {
+                // Disable FTS triggers during the write phase; rebuild index at the end.
+                drop_fts_triggers(transaction)?;
                 let result = apply_incremental_scan(
                     transaction,
                     &config,
@@ -412,6 +418,8 @@ where
                     );
                     resolve_all_links(transaction, config.link_resolution)?;
                 }
+                rebuild_fts_index(transaction)?;
+                restore_fts_triggers(transaction)?;
                 emit_scan_progress(
                     on_progress,
                     ScanProgress {
@@ -433,6 +441,95 @@ where
     Ok(summary)
 }
 
+/// File that needs I/O work during incremental scan.
+struct IncrementalWorkItem<'a> {
+    file: &'a DiscoveredFile,
+    cached: Option<&'a CachedDocument>,
+}
+
+/// Result of preparing an incremental file (parallel phase).
+enum IncrementalPrepResult {
+    /// Content hash unchanged — only mtime/size metadata needs updating.
+    MetadataOnly { cached_id: String },
+    /// Needs full reindex (content or parser version changed, or new file).
+    Reindex {
+        id: String,
+        content_hash: Vec<u8>,
+        derived: PreparedDerivedContent,
+        is_new: bool,
+    },
+}
+
+fn prepare_incremental_file(
+    file: &DiscoveredFile,
+    config: &crate::VaultConfig,
+    cached: Option<&CachedDocument>,
+) -> Result<IncrementalPrepResult, ScanError> {
+    let current_version = document_index_version(file.kind, config);
+
+    if let Some(cached) = cached {
+        // Determine hash: reuse cached if mtime+size unchanged, otherwise read+hash.
+        let (hash, content_bytes) =
+            if cached.file_size == file.file_size && cached.file_mtime == file.file_mtime {
+                (cached.content_hash.clone(), None)
+            } else {
+                let bytes = fs::read(&file.absolute_path)?;
+                let hash = blake3::hash(&bytes).as_bytes().to_vec();
+                (hash, Some(bytes))
+            };
+
+        let needs_reindex =
+            hash != cached.content_hash || cached.parser_version != current_version;
+
+        if !needs_reindex {
+            return Ok(IncrementalPrepResult::MetadataOnly {
+                cached_id: cached.id.clone(),
+            });
+        }
+
+        let derived = prepare_derived_content(file, config, content_bytes)?;
+        Ok(IncrementalPrepResult::Reindex {
+            id: cached.id.clone(),
+            content_hash: hash,
+            derived,
+            is_new: false,
+        })
+    } else {
+        let bytes = fs::read(&file.absolute_path)?;
+        let content_hash = blake3::hash(&bytes).as_bytes().to_vec();
+        let derived = prepare_derived_content(file, config, Some(bytes))?;
+        Ok(IncrementalPrepResult::Reindex {
+            id: Ulid::new().to_string(),
+            content_hash,
+            derived,
+            is_new: true,
+        })
+    }
+}
+
+fn prepare_derived_content(
+    file: &DiscoveredFile,
+    config: &crate::VaultConfig,
+    content_bytes: Option<Vec<u8>>,
+) -> Result<PreparedDerivedContent, ScanError> {
+    match file.kind {
+        DocumentKind::Note => {
+            let bytes = match content_bytes {
+                Some(b) => b,
+                None => fs::read(&file.absolute_path)?,
+            };
+            let source = decode_note_source(bytes, &file.absolute_path)?;
+            Ok(PreparedDerivedContent::Note(Box::new(parse_document(
+                &source, config,
+            ))))
+        }
+        DocumentKind::Attachment => Ok(PreparedDerivedContent::Attachment(
+            extract_attachment_chunks(config, &file.absolute_path, &file.relative_path)?,
+        )),
+        DocumentKind::Base => Ok(PreparedDerivedContent::None),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn apply_incremental_scan(
     transaction: &Transaction<'_>,
@@ -452,8 +549,6 @@ fn apply_incremental_scan(
             unchanged: 0,
             deleted: 0,
         },
-        // Link resolution is only needed when the set of resolvable targets or
-        // the extracted links/aliases of a note changed.
         requires_link_resolution: false,
         requires_property_catalog_refresh: false,
     };
@@ -461,7 +556,7 @@ fn apply_incremental_scan(
         on_progress,
         ScanProgress {
             mode,
-            phase: ScanPhase::ScanningFiles,
+            phase: ScanPhase::PreparingFiles,
             discovered: discovered.len(),
             processed: 0,
             added: 0,
@@ -470,11 +565,10 @@ fn apply_incremental_scan(
             deleted: 0,
         },
     );
-    let mut seen_paths = HashSet::with_capacity(discovered.len());
 
-    for (index, file) in discovered.iter().enumerate() {
-        seen_paths.insert(file.relative_path.clone());
-
+    // Phase 1: Classify files into "unchanged" (skip) vs "needs work".
+    let mut work_items: Vec<IncrementalWorkItem<'_>> = Vec::new();
+    for file in discovered {
         match existing.get(&file.relative_path) {
             Some(cached)
                 if cached.file_size == file.file_size
@@ -484,73 +578,100 @@ fn apply_incremental_scan(
                 result.summary.unchanged += 1;
             }
             Some(cached) => {
-                let current_version = document_index_version(file.kind, config);
-                let hash =
-                    if cached.file_size == file.file_size && cached.file_mtime == file.file_mtime {
-                        cached.content_hash.clone()
-                    } else {
-                        compute_content_hash(&file.absolute_path)?
-                    };
-                let requires_reindex =
-                    hash != cached.content_hash || cached.parser_version != current_version;
-
-                if hash == cached.content_hash && !requires_reindex {
-                    update_document_metadata(transaction, &cached.id, file)?;
-                    result.summary.unchanged += 1;
-                } else {
-                    match file.kind {
-                        DocumentKind::Note => {
-                            index_note_document(transaction, config, &cached.id, file, &hash)?;
-                            result.requires_link_resolution = true;
-                            result.requires_property_catalog_refresh = true;
-                        }
-                        DocumentKind::Attachment => {
-                            index_attachment_document(
-                                transaction,
-                                config,
-                                &cached.id,
-                                file,
-                                &hash,
-                            )?;
-                        }
-                        DocumentKind::Base => {
-                            insert_or_update_document(
-                                transaction,
-                                &cached.id,
-                                file,
-                                &hash,
-                                None,
-                                current_version,
-                            )?;
-                        }
-                    }
-                    result.summary.updated += 1;
-                }
+                work_items.push(IncrementalWorkItem {
+                    file,
+                    cached: Some(cached),
+                });
             }
             None => {
-                let hash = compute_content_hash(&file.absolute_path)?;
-                let id = Ulid::new().to_string();
-                match file.kind {
-                    DocumentKind::Note => {
-                        index_note_document(transaction, config, &id, file, &hash)?;
-                    }
-                    DocumentKind::Attachment => {
-                        index_attachment_document(transaction, config, &id, file, &hash)?;
-                    }
-                    DocumentKind::Base => {
-                        insert_or_update_document(
+                work_items.push(IncrementalWorkItem {
+                    file,
+                    cached: None,
+                });
+            }
+        }
+    }
+
+    // Phase 2: Prepare files needing work in parallel (read + hash + parse).
+    let batch_size = full_scan_prepare_batch_size();
+    let mut prepared_results: Vec<IncrementalPrepResult> = Vec::with_capacity(work_items.len());
+    for batch in work_items.chunks(batch_size) {
+        let mut batch_results = batch
+            .par_iter()
+            .map(|item| prepare_incremental_file(item.file, config, item.cached))
+            .collect::<Result<Vec<_>, _>>()?;
+        prepared_results.append(&mut batch_results);
+    }
+
+    // Phase 3: Apply all changes sequentially within the transaction.
+    emit_scan_progress(
+        on_progress,
+        ScanProgress {
+            mode,
+            phase: ScanPhase::ScanningFiles,
+            discovered: discovered.len(),
+            processed: result.summary.unchanged,
+            added: 0,
+            updated: 0,
+            unchanged: result.summary.unchanged,
+            deleted: 0,
+        },
+    );
+
+    for (item, prep) in work_items.iter().zip(prepared_results) {
+        match prep {
+            IncrementalPrepResult::MetadataOnly { cached_id } => {
+                update_document_metadata(transaction, &cached_id, item.file)?;
+                result.summary.unchanged += 1;
+            }
+            IncrementalPrepResult::Reindex {
+                id,
+                content_hash,
+                derived,
+                is_new,
+            } => {
+                let current_version = document_index_version(item.file.kind, config);
+                insert_or_update_document(
+                    transaction,
+                    &id,
+                    item.file,
+                    &content_hash,
+                    match &derived {
+                        PreparedDerivedContent::Note(parsed) => parsed.raw_frontmatter.as_deref(),
+                        PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => None,
+                    },
+                    current_version,
+                )?;
+                match &derived {
+                    PreparedDerivedContent::Note(parsed) => {
+                        replace_derived_rows(
                             transaction,
                             &id,
-                            file,
-                            &hash,
-                            None,
-                            document_index_version(file.kind, config),
+                            &item.file.filename,
+                            config,
+                            parsed,
+                        )?;
+                        result.requires_link_resolution = true;
+                        result.requires_property_catalog_refresh = true;
+                    }
+                    PreparedDerivedContent::Attachment(chunks) => {
+                        replace_attachment_rows(
+                            transaction,
+                            &id,
+                            &item.file.filename,
+                            chunks,
                         )?;
                     }
+                    PreparedDerivedContent::None => {}
                 }
-                result.requires_link_resolution = true;
-                result.requires_property_catalog_refresh = matches!(file.kind, DocumentKind::Note);
-                result.summary.added += 1;
+                if is_new {
+                    result.summary.added += 1;
+                    result.requires_link_resolution = true;
+                    result.requires_property_catalog_refresh |=
+                        matches!(item.file.kind, DocumentKind::Note);
+                } else {
+                    result.summary.updated += 1;
+                }
             }
         }
 
@@ -560,7 +681,7 @@ fn apply_incremental_scan(
                 mode,
                 phase: ScanPhase::ScanningFiles,
                 discovered: discovered.len(),
-                processed: index + 1,
+                processed: result.summary.unchanged + result.summary.added + result.summary.updated,
                 added: result.summary.added,
                 updated: result.summary.updated,
                 unchanged: result.summary.unchanged,
@@ -591,7 +712,6 @@ fn apply_incremental_scan(
         }
     }
 
-    debug_assert_eq!(seen_paths.len(), discovered.len());
     Ok(result)
 }
 
@@ -674,6 +794,7 @@ fn normalize_relative_path(path: &Path) -> String {
         .join("/")
 }
 
+#[cfg(test)]
 fn compute_content_hash(path: &Path) -> Result<Vec<u8>, ScanError> {
     Ok(blake3::hash(&fs::read(path)?).as_bytes().to_vec())
 }
@@ -820,47 +941,6 @@ fn insert_or_update_document(
     Ok(())
 }
 
-fn index_note_document(
-    transaction: &Transaction<'_>,
-    config: &crate::VaultConfig,
-    id: &str,
-    file: &DiscoveredFile,
-    content_hash: &[u8],
-) -> Result<(), ScanError> {
-    let source = fs::read_to_string(&file.absolute_path)?;
-    let parsed = parse_document(&source, config);
-    insert_or_update_document(
-        transaction,
-        id,
-        file,
-        content_hash,
-        parsed.raw_frontmatter.as_deref(),
-        document_index_version(file.kind, config),
-    )?;
-    replace_derived_rows(transaction, id, config, &parsed)?;
-
-    Ok(())
-}
-
-fn index_attachment_document(
-    transaction: &Transaction<'_>,
-    config: &crate::VaultConfig,
-    id: &str,
-    file: &DiscoveredFile,
-    content_hash: &[u8],
-) -> Result<(), ScanError> {
-    insert_or_update_document(
-        transaction,
-        id,
-        file,
-        content_hash,
-        None,
-        document_index_version(file.kind, config),
-    )?;
-    let chunks = extract_attachment_chunks(config, &file.absolute_path, &file.relative_path)?;
-    replace_attachment_rows(transaction, id, &chunks)?;
-    Ok(())
-}
 
 fn apply_prepared_full_scan_document(
     transaction: &Transaction<'_>,
@@ -881,10 +961,10 @@ fn apply_prepared_full_scan_document(
     )?;
     match &prepared.derived {
         PreparedDerivedContent::Note(parsed) => {
-            replace_derived_rows(transaction, id, config, parsed)?;
+            replace_derived_rows(transaction, id, &prepared.file.filename, config, parsed)?;
         }
         PreparedDerivedContent::Attachment(chunks) => {
-            replace_attachment_rows(transaction, id, chunks)?;
+            replace_attachment_rows(transaction, id, &prepared.file.filename, chunks)?;
         }
         PreparedDerivedContent::None => {}
     }
@@ -929,6 +1009,7 @@ fn delete_document(transaction: &Transaction<'_>, id: &str) -> Result<(), rusqli
 fn replace_derived_rows(
     transaction: &Transaction<'_>,
     document_id: &str,
+    document_title: &str,
     config: &crate::VaultConfig,
     parsed: &ParsedDocument,
 ) -> Result<(), ScanError> {
@@ -939,13 +1020,15 @@ fn replace_derived_rows(
     insert_links(transaction, document_id, &parsed.links)?;
     insert_aliases(transaction, document_id, &parsed.aliases)?;
     insert_tags(transaction, document_id, &parsed.tags)?;
-    insert_chunks(
+    let aliases_text = parsed.aliases.join(" ");
+    insert_chunks_with_search(
         transaction,
         document_id,
+        document_title,
+        &aliases_text,
         &parsed.chunk_texts,
         reusable_chunk_ids,
     )?;
-    replace_chunk_search_rows(transaction, document_id)?;
     insert_diagnostics(transaction, document_id, &parsed.diagnostics)?;
     if let Some(properties) = extract_indexed_properties(
         parsed.raw_frontmatter.as_deref(),
@@ -965,230 +1048,34 @@ fn replace_derived_rows(
 fn replace_attachment_rows(
     transaction: &Transaction<'_>,
     document_id: &str,
+    document_title: &str,
     chunks: &[crate::ChunkText],
 ) -> Result<(), ScanError> {
     let reusable_chunk_ids = load_reusable_chunk_ids(transaction, document_id)?;
     clear_derived_rows(transaction, document_id)?;
-    insert_chunks(transaction, document_id, chunks, reusable_chunk_ids)?;
-    replace_chunk_search_rows(transaction, document_id)?;
-    Ok(())
-}
-
-fn replace_chunk_search_rows(
-    transaction: &Transaction<'_>,
-    document_id: &str,
-) -> Result<(), ScanError> {
-    let document_title: String = transaction.query_row(
-        "SELECT filename FROM documents WHERE id = ?1",
-        [document_id],
-        |row| row.get(0),
+    insert_chunks_with_search(
+        transaction,
+        document_id,
+        document_title,
+        "",
+        chunks,
+        reusable_chunk_ids,
     )?;
-    let aliases = load_search_alias_text(transaction, document_id)?;
-    let mut statement = transaction.prepare(
-        "
-        SELECT id, content, heading_path
-        FROM chunks
-        WHERE document_id = ?1
-        ORDER BY sequence_index
-        ",
-    )?;
-    let rows = statement.query_map([document_id], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-
-    for row in rows {
-        let (chunk_id, content, heading_path) = row?;
-        transaction.execute(
-            "
-            INSERT INTO search_chunk_content (
-                chunk_id,
-                document_id,
-                content,
-                document_title,
-                aliases,
-                headings
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ",
-            params![
-                chunk_id,
-                document_id,
-                content,
-                document_title,
-                aliases,
-                flatten_heading_path(&heading_path)?,
-            ],
-        )?;
-    }
-
     Ok(())
 }
 
-fn insert_headings(
+fn insert_chunks_with_search(
     transaction: &Transaction<'_>,
     document_id: &str,
-    headings: &[crate::RawHeading],
-) -> Result<(), ScanError> {
-    for heading in headings {
-        transaction.execute(
-            "
-            INSERT INTO headings (id, document_id, level, text, byte_offset)
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            ",
-            params![
-                Ulid::new().to_string(),
-                document_id,
-                i64::from(heading.level),
-                &heading.text,
-                i64::try_from(heading.byte_offset).map_err(|_| ScanError::MetadataOverflow {
-                    field: "heading.byte_offset",
-                    path: PathBuf::from(document_id),
-                })?,
-            ],
-        )?;
-    }
-    Ok(())
-}
-
-fn insert_block_refs(
-    transaction: &Transaction<'_>,
-    document_id: &str,
-    block_refs: &[crate::RawBlockRef],
-) -> Result<(), ScanError> {
-    for block_ref in block_refs {
-        transaction.execute(
-            "
-            INSERT INTO block_refs (
-                id,
-                document_id,
-                block_id_text,
-                block_id_byte_offset,
-                target_block_byte_start,
-                target_block_byte_end
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ",
-            params![
-                Ulid::new().to_string(),
-                document_id,
-                &block_ref.block_id_text,
-                i64::try_from(block_ref.block_id_byte_offset).map_err(|_| {
-                    ScanError::MetadataOverflow {
-                        field: "block_ref.byte_offset",
-                        path: PathBuf::from(document_id),
-                    }
-                })?,
-                i64::try_from(block_ref.target_block_byte_start).map_err(|_| {
-                    ScanError::MetadataOverflow {
-                        field: "block_ref.target_start",
-                        path: PathBuf::from(document_id),
-                    }
-                })?,
-                i64::try_from(block_ref.target_block_byte_end).map_err(|_| {
-                    ScanError::MetadataOverflow {
-                        field: "block_ref.target_end",
-                        path: PathBuf::from(document_id),
-                    }
-                })?,
-            ],
-        )?;
-    }
-    Ok(())
-}
-
-fn insert_links(
-    transaction: &Transaction<'_>,
-    document_id: &str,
-    links: &[crate::RawLink],
-) -> Result<(), ScanError> {
-    for link in links {
-        transaction.execute(
-            "
-            INSERT INTO links (
-                id,
-                source_document_id,
-                raw_text,
-                link_kind,
-                display_text,
-                target_path_candidate,
-                target_heading,
-                target_block,
-                resolved_target_id,
-                origin_context,
-                byte_offset
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10)
-            ",
-            params![
-                Ulid::new().to_string(),
-                document_id,
-                &link.raw_text,
-                link_kind_name(link.link_kind),
-                link.display_text.as_deref(),
-                link.target_path_candidate.as_deref(),
-                link.target_heading.as_deref(),
-                link.target_block.as_deref(),
-                origin_context_name(link.origin_context),
-                i64::try_from(link.byte_offset).map_err(|_| ScanError::MetadataOverflow {
-                    field: "link.byte_offset",
-                    path: PathBuf::from(document_id),
-                })?,
-            ],
-        )?;
-    }
-    Ok(())
-}
-
-fn insert_aliases(
-    transaction: &Transaction<'_>,
-    document_id: &str,
-    aliases: &[String],
-) -> Result<(), ScanError> {
-    for alias in aliases {
-        transaction.execute(
-            "
-            INSERT INTO aliases (id, document_id, alias_text)
-            VALUES (?1, ?2, ?3)
-            ",
-            params![Ulid::new().to_string(), document_id, alias],
-        )?;
-    }
-    Ok(())
-}
-
-fn insert_tags(
-    transaction: &Transaction<'_>,
-    document_id: &str,
-    tags: &[crate::RawTag],
-) -> Result<(), ScanError> {
-    for tag in tags {
-        transaction.execute(
-            "
-            INSERT INTO tags (id, document_id, tag_text)
-            VALUES (?1, ?2, ?3)
-            ",
-            params![Ulid::new().to_string(), document_id, &tag.tag_text],
-        )?;
-    }
-    Ok(())
-}
-
-fn insert_chunks(
-    transaction: &Transaction<'_>,
-    document_id: &str,
+    document_title: &str,
+    aliases: &str,
     chunks: &[crate::ChunkText],
     mut reusable_chunk_ids: HashMap<ChunkReuseKey, VecDeque<String>>,
 ) -> Result<(), ScanError> {
-    for chunk in chunks {
-        let chunk_id = reusable_chunk_ids
-            .get_mut(&chunk_reuse_key(chunk))
-            .and_then(VecDeque::pop_front)
-            .unwrap_or_else(|| Ulid::new().to_string());
-        transaction.execute(
+    // First pass: insert chunks, collecting IDs and heading paths for search rows.
+    let mut chunk_ids_and_headings = Vec::with_capacity(chunks.len());
+    {
+        let mut statement = transaction.prepare_cached(
             "
             INSERT INTO chunks (
                 id,
@@ -1204,15 +1091,22 @@ fn insert_chunks(
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ",
-            params![
+        )?;
+        for chunk in chunks {
+            let chunk_id = reusable_chunk_ids
+                .get_mut(&chunk_reuse_key(chunk))
+                .and_then(VecDeque::pop_front)
+                .unwrap_or_else(|| Ulid::new().to_string());
+            let heading_path_json = serde_json::to_string(&chunk.heading_path)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
+            statement.execute(params![
                 chunk_id,
                 document_id,
                 i64::try_from(chunk.sequence_index).map_err(|_| ScanError::MetadataOverflow {
                     field: "chunk.sequence_index",
                     path: PathBuf::from(document_id),
                 })?,
-                serde_json::to_string(&chunk.heading_path)
-                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                &heading_path_json,
                 i64::try_from(chunk.byte_offset_start).map_err(|_| {
                     ScanError::MetadataOverflow {
                         field: "chunk.byte_offset_start",
@@ -1227,11 +1121,191 @@ fn insert_chunks(
                 &chunk.content,
                 &chunk.chunk_strategy,
                 i64::from(chunk.chunk_version),
-            ],
+            ])?;
+            chunk_ids_and_headings.push((chunk_id, heading_path_json));
+        }
+    }
+    // Second pass: insert search rows using in-memory data (no SELECT needed).
+    {
+        let mut statement = transaction.prepare_cached(
+            "
+            INSERT INTO search_chunk_content (
+                chunk_id,
+                document_id,
+                content,
+                document_title,
+                aliases,
+                headings
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ",
         )?;
+        for (chunk, (chunk_id, heading_path_json)) in
+            chunks.iter().zip(&chunk_ids_and_headings)
+        {
+            statement.execute(params![
+                chunk_id,
+                document_id,
+                &chunk.content,
+                document_title,
+                aliases,
+                flatten_heading_path(heading_path_json)?,
+            ])?;
+        }
+    }
+
+    Ok(())
+}
+
+fn insert_headings(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    headings: &[crate::RawHeading],
+) -> Result<(), ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO headings (id, document_id, level, text, byte_offset)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ",
+    )?;
+    for heading in headings {
+        statement.execute(params![
+            Ulid::new().to_string(),
+            document_id,
+            i64::from(heading.level),
+            &heading.text,
+            i64::try_from(heading.byte_offset).map_err(|_| ScanError::MetadataOverflow {
+                field: "heading.byte_offset",
+                path: PathBuf::from(document_id),
+            })?,
+        ])?;
     }
     Ok(())
 }
+
+fn insert_block_refs(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    block_refs: &[crate::RawBlockRef],
+) -> Result<(), ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO block_refs (
+            id,
+            document_id,
+            block_id_text,
+            block_id_byte_offset,
+            target_block_byte_start,
+            target_block_byte_end
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ",
+    )?;
+    for block_ref in block_refs {
+        statement.execute(params![
+            Ulid::new().to_string(),
+            document_id,
+            &block_ref.block_id_text,
+            i64::try_from(block_ref.block_id_byte_offset).map_err(|_| {
+                ScanError::MetadataOverflow {
+                    field: "block_ref.byte_offset",
+                    path: PathBuf::from(document_id),
+                }
+            })?,
+            i64::try_from(block_ref.target_block_byte_start).map_err(|_| {
+                ScanError::MetadataOverflow {
+                    field: "block_ref.target_start",
+                    path: PathBuf::from(document_id),
+                }
+            })?,
+            i64::try_from(block_ref.target_block_byte_end).map_err(|_| {
+                ScanError::MetadataOverflow {
+                    field: "block_ref.target_end",
+                    path: PathBuf::from(document_id),
+                }
+            })?,
+        ])?;
+    }
+    Ok(())
+}
+
+fn insert_links(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    links: &[crate::RawLink],
+) -> Result<(), ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO links (
+            id,
+            source_document_id,
+            raw_text,
+            link_kind,
+            display_text,
+            target_path_candidate,
+            target_heading,
+            target_block,
+            resolved_target_id,
+            origin_context,
+            byte_offset
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10)
+        ",
+    )?;
+    for link in links {
+        statement.execute(params![
+            Ulid::new().to_string(),
+            document_id,
+            &link.raw_text,
+            link_kind_name(link.link_kind),
+            link.display_text.as_deref(),
+            link.target_path_candidate.as_deref(),
+            link.target_heading.as_deref(),
+            link.target_block.as_deref(),
+            origin_context_name(link.origin_context),
+            i64::try_from(link.byte_offset).map_err(|_| ScanError::MetadataOverflow {
+                field: "link.byte_offset",
+                path: PathBuf::from(document_id),
+            })?,
+        ])?;
+    }
+    Ok(())
+}
+
+fn insert_aliases(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    aliases: &[String],
+) -> Result<(), ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO aliases (id, document_id, alias_text)
+        VALUES (?1, ?2, ?3)
+        ",
+    )?;
+    for alias in aliases {
+        statement.execute(params![Ulid::new().to_string(), document_id, alias])?;
+    }
+    Ok(())
+}
+
+fn insert_tags(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    tags: &[crate::RawTag],
+) -> Result<(), ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO tags (id, document_id, tag_text)
+        VALUES (?1, ?2, ?3)
+        ",
+    )?;
+    for tag in tags {
+        statement.execute(params![Ulid::new().to_string(), document_id, &tag.tag_text])?;
+    }
+    Ok(())
+}
+
 
 fn load_reusable_chunk_ids(
     transaction: &Transaction<'_>,
@@ -1288,26 +1362,26 @@ fn insert_diagnostics(
     document_id: &str,
     diagnostics: &[crate::ParseDiagnostic],
 ) -> Result<(), ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ",
+    )?;
     for diagnostic in diagnostics {
-        transaction.execute(
-            "
-            INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ",
-            params![
-                Ulid::new().to_string(),
-                document_id,
-                diagnostic_kind_name(diagnostic.kind),
-                &diagnostic.message,
-                serde_json::to_string(&json!({
-                    "byte_range": diagnostic.byte_range.as_ref().map(|range| {
-                        json!({"start": range.start, "end": range.end})
-                    }),
-                }))
-                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
-                current_timestamp()?,
-            ],
-        )?;
+        statement.execute(params![
+            Ulid::new().to_string(),
+            document_id,
+            diagnostic_kind_name(diagnostic.kind),
+            &diagnostic.message,
+            serde_json::to_string(&json!({
+                "byte_range": diagnostic.byte_range.as_ref().map(|range| {
+                    json!({"start": range.start, "end": range.end})
+                }),
+            }))
+            .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            current_timestamp()?,
+        ])?;
     }
     Ok(())
 }
@@ -1336,30 +1410,30 @@ fn insert_property_values(
     document_id: &str,
     properties: &IndexedProperties,
 ) -> Result<(), ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO property_values (
+            document_id,
+            key,
+            value_text,
+            value_number,
+            value_bool,
+            value_date,
+            value_type
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ",
+    )?;
     for property in &properties.values {
-        transaction.execute(
-            "
-            INSERT INTO property_values (
-                document_id,
-                key,
-                value_text,
-                value_number,
-                value_bool,
-                value_date,
-                value_type
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            ",
-            params![
-                document_id,
-                &property.key,
-                property.value_text.as_deref(),
-                property.value_number,
-                property.value_bool.map(i64::from),
-                property.value_date.as_deref(),
-                &property.value_type,
-            ],
-        )?;
+        statement.execute(params![
+            document_id,
+            &property.key,
+            property.value_text.as_deref(),
+            property.value_number,
+            property.value_bool.map(i64::from),
+            property.value_date.as_deref(),
+            &property.value_type,
+        ])?;
     }
     Ok(())
 }
@@ -1369,22 +1443,22 @@ fn insert_property_list_items(
     document_id: &str,
     properties: &IndexedProperties,
 ) -> Result<(), ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO property_list_items (document_id, key, item_index, value_text)
+        VALUES (?1, ?2, ?3, ?4)
+        ",
+    )?;
     for item in &properties.list_items {
-        transaction.execute(
-            "
-            INSERT INTO property_list_items (document_id, key, item_index, value_text)
-            VALUES (?1, ?2, ?3, ?4)
-            ",
-            params![
-                document_id,
-                &item.key,
-                i64::try_from(item.item_index).map_err(|_| ScanError::MetadataOverflow {
-                    field: "property_list_items.item_index",
-                    path: PathBuf::from(document_id),
-                })?,
-                &item.value_text,
-            ],
-        )?;
+        statement.execute(params![
+            document_id,
+            &item.key,
+            i64::try_from(item.item_index).map_err(|_| ScanError::MetadataOverflow {
+                field: "property_list_items.item_index",
+                path: PathBuf::from(document_id),
+            })?,
+            &item.value_text,
+        ])?;
     }
     Ok(())
 }
@@ -1394,25 +1468,25 @@ fn insert_property_diagnostics(
     document_id: &str,
     properties: &IndexedProperties,
 ) -> Result<(), ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+        VALUES (?1, ?2, 'type_mismatch', ?3, ?4, ?5)
+        ",
+    )?;
     for diagnostic in &properties.diagnostics {
-        transaction.execute(
-            "
-            INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
-            VALUES (?1, ?2, 'type_mismatch', ?3, ?4, ?5)
-            ",
-            params![
-                Ulid::new().to_string(),
-                document_id,
-                &diagnostic.message,
-                serde_json::to_string(&json!({
-                    "key": diagnostic.key,
-                    "expected_type": diagnostic.expected_type,
-                    "actual_type": diagnostic.actual_type,
-                }))
-                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
-                current_timestamp()?,
-            ],
-        )?;
+        statement.execute(params![
+            Ulid::new().to_string(),
+            document_id,
+            &diagnostic.message,
+            serde_json::to_string(&json!({
+                "key": diagnostic.key,
+                "expected_type": diagnostic.expected_type,
+                "actual_type": diagnostic.actual_type,
+            }))
+            .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            current_timestamp()?,
+        ])?;
     }
     Ok(())
 }
@@ -1421,52 +1495,26 @@ fn clear_derived_rows(
     transaction: &Transaction<'_>,
     document_id: &str,
 ) -> Result<(), rusqlite::Error> {
-    for table_name in [
-        "headings",
-        "block_refs",
-        "links",
-        "aliases",
-        "tags",
-        "properties",
-        "property_values",
-        "property_list_items",
-        "search_chunk_content",
-        "chunks",
-        "diagnostics",
-    ] {
-        let key_column = if table_name == "links" {
-            "source_document_id"
-        } else {
-            "document_id"
-        };
-        transaction.execute(
-            &format!("DELETE FROM {table_name} WHERE {key_column} = ?1"),
-            [document_id],
-        )?;
+    // Static SQL strings so prepare_cached can reuse them across calls.
+    static CLEAR_STATEMENTS: &[&str] = &[
+        "DELETE FROM headings WHERE document_id = ?1",
+        "DELETE FROM block_refs WHERE document_id = ?1",
+        "DELETE FROM links WHERE source_document_id = ?1",
+        "DELETE FROM aliases WHERE document_id = ?1",
+        "DELETE FROM tags WHERE document_id = ?1",
+        "DELETE FROM properties WHERE document_id = ?1",
+        "DELETE FROM property_values WHERE document_id = ?1",
+        "DELETE FROM property_list_items WHERE document_id = ?1",
+        "DELETE FROM search_chunk_content WHERE document_id = ?1",
+        "DELETE FROM chunks WHERE document_id = ?1",
+        "DELETE FROM diagnostics WHERE document_id = ?1",
+    ];
+    for sql in CLEAR_STATEMENTS {
+        transaction.prepare_cached(sql)?.execute([document_id])?;
     }
     Ok(())
 }
 
-fn load_search_alias_text(
-    transaction: &Transaction<'_>,
-    document_id: &str,
-) -> Result<String, ScanError> {
-    let mut statement = transaction.prepare(
-        "
-        SELECT alias_text
-        FROM aliases
-        WHERE document_id = ?1
-        ORDER BY alias_text
-        ",
-    )?;
-    let rows = statement.query_map([document_id], |row| row.get::<_, String>(0))?;
-
-    Ok(rows
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .collect::<Vec<_>>()
-        .join(" "))
-}
 
 fn flatten_heading_path(heading_path: &str) -> Result<String, ScanError> {
     let values = serde_json::from_str::<Vec<String>>(heading_path)
@@ -1483,31 +1531,30 @@ fn resolve_all_links(
     let documents = load_resolver_documents(transaction)?;
     let links = load_resolver_links(transaction)?;
 
+    let mut update_statement = transaction
+        .prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
+    let mut diag_statement = transaction.prepare_cached(
+        "
+        INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+        VALUES (?1, ?2, 'unresolved_link', ?3, ?4, ?5)
+        ",
+    )?;
     for link in links {
         let resolution = resolve_link(&documents, &link.resolver_link, mode);
-        transaction.execute(
-            "UPDATE links SET resolved_target_id = ?2 WHERE id = ?1",
-            params![link.id, resolution.resolved_target_id],
-        )?;
+        update_statement.execute(params![link.id, resolution.resolved_target_id])?;
 
         if let Some(problem) = resolution.problem {
-            transaction.execute(
-                "
-                INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
-                VALUES (?1, ?2, 'unresolved_link', ?3, ?4, ?5)
-                ",
-                params![
-                    Ulid::new().to_string(),
-                    link.resolver_link.source_document_id,
-                    resolution_problem_message(&problem, &link.resolver_link),
-                    serde_json::to_string(&resolution_problem_detail(
-                        &problem,
-                        &link.resolver_link
-                    ))
-                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
-                    current_timestamp()?,
-                ],
-            )?;
+            diag_statement.execute(params![
+                Ulid::new().to_string(),
+                link.resolver_link.source_document_id,
+                resolution_problem_message(&problem, &link.resolver_link),
+                serde_json::to_string(&resolution_problem_detail(
+                    &problem,
+                    &link.resolver_link
+                ))
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                current_timestamp()?,
+            ])?;
         }
     }
 
