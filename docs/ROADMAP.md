@@ -533,7 +533,160 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 
 ---
 
-## Phase 8: CLI Refinements
+## Phase 8: Performance Optimization
+
+**Goal:** Systematically address algorithmic and database bottlenecks across the application. Phase 6.3 tuned the scan/index hot path; this phase targets the remaining query, suggestion, graph, and search operations that degrade on large vaults (10k+ notes).
+
+**Depends on:** Phase 7 complete. Independent of Phase 9 (CLI refinements) — can be developed in parallel.
+
+**Baseline:** On a 13,389-file vault, scan performance was improved from ~300s to ~30s (10x) in Phase 6.3 via parallel file preparation, prepared statement caching, FTS trigger deferral, SQLite pragmas, and indexed link resolution. The improvements below target other commands.
+
+### 8.1 Aho-Corasick mention detection
+
+Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.
+
+**Current bottleneck:** `find_note_mentions()` in `vulcan-core/src/suggestions.rs` iterates every `MentionCandidate` and calls `source.match_indices(&candidate.name)` for each — O(C × N) where C = candidate count (note names + aliases, ~13k for a large vault) and N = file content length. This runs per file being analyzed.
+
+**Implementation:**
+- [ ] Add `aho-corasick` crate to `vulcan-core/Cargo.toml` (already a transitive dep via `regex`; making it direct)
+- [ ] In `suggest_mentions()`, build an `AhoCorasick` automaton from all candidate names (once, before iterating files)
+- [ ] Replace the inner `for candidate in candidates { source.match_indices(...) }` loop in `find_note_mentions()` with a single `automaton.find_overlapping_iter(source)` pass
+- [ ] Map each match back to its `MentionCandidate` via the pattern index returned by Aho-Corasick
+- [ ] Preserve existing filtering: `ranges_intersect(blocked, ...)`, `ranges_intersect(&occupied, ...)`, `is_word_boundary()` checks remain unchanged — they operate on match positions regardless of how matches were found
+- [ ] The `link_mentions` command uses the same `suggest_mentions` path, so it benefits automatically
+- [ ] Unit tests: existing `suggest_mentions` tests must produce identical results; add a benchmark test with 1000+ candidates
+
+**Expected improvement:** O(C × N) → O(N) per file (Aho-Corasick is linear in input length regardless of pattern count). For 13k candidates this is potentially 1000x faster per file.
+
+**Files:** `vulcan-core/src/suggestions.rs`, `vulcan-core/Cargo.toml`
+
+### 8.2 Duplicate/merge candidate optimization
+
+Reduce the O(N²) pairwise Levenshtein comparison in `suggest_duplicates`.
+
+**Current bottleneck:** `merge_candidates()` in `vulcan-core/src/suggestions.rs` compares every pair of `NoteIdentity` filenames with a custom Levenshtein implementation (lines 857–875, Wagner-Fischer). For 13k notes this is ~90M comparisons, each involving string lowercasing and O(len₁ × len₂) dynamic programming.
+
+**Implementation:**
+- [ ] Pre-compute lowercased filenames once, outside the comparison loop (currently re-lowercased per pair)
+- [ ] Filter candidate pairs by filename length: Levenshtein distance ≤ 1 requires `|len₁ - len₂| ≤ 1`, so skip pairs where lengths differ by more than the threshold
+- [ ] Group filenames by length into buckets; only compare within same-length and adjacent-length buckets
+- [ ] Consider a BK-tree or sorted-prefix approach for further pruning if length filtering alone is insufficient
+- [ ] The scoring thresholds (exact match = 1.0, alias collision = 0.95, similar title = 0.8) and distance threshold (> 1 = skip) remain unchanged
+- [ ] Unit tests: existing `suggest_duplicates` tests must produce identical results
+
+**Expected improvement:** Length filtering alone reduces comparisons from O(N²) to roughly O(N × B) where B = average bucket size. For natural filename distributions this is typically 10–100x fewer comparisons.
+
+**Files:** `vulcan-core/src/suggestions.rs`
+
+### 8.3 Graph query caching
+
+Eliminate redundant link scans across graph operations by caching the adjacency data.
+
+**Current bottleneck:** `note_link_counts()` in `vulcan-core/src/graph.rs` runs a full `SELECT ... FROM links JOIN documents` to build a HashMap of (inbound, outbound) counts. This is called by `query_graph_analytics()`, `query_graph_hubs()`, `query_graph_dead_ends()`, and `query_graph_moc_candidates()` — each independently. When a user runs `graph analytics` the query is called once, but the same SQL pattern is repeated across commands with no shared cache.
+
+**Implementation:**
+- [ ] Extract adjacency loading into a `GraphAdjacency` struct that holds both the `HashMap<String, (usize, usize)>` counts and the raw edge list
+- [ ] `GraphAdjacency::load(connection)` runs the link query once and provides methods: `inbound_count()`, `outbound_count()`, `is_orphan()`, `hubs(min_degree)`, etc.
+- [ ] Refactor `query_graph_analytics()`, `query_graph_hubs()`, `query_graph_dead_ends()`, `query_graph_moc_candidates()` to accept `&GraphAdjacency` instead of re-querying
+- [ ] For CLI dispatch: load `GraphAdjacency` once per command invocation and pass it through
+- [ ] Also refactor `load_indexed_notes()` to return a shared `IndexedNoteSet` that can be reused across graph operations in the same invocation
+- [ ] `resolve_note_identifier()` currently does a linear scan over `&[IndexedNote]` with sequential predicate matching (path → filename → alias). Build a HashMap index on first call, similar to the `ResolverIndex` pattern already used in `resolver.rs`
+
+**Expected improvement:** Graph commands that internally compute multiple metrics go from N link-query round trips to 1. For `graph analytics` on a large vault this saves a full table scan.
+
+**Files:** `vulcan-core/src/graph.rs`
+
+### 8.4 Missing database indexes
+
+Add indexes for columns that appear in WHERE/JOIN clauses across many queries but currently lack coverage.
+
+**Current gap:** The schema in `vulcan-core/src/cache/schema.rs` has no index on `documents(extension)` despite nearly every graph, search, property, and doctor query filtering on `WHERE extension = 'md'`. Similarly, `tags(document_id)` has no index despite DELETE/JOIN operations keyed on it.
+
+**Implementation:**
+- [ ] Add a new schema migration (`apply_schema_v9`) that creates:
+  - `CREATE INDEX IF NOT EXISTS idx_documents_extension ON documents(extension)` — used by graph.rs, search.rs, doctor.rs, properties.rs, suggestions.rs
+  - `CREATE INDEX IF NOT EXISTS idx_tags_document_id ON tags(document_id)` — used by scan.rs (DELETE), search.rs (filter), graph.rs (identity loading)
+  - `CREATE INDEX IF NOT EXISTS idx_headings_document_id ON headings(document_id)` — used by scan.rs (DELETE), search.rs (heading path lookups)
+  - `CREATE INDEX IF NOT EXISTS idx_block_refs_document_id ON block_refs(document_id)` — used by scan.rs (DELETE)
+  - `CREATE INDEX IF NOT EXISTS idx_links_source_document_id_resolved ON links(source_document_id, resolved_target_id)` — compound index for backlink queries that JOIN on both columns
+- [ ] Register the migration in `MigrationRegistry`
+- [ ] Bump `SCHEMA_VERSION` to 9 in `vulcan-core/src/lib.rs`
+- [ ] Verify with `EXPLAIN QUERY PLAN` that the new indexes are used by the most common queries
+- [ ] Run the existing test suite to confirm no regressions
+
+**Expected improvement:** WHERE clauses on `extension = 'md'` go from full table scan to index lookup. For 13k documents this turns many O(N) scans into O(log N) lookups. The compound link index accelerates backlink queries specifically.
+
+**Files:** `vulcan-core/src/cache/schema.rs`, `vulcan-core/src/cache/migrations.rs`, `vulcan-core/src/lib.rs`
+
+### 8.5 Hybrid search batch filtering
+
+Replace per-hit filter queries in hybrid search with a single batch lookup.
+
+**Current bottleneck:** `matches_filters()` in `vulcan-core/src/search.rs` is called once per vector hit from `hybrid_search_hits()`. Each call runs up to 3 SQL queries: one to look up document_id by path, one to check tag existence, one to check property existence. With a typical candidate_limit of 40 vector hits, this is up to 120 individual queries.
+
+**Implementation:**
+- [ ] Before the vector hit filter loop, collect all vector hit paths into a `Vec<&str>`
+- [ ] Run a single batch query to load document_ids for all paths: `SELECT path, id FROM documents WHERE path IN (?, ?, ...)`
+- [ ] If tag filter is active, run a single batch query: `SELECT DISTINCT document_id FROM tags WHERE document_id IN (...) AND tag_text = ?`
+- [ ] If property filter is active, run a single batch query: `SELECT DISTINCT document_id FROM property_values WHERE document_id IN (...) AND key = ?`
+- [ ] Build a `HashSet<String>` of passing document_ids and filter vector hits against it
+- [ ] The existing `filtered_paths` (from keyword search pre-filtering) continues to work as a fast pre-check before the batch queries
+- [ ] Unit tests: existing hybrid search tests must produce identical results
+
+**Expected improvement:** 3N individual queries → 3 batch queries. For 40 vector hits this is 120 queries → 3.
+
+**Files:** `vulcan-core/src/search.rs`
+
+### 8.6 Vector index hash comparison
+
+Replace in-memory hash loading with a SQL-side comparison for identifying pending chunks.
+
+**Current bottleneck:** `index_vectors_with_progress()` in `vulcan-core/src/vector.rs` calls `store.load_hashes()` which loads ALL chunk hashes from the vector table into a `HashMap<String, Vec<u8>>`. Then it iterates all current chunks in Rust to find mismatches. For 50k+ chunks this allocates a large HashMap and does O(N) Rust-side comparison.
+
+**Implementation:**
+- [ ] Add a `pending_chunk_ids(current_chunks: &[(chunk_id, content_hash)])` method to `VectorStore` / `SqliteVecStore`
+- [ ] Implementation: create a temp table with current chunk_id + content_hash pairs, then `SELECT chunk_id FROM temp WHERE NOT EXISTS (SELECT 1 FROM vectors_table WHERE vectors_table.chunk_id = temp.chunk_id AND vectors_table.content_hash = temp.content_hash)`
+- [ ] Similarly for stale detection: `SELECT chunk_id FROM vectors_table WHERE chunk_id NOT IN (SELECT chunk_id FROM temp)`
+- [ ] This avoids loading all hashes into memory and lets SQLite use its indexes
+- [ ] Fall back to current approach if temp table creation fails (defensive)
+- [ ] The `delete_chunks` call for stale chunks remains unchanged
+- [ ] Unit tests: existing vector index tests must produce identical results
+
+**Expected improvement:** Eliminates O(N) memory allocation for hash HashMap; comparison done in SQLite with index support. Most beneficial when the majority of chunks are already indexed (common case for incremental re-index).
+
+**Files:** `vulcan-embed/src/sqlite_vec.rs`, `vulcan-core/src/vector.rs`
+
+### 8.7 Scan phase: further SQLite write optimization
+
+Investigate and apply remaining SQLite tuning for bulk insert workloads.
+
+**Context:** The scan phase currently achieves ~1100 files/s on fresh index but degrades from ~1500 to ~1100 as the B-tree grows. Link resolution takes ~16s for ~13k files due to per-row FK-validated UPDATEs.
+
+**Implementation:**
+- [ ] Profile the scan write phase with `perf` or `flamegraph` to identify the actual bottleneck (B-tree page splits vs. index maintenance vs. FK checks)
+- [ ] Test disabling FK checks during bulk scan (`PRAGMA foreign_keys = OFF` within the scan transaction, re-enable after) — FKs are validated on INSERT which adds overhead for every link/heading/tag row
+- [ ] Test increasing `page_size` from default 4096 to 8192 or 16384 for better B-tree fanout on large datasets
+- [ ] Test `PRAGMA locking_mode = EXCLUSIVE` during scan (already single-writer, so no concurrency loss)
+- [ ] Benchmark each change independently; only keep changes that show measurable improvement
+- [ ] Document findings in code comments for future reference
+
+**Expected improvement:** Incremental — possibly 10–30% reduction in scan write phase. The goal is to identify the remaining ceiling and document it, not necessarily to break through it.
+
+**Files:** `vulcan-core/src/scan.rs`, `vulcan-core/src/cache/mod.rs`
+
+### Implementation order
+
+1. **8.4** (Missing indexes) — Quickest win, broad impact, no algorithm changes. ~30 minutes.
+2. **8.1** (Aho-Corasick mentions) — Highest single-command impact. ~2 hours.
+3. **8.5** (Hybrid search batch) — Straightforward query batching. ~1 hour.
+4. **8.2** (Duplicate candidate optimization) — Algorithm improvement. ~1 hour.
+5. **8.3** (Graph query caching) — Refactoring, medium scope. ~2 hours.
+6. **8.6** (Vector hash comparison) — Store-layer change. ~2 hours.
+7. **8.7** (Scan write profiling) — Investigative, results uncertain. ~2 hours.
+
+---
+
+## Phase 9: CLI Refinements
 
 **Goal:** Improve the interactive CLI experience with direct note editing, a persistent browser TUI, auto-commit integration, and quality-of-life commands. These features make vulcan a practical daily-driver tool for vault maintenance, not just a query/analysis engine.
 
@@ -545,7 +698,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - **Browse TUI ships incrementally in layers:** (1) edit loop only, (2) `Ctrl-F` full-text search, (3) action hotkeys, (4) remaining modes. Each layer is independently shippable.
 - **TUI testing strategy:** Test state machine transitions on `BrowseState`/`NotePickerState` directly (no terminal). Use `ratatui::TestBackend` for render assertions on layout and content. Manual testing for interactive flows.
 
-### 8.1 `edit` command — open note in `$EDITOR`
+### 9.1 `edit` command — open note in `$EDITOR`
 
 Open a note for editing directly from the CLI, with picker fallback for disambiguation.
 
@@ -557,14 +710,14 @@ vulcan edit --new [path]     # create new note, open in editor
 - [ ] **Keybinding fix:** change note picker quit from `Esc | q` to `Esc`-only, so `q` can be typed in search queries
 - [ ] `vulcan edit <note>`: resolve note by path/filename/alias, open in `$VISUAL`/`$EDITOR`/`vi`
 - [ ] If `<note>` is ambiguous or omitted: spawn the existing note picker TUI, Enter opens selected note in editor
-- [ ] `vulcan edit --new <path>`: create a new empty note (or from template if 8.5 is implemented), open in editor
+- [ ] `vulcan edit --new <path>`: create a new empty note (or from template if 9.4.3 is implemented), open in editor
 - [ ] After editor exits: run an incremental rescan of the edited file to update the cache
 - [ ] If auto-commit is enabled (8.3): commit the change after rescan
 - [ ] Reuse `open_in_editor()` and `with_terminal_suspended()` from `bases_tui.rs` — extract these into a shared `editor.rs` utility module in `vulcan-cli/src/`
 - [ ] Non-interactive fallback: if not a TTY, print an error rather than spawning a picker
 - [ ] Integration test: create a temp vault, run `edit --new`, verify file exists and cache is updated
 
-### 8.2 `browse` command — persistent note browser TUI
+### 9.2 `browse` command — persistent note browser TUI
 
 A persistent TUI session that acts as a lightweight terminal Obsidian. The user searches, previews, edits, and navigates notes without leaving the TUI.
 
@@ -621,7 +774,7 @@ Each layer is independently shippable and testable.
 - Integration tests: spin up a temp vault, exercise the edit loop programmatically (mock editor via `EDITOR=true`), verify cache is updated after edit
 - Fuzzy scoring tests already exist in `note_picker.rs`; extend for new filter modes
 
-### 8.3 Auto-commit
+### 9.3 Auto-commit
 
 Automatically commit vault changes to git after vulcan-initiated mutations. Off by default.
 
@@ -669,9 +822,9 @@ scope = "vulcan-only"
 - [ ] If `trigger = "scan"`: also commit after `scan` and `watch` detect and process external changes
 - [ ] Integration test: enable auto-commit in config, run a mutation, verify git log shows the commit with expected message
 
-### 8.4 Additional CLI commands
+### 9.4 Additional CLI commands
 
-#### 8.4.1 `diff` — single-note change view
+#### 9.4.1 `diff` — single-note change view
 
 ```
 vulcan diff [note] [--since <checkpoint>]
@@ -683,7 +836,7 @@ vulcan diff [note] [--since <checkpoint>]
 - [ ] `--output json` support
 - [ ] Builds on existing `changes` command but focused on a single note with richer output
 
-#### 8.4.2 `inbox` — quick capture
+#### 9.4.2 `inbox` — quick capture
 
 ```
 vulcan inbox <text>
@@ -705,7 +858,7 @@ echo "idea" | vulcan inbox -   # read from stdin
 - [ ] Auto-commit if enabled
 - [ ] `--output json` returns `{ "path": "Inbox.md", "appended": true }`
 
-#### 8.4.3 `template` — create note from template
+#### 9.4.3 `template` — create note from template
 
 ```
 vulcan template [name] [--path <output-path>]
@@ -719,7 +872,7 @@ vulcan template --list
 - [ ] After creation: open in `$EDITOR` if TTY, then rescan
 - [ ] Auto-commit if enabled
 
-#### 8.4.4 `open` — open note in Obsidian
+#### 9.4.4 `open` — open note in Obsidian
 
 ```
 vulcan open [note]
@@ -733,24 +886,24 @@ vulcan open [note]
 
 ---
 
-## Phase 9: Multi-Vault Daemon
+## Phase 10: Multi-Vault Daemon
 
 **Goal:** A long-running process that serves multiple vaults over a proper REST API. The CLI can connect to it instead of opening the cache directly, eliminating per-command startup cost and enabling multi-vault workflows.
 
-**Depends on:** Phase 7 complete. Independent of Phase 8 (can be developed in parallel).
+**Depends on:** Phase 7 complete. Independent of Phase 9 (can be developed in parallel).
 **Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
 
-### 9.1 Architecture decisions
+### 10.1 Architecture decisions
 
 The daemon extends the existing architecture rather than replacing it:
 
 - **Same binary**: `vulcan daemon start/stop/status/config` — keeps deployment simple, shares all deps
 - **HTTP framework**: `axum` replaces the hand-rolled `TcpListener` server. Provides async request handling, tower middleware (auth, CORS, logging, compression), and WebSocket support for live updates.
-- **WebSocket-ready architecture**: Design the router module structure so that adding WebSocket upgrade endpoints (e.g., `/ws/{vault_id}/...`) is straightforward. Phase 15 will use WebSockets for real-time collaborative editing via Automerge sync protocol. No WebSocket code ships in Phase 9, but handlers should not assume pure request/response.
+- **WebSocket-ready architecture**: Design the router module structure so that adding WebSocket upgrade endpoints (e.g., `/ws/{vault_id}/...`) is straightforward. Phase 16 will use WebSockets for real-time collaborative editing via Automerge sync protocol. No WebSocket code ships in Phase 10, but handlers should not assume pure request/response.
 - **Async boundary**: `vulcan-core` stays synchronous (SQLite is inherently sync). The daemon wraps core calls in `tokio::task::spawn_blocking`. This avoids an async rewrite of the entire core.
 - **New crate**: `vulcan-daemon` (lib) — contains the axum router, middleware, vault registry, and daemon lifecycle. `vulcan-cli` depends on it for the `daemon` subcommand.
 
-### 9.2 Vault registry
+### 10.2 Vault registry
 
 ```toml
 # ~/.config/vulcan/daemon.toml
@@ -776,7 +929,7 @@ read_only = true  # no mutation endpoints
 - [ ] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
 - [ ] Vault auto-discovery: optionally scan a directory for vaults (e.g., `scan_dir = "/home/user/vaults"`)
 
-### 9.3 REST API
+### 10.3 REST API
 
 All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
@@ -811,14 +964,14 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] `GET /vaults` — list registered vaults with status
 - [ ] Auth: per-vault `Authorization: Bearer <token>` header, validated against argon2 hash
 
-### 9.4 Per-vault watcher
+### 10.4 Per-vault watcher
 
 - [ ] Each registered vault gets its own file watcher thread (reuse `watch_vault_until`)
 - [ ] Watcher keeps cache fresh automatically — API queries always return current data
 - [ ] Watcher errors are surfaced via `/health` and `/{id}/health` endpoints
 - [ ] Graceful shutdown: daemon stop signals all watchers to terminate
 
-### 9.5 CLI daemon integration
+### 10.5 CLI daemon integration
 
 - [ ] `vulcan daemon start` — start the daemon (foreground or `--detach` for background)
 - [ ] `vulcan daemon stop` — send shutdown signal
@@ -826,23 +979,23 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] `vulcan --daemon` flag or `VULCAN_DAEMON_URL` env var on any CLI command: route the command through the daemon's REST API instead of direct SQLite access. Same UX, daemon does the work.
 - [ ] Transparent fallback: if daemon is not running, fall back to direct mode with a warning
 
-### 9.6 Implementation notes
+### 10.6 Implementation notes
 
 - **`serve` becomes a lightweight shim over daemon internals.** The existing `vulcan serve` command is kept for single-vault convenience but refactored to use the same router and handler code as the daemon. Internally it registers the current vault as the sole vault and starts the daemon in single-vault mode. This ensures API consistency between `serve` and `daemon` without maintaining two codepaths.
 - **Daemon dependencies (axum, tokio) are included unconditionally.** If compile time or binary size becomes a problem, they can be moved behind a `--features daemon` cargo feature flag later, but start without the complexity.
 - Response format matches existing `--output json` format from CLI commands — the daemon serializes the same report structs
 - Rate limiting and request logging via tower middleware
-- CORS headers configurable for WebUI integration (Phase 12)
+- CORS headers configurable for WebUI integration (Phase 13)
 
 ---
 
-## Phase 10: Git Auto-Versioning (Daemon-Level)
+## Phase 11: Git Auto-Versioning (Daemon-Level)
 
-**Goal:** Automatic version history for vault content managed by the daemon. Extends the per-vault auto-commit from Phase 8.3 to daemon-managed vaults with richer history APIs.
+**Goal:** Automatic version history for vault content managed by the daemon. Extends the per-vault auto-commit from Phase 9.3 to daemon-managed vaults with richer history APIs.
 
-**Depends on:** Phase 8.3 (git module in vulcan-core), Phase 9 (daemon).
+**Depends on:** Phase 9.3 (git module in vulcan-core), Phase 10 (daemon).
 
-### 10.1 Daemon-level git integration
+### 11.1 Daemon-level git integration
 
 - [ ] On vault registration: detect if vault is a git repo, optionally `git init` if configured
 - [ ] Configurable commit strategy per vault in `daemon.toml`:
@@ -856,11 +1009,11 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
   batch_interval_seconds = 300  # for "batched" strategy
   message = "vault: {files}"
   ```
-- [ ] `per-write`: commit immediately after each mutation (same as Phase 8.3)
+- [ ] `per-write`: commit immediately after each mutation (same as Phase 9.3)
 - [ ] `batched`: accumulate changes, commit every N seconds (daemon timer thread)
 - [ ] `manual`: no auto-commit, but history endpoints still work if vault has git
 
-### 10.2 History API endpoints
+### 11.2 History API endpoints
 
 - [ ] `GET /{id}/history/{path}` — git log for a specific file (author, date, message, sha)
 - [ ] `GET /{id}/history/{path}/{sha}` — file content at a specific commit
@@ -868,7 +1021,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] `GET /{id}/diff` — uncommitted changes in the vault
 - [ ] `GET /{id}/history` — recent commits across the whole vault
 
-### 10.3 Branch management (optional)
+### 11.3 Branch management (optional)
 
 - [ ] Daemon works on a configurable branch (default: current branch)
 - [ ] `POST /{id}/git/snapshot` — create a named tag/branch for a point-in-time snapshot
@@ -876,13 +1029,13 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
 ---
 
-## Phase 11: Sync Integration
+## Phase 12: Sync Integration
 
 **Goal:** Pluggable sync backends so vaults stay current across devices. The daemon orchestrates sync alongside watching and versioning.
 
-**Depends on:** Phase 9 (daemon), Phase 10 (git versioning for conflict-aware sync).
+**Depends on:** Phase 10 (daemon), Phase 11 (git versioning for conflict-aware sync).
 
-### 11.1 Sync backend trait
+### 12.1 Sync backend trait
 
 ```rust
 trait SyncBackend: Send + Sync {
@@ -896,7 +1049,7 @@ trait SyncBackend: Send + Sync {
 - [ ] Define the trait in a new `vulcan-sync` crate (or module in `vulcan-daemon`)
 - [ ] `SyncStatus` enum: `Idle`, `Syncing { progress: Option<f32> }`, `Error(String)`, `Disabled`
 
-### 11.2 Obsidian headless sync backend
+### 12.2 Obsidian headless sync backend
 
 - [ ] Spawn and manage the `obsidian-headless` process as a subprocess
 - [ ] Config in `daemon.toml`:
@@ -911,21 +1064,21 @@ trait SyncBackend: Send + Sync {
 - [ ] Monitor process health, restart on crash
 - [ ] Forward sync status to daemon health endpoint
 
-### 11.3 Git remote sync backend
+### 12.3 Git remote sync backend
 
 - [ ] Pull/push on schedule or on trigger
 - [ ] Config: `remote`, `branch`, `pull_interval_seconds`, `auto_push`
 - [ ] Merge strategy: fast-forward only by default, configurable
 - [ ] Conflict detection: if pull results in merge conflicts, surface as diagnostics (do not auto-resolve)
 
-### 11.4 Passive sync backend
+### 12.4 Passive sync backend
 
 - [ ] For Syncthing, Dropbox, iCloud, etc. — the sync tool runs independently
 - [ ] The daemon just watches for file changes (already handled by the watcher)
 - [ ] Sync status is always "external" — daemon doesn't control it
 - [ ] Useful for users who already have sync set up and just want the daemon's API layer
 
-### 11.5 Sync API endpoints
+### 12.5 Sync API endpoints
 
 - [ ] `GET /{id}/sync/status` — current sync state
 - [ ] `POST /{id}/sync/trigger` — force a sync cycle
@@ -933,13 +1086,13 @@ trait SyncBackend: Send + Sync {
 
 ---
 
-## Phase 12: WebUI — Admin and Browse
+## Phase 13: WebUI — Admin and Browse
 
 **Goal:** A web interface for managing the daemon, browsing vaults, and monitoring sync. Read-only initially, leveraging the existing JSON API.
 
-**Depends on:** Phase 9 (daemon REST API).
+**Depends on:** Phase 10 (daemon REST API).
 
-### 12.1 Architecture
+### 13.1 Architecture
 
 - [ ] Served by the daemon itself at a configurable path (e.g., `GET /ui/...`)
 - [ ] Static SPA assets embedded in the binary at compile time (e.g., `rust-embed` or `include_dir`)
@@ -947,7 +1100,7 @@ trait SyncBackend: Send + Sync {
 - [ ] Framework choice: lightweight (Svelte, Solid, or vanilla + htmx) — TBD at implementation time
 - [ ] Auth: reuse daemon token auth, with a login page for browser sessions (cookie or localStorage token)
 
-### 12.2 Admin panel
+### 13.2 Admin panel
 
 - [ ] Vault list with status indicators (online, syncing, error, indexing)
 - [ ] Register/unregister vaults
@@ -955,7 +1108,7 @@ trait SyncBackend: Send + Sync {
 - [ ] Daemon health dashboard: uptime, memory, active watchers, recent errors
 - [ ] Token management: generate, revoke, copy
 
-### 12.3 Vault browser
+### 13.3 Vault browser
 
 - [ ] Note list with search (uses `/search` API)
 - [ ] Note detail view: rendered markdown, frontmatter properties, backlinks, outgoing links
@@ -966,13 +1119,13 @@ trait SyncBackend: Send + Sync {
 
 ---
 
-## Phase 13: WebUI — Write and Collaborate
+## Phase 14: WebUI — Write and Collaborate
 
 **Goal:** Turn the web browser into an editor for vault content.
 
-**Depends on:** Phase 12 (read-only WebUI), Phase 9 (write API endpoints).
+**Depends on:** Phase 13 (read-only WebUI), Phase 10 (write API endpoints).
 
-### 13.1 Note editor
+### 14.1 Note editor
 
 **Automerge for live editing sessions.** Use `automerge` (Rust-native CRDT library) for real-time collaborative editing and ephemeral editing sessions. Automerge is scoped to the WebUI editing layer — it does **not** replace git as the versioning backend. The on-disk `.md` files remain the vault source of truth.
 
@@ -981,7 +1134,7 @@ trait SyncBackend: Send + Sync {
 - On save: Automerge doc state is materialized → `.md` file on disk → incremental rescan → git commit (if auto-commit enabled)
 - On editor open: `.md` file content is loaded into a fresh Automerge doc (or resumed from a persisted session)
 - Automerge docs are ephemeral by default — they exist while a note is being edited and are discarded after materialization. Optional session persistence in `.vulcan/` for crash recovery.
-- Phase 15 live collaboration adds multi-peer sync on top of this same Automerge doc, without changing the materialization pipeline
+- Phase 16 live collaboration adds multi-peer sync on top of this same Automerge doc, without changing the materialization pipeline
 
 **Design decision: git stays the versioning backend.** Automerge provides excellent real-time collaboration and offline merge, but the vault's canonical history remains in git. This avoids a dual source-of-truth problem — on-disk files are always authoritative for CLI, Obsidian, search, and indexing. Automerge is a transient editing layer, not a storage layer.
 
@@ -994,21 +1147,21 @@ trait SyncBackend: Send + Sync {
 - [ ] Materialization pipeline: flush Automerge doc state to disk via `PATCH /{id}/notes/{path}`, which rescans and optionally commits
 - [ ] Optional session persistence: store Automerge binary doc in `.vulcan/` for crash recovery, discard after successful materialization
 
-### 13.2 Note management
+### 14.2 Note management
 
 - [ ] Create new notes (with optional template selection)
 - [ ] Move/rename notes (with link rewriting preview)
 - [ ] Delete notes (with broken-link impact preview)
 - [ ] Inbox quick-capture widget
 
-### 13.3 History and diff
+### 14.3 History and diff
 
 - [ ] Git diff viewer for pending uncommitted changes
-- [ ] File history timeline (uses `/history` API from Phase 10)
+- [ ] File history timeline (uses `/history` API from Phase 11)
 - [ ] Side-by-side diff between versions
 - [ ] Restore previous version
 
-### 13.4 Activity feed
+### 14.4 Activity feed
 
 - [ ] Recent changes across the vault (from `changes` API)
 - [ ] Sync activity log
@@ -1016,13 +1169,13 @@ trait SyncBackend: Send + Sync {
 
 ---
 
-## Phase 14: Extensibility and Integrations
+## Phase 15: Extensibility and Integrations
 
 **Goal:** Let vaults define custom behaviors and expose integration points for external tools.
 
-**Depends on:** Phase 9 (daemon API).
+**Depends on:** Phase 10 (daemon API).
 
-### 14.1 Webhook system
+### 15.1 Webhook system
 
 - [ ] Vault config defines triggers and HTTP callbacks:
   ```toml
@@ -1036,7 +1189,7 @@ trait SyncBackend: Send + Sync {
 - [ ] Retry with exponential backoff on failure
 - [ ] Webhook delivery log accessible via API
 
-### 14.2 Telegram bot integration
+### 15.2 Telegram bot integration
 
 - [ ] Per-vault Telegram bot configuration:
   ```toml
@@ -1050,7 +1203,7 @@ trait SyncBackend: Send + Sync {
 - [ ] `/daily` — create or open today's daily note
 - [ ] Implemented as a daemon plugin module
 
-### 14.3 Custom API endpoints
+### 15.3 Custom API endpoints
 
 - [ ] Vault config can define additional routes:
   ```toml
@@ -1068,7 +1221,7 @@ trait SyncBackend: Send + Sync {
 - [ ] Actions are a fixed set of built-in operations (inbox, template, update, etc.)
 - [ ] This is intentionally not a plugin/scripting system — keeps the security surface small
 
-### 14.4 Plugin trait (future)
+### 15.4 Plugin trait (future)
 
 - [ ] Rust trait for daemon plugins: `on_event`, `register_routes`, `on_startup`, `on_shutdown`
 - [ ] Plugins compiled into the binary (feature flags) or loaded as dynamic libraries
@@ -1076,15 +1229,15 @@ trait SyncBackend: Send + Sync {
 
 ---
 
-## Phase 15: Wiki Mode
+## Phase 16: Wiki Mode
 
 **Goal:** A polished, public-facing wiki served from an Obsidian vault. Read-optimized with optional auth for editing. Supports real-time collaborative editing via Automerge CRDTs.
 
-**Depends on:** Phase 12 (WebUI browse), Phase 13 (WebUI write, Automerge editing sessions).
+**Depends on:** Phase 13 (WebUI browse), Phase 14 (WebUI write, Automerge editing sessions).
 
-**Automerge in Phase 15:** Phase 13 introduces Automerge for ephemeral single-user editing sessions. Phase 15 extends this to multi-user real-time collaboration by adding the Automerge sync protocol over WebSockets. The on-disk `.md` files and git remain the canonical store and versioning backend — Automerge is the live collaboration layer, not a replacement for git.
+**Automerge in Phase 16:** Phase 14 introduces Automerge for ephemeral single-user editing sessions. Phase 16 extends this to multi-user real-time collaboration by adding the Automerge sync protocol over WebSockets. The on-disk `.md` files and git remain the canonical store and versioning backend — Automerge is the live collaboration layer, not a replacement for git.
 
-### 15.1 Public read mode
+### 16.1 Public read mode
 
 - [ ] Unauthenticated read access to rendered vault content
 - [ ] Rendered Markdown with Obsidian-compatible features: callouts, embeds, math (KaTeX), wikilinks resolved to wiki URLs, mermaid diagrams, code highlighting
@@ -1093,7 +1246,7 @@ trait SyncBackend: Send + Sync {
 - [ ] Home page: configurable (default: note named `Home.md` or `index.md`)
 - [ ] SEO: server-rendered HTML, meta tags, sitemap generation
 
-### 15.2 Wiki-specific rendering
+### 16.2 Wiki-specific rendering
 
 - [ ] Wikilinks rendered as clickable links to other wiki pages
 - [ ] Embeds rendered inline (images, other notes, blocks)
@@ -1101,23 +1254,23 @@ trait SyncBackend: Send + Sync {
 - [ ] Table of contents generated from headings
 - [ ] Breadcrumb navigation from folder path
 
-### 15.3 Theming and branding
+### 16.3 Theming and branding
 
 - [ ] Configurable per-vault theme (CSS custom properties)
 - [ ] Custom header/footer HTML
 - [ ] Logo and favicon configuration
 - [ ] Light/dark mode toggle
 
-### 15.4 Access control
+### 16.4 Access control
 
 - [ ] Public read / authenticated write (default)
 - [ ] Fully public (no auth)
 - [ ] Fully private (auth required for read and write)
 - [ ] Per-folder or per-tag visibility rules (future)
 
-### 15.5 Live collaborative editing
+### 16.5 Live collaborative editing
 
-Real-time multi-user editing using Automerge CRDTs, building on the Automerge document model introduced in Phase 13.
+Real-time multi-user editing using Automerge CRDTs, building on the Automerge document model introduced in Phase 14.
 
 - [ ] WebSocket endpoint `WS /{id}/collab/{path}` — joins an Automerge sync session for a note
 - [ ] Server manages Automerge documents: one doc per actively-edited note, loaded from `.md` content on first open (or resumed from crash-recovery state)
@@ -1126,9 +1279,9 @@ Real-time multi-user editing using Automerge CRDTs, building on the Automerge do
 - [ ] Materialization pipeline: periodically (and on last-editor-disconnect) flush Automerge doc state → `.md` file → incremental rescan → optional git commit
 - [ ] Conflict-free by design: Automerge CRDTs guarantee convergence without manual conflict resolution
 - [ ] Graceful degradation: if WebSocket disconnects, client continues editing locally; changes merge on reconnect
-- [ ] Editor integration: the CodeMirror/ProseMirror binding from Phase 13 already uses Automerge — collaboration adds the sync layer on top
+- [ ] Editor integration: the CodeMirror/ProseMirror binding from Phase 14 already uses Automerge — collaboration adds the sync layer on top
 
-### 15.6 Local-first and WASM (future direction)
+### 16.6 Local-first and WASM (future direction)
 
 Automerge compiles to `wasm32`, enabling browser-side editing without a live server connection.
 
@@ -1152,29 +1305,30 @@ Phase 1 (Core indexing)
                                Phase 6 (Hardening) ← all phases
                                                      ↓
                                Phase 7 (Post-v1 workflow features)
-                                    ↓                         ↓
-                          Phase 8 (CLI refinements)   Phase 9 (Multi-vault daemon)
-                            ↓                           ↓             ↓
-                          8.3 ──────────→ Phase 10 (Git versioning)  Phase 12 (WebUI browse)
-                                            ↓                         ↓
-                                    Phase 11 (Sync)           Phase 13 (WebUI write + Automerge)
-                                                                ↓
-                                    Phase 14 (Extensibility) ← Phase 9
-                                                                ↓
-                                                        Phase 15 (Wiki + live collab)
-                                                                ↓
-                                                        15.6 (Local-first / WASM) [future]
+                                    ↓                    ↓                         ↓
+                          Phase 8 (Performance)  Phase 9 (CLI refinements)  Phase 10 (Multi-vault daemon)
+                                                   ↓                          ↓             ↓
+                                                 9.3 ──────→ Phase 11 (Git versioning)  Phase 13 (WebUI browse)
+                                                                ↓                         ↓
+                                                        Phase 12 (Sync)           Phase 14 (WebUI write + Automerge)
+                                                                                    ↓
+                                                        Phase 15 (Extensibility) ← Phase 10
+                                                                                    ↓
+                                                                            Phase 16 (Wiki + live collab)
+                                                                                    ↓
+                                                                            16.6 (Local-first / WASM) [future]
 ```
 
-Phases 8 and 9 can proceed in parallel after Phase 7.
-Phase 10 requires 8.3 (git module) and 9 (daemon). Phase 11 requires 9 and 10.
-Phase 12 requires 9. Phase 13 requires 12 and 9's write endpoints. Phase 13 introduces Automerge as the document model.
-Phase 14 requires 9. Phase 15 requires 12 and 13 (including the Automerge foundation from 13 for live collaboration).
-Phase 15.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
+Phase 8 (Performance) is independent and can proceed in parallel with Phases 9 and 10 after Phase 7.
+Phases 9 and 10 can proceed in parallel after Phase 7.
+Phase 11 requires 9.3 (git module) and 10 (daemon). Phase 12 requires 10 and 11.
+Phase 13 requires 10. Phase 14 requires 13 and 10's write endpoints. Phase 14 introduces Automerge as the document model.
+Phase 15 requires 10. Phase 16 requires 13 and 14 (including the Automerge foundation from 14 for live collaboration).
+Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 
 ---
 
-## New crates (Phases 9+)
+## New crates (Phases 10+)
 
 | Crate | Type | Purpose |
 |-------|------|---------|
@@ -1184,13 +1338,14 @@ Phase 15.6 (local-first/WASM) is a future direction beyond the current roadmap s
 The `vulcan-cli` binary gains the `daemon` subcommand group by depending on `vulcan-daemon`.
 The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) and `vulcan-sync` (for sync backends).
 
-## Key dependencies to add (Phases 9+)
+## Key dependencies to add (Phases 8+)
 
 | Dependency | Purpose | Phase |
 |------------|---------|-------|
-| `axum` | HTTP framework for daemon | 9 |
-| `tokio` | Async runtime for axum | 9 |
-| `tower-http` | CORS, compression, logging middleware | 9 |
-| `argon2` | Token hashing | 9 |
-| `automerge` | CRDT document model for collaborative editing | 13 |
-| `rust-embed` or `include_dir` | Embed static WebUI assets | 12 |
+| `aho-corasick` | Multi-pattern string matching for mention detection | 8 |
+| `axum` | HTTP framework for daemon | 10 |
+| `tokio` | Async runtime for axum | 10 |
+| `tower-http` | CORS, compression, logging middleware | 10 |
+| `argon2` | Token hashing | 10 |
+| `automerge` | CRDT document model for collaborative editing | 14 |
+| `rust-embed` or `include_dir` | Embed static WebUI assets | 13 |
