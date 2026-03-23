@@ -650,6 +650,7 @@ fn apply_incremental_scan(
                             transaction,
                             &id,
                             &item.file.filename,
+                            is_new,
                             config,
                             parsed,
                         )?;
@@ -661,6 +662,7 @@ fn apply_incremental_scan(
                             transaction,
                             &id,
                             &item.file.filename,
+                            is_new,
                             chunks,
                         )?;
                     }
@@ -963,10 +965,10 @@ fn apply_prepared_full_scan_document(
     )?;
     match &prepared.derived {
         PreparedDerivedContent::Note(parsed) => {
-            replace_derived_rows(transaction, id, &prepared.file.filename, config, parsed)?;
+            replace_derived_rows(transaction, id, &prepared.file.filename, true, config, parsed)?;
         }
         PreparedDerivedContent::Attachment(chunks) => {
-            replace_attachment_rows(transaction, id, &prepared.file.filename, chunks)?;
+            replace_attachment_rows(transaction, id, &prepared.file.filename, true, chunks)?;
         }
         PreparedDerivedContent::None => {}
     }
@@ -1012,11 +1014,18 @@ fn replace_derived_rows(
     transaction: &Transaction<'_>,
     document_id: &str,
     document_title: &str,
+    is_new: bool,
     config: &crate::VaultConfig,
     parsed: &ParsedDocument,
 ) -> Result<(), ScanError> {
-    let reusable_chunk_ids = load_reusable_chunk_ids(transaction, document_id)?;
-    clear_derived_rows(transaction, document_id)?;
+    let reusable_chunk_ids = if is_new {
+        HashMap::new()
+    } else {
+        load_reusable_chunk_ids(transaction, document_id)?
+    };
+    if !is_new {
+        clear_derived_rows(transaction, document_id)?;
+    }
     insert_headings(transaction, document_id, &parsed.headings)?;
     insert_block_refs(transaction, document_id, &parsed.block_refs)?;
     insert_links(transaction, document_id, &parsed.links)?;
@@ -1051,10 +1060,17 @@ fn replace_attachment_rows(
     transaction: &Transaction<'_>,
     document_id: &str,
     document_title: &str,
+    is_new: bool,
     chunks: &[crate::ChunkText],
 ) -> Result<(), ScanError> {
-    let reusable_chunk_ids = load_reusable_chunk_ids(transaction, document_id)?;
-    clear_derived_rows(transaction, document_id)?;
+    let reusable_chunk_ids = if is_new {
+        HashMap::new()
+    } else {
+        load_reusable_chunk_ids(transaction, document_id)?
+    };
+    if !is_new {
+        clear_derived_rows(transaction, document_id)?;
+    }
     insert_chunks_with_search(
         transaction,
         document_id,
@@ -1534,29 +1550,66 @@ fn resolve_all_links(
     let links = load_resolver_links(transaction)?;
     let index = ResolverIndex::build(&documents);
 
-    let mut update_statement = transaction
-        .prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
-    let mut diag_statement = transaction.prepare_cached(
-        "
-        INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
-        VALUES (?1, ?2, 'unresolved_link', ?3, ?4, ?5)
-        ",
-    )?;
-    for link in links {
+    // Resolve all links in memory first, then batch-write to DB.
+    let timestamp = current_timestamp()?;
+    let mut resolutions: Vec<(String, Option<String>)> = Vec::with_capacity(links.len());
+    let mut diagnostics: Vec<(String, String, String, String)> = Vec::new();
+
+    for link in &links {
         let resolution = index.resolve(&link.resolver_link, mode);
-        update_statement.execute(params![link.id, resolution.resolved_target_id])?;
+        resolutions.push((link.id.clone(), resolution.resolved_target_id));
 
         if let Some(problem) = resolution.problem {
+            diagnostics.push((
+                link.resolver_link.source_document_id.clone(),
+                resolution_problem_message(&problem, &link.resolver_link),
+                serde_json::to_string(&resolution_problem_detail(&problem, &link.resolver_link))
+                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                timestamp.clone(),
+            ));
+        }
+    }
+
+    // Batch UPDATE using a temp table + single UPDATE...FROM.
+    transaction.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS _link_resolutions (
+            link_id TEXT NOT NULL,
+            resolved_id TEXT
+        )",
+    )?;
+    transaction.execute("DELETE FROM _link_resolutions", [])?;
+
+    {
+        let mut insert_stmt = transaction.prepare_cached(
+            "INSERT INTO _link_resolutions (link_id, resolved_id) VALUES (?1, ?2)",
+        )?;
+        for (link_id, resolved_id) in &resolutions {
+            insert_stmt.execute(params![link_id, resolved_id])?;
+        }
+    }
+
+    transaction.execute_batch(
+        "UPDATE links SET resolved_target_id = (
+            SELECT resolved_id FROM _link_resolutions WHERE link_id = links.id
+        ) WHERE id IN (SELECT link_id FROM _link_resolutions)",
+    )?;
+    transaction.execute_batch("DROP TABLE IF EXISTS _link_resolutions")?;
+
+    // Insert diagnostics.
+    {
+        let mut diag_statement = transaction.prepare_cached(
+            "
+            INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+            VALUES (?1, ?2, 'unresolved_link', ?3, ?4, ?5)
+            ",
+        )?;
+        for (source_id, message, detail, ts) in &diagnostics {
             diag_statement.execute(params![
                 Ulid::new().to_string(),
-                link.resolver_link.source_document_id,
-                resolution_problem_message(&problem, &link.resolver_link),
-                serde_json::to_string(&resolution_problem_detail(
-                    &problem,
-                    &link.resolver_link
-                ))
-                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
-                current_timestamp()?,
+                source_id,
+                message,
+                detail,
+                ts,
             ])?;
         }
     }
