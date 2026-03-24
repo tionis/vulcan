@@ -1,3 +1,5 @@
+use crate::expression::eval::EvalContext;
+use crate::expression::parse_expression;
 use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePathOptions};
 use crate::{query_notes, NoteQuery, NoteRecord, PropertyError, VaultPaths};
 use serde::Serialize;
@@ -1215,17 +1217,36 @@ fn evaluate_formulas(
     let mut evaluated = BTreeMap::new();
 
     for (name, expression) in formulas {
-        match evaluate_formula(note, expression) {
-            Some(value) => {
-                evaluated.insert(name.clone(), value);
+        match parse_expression(expression) {
+            Ok(ast) => {
+                let ctx = EvalContext::new(note, &evaluated);
+                match crate::expression::eval::evaluate(&ast, &ctx) {
+                    Ok(value) => {
+                        evaluated.insert(name.clone(), value);
+                    }
+                    Err(err) => {
+                        let diagnostic = BasesDiagnostic {
+                            path: Some(match view_name {
+                                Some(view_name) => {
+                                    format!("views.{view_name}.formulas.{name}")
+                                }
+                                None => format!("formulas.{name}"),
+                            }),
+                            message: format!("formula evaluation error: {err}"),
+                        };
+                        if !diagnostics.contains(&diagnostic) {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                }
             }
-            None => {
+            Err(err) => {
                 let diagnostic = BasesDiagnostic {
                     path: Some(match view_name {
                         Some(view_name) => format!("views.{view_name}.formulas.{name}"),
                         None => format!("formulas.{name}"),
                     }),
-                    message: format!("unsupported formula expression `{expression}`"),
+                    message: format!("formula parse error: {err}"),
                 };
                 if !diagnostics.contains(&diagnostic) {
                     diagnostics.push(diagnostic);
@@ -1235,22 +1256,6 @@ fn evaluate_formulas(
     }
 
     evaluated
-}
-
-fn evaluate_formula(note: &NoteRecord, expression: &str) -> Option<Value> {
-    match expression {
-        "file.path" => Some(Value::String(note.document_path.clone())),
-        "file.name" => Some(Value::String(note.file_name.clone())),
-        "file.ext" => Some(Value::String(note.file_ext.clone())),
-        "file.mtime" => Some(Value::Number(note.file_mtime.into())),
-        property if is_simple_property_expression(property) => Some(
-            note.properties
-                .get(property)
-                .cloned()
-                .unwrap_or(Value::Null),
-        ),
-        _ => None,
-    }
 }
 
 fn combined_filters(base_filters: &[String], view_filters: &[String]) -> Vec<String> {
@@ -1315,17 +1320,12 @@ fn evaluate_base_cell(note: &NoteRecord, formulas: &BTreeMap<String, Value>, key
         return value.clone();
     }
 
-    match key {
-        "file.path" => Value::String(note.document_path.clone()),
-        "file.name" => Value::String(note.file_name.clone()),
-        "file.ext" => Value::String(note.file_ext.clone()),
-        "file.mtime" => Value::Number(note.file_mtime.into()),
-        property if is_simple_property_expression(property) => note
-            .properties
-            .get(property)
-            .cloned()
-            .unwrap_or(Value::Null),
-        _ => Value::Null,
+    match parse_expression(key) {
+        Ok(ast) => {
+            let ctx = EvalContext::new(note, formulas);
+            crate::expression::eval::evaluate(&ast, &ctx).unwrap_or(Value::Null)
+        }
+        Err(_) => Value::Null,
     }
 }
 
@@ -1424,13 +1424,6 @@ fn json_sort_rank(value: &JsonSortKey) -> u8 {
         JsonSortKey::Number(_) => 2,
         JsonSortKey::Text(_) => 3,
     }
-}
-
-fn is_simple_property_expression(expression: &str) -> bool {
-    !expression.is_empty()
-        && expression
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 fn normalize_base_path(path: &str) -> Result<String, BasesError> {
@@ -1552,7 +1545,7 @@ mod tests {
         );
         assert!(report.diagnostics.iter().any(|diagnostic| diagnostic
             .message
-            .contains("unsupported formula expression")));
+            .contains("unknown function")));
         assert!(report
             .diagnostics
             .iter()
