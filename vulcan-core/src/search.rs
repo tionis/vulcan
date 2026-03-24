@@ -366,10 +366,10 @@ fn keyword_search_hits(
         .has_property
         .clone()
         .map_or(SqlValue::Null, SqlValue::Text);
-    let (filter_clause, mut filter_params) = build_note_filter_clause(&prepared.filters)?;
-    let mut sql = String::from(
-        "
-        SELECT
+    let filter_sql = build_note_filter_clause(&prepared.filters)?;
+    let mut sql = filter_sql.cte;
+    sql.push_str(
+        "SELECT
             documents.path,
             chunks.id,
             chunks.heading_path,
@@ -398,15 +398,12 @@ fn keyword_search_hits(
                     WHERE property_values.document_id = documents.id
                       AND property_values.key = ?4
                 )
-          )
-        ",
+          )",
     );
-    sql.push_str(&filter_clause);
+    sql.push_str(&filter_sql.clause);
     sql.push_str(
-        "
-        ORDER BY 5 ASC, documents.path ASC, chunks.sequence_index ASC
-        LIMIT ?5
-        ",
+        " ORDER BY 5 ASC, documents.path ASC, chunks.sequence_index ASC
+        LIMIT ?5",
     );
 
     let mut params = vec![
@@ -417,7 +414,7 @@ fn keyword_search_hits(
         SqlValue::Integer(limit),
         SqlValue::Integer(i64::try_from(query.context_size).unwrap_or(i64::MAX)),
     ];
-    params.append(&mut filter_params);
+    params.append(&mut filter_sql.params.clone());
 
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(
@@ -622,17 +619,17 @@ fn matching_note_paths(
     if filters.is_empty() {
         return Ok(None);
     }
-    let (filter_clause, params) = build_note_filter_clause(filters)?;
-    let sql = format!(
-        "
-        SELECT documents.path
+    let filter_sql = build_note_filter_clause(filters)?;
+    let mut sql = filter_sql.cte;
+    sql.push_str(
+        "SELECT documents.path
         FROM documents
         LEFT JOIN properties ON properties.document_id = documents.id
-        WHERE documents.extension = 'md' {filter_clause}
-        "
+        WHERE documents.extension = 'md'",
     );
+    sql.push_str(&filter_sql.clause);
     let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
+    let rows = statement.query_map(params_from_iter(filter_sql.params.iter()), |row| {
         row.get::<_, String>(0)
     })?;
     Ok(Some(rows.collect::<Result<HashSet<_>, _>>()?))
