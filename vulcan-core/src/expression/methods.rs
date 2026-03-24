@@ -145,6 +145,36 @@ fn string_method(
             };
             Ok(Value::Bool(matched))
         }
+        // Link methods — available on any string that looks like a wikilink
+        "asFile" => {
+            use crate::expression::eval::{note_to_file_object, parse_wikilink_target};
+            let target = parse_wikilink_target(s);
+            if let Some(lookup) = ctx.note_lookup {
+                if let Some(note) = lookup.get(target) {
+                    return Ok(note_to_file_object(note));
+                }
+            }
+            Ok(Value::Null)
+        }
+        "linksTo" => {
+            use crate::expression::eval::parse_wikilink_target;
+            // `s` is the source link; arg 0 is the target file (link string or filename)
+            let source_name = parse_wikilink_target(s);
+            let file_arg = eval_arg(args, 0, ctx)?;
+            let target_name = match &file_arg {
+                Value::String(fs) => parse_wikilink_target(fs).to_string(),
+                _ => return Ok(Value::Bool(false)),
+            };
+            if let Some(lookup) = ctx.note_lookup {
+                if let Some(source_note) = lookup.get(source_name) {
+                    let found = source_note.links.iter().any(|l| {
+                        parse_wikilink_target(l) == target_name.as_str()
+                    });
+                    return Ok(Value::Bool(found));
+                }
+            }
+            Ok(Value::Bool(false))
+        }
         // Date methods on strings that look like dates
         "format" | "date" | "time" | "relative" | "year" | "month" | "day" | "hour" | "minute"
         | "second" | "millisecond" => {
@@ -349,6 +379,7 @@ fn array_method(
                     formulas: ctx.formulas,
                     now_ms: ctx.now_ms,
                     locals: ctx.locals.clone(),
+                    note_lookup: ctx.note_lookup,
                 };
                 local_ctx
                     .locals
@@ -374,6 +405,7 @@ fn array_method(
                     formulas: ctx.formulas,
                     now_ms: ctx.now_ms,
                     locals: ctx.locals.clone(),
+                    note_lookup: ctx.note_lookup,
                 };
                 local_ctx
                     .locals
@@ -397,6 +429,7 @@ fn array_method(
                     formulas: ctx.formulas,
                     now_ms: ctx.now_ms,
                     locals: ctx.locals.clone(),
+                    note_lookup: ctx.note_lookup,
                 };
                 local_ctx
                     .locals

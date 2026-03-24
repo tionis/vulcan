@@ -5,7 +5,7 @@ use rusqlite::types::Value as SqlValue;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -300,6 +300,50 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         sort_descending: query.sort_descending,
         notes,
     })
+}
+
+/// Load a lightweight index of all notes keyed by file_name (basename without extension).
+/// Loads only core document fields and frontmatter properties; tags and links are left empty
+/// since they require expensive batch queries. Notes in the current view should be overlaid
+/// on top of this index so their tags/links are available.
+pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>, PropertyError> {
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let mut stmt = connection.prepare(
+        "SELECT path, file_name, file_ext, file_mtime, COALESCE(file_size, 0), \
+         COALESCE(properties, '{}') \
+         FROM documents",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let props_json: String = row.get(5)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            props_json,
+        ))
+    })?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let (path, file_name, file_ext, file_mtime, file_size, props_json) = row?;
+        let properties = serde_json::from_str(&props_json).unwrap_or(Value::Object(Default::default()));
+        map.insert(
+            file_name.clone(),
+            NoteRecord {
+                document_path: path,
+                file_name,
+                file_ext,
+                file_mtime,
+                file_size,
+                properties,
+                tags: vec![],
+                links: vec![],
+            },
+        );
+    }
+    Ok(map)
 }
 
 /// The result of building a filter clause.

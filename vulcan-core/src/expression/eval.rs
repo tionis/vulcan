@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
@@ -14,6 +14,9 @@ pub struct EvalContext<'a> {
     pub now_ms: i64,
     /// Scoped variables for list.filter/map/reduce callbacks.
     pub locals: BTreeMap<String, Value>,
+    /// Vault-wide note index keyed by file_name (basename without extension).
+    /// Used to resolve `.asFile()` and `.linksTo()` on link values.
+    pub note_lookup: Option<&'a HashMap<String, NoteRecord>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -23,7 +26,13 @@ impl<'a> EvalContext<'a> {
             formulas,
             now_ms: now_millis(),
             locals: BTreeMap::new(),
+            note_lookup: None,
         }
+    }
+
+    pub fn with_note_lookup(mut self, lookup: &'a HashMap<String, NoteRecord>) -> Self {
+        self.note_lookup = Some(lookup);
+        self
     }
 }
 
@@ -204,6 +213,46 @@ fn resolve_file_field(ctx: &EvalContext, field: &str) -> Result<Value, String> {
         }
         "properties" => Ok(ctx.note.properties.clone()),
         _ => Ok(Value::Null),
+    }
+}
+
+/// Convert a NoteRecord into the file object Value returned by `.asFile()`.
+pub fn note_to_file_object(note: &NoteRecord) -> Value {
+    let folder = note
+        .document_path
+        .rfind('/')
+        .map(|i| &note.document_path[..i])
+        .unwrap_or("");
+    let tags: Vec<Value> = note.tags.iter().map(|t| Value::String(t.clone())).collect();
+    let links: Vec<Value> = note.links.iter().map(|l| Value::String(l.clone())).collect();
+    serde_json::json!({
+        "path": note.document_path,
+        "name": note.file_name,
+        "basename": note.file_name,
+        "ext": note.file_ext,
+        "folder": folder,
+        "size": note.file_size,
+        "mtime": note.file_mtime,
+        "ctime": note.file_mtime,
+        "tags": tags,
+        "links": links,
+        "properties": note.properties,
+    })
+}
+
+/// Parse the target filename from a wikilink string like `[[target]]` or `[[target|display]]`.
+/// Falls back to the raw string if it is not a wikilink (treating it as a plain filename).
+pub fn parse_wikilink_target(s: &str) -> &str {
+    let s = s.trim();
+    if s.starts_with("[[") && s.ends_with("]]") {
+        let inner = &s[2..s.len() - 2];
+        // Strip display text
+        let inner = inner.find('|').map(|i| &inner[..i]).unwrap_or(inner);
+        // Strip heading/block anchor
+        let inner = inner.find('#').map(|i| &inner[..i]).unwrap_or(inner);
+        inner.trim()
+    } else {
+        s
     }
 }
 
@@ -598,6 +647,64 @@ mod tests {
         assert_eq!(
             eval(r#"{"a": 1, "b": 2}"#),
             serde_json::json!({"a": 1, "b": 2})
+        );
+    }
+
+    fn eval_with_lookup(input: &str, lookup: &HashMap<String, NoteRecord>) -> Value {
+        let expr = Parser::new(input).unwrap().parse().unwrap();
+        let note = NoteRecord {
+            document_path: "folder/note.md".to_string(),
+            file_name: "note".to_string(),
+            file_ext: "md".to_string(),
+            file_mtime: 1700000000,
+            file_size: 1234,
+            properties: serde_json::json!({"author": "[[alice]]"}),
+            tags: vec![],
+            links: vec!["[[alice]]".to_string()],
+        };
+        let formulas = BTreeMap::new();
+        let ctx = EvalContext::new(&note, &formulas).with_note_lookup(lookup);
+        evaluate(&expr, &ctx).unwrap()
+    }
+
+    #[test]
+    fn eval_as_file_and_links_to() {
+        let alice = NoteRecord {
+            document_path: "people/alice.md".to_string(),
+            file_name: "alice".to_string(),
+            file_ext: "md".to_string(),
+            file_mtime: 1700000001,
+            file_size: 500,
+            properties: serde_json::json!({"role": "editor"}),
+            tags: vec!["person".to_string()],
+            links: vec!["[[note]]".to_string()],
+        };
+        let mut lookup = HashMap::new();
+        lookup.insert("alice".to_string(), alice);
+
+        // asFile() on a wikilink returns the file object
+        let file_obj = eval_with_lookup(r#""[[alice]]".asFile()"#, &lookup);
+        assert_eq!(file_obj.get("name").unwrap(), &Value::String("alice".to_string()));
+        assert_eq!(file_obj.get("ext").unwrap(), &Value::String("md".to_string()));
+        assert_eq!(file_obj.get("properties").unwrap().get("role").unwrap(), &Value::String("editor".to_string()));
+
+        // asFile() on unknown link returns null
+        assert_eq!(eval_with_lookup(r#""[[nobody]]".asFile()"#, &lookup), Value::Null);
+
+        // linksTo() checks outbound links of the source note
+        assert_eq!(
+            eval_with_lookup(r#""[[alice]]".linksTo("[[note]]")"#, &lookup),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval_with_lookup(r#""[[alice]]".linksTo("[[other]]")"#, &lookup),
+            Value::Bool(false)
+        );
+
+        // asFile().property navigation
+        assert_eq!(
+            eval_with_lookup(r#""[[alice]]".asFile().properties.role"#, &lookup),
+            Value::String("editor".to_string())
         );
     }
 }
