@@ -293,6 +293,174 @@ pub(crate) fn record_scan_checkpoint(connection: &Connection) -> Result<(), Chec
     Ok(())
 }
 
+/// Record a scan checkpoint incrementally: copy unchanged document rows from the
+/// most recent scan checkpoint and only recompute hashes for the changed documents.
+/// This avoids the O(N) hash computation over all documents when only a few changed.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn record_scan_checkpoint_incremental(
+    connection: &Connection,
+    changed_document_ids: &[String],
+) -> Result<(), CheckpointError> {
+    let transaction = connection.unchecked_transaction()?;
+
+    // Find the most recent scan checkpoint to copy unchanged rows from.
+    let previous_checkpoint_id: Option<String> = transaction
+        .query_row(
+            "SELECT id FROM checkpoints WHERE source = 'scan' ORDER BY created_at DESC, id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    // If there's no previous checkpoint, fall back to a full snapshot.
+    let Some(previous_id) = previous_checkpoint_id else {
+        insert_checkpoint_snapshot(&transaction, None, "scan")?;
+        prune_automatic_scan_checkpoints(&transaction)?;
+        transaction.commit()?;
+        return Ok(());
+    };
+
+    let created_at = current_unix_timestamp()?;
+    let checkpoint_id = Ulid::new().to_string();
+
+    // Build a set of changed doc IDs for quick lookup, and also collect
+    // the current document IDs (path→id) so we know which previous rows are still valid.
+    let changed_set: std::collections::HashSet<&str> = changed_document_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    // Insert the checkpoint header row first (FK parent for checkpoint_documents).
+    // Counts will be updated after all document rows are inserted.
+    transaction.execute(
+        "INSERT INTO checkpoints (id, name, source, created_at, note_count, orphan_notes, stale_notes, resolved_links)
+         VALUES (?1, NULL, 'scan', ?2, 0, 0, 0, 0)",
+        params![&checkpoint_id, created_at],
+    )?;
+
+    // Load current document id→path mapping.
+    let current_docs: HashMap<String, String> = {
+        let mut stmt = transaction.prepare("SELECT id, path FROM documents")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<HashMap<_, _>, _>>()?
+    };
+    let current_paths: std::collections::HashSet<&str> =
+        current_docs.values().map(String::as_str).collect();
+
+    // Copy unchanged rows from the previous checkpoint. A row is unchanged if:
+    // 1. Its path still exists in the current documents table
+    // 2. The document at that path was not in the changed set
+    // We need to map paths back to IDs to check against changed_document_ids.
+    let path_to_id: HashMap<&str, &str> = current_docs
+        .iter()
+        .map(|(id, path)| (path.as_str(), id.as_str()))
+        .collect();
+
+    let previous_docs = load_checkpoint_documents(&transaction, &previous_id)?;
+
+    let mut insert_stmt = transaction.prepare(
+        "INSERT INTO checkpoint_documents (
+            checkpoint_id, path, document_kind, content_hash,
+            link_hash, property_hash, embedding_hash, orphan, stale
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+
+    // Copy unchanged document rows from previous checkpoint.
+    for doc in &previous_docs {
+        if !current_paths.contains(doc.path.as_str()) {
+            // Document was deleted — skip it.
+            continue;
+        }
+        if let Some(&doc_id) = path_to_id.get(doc.path.as_str()) {
+            if changed_set.contains(doc_id) {
+                // Document was changed — will be recomputed below.
+                continue;
+            }
+        }
+        insert_stmt.execute(params![
+            &checkpoint_id,
+            &doc.path,
+            &doc.document_kind,
+            &doc.content_hash,
+            &doc.link_hash,
+            &doc.property_hash,
+            &doc.embedding_hash,
+            i64::from(doc.orphan),
+            i64::from(doc.stale),
+        ])?;
+    }
+
+    // Compute fresh state only for changed documents.
+    if !changed_document_ids.is_empty() {
+        let now = current_unix_timestamp()?;
+        let changed_states =
+            load_document_states_for_ids(&transaction, changed_document_ids, now)?;
+        for state in &changed_states {
+            insert_stmt.execute(params![
+                &checkpoint_id,
+                &state.path,
+                &state.document_kind,
+                &state.content_hash,
+                &state.link_hash,
+                &state.property_hash,
+                &state.embedding_hash,
+                i64::from(state.orphan),
+                i64::from(state.stale),
+            ])?;
+        }
+    }
+
+    // Drop the prepared statement so `transaction` is no longer borrowed.
+    drop(insert_stmt);
+
+    // Compute summary counts from the current cache state (cheap queries).
+    let note_count = usize::try_from(transaction.query_row(
+        "SELECT COUNT(*) FROM documents WHERE extension = 'md'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?)
+    .unwrap_or(usize::MAX);
+
+    let resolved_links = usize::try_from(transaction.query_row(
+        "SELECT COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?)
+    .unwrap_or(usize::MAX);
+
+    // Count orphan/stale from the checkpoint_documents we just inserted.
+    let orphan_notes = usize::try_from(transaction.query_row(
+        "SELECT COUNT(*) FROM checkpoint_documents WHERE checkpoint_id = ?1 AND document_kind = 'note' AND orphan = 1",
+        [&checkpoint_id],
+        |row| row.get::<_, i64>(0),
+    )?)
+    .unwrap_or(usize::MAX);
+
+    let stale_notes = usize::try_from(transaction.query_row(
+        "SELECT COUNT(*) FROM checkpoint_documents WHERE checkpoint_id = ?1 AND document_kind = 'note' AND stale = 1",
+        [&checkpoint_id],
+        |row| row.get::<_, i64>(0),
+    )?)
+    .unwrap_or(usize::MAX);
+
+    transaction.execute(
+        "UPDATE checkpoints SET note_count = ?2, orphan_notes = ?3, stale_notes = ?4, resolved_links = ?5 WHERE id = ?1",
+        params![
+            &checkpoint_id,
+            i64::try_from(note_count).unwrap_or(i64::MAX),
+            i64::try_from(orphan_notes).unwrap_or(i64::MAX),
+            i64::try_from(stale_notes).unwrap_or(i64::MAX),
+            i64::try_from(resolved_links).unwrap_or(i64::MAX),
+        ],
+    )?;
+
+    prune_automatic_scan_checkpoints(&transaction)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn insert_checkpoint_snapshot(
     transaction: &rusqlite::Transaction<'_>,
     name: Option<&str>,
@@ -488,6 +656,90 @@ fn load_document_states(connection: &Connection) -> Result<Vec<DocumentState>, C
         .collect())
 }
 
+/// Load document states for only the specified document IDs. Used by incremental checkpoints
+/// to avoid recomputing hashes for the entire vault.
+fn load_document_states_for_ids(
+    connection: &Connection,
+    document_ids: &[String],
+    now: i64,
+) -> Result<Vec<DocumentState>, CheckpointError> {
+    if document_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = document_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+
+    // Load document basics.
+    let sql = format!(
+        "SELECT id, path, extension, lower(hex(content_hash)), file_mtime
+         FROM documents WHERE id IN ({placeholders}) ORDER BY path"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(
+        rusqlite::params_from_iter(document_ids.iter()),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
+    )?;
+    let documents = rows.collect::<Result<Vec<_>, _>>()?;
+
+    // Compute link/property/embedding hashes only for these documents.
+    let link_hashes = document_link_hashes_for_ids(connection, &placeholders, document_ids)?;
+    let property_hashes =
+        document_property_hashes_for_ids(connection, &placeholders, document_ids)?;
+    let embedding_hashes =
+        document_embedding_hashes_for_ids(connection, &placeholders, document_ids)?;
+
+    // Compute orphan status for these documents.
+    let outbound_sql = format!(
+        "SELECT source_document_id, COUNT(*) FROM links
+         WHERE resolved_target_id IS NOT NULL AND source_document_id IN ({placeholders})
+         GROUP BY source_document_id"
+    );
+    let inbound_sql = format!(
+        "SELECT resolved_target_id, COUNT(*) FROM links
+         WHERE resolved_target_id IS NOT NULL AND resolved_target_id IN ({placeholders})
+         GROUP BY resolved_target_id"
+    );
+    let outbound = count_map_parameterized(connection, &outbound_sql, document_ids)?;
+    let inbound = count_map_parameterized(connection, &inbound_sql, document_ids)?;
+
+    Ok(documents
+        .into_iter()
+        .map(|(id, path, extension, content_hash, file_mtime)| {
+            let document_kind = match extension.as_str() {
+                "md" => "note",
+                "base" => "base",
+                _ => "attachment",
+            }
+            .to_string();
+            let orphan = document_kind == "note"
+                && outbound.get(&id).copied().unwrap_or(0) == 0
+                && inbound.get(&id).copied().unwrap_or(0) == 0;
+            let stale = document_kind == "note"
+                && file_mtime > 0
+                && now.saturating_sub(file_mtime) >= STALE_AGE_SECS;
+
+            DocumentState {
+                path,
+                document_kind,
+                content_hash,
+                link_hash: link_hashes.get(&id).cloned().unwrap_or_default(),
+                property_hash: property_hashes.get(&id).cloned().unwrap_or_default(),
+                embedding_hash: embedding_hashes.get(&id).cloned().unwrap_or_default(),
+                orphan,
+                stale,
+            }
+        })
+        .collect())
+}
+
 fn count_map(
     connection: &Connection,
     sql: &str,
@@ -601,6 +853,145 @@ fn document_embedding_hashes(
         ",
     )?;
     let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            format!("{}:{}", row.get::<_, String>(1)?, row.get::<_, String>(2)?),
+        ))
+    })?;
+    let mut parts = HashMap::<String, Vec<String>>::new();
+    for row in rows {
+        let (document_id, value) = row?;
+        parts.entry(document_id).or_default().push(value);
+    }
+    let prefix = format!("{provider_name}:{model_name}:{dimensions}");
+    Ok(parts
+        .into_iter()
+        .map(|(document_id, values)| {
+            let mut all = Vec::with_capacity(values.len() + 1);
+            all.push(prefix.clone());
+            all.extend(values);
+            (document_id, hash_joined(&all))
+        })
+        .collect())
+}
+
+fn count_map_parameterized(
+    connection: &Connection,
+    sql: &str,
+    params: &[String],
+) -> Result<HashMap<String, usize>, CheckpointError> {
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            usize::try_from(row.get::<_, i64>(1)?).unwrap_or(usize::MAX),
+        ))
+    })?;
+    Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
+}
+
+fn document_link_hashes_for_ids(
+    connection: &Connection,
+    placeholders: &str,
+    document_ids: &[String],
+) -> Result<HashMap<String, String>, CheckpointError> {
+    let sql = format!(
+        "SELECT
+            source_document_id,
+            raw_text,
+            link_kind,
+            COALESCE(display_text, ''),
+            COALESCE(target_path_candidate, ''),
+            COALESCE(target_heading, ''),
+            COALESCE(target_block, ''),
+            COALESCE(target.path, '')
+        FROM links
+        LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+        WHERE source_document_id IN ({placeholders})
+        ORDER BY source_document_id, byte_offset"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(document_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            [
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ]
+            .join("|"),
+        ))
+    })?;
+
+    let mut parts = HashMap::<String, Vec<String>>::new();
+    for row in rows {
+        let (document_id, value) = row?;
+        parts.entry(document_id).or_default().push(value);
+    }
+    Ok(parts
+        .into_iter()
+        .map(|(document_id, values)| (document_id, hash_joined(&values)))
+        .collect())
+}
+
+fn document_property_hashes_for_ids(
+    connection: &Connection,
+    placeholders: &str,
+    document_ids: &[String],
+) -> Result<HashMap<String, String>, CheckpointError> {
+    let sql = format!(
+        "SELECT document_id, canonical_json
+         FROM properties
+         WHERE document_id IN ({placeholders})
+         ORDER BY document_id"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(document_ids.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    Ok(rows
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|(document_id, canonical_json)| (document_id, hash_value(&canonical_json)))
+        .collect())
+}
+
+fn document_embedding_hashes_for_ids(
+    connection: &Connection,
+    placeholders: &str,
+    document_ids: &[String],
+) -> Result<HashMap<String, String>, CheckpointError> {
+    let model = connection
+        .query_row(
+            "SELECT provider_name, model_name, dimensions
+             FROM vector_index_state WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((provider_name, model_name, dimensions)) = model else {
+        return Ok(HashMap::new());
+    };
+
+    let sql = format!(
+        "SELECT chunks.document_id, chunks.id, lower(hex(chunks.content_hash))
+         FROM chunks
+         JOIN vectors ON vectors.chunk_id = chunks.id
+         WHERE chunks.document_id IN ({placeholders})
+         ORDER BY chunks.document_id, chunks.sequence_index"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(document_ids.iter()), |row| {
         Ok((
             row.get::<_, String>(0)?,
             format!("{}:{}", row.get::<_, String>(1)?, row.get::<_, String>(2)?),

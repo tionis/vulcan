@@ -106,6 +106,25 @@ fn configure_connection(connection: &Connection) -> Result<(), CacheError> {
 }
 
 fn sync_runtime_metadata(connection: &Connection) -> Result<(), CacheError> {
+    // Skip the write transaction if all metadata values are already current.
+    let pairs = [
+        (META_SCHEMA_VERSION, crate::SCHEMA_VERSION.to_string()),
+        (META_PARSER_VERSION, PARSER_VERSION.to_string()),
+        (META_EXTRACTION_VERSION, EXTRACTION_VERSION.to_string()),
+    ];
+    let all_current = pairs.iter().all(|(key, expected)| {
+        connection
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+                row.get::<_, String>(0)
+            })
+            .ok()
+            .as_ref()
+            == Some(expected)
+    });
+    if all_current {
+        return Ok(());
+    }
+
     let transaction = connection.unchecked_transaction()?;
     sync_runtime_metadata_tx(&transaction)?;
     transaction.commit()?;

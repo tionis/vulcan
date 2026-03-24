@@ -262,6 +262,88 @@ pub(crate) fn rebuild_property_catalog(
         [PROPERTY_NAMESPACE_FRONTMATTER],
     )?;
 
+    insert_configured_property_types(transaction, configured_types)?;
+
+    Ok(())
+}
+
+/// Incrementally refresh the property catalog for only the given document IDs.
+/// Instead of a full rebuild, deletes stale catalog entries for keys that appear in the
+/// changed documents and recomputes counts only for those keys.
+pub(crate) fn refresh_property_catalog_for_documents(
+    transaction: &rusqlite::Transaction<'_>,
+    changed_document_ids: &[String],
+    configured_types: &BTreeMap<String, String>,
+) -> Result<(), rusqlite::Error> {
+    if changed_document_ids.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = changed_document_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Collect all property keys that appear in the changed documents (before or after update).
+    // We need to refresh counts for these keys.
+    let sql = format!(
+        "SELECT DISTINCT key FROM property_values WHERE document_id IN ({placeholders})"
+    );
+    let mut statement = transaction.prepare(&sql)?;
+    let rows = statement.query_map(
+        rusqlite::params_from_iter(changed_document_ids.iter()),
+        |row| row.get::<_, String>(0),
+    )?;
+    let affected_keys: Vec<String> = rows.collect::<Result<Vec<_>, _>>()?;
+
+    // Also include keys from the catalog that might now have zero usage
+    // (if the changed documents were the only ones using them).
+    // The simplest correct approach: delete catalog entries for affected keys,
+    // then reinsert with fresh counts.
+    if affected_keys.is_empty() {
+        return Ok(());
+    }
+
+    // Use numbered params: ?1..?N for keys, ?{N+1} for namespace.
+    let key_placeholders: Vec<String> = (1..=affected_keys.len())
+        .map(|i| format!("?{i}"))
+        .collect();
+    let key_list = key_placeholders.join(", ");
+    let ns_param = affected_keys.len() + 1;
+
+    let mut params: Vec<String> = affected_keys.clone();
+    params.push(PROPERTY_NAMESPACE_FRONTMATTER.to_string());
+
+    let delete_sql = format!(
+        "DELETE FROM property_catalog WHERE key IN ({key_list}) AND namespace = ?{ns_param}"
+    );
+    transaction.execute(
+        &delete_sql,
+        rusqlite::params_from_iter(params.iter()),
+    )?;
+
+    let insert_sql = format!(
+        "INSERT INTO property_catalog (key, observed_type, usage_count, namespace)
+         SELECT key, value_type, COUNT(*), ?{ns_param}
+         FROM property_values
+         WHERE key IN ({key_list})
+         GROUP BY key, value_type"
+    );
+    transaction.execute(
+        &insert_sql,
+        rusqlite::params_from_iter(params.iter()),
+    )?;
+
+    insert_configured_property_types(transaction, configured_types)?;
+
+    Ok(())
+}
+
+fn insert_configured_property_types(
+    transaction: &rusqlite::Transaction<'_>,
+    configured_types: &BTreeMap<String, String>,
+) -> Result<(), rusqlite::Error> {
     for (key, value_type) in configured_types {
         transaction.execute(
             "
@@ -276,7 +358,6 @@ pub(crate) fn rebuild_property_catalog(
             ),
         )?;
     }
-
     Ok(())
 }
 
