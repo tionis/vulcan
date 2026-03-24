@@ -14,7 +14,7 @@
   "bases": {
     "diagnostics": [
       {
-        "message": "unsupported formula expression `concat(file.name, due)`",
+        "message": "formula evaluation error: unknown function `concat`",
         "path": "views.Release Table.formulas.unsupported_calc"
       },
       {

@@ -58,6 +58,14 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
             if let Some(value) = ctx.locals.get(name) {
                 return Ok(value.clone());
             }
+            // `file` standalone → basename string (usable as link target)
+            if name == "file" {
+                return Ok(Value::String(ctx.note.file_name.clone()));
+            }
+            // `note` standalone → properties object (so note.title accesses frontmatter)
+            if name == "note" {
+                return Ok(ctx.note.properties.clone());
+            }
             // Then check note properties
             resolve_property(ctx, name)
         }
