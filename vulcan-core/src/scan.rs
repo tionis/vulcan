@@ -1,7 +1,10 @@
 use crate::cache::{drop_fts_triggers, rebuild_fts_index, restore_fts_triggers, CacheError};
 use crate::extraction::extract_attachment_chunks;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
-use crate::properties::{extract_indexed_properties, rebuild_property_catalog, IndexedProperties};
+use crate::properties::{
+    extract_indexed_properties, rebuild_property_catalog,
+    refresh_property_catalog_for_documents, IndexedProperties,
+};
 use crate::resolver::{
     LinkResolutionProblem, ResolverDocument, ResolverIndex, ResolverLink,
 };
@@ -19,6 +22,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
 use ulid::Ulid;
+
+/// When the number of changed + deleted files exceeds this threshold during an incremental
+/// scan, FTS triggers are dropped and the FTS index is rebuilt in one pass. Below this
+/// threshold, triggers handle FTS updates incrementally per row (avoiding an O(N) full rebuild).
+const FTS_BULK_THRESHOLD: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -175,10 +183,18 @@ struct CachedDocument {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 struct IncrementalScanResult {
     summary: ScanSummary,
     requires_link_resolution: bool,
+    /// When true, the target pool changed (adds/deletes) so all links must be re-resolved.
+    /// When false but `requires_link_resolution` is true, only links from changed documents
+    /// need re-resolution.
+    target_pool_changed: bool,
+    /// Document IDs that were added, updated, or deleted.
+    changed_document_ids: Vec<String>,
     requires_property_catalog_refresh: bool,
+    requires_fts_rebuild: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -282,134 +298,172 @@ where
             let discovered_count = discovered.len();
             let deleted_count = deleted_paths.len();
             let prepared = prepare_full_scan_documents(&discovered, &config)?;
-            database.rebuild_with(|transaction| -> Result<ScanSummary, ScanError> {
-                // Disable FTS triggers — we'll rebuild the index in one pass at the end.
-                drop_fts_triggers(transaction)?;
-                emit_scan_progress(
-                    on_progress,
-                    ScanProgress {
-                        mode,
-                        phase: ScanPhase::ScanningFiles,
-                        discovered: discovered_count,
-                        processed: 0,
-                        added: 0,
-                        updated: 0,
-                        unchanged: 0,
-                        deleted: deleted_count,
-                    },
-                );
-                for (index, prepared_document) in prepared.iter().enumerate() {
-                    let id = Ulid::new().to_string();
-                    apply_prepared_full_scan_document(
-                        transaction,
-                        &config,
-                        &id,
-                        prepared_document,
-                    )?;
+            let summary =
+                database.rebuild_with(|transaction| -> Result<ScanSummary, ScanError> {
+                    // Disable FTS triggers — we'll rebuild the index in one pass at the end.
+                    drop_fts_triggers(transaction)?;
                     emit_scan_progress(
                         on_progress,
                         ScanProgress {
                             mode,
                             phase: ScanPhase::ScanningFiles,
                             discovered: discovered_count,
-                            processed: index + 1,
-                            added: index + 1,
+                            processed: 0,
+                            added: 0,
                             updated: 0,
                             unchanged: 0,
                             deleted: deleted_count,
                         },
                     );
-                }
-                emit_scan_progress(
-                    on_progress,
-                    ScanProgress {
-                        mode,
-                        phase: ScanPhase::RefreshingPropertyCatalog,
-                        discovered: discovered_count,
-                        processed: discovered_count,
-                        added: discovered_count,
-                        updated: 0,
-                        unchanged: 0,
-                        deleted: deleted_count,
-                    },
-                );
-                rebuild_property_catalog(transaction, &config.property_types)?;
-                emit_scan_progress(
-                    on_progress,
-                    ScanProgress {
-                        mode,
-                        phase: ScanPhase::ResolvingLinks,
-                        discovered: discovered_count,
-                        processed: discovered_count,
-                        added: discovered_count,
-                        updated: 0,
-                        unchanged: 0,
-                        deleted: deleted_count,
-                    },
-                );
-                resolve_all_links(transaction, config.link_resolution)?;
-                rebuild_fts_index(transaction)?;
-                restore_fts_triggers(transaction)?;
-
-                let summary = ScanSummary {
-                    mode,
-                    discovered: discovered_count,
-                    added: discovered_count,
-                    updated: 0,
-                    unchanged: 0,
-                    deleted: deleted_count,
-                };
-                emit_scan_progress(
-                    on_progress,
-                    ScanProgress {
-                        mode,
-                        phase: ScanPhase::Completed,
-                        discovered: summary.discovered,
-                        processed: summary.discovered,
-                        added: summary.added,
-                        updated: summary.updated,
-                        unchanged: summary.unchanged,
-                        deleted: summary.deleted,
-                    },
-                );
-                Ok(summary)
-            })
-        }
-        ScanMode::Incremental => {
-            database.with_transaction(|transaction| -> Result<ScanSummary, ScanError> {
-                // Disable FTS triggers during the write phase; rebuild index at the end.
-                drop_fts_triggers(transaction)?;
-                let result = apply_incremental_scan(
-                    transaction,
-                    &config,
-                    &discovered,
-                    &existing,
-                    &deleted_paths,
-                    mode,
-                    on_progress,
-                )?;
-                if result.requires_property_catalog_refresh {
+                    for (index, prepared_document) in prepared.iter().enumerate() {
+                        let id = Ulid::new().to_string();
+                        apply_prepared_full_scan_document(
+                            transaction,
+                            &config,
+                            &id,
+                            prepared_document,
+                        )?;
+                        emit_scan_progress(
+                            on_progress,
+                            ScanProgress {
+                                mode,
+                                phase: ScanPhase::ScanningFiles,
+                                discovered: discovered_count,
+                                processed: index + 1,
+                                added: index + 1,
+                                updated: 0,
+                                unchanged: 0,
+                                deleted: deleted_count,
+                            },
+                        );
+                    }
                     emit_scan_progress(
                         on_progress,
                         ScanProgress {
                             mode,
                             phase: ScanPhase::RefreshingPropertyCatalog,
-                            discovered: result.summary.discovered,
-                            processed: result.summary.discovered,
-                            added: result.summary.added,
-                            updated: result.summary.updated,
-                            unchanged: result.summary.unchanged,
-                            deleted: result.summary.deleted,
+                            discovered: discovered_count,
+                            processed: discovered_count,
+                            added: discovered_count,
+                            updated: 0,
+                            unchanged: 0,
+                            deleted: deleted_count,
                         },
                     );
                     rebuild_property_catalog(transaction, &config.property_types)?;
-                }
-                if result.requires_link_resolution {
                     emit_scan_progress(
                         on_progress,
                         ScanProgress {
                             mode,
                             phase: ScanPhase::ResolvingLinks,
+                            discovered: discovered_count,
+                            processed: discovered_count,
+                            added: discovered_count,
+                            updated: 0,
+                            unchanged: 0,
+                            deleted: deleted_count,
+                        },
+                    );
+                    resolve_all_links(transaction, config.link_resolution)?;
+                    rebuild_fts_index(transaction)?;
+                    restore_fts_triggers(transaction)?;
+
+                    Ok(ScanSummary {
+                        mode,
+                        discovered: discovered_count,
+                        added: discovered_count,
+                        updated: 0,
+                        unchanged: 0,
+                        deleted: deleted_count,
+                    })
+                })?;
+            emit_scan_progress(
+                on_progress,
+                ScanProgress {
+                    mode,
+                    phase: ScanPhase::Completed,
+                    discovered: summary.discovered,
+                    processed: summary.discovered,
+                    added: summary.added,
+                    updated: summary.updated,
+                    unchanged: summary.unchanged,
+                    deleted: summary.deleted,
+                },
+            );
+            crate::history::record_scan_checkpoint(database.connection())?;
+            summary
+        }
+        ScanMode::Incremental => {
+            let result = database.with_transaction(
+                |transaction| -> Result<IncrementalScanResult, ScanError> {
+                    let result = apply_incremental_scan(
+                        transaction,
+                        &config,
+                        &discovered,
+                        &existing,
+                        &deleted_paths,
+                        mode,
+                        on_progress,
+                    )?;
+                    if result.requires_property_catalog_refresh {
+                        emit_scan_progress(
+                            on_progress,
+                            ScanProgress {
+                                mode,
+                                phase: ScanPhase::RefreshingPropertyCatalog,
+                                discovered: result.summary.discovered,
+                                processed: result.summary.discovered,
+                                added: result.summary.added,
+                                updated: result.summary.updated,
+                                unchanged: result.summary.unchanged,
+                                deleted: result.summary.deleted,
+                            },
+                        );
+                        if result.target_pool_changed {
+                            // Documents added/deleted — full catalog rebuild is needed.
+                            rebuild_property_catalog(transaction, &config.property_types)?;
+                        } else {
+                            // Only updates — refresh catalog entries for changed documents.
+                            refresh_property_catalog_for_documents(
+                                transaction,
+                                &result.changed_document_ids,
+                                &config.property_types,
+                            )?;
+                        }
+                    }
+                    if result.requires_link_resolution {
+                        emit_scan_progress(
+                            on_progress,
+                            ScanProgress {
+                                mode,
+                                phase: ScanPhase::ResolvingLinks,
+                                discovered: result.summary.discovered,
+                                processed: result.summary.discovered,
+                                added: result.summary.added,
+                                updated: result.summary.updated,
+                                unchanged: result.summary.unchanged,
+                                deleted: result.summary.deleted,
+                            },
+                        );
+                        if result.target_pool_changed {
+                            resolve_all_links(transaction, config.link_resolution)?;
+                        } else {
+                            resolve_changed_links(
+                                transaction,
+                                config.link_resolution,
+                                &result.changed_document_ids,
+                            )?;
+                        }
+                    }
+                    if result.requires_fts_rebuild {
+                        rebuild_fts_index(transaction)?;
+                        restore_fts_triggers(transaction)?;
+                    }
+                    emit_scan_progress(
+                        on_progress,
+                        ScanProgress {
+                            mode,
+                            phase: ScanPhase::Completed,
                             discovered: result.summary.discovered,
                             processed: result.summary.discovered,
                             added: result.summary.added,
@@ -418,28 +472,21 @@ where
                             deleted: result.summary.deleted,
                         },
                     );
-                    resolve_all_links(transaction, config.link_resolution)?;
-                }
-                rebuild_fts_index(transaction)?;
-                restore_fts_triggers(transaction)?;
-                emit_scan_progress(
-                    on_progress,
-                    ScanProgress {
-                        mode,
-                        phase: ScanPhase::Completed,
-                        discovered: result.summary.discovered,
-                        processed: result.summary.discovered,
-                        added: result.summary.added,
-                        updated: result.summary.updated,
-                        unchanged: result.summary.unchanged,
-                        deleted: result.summary.deleted,
-                    },
-                );
-                Ok(result.summary)
-            })
+                    Ok(result)
+                },
+            )?;
+            let has_changes = result.summary.added > 0
+                || result.summary.updated > 0
+                || result.summary.deleted > 0;
+            if has_changes {
+                crate::history::record_scan_checkpoint_incremental(
+                    database.connection(),
+                    &result.changed_document_ids,
+                )?;
+            }
+            result.summary
         }
-    }?;
-    crate::history::record_scan_checkpoint(database.connection())?;
+    };
     Ok(summary)
 }
 
@@ -552,7 +599,10 @@ fn apply_incremental_scan(
             deleted: 0,
         },
         requires_link_resolution: false,
+        target_pool_changed: false,
+        changed_document_ids: Vec::new(),
         requires_property_catalog_refresh: false,
+        requires_fts_rebuild: false,
     };
     emit_scan_progress(
         on_progress,
@@ -569,13 +619,23 @@ fn apply_incremental_scan(
     );
 
     // Phase 1: Classify files into "unchanged" (skip) vs "needs work".
+    // Precompute version hashes to avoid recomputing per file.
+    let note_version = document_index_version(DocumentKind::Note, config);
+    let attachment_version = document_index_version(DocumentKind::Attachment, config);
+    let base_version = document_index_version(DocumentKind::Base, config);
+
     let mut work_items: Vec<IncrementalWorkItem<'_>> = Vec::new();
     for file in discovered {
+        let expected_version = match file.kind {
+            DocumentKind::Note => note_version,
+            DocumentKind::Attachment => attachment_version,
+            DocumentKind::Base => base_version,
+        };
         match existing.get(&file.relative_path) {
             Some(cached)
                 if cached.file_size == file.file_size
                     && cached.file_mtime == file.file_mtime
-                    && cached.parser_version == document_index_version(file.kind, config) =>
+                    && cached.parser_version == expected_version =>
             {
                 result.summary.unchanged += 1;
             }
@@ -606,6 +666,13 @@ fn apply_incremental_scan(
     }
 
     // Phase 3: Apply all changes sequentially within the transaction.
+    // For bulk changes, drop FTS triggers and rebuild the index in one pass at the end.
+    // For small changes, keep triggers active so FTS updates happen incrementally per row.
+    let total_changes = work_items.len() + deleted_paths.len();
+    if total_changes >= FTS_BULK_THRESHOLD {
+        drop_fts_triggers(transaction)?;
+        result.requires_fts_rebuild = true;
+    }
     emit_scan_progress(
         on_progress,
         ScanProgress {
@@ -668,9 +735,11 @@ fn apply_incremental_scan(
                     }
                     PreparedDerivedContent::None => {}
                 }
+                result.changed_document_ids.push(id);
                 if is_new {
                     result.summary.added += 1;
                     result.requires_link_resolution = true;
+                    result.target_pool_changed = true;
                     result.requires_property_catalog_refresh |=
                         matches!(item.file.kind, DocumentKind::Note);
                 } else {
@@ -696,8 +765,10 @@ fn apply_incremental_scan(
 
     for path in deleted_paths {
         if let Some(cached) = existing.get(path) {
+            result.changed_document_ids.push(cached.id.clone());
             delete_document(transaction, &cached.id)?;
             result.requires_link_resolution = true;
+            result.target_pool_changed = true;
             result.requires_property_catalog_refresh = true;
             result.summary.deleted += 1;
             emit_scan_progress(
@@ -723,6 +794,7 @@ fn emit_scan_progress(on_progress: &mut impl FnMut(ScanProgress), progress: Scan
     on_progress(progress);
 }
 
+#[allow(clippy::too_many_lines)]
 fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
     let mut builder = WalkBuilder::new(vault_root);
     builder.hidden(true);
@@ -732,52 +804,106 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
     builder.parents(false);
     builder.require_git(false);
 
-    let mut files = Vec::new();
-    for entry in builder.build() {
-        let entry = entry?;
-        let Some(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_file() {
-            continue;
-        }
+    let files = std::sync::Mutex::new(Vec::new());
+    let first_error = std::sync::Mutex::new(None::<ScanError>);
 
-        let path = entry.path();
-        let metadata = fs::metadata(path)?;
-        let relative_path = normalize_relative_path(
-            path.strip_prefix(vault_root)
-                .expect("walked paths should always be inside the vault root"),
-        );
-        let filename = path
-            .file_stem()
-            .or_else(|| path.file_name())
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| ScanError::MetadataOverflow {
-                field: "filename",
-                path: path.to_path_buf(),
-            })?
-            .to_string();
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(str::to_ascii_lowercase)
-            .unwrap_or_default();
+    builder.build_parallel().run(|| {
+        let files = &files;
+        let first_error = &first_error;
+        Box::new(move |entry| {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    let mut guard = first_error.lock().expect("error lock should not be poisoned");
+                    if guard.is_none() {
+                        *guard = Some(ScanError::Ignore(err));
+                    }
+                    return ignore::WalkState::Continue;
+                }
+            };
+            let Some(file_type) = entry.file_type() else {
+                return ignore::WalkState::Continue;
+            };
+            if !file_type.is_file() {
+                return ignore::WalkState::Continue;
+            }
 
-        files.push(DiscoveredFile {
-            absolute_path: path.to_path_buf(),
-            relative_path,
-            filename,
-            extension,
-            kind: detect_document_kind(path),
-            file_size: i64::try_from(metadata.len()).map_err(|_| ScanError::MetadataOverflow {
-                field: "file_size",
-                path: path.to_path_buf(),
-            })?,
-            file_mtime: system_time_to_millis(metadata.modified()?, path)?,
-        });
+            let path = entry.path();
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => match fs::metadata(path) {
+                    Ok(m) => m,
+                    Err(err) => {
+                        let mut guard =
+                            first_error.lock().expect("error lock should not be poisoned");
+                        if guard.is_none() {
+                            *guard = Some(ScanError::Io(err));
+                        }
+                        return ignore::WalkState::Continue;
+                    }
+                },
+            };
+
+            let relative_path = normalize_relative_path(
+                path.strip_prefix(vault_root)
+                    .expect("walked paths should always be inside the vault root"),
+            );
+            let filename = match path
+                .file_stem()
+                .or_else(|| path.file_name())
+                .and_then(|value| value.to_str())
+            {
+                Some(name) => name.to_string(),
+                None => return ignore::WalkState::Continue,
+            };
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_default();
+
+            let Ok(file_size) = i64::try_from(metadata.len()) else {
+                return ignore::WalkState::Continue;
+            };
+            let file_mtime = match metadata
+                .modified()
+                .map_err(ScanError::Io)
+                .and_then(|mtime| system_time_to_millis(mtime, path))
+            {
+                Ok(mtime) => mtime,
+                Err(err) => {
+                    let mut guard =
+                        first_error.lock().expect("error lock should not be poisoned");
+                    if guard.is_none() {
+                        *guard = Some(err);
+                    }
+                    return ignore::WalkState::Continue;
+                }
+            };
+
+            files
+                .lock()
+                .expect("files lock should not be poisoned")
+                .push(DiscoveredFile {
+                    absolute_path: path.to_path_buf(),
+                    relative_path,
+                    filename,
+                    extension,
+                    kind: detect_document_kind(path),
+                    file_size,
+                    file_mtime,
+                });
+
+            ignore::WalkState::Continue
+        })
+    });
+
+    if let Some(err) = first_error.into_inner().expect("error lock should not be poisoned") {
+        return Err(err);
     }
 
-    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let mut files = files.into_inner().expect("files lock should not be poisoned");
+    files.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(files)
 }
 
@@ -1568,6 +1694,95 @@ fn resolve_all_links(
                 .execute(params![link.id, resolution.resolved_target_id])?;
         }
 
+        if let Some(problem) = resolution.problem {
+            diag_statement.execute(params![
+                Ulid::new().to_string(),
+                link.resolver_link.source_document_id,
+                resolution_problem_message(&problem, &link.resolver_link),
+                serde_json::to_string(&resolution_problem_detail(
+                    &problem,
+                    &link.resolver_link
+                ))
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                &timestamp,
+            ])?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve only links originating from the given document IDs.
+/// Used when documents were updated but no documents were added/deleted
+/// (so the target pool is unchanged and only source links need re-resolution).
+fn resolve_changed_links(
+    transaction: &Transaction<'_>,
+    mode: crate::LinkResolutionMode,
+    changed_document_ids: &[String],
+) -> Result<(), ScanError> {
+    if changed_document_ids.is_empty() {
+        return Ok(());
+    }
+
+    // Delete diagnostics only for the changed documents.
+    let mut delete_diag_statement = transaction.prepare_cached(
+        "DELETE FROM diagnostics WHERE document_id = ?1 AND kind = 'unresolved_link'",
+    )?;
+    for doc_id in changed_document_ids {
+        delete_diag_statement.execute([doc_id])?;
+    }
+
+    // Build the full resolver index (needed to resolve against all targets).
+    let documents = load_resolver_documents(transaction)?;
+    let index = ResolverIndex::build(&documents);
+
+    // Load only links from changed documents.
+    let placeholders = changed_document_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "
+        SELECT l.id, l.source_document_id, s.path, l.target_path_candidate, l.link_kind
+        FROM links l
+        JOIN documents s ON s.id = l.source_document_id
+        WHERE l.source_document_id IN ({placeholders})
+        ORDER BY l.byte_offset
+        "
+    );
+    let mut statement = transaction.prepare(&sql)?;
+    let rows = statement.query_map(
+        rusqlite::params_from_iter(changed_document_ids),
+        |row| {
+            Ok(ResolverLinkRow {
+                id: row.get(0)?,
+                resolver_link: ResolverLink {
+                    source_document_id: row.get(1)?,
+                    source_path: row.get(2)?,
+                    target_path_candidate: row.get(3)?,
+                    link_kind: parse_link_kind(&row.get::<_, String>(4)?),
+                },
+            })
+        },
+    )?;
+    let links = rows.collect::<Result<Vec<_>, _>>()?;
+
+    let mut update_statement = transaction
+        .prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
+    let mut diag_statement = transaction.prepare_cached(
+        "
+        INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
+        VALUES (?1, ?2, 'unresolved_link', ?3, ?4, ?5)
+        ",
+    )?;
+    let timestamp = current_timestamp()?;
+    for link in &links {
+        let resolution = index.resolve(&link.resolver_link, mode);
+        if resolution.resolved_target_id.is_some() {
+            update_statement
+                .execute(params![link.id, resolution.resolved_target_id])?;
+        }
         if let Some(problem) = resolution.problem {
             diag_statement.execute(params![
                 Ulid::new().to_string(),
