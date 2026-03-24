@@ -286,21 +286,21 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 **Depends on:** Phase 4.4 complete.
 **Refs:** `references/bases_syntax.md` (expression syntax, operators, date arithmetic), `references/bases_functions.md` (all global functions, type methods, file/link/date/string/number/list/object/regex APIs), `references/bases_formulats.md` (formula property creation, referencing, examples)
 
-- [ ] **Expression parser**: hand-rolled recursive descent tokenizer + parser for the full Obsidian expression syntax (arithmetic, comparison, boolean, string concatenation, unary operators, parentheses, array/object literals)
-- [ ] **Expression evaluator**: tree-walking evaluator with `ExprValue` runtime type supporting null, bool, number, string, date, duration, list, object, link, file, html/image/icon
-- [ ] **Global functions**: `if()`, `now()`, `today()`, `date()`, `duration()`, `number()`, `max()`, `min()`, `list()`, `link()`, `file()`, `escapeHTML()`, `html()`, `image()`, `icon()`
-- [ ] **String methods**: `.length`, `.contains()`, `.containsAll()`, `.containsAny()`, `.startsWith()`, `.endsWith()`, `.isEmpty()`, `.lower()`, `.title()`, `.trim()`, `.replace()`, `.repeat()`, `.reverse()`, `.slice()`, `.split()`
-- [ ] **Number methods**: `.abs()`, `.ceil()`, `.floor()`, `.round()`, `.toFixed()`, `.isEmpty()`
-- [ ] **List methods**: `.length`, `.contains()`, `.containsAll()`, `.containsAny()`, `.filter()`, `.map()`, `.reduce()`, `.flat()`, `.join()`, `.slice()`, `.sort()`, `.reverse()`, `.unique()`, `.isEmpty()`
-- [ ] **Date type**: field access (`.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`), methods (`.format()`, `.date()`, `.time()`, `.relative()`, `.isEmpty()`), date arithmetic with durations
-- [ ] **Any/Object methods**: `.isTruthy()`, `.isType()`, `.toString()`, `.isEmpty()`, `.keys()`, `.values()`
-- [ ] **NoteRecord expansion**: add `file_size`, `tags`, `links` fields; batch-load from DB
-- [ ] **File field access**: `file.basename`, `file.folder`, `file.size`, `file.ctime`, `file.tags`, `file.links`, `file.properties`
-- [ ] **File methods**: `.hasTag()`, `.hasProperty()`, `.inFolder()`, `.hasLink()`, `.asLink()`
-- [ ] **Formula references**: `formula.X` with cycle detection
-- [ ] **Filter expression upgrade**: parse filters as full expressions; partition into SQL-pushable vs in-memory; support `&&`, `||`, `!`, `!=`, multi-arg `file.hasTag()`, `file.hasProperty()`
-- [ ] **Regex support**: regex literals `/pattern/flags`, `.matches()` method
-- [ ] **Link methods**: `.asFile()`, `.linksTo()`
+- [x] **Expression parser**: hand-rolled recursive descent tokenizer + parser for the full Obsidian expression syntax (arithmetic, comparison, boolean, string concatenation, unary operators, parentheses, array/object literals)
+- [x] **Expression evaluator**: tree-walking evaluator with `serde_json::Value` runtime type supporting null, bool, number, string, list, object; date as ms timestamp
+- [x] **Global functions**: `if()`, `now()`, `today()`, `date()`, `duration()`, `number()`, `max()`, `min()`, `list()`, `link()`, `file()`, `escapeHTML()`, `html()`, `image()`, `icon()`
+- [x] **String methods**: `.length`, `.contains()`, `.containsAll()`, `.containsAny()`, `.startsWith()`, `.endsWith()`, `.isEmpty()`, `.lower()`, `.title()`, `.trim()`, `.replace()`, `.repeat()`, `.reverse()`, `.slice()`, `.split()`, `.matches()`
+- [x] **Number methods**: `.abs()`, `.ceil()`, `.floor()`, `.round()`, `.toFixed()`, `.isEmpty()`
+- [x] **List methods**: `.length`, `.contains()`, `.containsAll()`, `.containsAny()`, `.filter()`, `.map()`, `.reduce()`, `.flat()`, `.join()`, `.slice()`, `.sort()`, `.reverse()`, `.unique()`, `.isEmpty()`
+- [x] **Date type**: field access (`.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`), methods (`.format()`, `.date()`, `.time()`, `.relative()`, `.isEmpty()`), date arithmetic with durations (`now() - "7d"`)
+- [x] **Any/Object methods**: `.isTruthy()`, `.isType()`, `.toString()`, `.isEmpty()`, `.keys()`, `.values()`
+- [x] **NoteRecord expansion**: add `file_size`, `tags`, `links` fields; batch-load from DB
+- [x] **File field access**: `file.name`, `file.basename`, `file.folder`, `file.size`, `file.ext`, `file.mtime`, `file.ctime`, `file.tags`, `file.links`, `file.properties`, `file.path`
+- [x] **File methods**: `file.hasTag()`, `file.hasProperty()`, `file.inFolder()`, `file.hasLink()`, `file.asLink()`
+- [x] **Formula references**: `formula.X` (forward references produce null; no cycle detection needed for sequential evaluation)
+- [x] **Filter expression upgrade**: `!=` operator added; filter string parser handles `==` → `=` translation; `file.hasTag()` and `file.inFolder()` translated to SQL-pushable filters
+- [x] **Regex support**: regex literals `/pattern/flags` in tokenizer/parser; `.matches()` method with case-insensitive flag support
+- [ ] **Link methods**: `.asFile()`, `.linksTo()` (deferred — requires link resolution integration)
 
 ---
 
