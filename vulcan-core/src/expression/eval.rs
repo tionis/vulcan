@@ -109,6 +109,12 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
         Expr::FunctionCall(name, args) => call_function(name, args, ctx),
 
         Expr::MethodCall(receiver, method, args) => {
+            // Special-case: file.method(...) routes to file-specific methods
+            if let Expr::Identifier(name) = receiver.as_ref() {
+                if name == "file" {
+                    return call_file_method(method, args, ctx);
+                }
+            }
             let receiver_val = evaluate(receiver, ctx)?;
             call_method(&receiver_val, method, args, ctx)
         }
@@ -193,6 +199,66 @@ fn resolve_file_field(ctx: &EvalContext, field: &str) -> Result<Value, String> {
     }
 }
 
+fn call_file_method(method: &str, args: &[crate::expression::ast::Expr], ctx: &EvalContext) -> Result<Value, String> {
+    use crate::expression::methods::eval_arg;
+    match method {
+        "hasTag" => {
+            let tag_arg = eval_arg(args, 0, ctx)?;
+            let tag = match &tag_arg {
+                Value::String(s) => s.trim_start_matches('#').to_string(),
+                _ => return Ok(Value::Bool(false)),
+            };
+            let matches = ctx.note.tags.iter().any(|t| {
+                let t = t.trim_start_matches('#');
+                t == tag || t.starts_with(&format!("{tag}/"))
+            });
+            Ok(Value::Bool(matches))
+        }
+        "hasProperty" => {
+            let prop_arg = eval_arg(args, 0, ctx)?;
+            let prop = match &prop_arg {
+                Value::String(s) => s.as_str(),
+                _ => return Ok(Value::Bool(false)),
+            };
+            let has = ctx
+                .note
+                .properties
+                .as_object()
+                .map(|m| m.contains_key(prop) && m.get(prop) != Some(&Value::Null))
+                .unwrap_or(false);
+            Ok(Value::Bool(has))
+        }
+        "inFolder" => {
+            let folder_arg = eval_arg(args, 0, ctx)?;
+            let folder = match &folder_arg {
+                Value::String(s) => s.trim_end_matches('/').to_string(),
+                _ => return Ok(Value::Bool(false)),
+            };
+            let in_folder = ctx.note.document_path.starts_with(&format!("{folder}/"));
+            Ok(Value::Bool(in_folder))
+        }
+        "hasLink" => {
+            let link_arg = eval_arg(args, 0, ctx)?;
+            let target = match &link_arg {
+                Value::String(s) => s.as_str(),
+                _ => return Ok(Value::Bool(false)),
+            };
+            let has = ctx.note.links.iter().any(|l| l == target);
+            Ok(Value::Bool(has))
+        }
+        "asLink" => {
+            let path = &ctx.note.document_path;
+            let basename = path
+                .rfind('/')
+                .map(|i| &path[i + 1..])
+                .unwrap_or(path);
+            let basename = basename.trim_end_matches(".md");
+            Ok(Value::String(format!("[[{basename}]]")))
+        }
+        _ => Err(format!("unknown file method `{method}`")),
+    }
+}
+
 fn resolve_property(ctx: &EvalContext, name: &str) -> Result<Value, String> {
     if let Some(props) = ctx.note.properties.as_object() {
         Ok(props.get(name).cloned().unwrap_or(Value::Null))
@@ -204,7 +270,7 @@ fn resolve_property(ctx: &EvalContext, name: &str) -> Result<Value, String> {
 fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Result<Value, String> {
     match op {
         BinOp::Add => eval_add(left, right),
-        BinOp::Sub => eval_arithmetic(left, right, |a, b| a - b),
+        BinOp::Sub => eval_sub(left, right),
         BinOp::Mul => eval_arithmetic(left, right, |a, b| a * b),
         BinOp::Div => {
             let b = as_number(right);
@@ -230,6 +296,20 @@ fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Result<Value, Strin
 }
 
 fn eval_add(left: &Value, right: &Value) -> Result<Value, String> {
+    use crate::expression::functions::parse_duration_string;
+    // Date arithmetic: number + duration_string (e.g. now() + "7d")
+    if let (Value::Number(_), Value::String(s)) = (left, right) {
+        if let Some(ms) = parse_duration_string(s) {
+            let n = as_number(left);
+            return Ok(number_to_value(n + ms as f64));
+        }
+    }
+    if let (Value::String(s), Value::Number(_)) = (left, right) {
+        if let Some(ms) = parse_duration_string(s) {
+            let n = as_number(right);
+            return Ok(number_to_value(ms as f64 + n));
+        }
+    }
     // String concatenation if either side is a string
     match (left, right) {
         (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
@@ -237,6 +317,18 @@ fn eval_add(left: &Value, right: &Value) -> Result<Value, String> {
         (_, Value::String(b)) => Ok(Value::String(format!("{}{b}", value_to_display(left)))),
         _ => eval_arithmetic(left, right, |a, b| a + b),
     }
+}
+
+fn eval_sub(left: &Value, right: &Value) -> Result<Value, String> {
+    use crate::expression::functions::parse_duration_string;
+    // Date arithmetic: number - duration_string (e.g. now() - "7d")
+    if let (Value::Number(_), Value::String(s)) = (left, right) {
+        if let Some(ms) = parse_duration_string(s) {
+            let n = as_number(left);
+            return Ok(number_to_value(n - ms as f64));
+        }
+    }
+    eval_arithmetic(left, right, |a, b| a - b)
 }
 
 fn eval_arithmetic(left: &Value, right: &Value, f: fn(f64, f64) -> f64) -> Result<Value, String> {
