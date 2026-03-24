@@ -118,7 +118,10 @@ pub struct NoteRecord {
     pub file_name: String,
     pub file_ext: String,
     pub file_mtime: i64,
+    pub file_size: i64,
     pub properties: Value,
+    pub tags: Vec<String>,
+    pub links: Vec<String>,
 }
 
 pub fn extract_indexed_properties(
@@ -171,10 +174,12 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     let mut sql = String::from(
         "
         SELECT
+            documents.id,
             documents.path,
             documents.filename,
             documents.extension,
             documents.file_mtime,
+            documents.file_size,
             COALESCE(properties.canonical_json, '{}')
         FROM documents
         LEFT JOIN properties ON properties.document_id = documents.id
@@ -188,25 +193,77 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(
         params_from_iter(params.iter()),
-        |row| -> Result<NoteRecord, rusqlite::Error> {
-            let canonical_json: String = row.get(4)?;
+        |row| -> Result<(String, NoteRecord), rusqlite::Error> {
+            let doc_id: String = row.get(0)?;
+            let canonical_json: String = row.get(6)?;
             let properties = serde_json::from_str::<Value>(&canonical_json).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    4,
+                    6,
                     rusqlite::types::Type::Text,
                     Box::new(error),
                 )
             })?;
-            Ok(NoteRecord {
-                document_path: row.get(0)?,
-                file_name: row.get(1)?,
-                file_ext: row.get(2)?,
-                file_mtime: row.get(3)?,
-                properties,
-            })
+            Ok((
+                doc_id,
+                NoteRecord {
+                    document_path: row.get(1)?,
+                    file_name: row.get(2)?,
+                    file_ext: row.get(3)?,
+                    file_mtime: row.get(4)?,
+                    file_size: row.get(5)?,
+                    properties,
+                    tags: Vec::new(),
+                    links: Vec::new(),
+                },
+            ))
         },
     )?;
-    let mut notes = rows.collect::<Result<Vec<_>, _>>()?;
+    let mut doc_ids_and_notes: Vec<(String, NoteRecord)> =
+        rows.collect::<Result<Vec<_>, _>>()?;
+
+    // Batch-load tags
+    if !doc_ids_and_notes.is_empty() {
+        let mut tag_map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut tag_stmt =
+            connection.prepare("SELECT document_id, tag_text FROM tags")?;
+        let tag_rows = tag_stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for tag_row in tag_rows {
+            let (doc_id, tag_text) = tag_row?;
+            tag_map.entry(doc_id).or_default().push(tag_text);
+        }
+
+        // Batch-load links
+        let mut link_map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut link_stmt = connection.prepare(
+            "SELECT source_document_id, raw_text FROM links WHERE link_kind = 'wikilink'",
+        )?;
+        let link_rows = link_stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for link_row in link_rows {
+            let (doc_id, raw_text) = link_row?;
+            link_map.entry(doc_id).or_default().push(raw_text);
+        }
+
+        // Attach tags and links to notes
+        for (doc_id, note) in &mut doc_ids_and_notes {
+            if let Some(tags) = tag_map.remove(doc_id.as_str()) {
+                note.tags = tags;
+            }
+            if let Some(links) = link_map.remove(doc_id.as_str()) {
+                note.links = links;
+            }
+        }
+    }
+
+    let mut notes: Vec<NoteRecord> = doc_ids_and_notes
+        .into_iter()
+        .map(|(_, note)| note)
+        .collect();
 
     if let Some(sort_by) = query.sort_by.as_deref() {
         notes.sort_by(|left, right| {

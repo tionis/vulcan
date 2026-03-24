@@ -3,6 +3,7 @@ pub mod cache;
 pub mod chunking;
 pub mod config;
 pub mod doctor;
+pub mod expression;
 mod extraction;
 pub mod graph;
 pub mod history;
