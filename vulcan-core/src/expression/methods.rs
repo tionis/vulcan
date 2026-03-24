@@ -116,6 +116,35 @@ fn string_method(
             };
             Ok(Value::Array(parts))
         }
+        "matches" => {
+            // Accepts a regex value (stored as "/pattern/flags") or a plain string pattern.
+            // We implement a simple substring match (case-insensitive if 'i' flag present).
+            let pattern_val = eval_arg(args, 0, ctx)?;
+            let (pattern, case_insensitive) = match &pattern_val {
+                Value::String(p) if p.starts_with('/') => {
+                    // Stored regex format: /pattern/flags
+                    if let Some(end) = p.rfind('/') {
+                        if end > 0 {
+                            let flags = &p[end + 1..];
+                            let pat = &p[1..end];
+                            (pat.to_string(), flags.contains('i'))
+                        } else {
+                            (p.clone(), false)
+                        }
+                    } else {
+                        (p.clone(), false)
+                    }
+                }
+                Value::String(p) => (p.clone(), false),
+                _ => return Ok(Value::Bool(false)),
+            };
+            let matched = if case_insensitive {
+                s.to_lowercase().contains(&pattern.to_lowercase())
+            } else {
+                s.contains(&pattern)
+            };
+            Ok(Value::Bool(matched))
+        }
         // Date methods on strings that look like dates
         "format" | "date" | "time" | "relative" | "year" | "month" | "day" | "hour" | "minute"
         | "second" | "millisecond" => {
@@ -404,7 +433,7 @@ fn object_method(
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, String> {
+pub fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, String> {
     args.get(index)
         .map(|e| evaluate(e, ctx))
         .unwrap_or(Ok(Value::Null))
