@@ -702,6 +702,7 @@ enum FilterOperator {
     Lte,
     StartsWith,
     Contains,
+    HasTag,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -722,6 +723,7 @@ struct ParsedFilter {
 
 fn parse_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> {
     for (separator, operator) in [
+        (" has_tag ", FilterOperator::HasTag),
         (" contains ", FilterOperator::Contains),
         (" starts_with ", FilterOperator::StartsWith),
         (" >= ", FilterOperator::Gte),
@@ -797,6 +799,30 @@ fn filter_sql_clause(
                 "EXISTS (SELECT 1 FROM property_list_items WHERE property_list_items.document_id = documents.id AND property_list_items.key = ? AND property_list_items.value_text = ?)".to_string(),
             )
         }
+        (FilterField::Property(key), FilterOperator::HasTag, FilterValue::Text(value)) => {
+            // Use UNION ALL so SQLite seeks the (key, value_text) index for
+            // both the exact match and the nested-tag prefix range, instead of
+            // falling back to a per-document tag scan.
+            // Range: value_text >= "tag/" AND value_text < "tag0"  ('0' is the
+            // character after '/' in ASCII, so this captures all "tag/…" entries)
+            params.push(SqlValue::Text(key.clone()));
+            params.push(SqlValue::Text(value.clone()));
+            params.push(SqlValue::Text(key.clone()));
+            params.push(SqlValue::Text(format!("{value}/")));
+            params.push(SqlValue::Text(format!("{value}0")));
+            Ok(
+                "EXISTS (\
+                    SELECT 1 FROM property_list_items \
+                    WHERE property_list_items.document_id = documents.id \
+                    AND property_list_items.key = ? AND property_list_items.value_text = ? \
+                    UNION ALL \
+                    SELECT 1 FROM property_list_items \
+                    WHERE property_list_items.document_id = documents.id \
+                    AND property_list_items.key = ? \
+                    AND property_list_items.value_text >= ? AND property_list_items.value_text < ? \
+                )".to_string(),
+            )
+        }
         (FilterField::Property(key), FilterOperator::StartsWith, FilterValue::Text(value)) => {
             params.push(SqlValue::Text(key.clone()));
             params.push(SqlValue::Text(format!("{value}%")));
@@ -807,7 +833,7 @@ fn filter_sql_clause(
         (FilterField::Property(key), operator, value) => {
             property_scalar_clause(key, operator, value, params)
         }
-        (field, FilterOperator::Contains, _) => Err(PropertyError::InvalidFilter(match field {
+        (field, FilterOperator::Contains | FilterOperator::HasTag, _) => Err(PropertyError::InvalidFilter(match field {
             FilterField::Property(key) => key.clone(),
             FilterField::FilePath => "file.path".to_string(),
             FilterField::FileName => "file.name".to_string(),
@@ -932,6 +958,9 @@ fn sql_comparator(operator: FilterOperator) -> Result<&'static str, PropertyErro
         )),
         FilterOperator::Contains => Err(PropertyError::InvalidFilter(
             "contains only supports property lists".to_string(),
+        )),
+        FilterOperator::HasTag => Err(PropertyError::InvalidFilter(
+            "has_tag only supports property lists".to_string(),
         )),
     }
 }

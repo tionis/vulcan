@@ -889,7 +889,7 @@ fn translate_base_filter_expression(expression: &str) -> Option<String> {
     }
 
     if let Some(tag) = parse_has_tag_expression(expression) {
-        return Some(format!("tags contains \"{tag}\""));
+        return Some(format!("tags has_tag \"{tag}\""));
     }
 
     if let Some((field, value)) = expression.split_once("==") {
