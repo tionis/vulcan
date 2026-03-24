@@ -171,9 +171,15 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
 
-    let mut sql = String::from(
-        "
-        SELECT
+    let NoteFilterSql {
+        cte,
+        clause: filter_clause,
+        params,
+    } = build_note_filter_clause(&query.filters)?;
+
+    let mut sql = cte;
+    sql.push_str(
+        "SELECT
             documents.id,
             documents.path,
             documents.filename,
@@ -183,10 +189,8 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             COALESCE(properties.canonical_json, '{}')
         FROM documents
         LEFT JOIN properties ON properties.document_id = documents.id
-        WHERE documents.extension = 'md'
-        ",
+        WHERE documents.extension = 'md'",
     );
-    let (filter_clause, params) = build_note_filter_clause(&query.filters)?;
     sql.push_str(&filter_clause);
     sql.push_str(" ORDER BY documents.path ASC");
 
@@ -221,13 +225,24 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     let mut doc_ids_and_notes: Vec<(String, NoteRecord)> =
         rows.collect::<Result<Vec<_>, _>>()?;
 
-    // Batch-load tags
+    // Batch-load tags and links for only the matching documents
     if !doc_ids_and_notes.is_empty() {
+        let doc_ids: Vec<&str> = doc_ids_and_notes
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        let placeholders = doc_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+
         let mut tag_map: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
-        let mut tag_stmt =
-            connection.prepare("SELECT document_id, tag_text FROM tags")?;
-        let tag_rows = tag_stmt.query_map([], |row| {
+        let tag_sql =
+            format!("SELECT document_id, tag_text FROM tags WHERE document_id IN ({placeholders})");
+        let mut tag_stmt = connection.prepare(&tag_sql)?;
+        let tag_rows = tag_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         for tag_row in tag_rows {
@@ -235,13 +250,13 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             tag_map.entry(doc_id).or_default().push(tag_text);
         }
 
-        // Batch-load links
         let mut link_map: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
-        let mut link_stmt = connection.prepare(
-            "SELECT source_document_id, raw_text FROM links WHERE link_kind = 'wikilink'",
-        )?;
-        let link_rows = link_stmt.query_map([], |row| {
+        let link_sql = format!(
+            "SELECT source_document_id, raw_text FROM links WHERE link_kind = 'wikilink' AND source_document_id IN ({placeholders})"
+        );
+        let mut link_stmt = connection.prepare(&link_sql)?;
+        let link_rows = link_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         for link_row in link_rows {
@@ -249,7 +264,6 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             link_map.entry(doc_id).or_default().push(raw_text);
         }
 
-        // Attach tags and links to notes
         for (doc_id, note) in &mut doc_ids_and_notes {
             if let Some(tags) = tag_map.remove(doc_id.as_str()) {
                 note.tags = tags;
@@ -288,20 +302,94 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     })
 }
 
+/// The result of building a filter clause.
+/// `cte` is an optional `WITH ...` prefix to prepend before `SELECT`.
+/// `clause` is an `AND ...` fragment appended to the WHERE clause.
+pub(crate) struct NoteFilterSql {
+    pub cte: String,
+    pub clause: String,
+    pub params: Vec<SqlValue>,
+}
+
 pub(crate) fn build_note_filter_clause(
     filters: &[String],
-) -> Result<(String, Vec<SqlValue>), PropertyError> {
+) -> Result<NoteFilterSql, PropertyError> {
     let parsed = filters
         .iter()
         .map(|filter| parse_filter_expression(filter))
         .collect::<Result<Vec<_>, _>>()?;
+
+    // Separate has_tag filters (grouped by property key) from all other filters.
+    // Multiple has_tag filters on the same key are combined via INTERSECT on
+    // property_list_items — much faster than correlated EXISTS for large result sets.
+    let mut has_tag_by_key: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut other_filters: Vec<&ParsedFilter> = Vec::new();
+
+    for filter in &parsed {
+        if let (FilterField::Property(key), FilterOperator::HasTag, FilterValue::Text(value)) =
+            (&filter.field, filter.operator, &filter.value)
+        {
+            has_tag_by_key
+                .entry(key.clone())
+                .or_default()
+                .push(value.clone());
+        } else {
+            other_filters.push(filter);
+        }
+    }
+
+    let mut cte = String::new();
     let mut clause = String::new();
     let mut params = Vec::<SqlValue>::new();
-    for filter in &parsed {
+
+    // Generate CTEs + IN(INTERSECT) for has_tag groups
+    if !has_tag_by_key.is_empty() {
+        let mut cte_names: Vec<String> = Vec::new();
+        let mut cte_index = 0usize;
+
+        cte.push_str("WITH ");
+        for (key_index, (key, tags)) in has_tag_by_key.iter().enumerate() {
+            for tag in tags {
+                let cte_name = format!("_hts{cte_index}");
+                cte_names.push(cte_name.clone());
+                if cte_index > 0 {
+                    cte.push_str(", ");
+                }
+                cte.push_str(&cte_name);
+                cte.push_str(" AS (SELECT document_id FROM property_list_items WHERE key = ? AND value_text = ?");
+                params.push(SqlValue::Text(key.clone()));
+                params.push(SqlValue::Text(tag.clone()));
+                // Also capture nested subtags via range (e.g. "Femdom/" .. "Femdom0")
+                cte.push_str(" UNION ALL SELECT document_id FROM property_list_items WHERE key = ? AND value_text >= ? AND value_text < ?)");
+                params.push(SqlValue::Text(key.clone()));
+                params.push(SqlValue::Text(format!("{tag}/")));
+                params.push(SqlValue::Text(format!("{tag}0")));
+                cte_index += 1;
+            }
+            let _ = key_index; // suppress unused warning
+        }
+        cte.push(' ');
+
+        // IN (INTERSECT of all CTEs)
+        clause.push_str(" AND documents.id IN (");
+        for (i, name) in cte_names.iter().enumerate() {
+            if i > 0 {
+                clause.push_str(" INTERSECT ");
+            }
+            clause.push_str("SELECT document_id FROM ");
+            clause.push_str(name);
+        }
+        clause.push(')');
+    }
+
+    // Regular WHERE fragments for non-has_tag filters
+    for filter in &other_filters {
         clause.push_str(" AND ");
         clause.push_str(&filter_sql_clause(filter, &mut params)?);
     }
-    Ok((clause, params))
+
+    Ok(NoteFilterSql { cte, clause, params })
 }
 
 pub(crate) fn rebuild_property_catalog(
