@@ -300,7 +300,7 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] **Formula references**: `formula.X` (forward references produce null; no cycle detection needed for sequential evaluation)
 - [x] **Filter expression upgrade**: `!=` operator added; filter string parser handles `==` → `=` translation; `file.hasTag()` and `file.inFolder()` translated to SQL-pushable filters
 - [x] **Regex support**: regex literals `/pattern/flags` in tokenizer/parser; `.matches()` method with case-insensitive flag support
-- [ ] **Link methods**: `.asFile()`, `.linksTo()` (deferred — requires link resolution integration)
+- [x] **Link methods**: `.asFile()` (resolves wikilink string to file object via vault-wide index), `.linksTo()` (checks outbound links of the source note)
 
 ---
 

@@ -1,11 +1,12 @@
 use crate::expression::eval::EvalContext;
 use crate::expression::parse_expression;
 use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePathOptions};
+use crate::properties::load_note_index;
 use crate::{query_notes, NoteQuery, NoteRecord, PropertyError, VaultPaths};
 use serde::Serialize;
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -629,23 +630,32 @@ fn evaluate_base_view(
         Err(error) => return Err(BasesError::Property(error)),
     };
 
+    // Build a vault-wide note index for link resolution (asFile / linksTo).
+    // Start with a lightweight full-vault index (properties only, no tags/links),
+    // then overlay the current query's notes which have tags/links fully loaded.
+    let mut note_index: HashMap<String, NoteRecord> =
+        load_note_index(paths).unwrap_or_default();
+    for note in &notes {
+        note_index.insert(note.file_name.clone(), note.clone());
+    }
+
     let columns = build_view_columns(property_display_names, &view);
     let mut rows = Vec::new();
     for note in notes {
-        let formulas = evaluate_formulas(&note, &view.formulas, diagnostics, view.name.as_deref());
+        let formulas = evaluate_formulas(&note, &view.formulas, diagnostics, view.name.as_deref(), &note_index);
         let cells = columns
             .iter()
             .map(|column| {
                 (
                     column.key.clone(),
-                    evaluate_base_cell(&note, &formulas, &column.key),
+                    evaluate_base_cell(&note, &formulas, &column.key, &note_index),
                 )
             })
             .collect::<BTreeMap<_, _>>();
         let group_value = view
             .group_by
             .as_ref()
-            .map(|group_by| evaluate_base_cell(&note, &formulas, &group_by.property));
+            .map(|group_by| evaluate_base_cell(&note, &formulas, &group_by.property, &note_index));
         rows.push(BasesRow {
             document_path: note.document_path.clone(),
             file_name: note.file_name.clone(),
@@ -1218,13 +1228,14 @@ fn evaluate_formulas(
     formulas: &BTreeMap<String, String>,
     diagnostics: &mut Vec<BasesDiagnostic>,
     view_name: Option<&str>,
+    note_index: &HashMap<String, NoteRecord>,
 ) -> BTreeMap<String, Value> {
     let mut evaluated = BTreeMap::new();
 
     for (name, expression) in formulas {
         match parse_expression(expression) {
             Ok(ast) => {
-                let ctx = EvalContext::new(note, &evaluated);
+                let ctx = EvalContext::new(note, &evaluated).with_note_lookup(note_index);
                 match crate::expression::eval::evaluate(&ast, &ctx) {
                     Ok(value) => {
                         evaluated.insert(name.clone(), value);
@@ -1320,14 +1331,19 @@ fn column_display_name(key: &str, property_display_names: &BTreeMap<String, Stri
     }
 }
 
-fn evaluate_base_cell(note: &NoteRecord, formulas: &BTreeMap<String, Value>, key: &str) -> Value {
+fn evaluate_base_cell(
+    note: &NoteRecord,
+    formulas: &BTreeMap<String, Value>,
+    key: &str,
+    note_index: &HashMap<String, NoteRecord>,
+) -> Value {
     if let Some(value) = formulas.get(key) {
         return value.clone();
     }
 
     match parse_expression(key) {
         Ok(ast) => {
-            let ctx = EvalContext::new(note, formulas);
+            let ctx = EvalContext::new(note, formulas).with_note_lookup(note_index);
             crate::expression::eval::evaluate(&ast, &ctx).unwrap_or(Value::Null)
         }
         Err(_) => Value::Null,
