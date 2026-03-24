@@ -1,7 +1,7 @@
 use crate::properties::build_note_filter_clause;
 use crate::vector::query_hybrid_candidates;
 use crate::{CacheDatabase, CacheError, PropertyError, VaultPaths};
-use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
+use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -473,18 +473,8 @@ fn hybrid_search_hits(
         candidate_limit,
     )?;
     let filtered_paths = matching_note_paths(connection, &prepared.filters)?;
-    let filtered_vector_hits = vector_hits
-        .into_iter()
-        .filter(|hit| {
-            matches_filters(
-                connection,
-                &hit.document_path,
-                prepared,
-                filtered_paths.as_ref(),
-            )
-            .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
+    let filtered_vector_hits =
+        batch_filter_vector_hits(connection, vector_hits, prepared, filtered_paths.as_ref())?;
 
     let mut combined = HashMap::<String, SearchHit>::new();
     let mut scores = HashMap::<String, f64>::new();
@@ -561,55 +551,123 @@ fn reciprocal_rank(index: usize) -> f64 {
     1.0 / (60.0 + f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 1.0)
 }
 
-fn matches_filters(
+fn batch_filter_vector_hits(
     connection: &Connection,
-    document_path: &str,
+    vector_hits: Vec<crate::vector::VectorNeighborHit>,
     prepared: &PreparedSearchQuery,
     filtered_paths: Option<&HashSet<String>>,
-) -> Result<bool, rusqlite::Error> {
-    if let Some(path_prefix) = prepared.path_prefix.as_deref() {
-        if !document_path.starts_with(path_prefix) {
-            return Ok(false);
-        }
-    }
-    if let Some(paths) = filtered_paths {
-        if !paths.contains(document_path) {
-            return Ok(false);
-        }
+) -> Result<Vec<crate::vector::VectorNeighborHit>, SearchError> {
+    // Apply path_prefix and filtered_paths inline — no DB needed
+    let mut candidates: Vec<crate::vector::VectorNeighborHit> = vector_hits
+        .into_iter()
+        .filter(|hit| {
+            if let Some(prefix) = prepared.path_prefix.as_deref() {
+                if !hit.document_path.starts_with(prefix) {
+                    return false;
+                }
+            }
+            if let Some(paths) = filtered_paths {
+                if !paths.contains(&hit.document_path) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Ok(candidates);
     }
 
-    let Some(document_id) = connection
-        .query_row(
-            "SELECT id FROM documents WHERE path = ?1",
-            [document_path],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-    else {
-        return Ok(false);
-    };
+    // If neither tag nor property filter is active, no DB queries needed
+    if prepared.tag.is_none() && prepared.has_property.is_none() {
+        return Ok(candidates);
+    }
+
+    // Batch query: get document IDs for all candidate paths in one query
+    let placeholders = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("SELECT path, id FROM documents WHERE path IN ({placeholders})");
+    let path_params: Vec<&dyn rusqlite::types::ToSql> = candidates
+        .iter()
+        .map(|hit| &hit.document_path as &dyn rusqlite::types::ToSql)
+        .collect();
+    let mut stmt = connection.prepare(&sql)?;
+    let path_to_id: HashMap<String, String> = stmt
+        .query_map(path_params.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<_, _>>()?;
+
+    // Collect the document IDs that passed the path lookup
+    let doc_ids: Vec<&String> = candidates
+        .iter()
+        .filter_map(|hit| path_to_id.get(&hit.document_path))
+        .collect();
+
+    if doc_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build set of passing document IDs (starts with all that have a known path)
+    let mut passing_ids: HashSet<&str> = doc_ids.iter().map(|id| id.as_str()).collect();
+
+    // Batch tag filter
     if let Some(tag) = prepared.tag.as_deref() {
-        let has_tag: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM tags WHERE document_id = ?1 AND tag_text = ?2)",
-            params![&document_id, tag],
-            |row| row.get(0),
-        )?;
-        if !has_tag {
-            return Ok(false);
-        }
-    }
-    if let Some(property_key) = prepared.has_property.as_deref() {
-        let has_property: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM property_values WHERE document_id = ?1 AND key = ?2)",
-            params![&document_id, property_key],
-            |row| row.get(0),
-        )?;
-        if !has_property {
-            return Ok(false);
-        }
+        let id_placeholders = (1..=doc_ids.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let tag_sql = format!(
+            "SELECT DISTINCT document_id FROM tags WHERE document_id IN ({id_placeholders}) AND tag_text = ?{}",
+            doc_ids.len() + 1
+        );
+        let mut tag_params: Vec<&dyn rusqlite::types::ToSql> =
+            doc_ids.iter().map(|id| *id as &dyn rusqlite::types::ToSql).collect();
+        tag_params.push(&tag);
+        let mut tag_stmt = connection.prepare(&tag_sql)?;
+        let tagged_ids: HashSet<String> = tag_stmt
+            .query_map(tag_params.as_slice(), |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        passing_ids.retain(|id| tagged_ids.contains(*id));
     }
 
-    Ok(true)
+    // Batch property filter
+    if let Some(property_key) = prepared.has_property.as_deref() {
+        let remaining_ids: Vec<&&str> = passing_ids.iter().collect();
+        if remaining_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let id_placeholders = (1..=remaining_ids.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let prop_sql = format!(
+            "SELECT DISTINCT document_id FROM property_values WHERE document_id IN ({id_placeholders}) AND key = ?{}",
+            remaining_ids.len() + 1
+        );
+        let mut prop_params: Vec<&dyn rusqlite::types::ToSql> =
+            remaining_ids.iter().map(|id| &**id as &dyn rusqlite::types::ToSql).collect();
+        prop_params.push(&property_key);
+        let mut prop_stmt = connection.prepare(&prop_sql)?;
+        let property_ids: HashSet<String> = prop_stmt
+            .query_map(prop_params.as_slice(), |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        passing_ids.retain(|id| property_ids.contains(*id));
+    }
+
+    // Filter candidates to those whose document_id passed all filters
+    candidates.retain(|hit| {
+        path_to_id
+            .get(&hit.document_path)
+            .is_some_and(|id| passing_ids.contains(id.as_str()))
+    });
+
+    Ok(candidates)
 }
 
 fn matching_note_paths(

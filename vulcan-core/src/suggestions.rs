@@ -1,3 +1,4 @@
+use aho_corasick::AhoCorasick;
 use crate::graph::{resolve_note_reference, GraphQueryError};
 use crate::parser::parse_document;
 use crate::refactor::{RefactorChange, RefactorFileReport, RefactorReport};
@@ -165,13 +166,16 @@ pub fn suggest_mentions(
     let notes = load_note_identities(&connection)?;
     let candidates = build_mention_candidates(&notes);
     let selected_paths = selected_note_paths(paths, &notes, note_identifier)?;
+    let automaton = AhoCorasick::builder()
+        .build(candidates.iter().map(|c| c.name.as_bytes()))
+        .expect("aho-corasick should build from note names");
     let mut suggestions = Vec::new();
 
     for path in selected_paths {
         let source = fs::read_to_string(paths.vault_root().join(&path))?;
         let parsed = parse_document(&source, &config);
         let blocked = blocked_ranges(&source, &parsed);
-        suggestions.extend(find_note_mentions(&path, &source, &candidates, &blocked));
+        suggestions.extend(find_note_mentions(&path, &source, &candidates, &blocked, &automaton));
     }
 
     suggestions.sort_by(|left, right| {
@@ -432,40 +436,42 @@ fn find_note_mentions(
     source: &str,
     candidates: &[MentionCandidate],
     blocked: &[Range<usize>],
+    automaton: &AhoCorasick,
 ) -> Vec<MentionSuggestion> {
     let mut suggestions = Vec::new();
     let mut occupied = Vec::<Range<usize>>::new();
 
-    for candidate in candidates {
-        for (start, matched) in source.match_indices(&candidate.name) {
-            let end = start + matched.len();
-            if ranges_intersect(blocked, start, end)
-                || ranges_intersect(&occupied, start, end)
-                || !is_word_boundary(source, start, end)
-            {
-                continue;
-            }
-            let candidate_paths = candidate
-                .paths
-                .iter()
-                .filter(|path| path.as_str() != source_path)
-                .cloned()
-                .collect::<Vec<_>>();
-            if candidate_paths.is_empty() {
-                continue;
-            }
-            let (line, column, context) = line_column_context(source, start);
-            suggestions.push(MentionSuggestion {
-                source_path: source_path.to_string(),
-                matched_text: matched.to_string(),
-                target_path: (candidate_paths.len() == 1).then(|| candidate_paths[0].clone()),
-                candidate_paths,
-                line,
-                column,
-                context,
-            });
-            occupied.push(start..end);
+    for mat in automaton.find_overlapping_iter(source) {
+        let start = mat.start();
+        let end = mat.end();
+        let candidate = &candidates[mat.pattern().as_usize()];
+        if ranges_intersect(blocked, start, end)
+            || ranges_intersect(&occupied, start, end)
+            || !is_word_boundary(source, start, end)
+        {
+            continue;
         }
+        let candidate_paths = candidate
+            .paths
+            .iter()
+            .filter(|path| path.as_str() != source_path)
+            .cloned()
+            .collect::<Vec<_>>();
+        if candidate_paths.is_empty() {
+            continue;
+        }
+        let matched_text = &source[start..end];
+        let (line, column, context) = line_column_context(source, start);
+        suggestions.push(MentionSuggestion {
+            source_path: source_path.to_string(),
+            matched_text: matched_text.to_string(),
+            target_path: (candidate_paths.len() == 1).then(|| candidate_paths[0].clone()),
+            candidate_paths,
+            line,
+            column,
+            context,
+        });
+        occupied.push(start..end);
     }
 
     suggestions
@@ -554,12 +560,20 @@ fn merge_candidates(
         }
     }
 
+    // Pre-compute lowercased filenames to avoid re-allocating in the inner loop
+    let lowercased: Vec<String> = notes.iter()
+        .map(|n| n.filename.to_ascii_lowercase())
+        .collect();
+
     for (left_index, left) in notes.iter().enumerate() {
-        for right in notes.iter().skip(left_index + 1) {
-            let distance = levenshtein(
-                &left.filename.to_ascii_lowercase(),
-                &right.filename.to_ascii_lowercase(),
-            );
+        let left_lower = &lowercased[left_index];
+        for (right_index, right) in notes.iter().enumerate().skip(left_index + 1) {
+            let right_lower = &lowercased[right_index];
+            // Levenshtein distance ≤ 1 requires the lengths differ by at most 1
+            if left_lower.len().abs_diff(right_lower.len()) > 1 {
+                continue;
+            }
+            let distance = levenshtein(left_lower, right_lower);
             if distance > 1 || left.filename.eq_ignore_ascii_case(&right.filename) {
                 continue;
             }

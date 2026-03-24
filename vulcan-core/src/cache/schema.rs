@@ -426,6 +426,19 @@ pub fn apply_schema_v8(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
     Ok(())
 }
 
+pub fn apply_schema_v9(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_documents_extension ON documents(extension);
+        CREATE INDEX IF NOT EXISTS idx_tags_document_id ON tags(document_id);
+        CREATE INDEX IF NOT EXISTS idx_headings_document_id ON headings(document_id);
+        CREATE INDEX IF NOT EXISTS idx_block_refs_document_id ON block_refs(document_id);
+        CREATE INDEX IF NOT EXISTS idx_links_source_resolved ON links(source_document_id, resolved_target_id);
+        ",
+    )?;
+    Ok(())
+}
+
 pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     // Drop all namespaced vector tables and the legacy table.
     let vector_tables: Vec<String> = {

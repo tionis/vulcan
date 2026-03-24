@@ -310,9 +310,9 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let mut stmt = connection.prepare(
-        "SELECT path, file_name, file_ext, file_mtime, COALESCE(file_size, 0), \
-         COALESCE(properties, '{}') \
-         FROM documents",
+        "SELECT d.path, d.filename, d.extension, d.file_mtime, d.file_size, \
+         COALESCE(p.canonical_json, '{}') \
+         FROM documents d LEFT JOIN properties p ON p.document_id = d.id",
     )?;
     let rows = stmt.query_map([], |row| {
         let props_json: String = row.get(5)?;
