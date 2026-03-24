@@ -281,6 +281,27 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] `--output json` for structured results
 - [x] Integration test: `bases/` vault with supported and unsupported constructs
 
+### 4.5 Full Bases expression language
+
+**Depends on:** Phase 4.4 complete.
+**Refs:** `references/bases_syntax.md` (expression syntax, operators, date arithmetic), `references/bases_functions.md` (all global functions, type methods, file/link/date/string/number/list/object/regex APIs), `references/bases_formulats.md` (formula property creation, referencing, examples)
+
+- [ ] **Expression parser**: hand-rolled recursive descent tokenizer + parser for the full Obsidian expression syntax (arithmetic, comparison, boolean, string concatenation, unary operators, parentheses, array/object literals)
+- [ ] **Expression evaluator**: tree-walking evaluator with `ExprValue` runtime type supporting null, bool, number, string, date, duration, list, object, link, file, html/image/icon
+- [ ] **Global functions**: `if()`, `now()`, `today()`, `date()`, `duration()`, `number()`, `max()`, `min()`, `list()`, `link()`, `file()`, `escapeHTML()`, `html()`, `image()`, `icon()`
+- [ ] **String methods**: `.length`, `.contains()`, `.containsAll()`, `.containsAny()`, `.startsWith()`, `.endsWith()`, `.isEmpty()`, `.lower()`, `.title()`, `.trim()`, `.replace()`, `.repeat()`, `.reverse()`, `.slice()`, `.split()`
+- [ ] **Number methods**: `.abs()`, `.ceil()`, `.floor()`, `.round()`, `.toFixed()`, `.isEmpty()`
+- [ ] **List methods**: `.length`, `.contains()`, `.containsAll()`, `.containsAny()`, `.filter()`, `.map()`, `.reduce()`, `.flat()`, `.join()`, `.slice()`, `.sort()`, `.reverse()`, `.unique()`, `.isEmpty()`
+- [ ] **Date type**: field access (`.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`), methods (`.format()`, `.date()`, `.time()`, `.relative()`, `.isEmpty()`), date arithmetic with durations
+- [ ] **Any/Object methods**: `.isTruthy()`, `.isType()`, `.toString()`, `.isEmpty()`, `.keys()`, `.values()`
+- [ ] **NoteRecord expansion**: add `file_size`, `tags`, `links` fields; batch-load from DB
+- [ ] **File field access**: `file.basename`, `file.folder`, `file.size`, `file.ctime`, `file.tags`, `file.links`, `file.properties`
+- [ ] **File methods**: `.hasTag()`, `.hasProperty()`, `.inFolder()`, `.hasLink()`, `.asLink()`
+- [ ] **Formula references**: `formula.X` with cycle detection
+- [ ] **Filter expression upgrade**: parse filters as full expressions; partition into SQL-pushable vs in-memory; support `&&`, `||`, `!`, `!=`, multi-arg `file.hasTag()`, `file.hasProperty()`
+- [ ] **Regex support**: regex literals `/pattern/flags`, `.matches()` method
+- [ ] **Link methods**: `.asFile()`, `.linksTo()`
+
 ---
 
 ## Phase 5: Vectors
