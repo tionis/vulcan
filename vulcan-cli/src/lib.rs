@@ -4368,6 +4368,14 @@ fn render_human_value(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
         Value::Null => "null".to_string(),
+        Value::Number(n) => {
+            let f = n.as_f64().unwrap_or(0.0);
+            if f == f.trunc() && f.abs() < 1e15 {
+                format!("{}", f as i64)
+            } else {
+                n.to_string()
+            }
+        }
         _ => value.to_string(),
     }
 }
