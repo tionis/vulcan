@@ -894,6 +894,10 @@ fn translate_base_filter_expression(expression: &str) -> Option<String> {
         return Some(format!("tags has_tag \"{tag}\""));
     }
 
+    if let Some((field, value)) = expression.split_once("!=") {
+        return Some(format!("{} != {}", field.trim(), value.trim()));
+    }
+
     if let Some((field, value)) = expression.split_once("==") {
         return Some(format!("{} = {}", field.trim(), value.trim()));
     }
@@ -902,6 +906,7 @@ fn translate_base_filter_expression(expression: &str) -> Option<String> {
         || expression.contains(" contains ")
         || expression.contains(" >= ")
         || expression.contains(" <= ")
+        || expression.contains(" != ")
         || expression.contains(" = ")
         || expression.contains(" > ")
         || expression.contains(" < ")
