@@ -569,12 +569,12 @@ Replace the per-candidate string search in `suggest_mentions` / `link-mentions` 
 **Current bottleneck:** `find_note_mentions()` in `vulcan-core/src/suggestions.rs` iterates every `MentionCandidate` and calls `source.match_indices(&candidate.name)` for each — O(C × N) where C = candidate count (note names + aliases, ~13k for a large vault) and N = file content length. This runs per file being analyzed.
 
 **Implementation:**
-- [ ] Add `aho-corasick` crate to `vulcan-core/Cargo.toml` (already a transitive dep via `regex`; making it direct)
-- [ ] In `suggest_mentions()`, build an `AhoCorasick` automaton from all candidate names (once, before iterating files)
-- [ ] Replace the inner `for candidate in candidates { source.match_indices(...) }` loop in `find_note_mentions()` with a single `automaton.find_overlapping_iter(source)` pass
-- [ ] Map each match back to its `MentionCandidate` via the pattern index returned by Aho-Corasick
-- [ ] Preserve existing filtering: `ranges_intersect(blocked, ...)`, `ranges_intersect(&occupied, ...)`, `is_word_boundary()` checks remain unchanged — they operate on match positions regardless of how matches were found
-- [ ] The `link_mentions` command uses the same `suggest_mentions` path, so it benefits automatically
+- [x] Add `aho-corasick` crate to `vulcan-core/Cargo.toml` (already a transitive dep via `regex`; making it direct)
+- [x] In `suggest_mentions()`, build an `AhoCorasick` automaton from all candidate names (once, before iterating files)
+- [x] Replace the inner `for candidate in candidates { source.match_indices(...) }` loop in `find_note_mentions()` with a single `automaton.find_overlapping_iter(source)` pass
+- [x] Map each match back to its `MentionCandidate` via the pattern index returned by Aho-Corasick
+- [x] Preserve existing filtering: `ranges_intersect(blocked, ...)`, `ranges_intersect(&occupied, ...)`, `is_word_boundary()` checks remain unchanged — they operate on match positions regardless of how matches were found
+- [x] The `link_mentions` command uses the same `suggest_mentions` path, so it benefits automatically
 - [ ] Unit tests: existing `suggest_mentions` tests must produce identical results; add a benchmark test with 1000+ candidates
 
 **Expected improvement:** O(C × N) → O(N) per file (Aho-Corasick is linear in input length regardless of pattern count). For 13k candidates this is potentially 1000x faster per file.
@@ -588,12 +588,12 @@ Reduce the O(N²) pairwise Levenshtein comparison in `suggest_duplicates`.
 **Current bottleneck:** `merge_candidates()` in `vulcan-core/src/suggestions.rs` compares every pair of `NoteIdentity` filenames with a custom Levenshtein implementation (lines 857–875, Wagner-Fischer). For 13k notes this is ~90M comparisons, each involving string lowercasing and O(len₁ × len₂) dynamic programming.
 
 **Implementation:**
-- [ ] Pre-compute lowercased filenames once, outside the comparison loop (currently re-lowercased per pair)
-- [ ] Filter candidate pairs by filename length: Levenshtein distance ≤ 1 requires `|len₁ - len₂| ≤ 1`, so skip pairs where lengths differ by more than the threshold
+- [x] Pre-compute lowercased filenames once, outside the comparison loop (currently re-lowercased per pair)
+- [x] Filter candidate pairs by filename length: Levenshtein distance ≤ 1 requires `|len₁ - len₂| ≤ 1`, so skip pairs where lengths differ by more than the threshold
 - [ ] Group filenames by length into buckets; only compare within same-length and adjacent-length buckets
 - [ ] Consider a BK-tree or sorted-prefix approach for further pruning if length filtering alone is insufficient
-- [ ] The scoring thresholds (exact match = 1.0, alias collision = 0.95, similar title = 0.8) and distance threshold (> 1 = skip) remain unchanged
-- [ ] Unit tests: existing `suggest_duplicates` tests must produce identical results
+- [x] The scoring thresholds (exact match = 1.0, alias collision = 0.95, similar title = 0.8) and distance threshold (> 1 = skip) remain unchanged
+- [x] Unit tests: existing `suggest_duplicates` tests must produce identical results
 
 **Expected improvement:** Length filtering alone reduces comparisons from O(N²) to roughly O(N × B) where B = average bucket size. For natural filename distributions this is typically 10–100x fewer comparisons.
 
@@ -624,16 +624,16 @@ Add indexes for columns that appear in WHERE/JOIN clauses across many queries bu
 **Current gap:** The schema in `vulcan-core/src/cache/schema.rs` has no index on `documents(extension)` despite nearly every graph, search, property, and doctor query filtering on `WHERE extension = 'md'`. Similarly, `tags(document_id)` has no index despite DELETE/JOIN operations keyed on it.
 
 **Implementation:**
-- [ ] Add a new schema migration (`apply_schema_v9`) that creates:
+- [x] Add a new schema migration (`apply_schema_v9`) that creates:
   - `CREATE INDEX IF NOT EXISTS idx_documents_extension ON documents(extension)` — used by graph.rs, search.rs, doctor.rs, properties.rs, suggestions.rs
   - `CREATE INDEX IF NOT EXISTS idx_tags_document_id ON tags(document_id)` — used by scan.rs (DELETE), search.rs (filter), graph.rs (identity loading)
   - `CREATE INDEX IF NOT EXISTS idx_headings_document_id ON headings(document_id)` — used by scan.rs (DELETE), search.rs (heading path lookups)
   - `CREATE INDEX IF NOT EXISTS idx_block_refs_document_id ON block_refs(document_id)` — used by scan.rs (DELETE)
-  - `CREATE INDEX IF NOT EXISTS idx_links_source_document_id_resolved ON links(source_document_id, resolved_target_id)` — compound index for backlink queries that JOIN on both columns
-- [ ] Register the migration in `MigrationRegistry`
-- [ ] Bump `SCHEMA_VERSION` to 9 in `vulcan-core/src/lib.rs`
-- [ ] Verify with `EXPLAIN QUERY PLAN` that the new indexes are used by the most common queries
-- [ ] Run the existing test suite to confirm no regressions
+  - `CREATE INDEX IF NOT EXISTS idx_links_source_resolved ON links(source_document_id, resolved_target_id)` — compound index for backlink queries that JOIN on both columns
+- [x] Register the migration in `MigrationRegistry`
+- [x] Bump `SCHEMA_VERSION` to 9 in `vulcan-core/src/lib.rs`
+- [x] Verify with `EXPLAIN QUERY PLAN` that the new indexes are used by the most common queries
+- [x] Run the existing test suite to confirm no regressions
 
 **Expected improvement:** WHERE clauses on `extension = 'md'` go from full table scan to index lookup. For 13k documents this turns many O(N) scans into O(log N) lookups. The compound link index accelerates backlink queries specifically.
 
@@ -646,13 +646,13 @@ Replace per-hit filter queries in hybrid search with a single batch lookup.
 **Current bottleneck:** `matches_filters()` in `vulcan-core/src/search.rs` is called once per vector hit from `hybrid_search_hits()`. Each call runs up to 3 SQL queries: one to look up document_id by path, one to check tag existence, one to check property existence. With a typical candidate_limit of 40 vector hits, this is up to 120 individual queries.
 
 **Implementation:**
-- [ ] Before the vector hit filter loop, collect all vector hit paths into a `Vec<&str>`
-- [ ] Run a single batch query to load document_ids for all paths: `SELECT path, id FROM documents WHERE path IN (?, ?, ...)`
-- [ ] If tag filter is active, run a single batch query: `SELECT DISTINCT document_id FROM tags WHERE document_id IN (...) AND tag_text = ?`
-- [ ] If property filter is active, run a single batch query: `SELECT DISTINCT document_id FROM property_values WHERE document_id IN (...) AND key = ?`
-- [ ] Build a `HashSet<String>` of passing document_ids and filter vector hits against it
-- [ ] The existing `filtered_paths` (from keyword search pre-filtering) continues to work as a fast pre-check before the batch queries
-- [ ] Unit tests: existing hybrid search tests must produce identical results
+- [x] Before the vector hit filter loop, collect all vector hit paths into a `Vec<&str>`
+- [x] Run a single batch query to load document_ids for all paths: `SELECT path, id FROM documents WHERE path IN (?, ?, ...)`
+- [x] If tag filter is active, run a single batch query: `SELECT DISTINCT document_id FROM tags WHERE document_id IN (...) AND tag_text = ?`
+- [x] If property filter is active, run a single batch query: `SELECT DISTINCT document_id FROM property_values WHERE document_id IN (...) AND key = ?`
+- [x] Build a `HashSet<String>` of passing document_ids and filter vector hits against it
+- [x] The existing `filtered_paths` (from keyword search pre-filtering) continues to work as a fast pre-check before the batch queries
+- [x] Unit tests: existing hybrid search tests must produce identical results
 
 **Expected improvement:** 3N individual queries → 3 batch queries. For 40 vector hits this is 120 queries → 3.
 
