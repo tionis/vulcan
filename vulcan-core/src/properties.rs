@@ -753,6 +753,7 @@ enum FilterField {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FilterOperator {
     Eq,
+    Ne,
     Gt,
     Gte,
     Lt,
@@ -785,6 +786,7 @@ fn parse_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> 
         (" starts_with ", FilterOperator::StartsWith),
         (" >= ", FilterOperator::Gte),
         (" <= ", FilterOperator::Lte),
+        (" != ", FilterOperator::Ne),
         (" = ", FilterOperator::Eq),
         (" > ", FilterOperator::Gt),
         (" < ", FilterOperator::Lt),
@@ -1006,6 +1008,7 @@ fn file_field_clause(
 fn sql_comparator(operator: FilterOperator) -> Result<&'static str, PropertyError> {
     match operator {
         FilterOperator::Eq => Ok("="),
+        FilterOperator::Ne => Ok("<>"),
         FilterOperator::Gt => Ok(">"),
         FilterOperator::Gte => Ok(">="),
         FilterOperator::Lt => Ok("<"),
