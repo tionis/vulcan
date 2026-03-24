@@ -741,7 +741,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
         .map_or_else(BTreeMap::new, |value| {
             parse_property_display_names(value, &mut diagnostics)
         });
-    let views = root
+    let mut views = root
         .get(serde_yaml::Value::String("views".to_string()))
         .and_then(serde_yaml::Value::as_sequence)
         .map_or_else(Vec::new, |entries| {
@@ -752,8 +752,21 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
                 .collect()
         });
 
+    let base_formulas = root
+        .get(serde_yaml::Value::String("formulas".to_string()))
+        .map_or_else(BTreeMap::new, |value| {
+            parse_top_level_formulas(value, &mut diagnostics)
+        });
+
+    // Merge top-level formulas into views (view formulas take precedence)
+    for view in &mut views {
+        for (key, expression) in &base_formulas {
+            view.formulas.entry(key.clone()).or_insert_with(|| expression.clone());
+        }
+    }
+
     for key in root.keys().filter_map(serde_yaml::Value::as_str) {
-        if !matches!(key, "source" | "views" | "filters" | "properties") {
+        if !matches!(key, "source" | "views" | "filters" | "properties" | "formulas") {
             diagnostics.push(BasesDiagnostic {
                 path: Some(key.to_string()),
                 message: format!("unsupported top-level base field `{key}`"),
@@ -802,6 +815,7 @@ fn parse_view(
         if !matches!(
             key,
             "name" | "type" | "filters" | "sort" | "formulas" | "order" | "groupBy"
+                | "columnSize"
         ) {
             diagnostics.push(BasesDiagnostic {
                 path: Some(format!("views[{index}].{key}")),
@@ -874,6 +888,10 @@ fn translate_base_filter_expression(expression: &str) -> Option<String> {
         return Some(format!("file.path starts_with \"{prefix}/\""));
     }
 
+    if let Some(tag) = parse_has_tag_expression(expression) {
+        return Some(format!("tags contains \"{tag}\""));
+    }
+
     if let Some((field, value)) = expression.split_once("==") {
         return Some(format!("{} = {}", field.trim(), value.trim()));
     }
@@ -896,6 +914,15 @@ fn parse_in_folder_expression(expression: &str) -> Option<String> {
     let trimmed = expression.trim();
     let argument = trimmed
         .strip_prefix("file.inFolder(")?
+        .strip_suffix(')')?
+        .trim();
+    strip_matching_quotes(argument).map(ToOwned::to_owned)
+}
+
+fn parse_has_tag_expression(expression: &str) -> Option<String> {
+    let trimmed = expression.trim();
+    let argument = trimmed
+        .strip_prefix("file.hasTag(")?
         .strip_suffix(')')?
         .trim();
     strip_matching_quotes(argument).map(ToOwned::to_owned)
@@ -966,27 +993,7 @@ fn parse_view_filters(
     let Some(filters) = mapping.get(serde_yaml::Value::String("filters".to_string())) else {
         return Vec::new();
     };
-    let Some(filters) = filters.as_sequence() else {
-        diagnostics.push(BasesDiagnostic {
-            path: Some(format!("views[{index}].filters")),
-            message: "filters must be a list of query strings".to_string(),
-        });
-        return Vec::new();
-    };
-
-    filters
-        .iter()
-        .enumerate()
-        .filter_map(|(filter_index, filter)| {
-            filter.as_str().map(ToOwned::to_owned).or_else(|| {
-                diagnostics.push(BasesDiagnostic {
-                    path: Some(format!("views[{index}].filters[{filter_index}]")),
-                    message: "filter entries must be strings".to_string(),
-                });
-                None
-            })
-        })
-        .collect()
+    parse_base_filters(&format!("views[{index}].filters"), filters, diagnostics)
 }
 
 fn parse_view_sort(
@@ -1002,22 +1009,50 @@ fn parse_view_sort(
         return (Some(sort_by.to_string()), false);
     }
 
+    // Support Obsidian's list format: [{property: "field", direction: "DESC"}]
+    if let Some(sequence) = sort.as_sequence() {
+        if let Some(first) = sequence.first().and_then(serde_yaml::Value::as_mapping) {
+            let sort_by = first
+                .get(serde_yaml::Value::String("property".to_string()))
+                .and_then(serde_yaml::Value::as_str)
+                .map(ToOwned::to_owned);
+            let sort_descending = first
+                .get(serde_yaml::Value::String("direction".to_string()))
+                .and_then(serde_yaml::Value::as_str)
+                .map(|direction| direction.eq_ignore_ascii_case("desc"))
+                .unwrap_or(false);
+            if sort_by.is_none() {
+                diagnostics.push(BasesDiagnostic {
+                    path: Some(format!("views[{index}].sort[0].property")),
+                    message: "sort[0].property must be a string".to_string(),
+                });
+            }
+            return (sort_by, sort_descending);
+        }
+    }
+
     let Some(sort) = sort.as_mapping() else {
         diagnostics.push(BasesDiagnostic {
             path: Some(format!("views[{index}].sort")),
-            message: "sort must be a string or object with `by`/`desc`".to_string(),
+            message: "sort must be a string, list, or object with `by`/`desc`".to_string(),
         });
         return (None, false);
     };
 
     let sort_by = sort
         .get(serde_yaml::Value::String("by".to_string()))
+        .or_else(|| sort.get(serde_yaml::Value::String("property".to_string())))
         .and_then(serde_yaml::Value::as_str)
         .map(ToOwned::to_owned);
     let sort_descending = sort
         .get(serde_yaml::Value::String("desc".to_string()))
         .and_then(serde_yaml::Value::as_bool)
-        .unwrap_or(false);
+        .unwrap_or_else(|| {
+            sort.get(serde_yaml::Value::String("direction".to_string()))
+                .and_then(serde_yaml::Value::as_str)
+                .map(|direction| direction.eq_ignore_ascii_case("desc"))
+                .unwrap_or(false)
+        });
     if sort_by.is_none() {
         diagnostics.push(BasesDiagnostic {
             path: Some(format!("views[{index}].sort.by")),
@@ -1095,6 +1130,42 @@ fn parse_view_group_by(
     })
 }
 
+fn parse_top_level_formulas(
+    value: &serde_yaml::Value,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> BTreeMap<String, String> {
+    let Some(formulas) = value.as_mapping() else {
+        diagnostics.push(BasesDiagnostic {
+            path: Some("formulas".to_string()),
+            message: "formulas must be a mapping of name -> expression".to_string(),
+        });
+        return BTreeMap::new();
+    };
+
+    formulas
+        .iter()
+        .filter_map(|(key, value)| {
+            let Some(key) = key.as_str() else {
+                diagnostics.push(BasesDiagnostic {
+                    path: Some("formulas".to_string()),
+                    message: "formula names must be strings".to_string(),
+                });
+                return None;
+            };
+            value
+                .as_str()
+                .map(|expression| (key.to_string(), expression.to_string()))
+                .or_else(|| {
+                    diagnostics.push(BasesDiagnostic {
+                        path: Some(format!("formulas.{key}")),
+                        message: "formula expressions must be strings".to_string(),
+                    });
+                    None
+                })
+        })
+        .collect()
+}
+
 fn parse_view_formulas(
     index: usize,
     mapping: &serde_yaml::Mapping,
@@ -1148,13 +1219,18 @@ fn evaluate_formulas(
             Some(value) => {
                 evaluated.insert(name.clone(), value);
             }
-            None => diagnostics.push(BasesDiagnostic {
-                path: Some(match view_name {
-                    Some(view_name) => format!("views.{view_name}.formulas.{name}"),
-                    None => format!("formulas.{name}"),
-                }),
-                message: format!("unsupported formula expression `{expression}`"),
-            }),
+            None => {
+                let diagnostic = BasesDiagnostic {
+                    path: Some(match view_name {
+                        Some(view_name) => format!("views.{view_name}.formulas.{name}"),
+                        None => format!("formulas.{name}"),
+                    }),
+                    message: format!("unsupported formula expression `{expression}`"),
+                };
+                if !diagnostics.contains(&diagnostic) {
+                    diagnostics.push(diagnostic);
+                }
+            }
         }
     }
 
