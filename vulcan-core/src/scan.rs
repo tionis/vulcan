@@ -298,7 +298,12 @@ where
             let discovered_count = discovered.len();
             let deleted_count = deleted_paths.len();
             let prepared = prepare_full_scan_documents(&discovered, &config)?;
-            let summary =
+            // Disable FK checks for the bulk insert phase.  FK integrity is guaranteed
+            // because documents are inserted before all derived rows (headings, links,
+            // tags, etc.) within the same transaction.  The pragma must be set outside
+            // the transaction.
+            database.set_foreign_keys(false).map_err(ScanError::Cache)?;
+            let rebuild_result =
                 database.rebuild_with(|transaction| -> Result<ScanSummary, ScanError> {
                     // Disable FTS triggers — we'll rebuild the index in one pass at the end.
                     drop_fts_triggers(transaction)?;
@@ -376,7 +381,10 @@ where
                         unchanged: 0,
                         deleted: deleted_count,
                     })
-                })?;
+                });
+            // Restore FK checks regardless of rebuild outcome.
+            let _ = database.set_foreign_keys(true);
+            let summary = rebuild_result?;
             emit_scan_progress(
                 on_progress,
                 ScanProgress {
