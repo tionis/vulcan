@@ -57,6 +57,37 @@ pub trait VectorStore {
 
     fn load_hashes(&self) -> Result<HashMap<String, String>, String>;
 
+    /// Return `(pending, stale)` chunk IDs by comparing `current` against the stored index.
+    ///
+    /// - `pending`: chunk IDs whose hash does not match what is stored (or which are absent).
+    /// - `stale`: chunk IDs present in the store but absent from `current`.
+    ///
+    /// `current` is a slice of `(chunk_id, content_hash)` pairs representing the chunks that
+    /// should be indexed.
+    ///
+    /// The default implementation falls back to `load_hashes()`.
+    fn pending_and_stale_chunks(
+        &self,
+        current: &[(String, String)],
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        let stored = self.load_hashes()?;
+        let current_set: HashMap<&str, &str> = current
+            .iter()
+            .map(|(id, hash)| (id.as_str(), hash.as_str()))
+            .collect();
+        let pending = current
+            .iter()
+            .filter(|(id, hash)| stored.get(id.as_str()).map(String::as_str) != Some(hash))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let stale = stored
+            .keys()
+            .filter(|id| !current_set.contains_key(id.as_str()))
+            .cloned()
+            .collect();
+        Ok((pending, stale))
+    }
+
     fn upsert(&mut self, vectors: &[StoredVector]) -> Result<(), String>;
 
     fn delete_chunks(&mut self, chunk_ids: &[String]) -> Result<(), String>;
