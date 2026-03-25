@@ -687,7 +687,7 @@ Investigate and apply remaining SQLite tuning for bulk insert workloads.
 - [x] Profile the scan write phase using the 10K-note synthetic vault (frontmatter + links); bottleneck is B-tree growth under bulk inserts — no perf/flamegraph needed as benchmarking was sufficient
 - [x] Test disabling FK checks during bulk scan (`PRAGMA foreign_keys = OFF` within the scan transaction, re-enable after) — FKs are validated on INSERT which adds overhead for every link/heading/tag row
 - [x] Test increasing `page_size` from default 4096 to 8192 or 16384 — benchmarked: 4096→6.83s, 8192→6.53s (+26% peak throughput), 16384→6.56s (no further gain); adopted 8192
-- [ ] Test `PRAGMA locking_mode = EXCLUSIVE` during scan (skipped: causes "database is locked" when multiple connections exist, e.g. in tests)
+- [x] Test `PRAGMA locking_mode = EXCLUSIVE` during scan — **rejected**: holds the lock between transactions, blocking all concurrent reads (WAL normally allows these); would break concurrent commands, editor plugins, and the incremental scan's own inner connections
 - [x] Benchmark each change independently; kept page_size=8192 (~4% wall-clock, ~26% peak files/s on 10K vault)
 - [x] Document findings: page_size=8192 comment added to configure_connection; FK disable in scan.rs
 
