@@ -415,25 +415,35 @@ where
         let model_matches = active_model
             .as_ref()
             .is_some_and(|model| same_model(model, &requested_model));
-        let hashes = if model_matches {
-            store.load_hashes().map_err(VectorError::Store)?
-        } else {
-            HashMap::new()
-        };
         if active_model.is_some() && !model_matches {
             report.rebuilt_index = true;
         }
-        if !initialized_skip_count {
-            report.skipped = chunks
+
+        // Use SQL-side comparison to determine pending and stale chunks.
+        let current_pairs: Vec<(String, String)> = if model_matches {
+            chunks
                 .iter()
-                .filter(|chunk| hashes.get(&chunk.chunk_id) == Some(&chunk.content_hash))
-                .count();
+                .map(|c| (c.chunk_id.clone(), c.content_hash.clone()))
+                .collect()
+        } else {
+            // Model mismatch: treat everything as pending, nothing stale.
+            Vec::new()
+        };
+        let (pending_ids, stale_chunk_ids) = if model_matches {
+            store
+                .pending_and_stale_chunks(&current_pairs)
+                .map_err(VectorError::Store)?
+        } else {
+            // All chunks pending when model changed.
+            let all_pending = chunks.iter().map(|c| c.chunk_id.clone()).collect();
+            (all_pending, Vec::new())
+        };
+        let pending_count = pending_ids.len();
+
+        if !initialized_skip_count {
+            report.skipped = chunks.len().saturating_sub(pending_count);
             initialized_skip_count = true;
         }
-        let pending_count = chunks
-            .iter()
-            .filter(|chunk| hashes.get(&chunk.chunk_id) != Some(&chunk.content_hash))
-            .count();
 
         if query.dry_run {
             report.indexed = pending_count;
@@ -461,19 +471,6 @@ where
             return Ok(report);
         }
 
-        let current_chunk_ids = chunks
-            .iter()
-            .map(|chunk| chunk.chunk_id.clone())
-            .collect::<HashSet<_>>();
-        let stale_chunk_ids = if model_matches {
-            hashes
-                .keys()
-                .filter(|chunk_id| !current_chunk_ids.contains(*chunk_id))
-                .cloned()
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
         if !stale_chunk_ids.is_empty() {
             let _lock = acquire_write_lock(paths)?;
             let database = open_existing_cache(paths)?;
@@ -509,9 +506,11 @@ where
             });
         }
 
+        // Build a set of pending chunk IDs for fast lookup.
+        let pending_id_set: HashSet<String> = pending_ids.into_iter().collect();
         let pending_chunks = chunks
             .into_iter()
-            .filter(|chunk| hashes.get(&chunk.chunk_id) != Some(&chunk.content_hash))
+            .filter(|chunk| pending_id_set.contains(&chunk.chunk_id))
             .take(batch_size)
             .collect::<Vec<_>>();
         if pending_chunks.is_empty() {

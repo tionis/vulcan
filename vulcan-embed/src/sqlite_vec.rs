@@ -175,6 +175,102 @@ impl VectorStore for SqliteVecStore<'_> {
             .map_err(|error| format!("failed to collect vector hashes: {error}"))
     }
 
+    fn pending_and_stale_chunks(
+        &self,
+        current: &[(String, String)],
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        let Some(table) = &self.active_table else {
+            // No active table: everything is pending, nothing is stale.
+            let pending = current.iter().map(|(id, _)| id.clone()).collect();
+            return Ok((pending, Vec::new()));
+        };
+        if !table_exists(self.connection, table)? {
+            let pending = current.iter().map(|(id, _)| id.clone()).collect();
+            return Ok((pending, Vec::new()));
+        }
+
+        // Use a uniquely named temp table to avoid conflicts.
+        let temp_table = "_pending_check";
+
+        self.connection
+            .execute_batch(&format!(
+                "CREATE TEMP TABLE IF NOT EXISTS [{temp_table}] (
+                    chunk_id TEXT NOT NULL,
+                    content_hash TEXT NOT NULL
+                )"
+            ))
+            .map_err(|error| {
+                format!("failed to create temp table for hash comparison: {error}")
+            })?;
+
+        // Insert all current (chunk_id, content_hash) pairs.
+        {
+            let insert_sql = format!(
+                "INSERT INTO [{temp_table}] (chunk_id, content_hash) VALUES (?1, ?2)"
+            );
+            let transaction = self
+                .connection
+                .unchecked_transaction()
+                .map_err(|error| format!("failed to start temp insert transaction: {error}"))?;
+            let mut stmt = transaction
+                .prepare(&insert_sql)
+                .map_err(|error| format!("failed to prepare temp insert: {error}"))?;
+            for (chunk_id, content_hash) in current {
+                stmt.execute(params![chunk_id, content_hash])
+                    .map_err(|error| format!("failed to insert into temp table: {error}"))?;
+            }
+            drop(stmt);
+            transaction
+                .commit()
+                .map_err(|error| format!("failed to commit temp inserts: {error}"))?;
+        }
+
+        // Query pending: current chunks whose hash doesn't match what is stored.
+        let pending = {
+            let sql = format!(
+                "SELECT chunk_id FROM [{temp_table}]
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM [{table}]
+                     WHERE [{table}].chunk_id = [{temp_table}].chunk_id
+                       AND [{table}].content_hash = [{temp_table}].content_hash
+                 )"
+            );
+            let mut stmt = self
+                .connection
+                .prepare(&sql)
+                .map_err(|error| format!("failed to prepare pending query: {error}"))?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("failed to execute pending query: {error}"))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("failed to collect pending chunk IDs: {error}"))?
+        };
+
+        // Query stale: stored chunks not present in current.
+        let stale = {
+            let sql = format!(
+                "SELECT chunk_id FROM [{table}]
+                 WHERE chunk_id NOT IN (SELECT chunk_id FROM [{temp_table}])"
+            );
+            let mut stmt = self
+                .connection
+                .prepare(&sql)
+                .map_err(|error| format!("failed to prepare stale query: {error}"))?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("failed to execute stale query: {error}"))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("failed to collect stale chunk IDs: {error}"))?
+        };
+
+        // Clean up temp table for reuse within the same connection.
+        self.connection
+            .execute_batch(&format!("DROP TABLE IF EXISTS [{temp_table}]"))
+            .map_err(|error| format!("failed to drop temp table: {error}"))?;
+
+        Ok((pending, stale))
+    }
+
     fn load_vectors(&self) -> Result<Vec<StoredVector>, String> {
         let Some(table) = &self.active_table else {
             return Ok(Vec::new());
