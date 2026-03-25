@@ -3,6 +3,7 @@ use serde_json::Value;
 use crate::expression::ast::Expr;
 use crate::expression::eval::{as_number, evaluate, is_truthy, number_to_value, value_to_display, EvalContext};
 
+#[allow(clippy::too_many_lines)]
 pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     match name {
         "if" => func_if(args, ctx),
@@ -17,8 +18,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
             let val = eval_arg(args, 0, ctx)?;
             match &val {
                 Value::String(s) => Ok(parse_date_string(s)
-                    .map(|ms| Value::Number(ms.into()))
-                    .unwrap_or(Value::Null)),
+                    .map_or(Value::Null, |ms| Value::Number(ms.into()))),
                 Value::Number(_) => Ok(val),
                 _ => Ok(Value::Null),
             }
@@ -36,7 +36,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
             let values = eval_all_args(args, ctx)?;
             let result = values
                 .iter()
-                .filter_map(|v| v.as_f64())
+                .filter_map(serde_json::Value::as_f64)
                 .fold(f64::NEG_INFINITY, f64::max);
             if result == f64::NEG_INFINITY {
                 Ok(Value::Null)
@@ -48,7 +48,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
             let values = eval_all_args(args, ctx)?;
             let result = values
                 .iter()
-                .filter_map(|v| v.as_f64())
+                .filter_map(serde_json::Value::as_f64)
                 .fold(f64::INFINITY, f64::min);
             if result == f64::INFINITY {
                 Ok(Value::Null)
@@ -87,15 +87,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
                     .replace('\'', "&#39;"),
             ))
         }
-        "html" => {
-            let val = eval_arg(args, 0, ctx)?;
-            Ok(Value::String(value_to_display(&val)))
-        }
-        "image" => {
-            let val = eval_arg(args, 0, ctx)?;
-            Ok(Value::String(value_to_display(&val)))
-        }
-        "icon" => {
+        "html" | "image" | "icon" => {
             let val = eval_arg(args, 0, ctx)?;
             Ok(Value::String(value_to_display(&val)))
         }
@@ -108,8 +100,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
             let val = eval_arg(args, 0, ctx)?;
             match &val {
                 Value::String(s) => Ok(parse_duration_string(s)
-                    .map(|ms| Value::Number(ms.into()))
-                    .unwrap_or(Value::Null)),
+                    .map_or(Value::Null, |ms| Value::Number(ms.into()))),
                 _ => Ok(Value::Null),
             }
         }
@@ -137,8 +128,7 @@ fn func_if(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
 
 fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, String> {
     args.get(index)
-        .map(|e| evaluate(e, ctx))
-        .unwrap_or(Ok(Value::Null))
+        .map_or(Ok(Value::Null), |e| evaluate(e, ctx))
 }
 
 fn eval_all_args(args: &[Expr], ctx: &EvalContext) -> Result<Vec<Value>, String> {
@@ -146,6 +136,7 @@ fn eval_all_args(args: &[Expr], ctx: &EvalContext) -> Result<Vec<Value>, String>
 }
 
 /// Parse an ISO 8601 date string into milliseconds since epoch.
+#[must_use]
 pub fn parse_date_string(s: &str) -> Option<i64> {
     let s = s.trim();
     // Try YYYY-MM-DD HH:mm:ss or YYYY-MM-DD
@@ -193,10 +184,11 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let yoe = y - era * 400;
     let doy = (153 * m + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
+    era * 146_097 + doe - 719_468
 }
 
 /// Parse a duration string like "1d", "2w", "3h", "30m", "10s" into milliseconds.
+#[must_use]
 pub fn parse_duration_string(s: &str) -> Option<i64> {
     let s = s.trim().trim_matches(|c: char| c == '\'' || c == '"');
     if s.is_empty() {
@@ -222,7 +214,10 @@ pub fn parse_duration_string(s: &str) -> Option<i64> {
                 'y' => n * 365.0 * 86400.0 * 1000.0,
                 _ => return None,
             };
-            total_ms += ms as i64;
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                total_ms += ms as i64;
+            }
         }
     }
 
@@ -234,13 +229,14 @@ pub fn parse_duration_string(s: &str) -> Option<i64> {
 }
 
 /// Extract date components from a millisecond timestamp.
+#[must_use]
 pub fn date_components(ms: i64) -> (i64, i64, i64, i64, i64, i64, i64) {
     let total_seconds = ms / 1000;
     let day_seconds = ((total_seconds % 86400) + 86400) % 86400;
     let hour = day_seconds / 3600;
     let minute = (day_seconds % 3600) / 60;
     let second = day_seconds % 60;
-    let millisecond = ((ms % 1000) + 1000) % 1000;
+    let millisecond = ms.rem_euclid(1000);
 
     let days = if ms >= 0 {
         ms / 86_400_000
@@ -254,10 +250,10 @@ pub fn date_components(ms: i64) -> (i64, i64, i64, i64, i64, i64, i64) {
 
 /// Days since Unix epoch to civil date.
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -268,6 +264,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 /// Format a date timestamp using a subset of Moment.js tokens.
+#[must_use]
 pub fn format_date(ms: i64, format: &str) -> String {
     let (year, month, day, hour, minute, second, millisecond) = date_components(ms);
     format

@@ -1036,8 +1036,7 @@ fn parse_view_sort(
             let sort_descending = first
                 .get(serde_yaml::Value::String("direction".to_string()))
                 .and_then(serde_yaml::Value::as_str)
-                .map(|direction| direction.eq_ignore_ascii_case("desc"))
-                .unwrap_or(false);
+                .is_some_and(|direction| direction.eq_ignore_ascii_case("desc"));
             if sort_by.is_none() {
                 diagnostics.push(BasesDiagnostic {
                     path: Some(format!("views[{index}].sort[0].property")),
@@ -1067,8 +1066,7 @@ fn parse_view_sort(
         .unwrap_or_else(|| {
             sort.get(serde_yaml::Value::String("direction".to_string()))
                 .and_then(serde_yaml::Value::as_str)
-                .map(|direction| direction.eq_ignore_ascii_case("desc"))
-                .unwrap_or(false)
+                .is_some_and(|direction| direction.eq_ignore_ascii_case("desc"))
         });
     if sort_by.is_none() {
         diagnostics.push(BasesDiagnostic {

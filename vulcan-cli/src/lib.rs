@@ -4364,6 +4364,7 @@ fn print_selected_human_fields(row: &Value, fields: &[String]) {
     println!("{}", rendered.join(" | "));
 }
 
+#[allow(clippy::float_cmp, clippy::cast_possible_truncation)]
 fn render_human_value(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),

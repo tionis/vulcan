@@ -35,7 +35,7 @@ pub fn call_method(
         Value::String(s) => string_method(s, method, args, ctx),
         Value::Number(n) => number_method(n.as_f64().unwrap_or(0.0), method, args, ctx),
         Value::Array(arr) => array_method(arr, method, args, ctx),
-        Value::Object(map) => object_method(map, method, args, ctx),
+        Value::Object(map) => Ok(object_method(map, method, args, ctx)),
         Value::Bool(_) => match method {
             "isEmpty" => Ok(Value::Bool(false)),
             _ => Ok(Value::Null),
@@ -49,6 +49,7 @@ pub fn call_method(
 
 // ── String methods ───────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn string_method(
     s: &str,
     method: &str,
@@ -207,6 +208,7 @@ fn title_case(s: &str) -> String {
 
 // ── Number methods ───────────────────────────────────────────────────
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn number_method(
     n: f64,
     method: &str,
@@ -218,12 +220,12 @@ fn number_method(
         "ceil" => Ok(number_to_value(n.ceil())),
         "floor" => Ok(number_to_value(n.floor())),
         "round" => {
-            if !args.is_empty() {
+            if args.is_empty() {
+                Ok(number_to_value(n.round()))
+            } else {
                 let digits = eval_number_arg(args, 0, ctx)?;
                 let factor = 10_f64.powi(digits as i32);
                 Ok(number_to_value((n * factor).round() / factor))
-            } else {
-                Ok(number_to_value(n.round()))
             }
         }
         "toFixed" => {
@@ -295,6 +297,7 @@ fn date_method(
 
 // ── Array methods ────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn array_method(
     arr: &[Value],
     method: &str,
@@ -323,7 +326,7 @@ fn array_method(
             let sep = eval_string_arg(args, 0, ctx)?;
             let joined: String = arr
                 .iter()
-                .map(|v| value_to_display(v))
+                .map(value_to_display)
                 .collect::<Vec<_>>()
                 .join(&sep);
             Ok(Value::String(joined))
@@ -345,7 +348,7 @@ fn array_method(
         }
         "sort" => {
             let mut result: Vec<Value> = arr.to_vec();
-            result.sort_by(|a, b| compare_values_for_sort(a, b));
+            result.sort_by(compare_values_for_sort);
             Ok(Value::Array(result))
         }
         "unique" => {
@@ -453,14 +456,14 @@ fn object_method(
     method: &str,
     _args: &[Expr],
     _ctx: &EvalContext,
-) -> Result<Value, String> {
+) -> Value {
     match method {
-        "isEmpty" => Ok(Value::Bool(map.is_empty())),
-        "keys" => Ok(Value::Array(
+        "isEmpty" => Value::Bool(map.is_empty()),
+        "keys" => Value::Array(
             map.keys().map(|k| Value::String(k.clone())).collect(),
-        )),
-        "values" => Ok(Value::Array(map.values().cloned().collect())),
-        _ => Ok(Value::Null),
+        ),
+        "values" => Value::Array(map.values().cloned().collect()),
+        _ => Value::Null,
     }
 }
 
@@ -468,8 +471,7 @@ fn object_method(
 
 pub fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, String> {
     args.get(index)
-        .map(|e| evaluate(e, ctx))
-        .unwrap_or(Ok(Value::Null))
+        .map_or(Ok(Value::Null), |e| evaluate(e, ctx))
 }
 
 fn eval_all_args(args: &[Expr], ctx: &EvalContext) -> Result<Vec<Value>, String> {

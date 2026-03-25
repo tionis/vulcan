@@ -104,7 +104,7 @@ impl CacheDatabase {
             .map_err(CacheError::from)
     }
 
-    /// Set the SQLite locking mode for this connection.
+    /// Set the `SQLite` locking mode for this connection.
     ///
     /// Use `"EXCLUSIVE"` during single-writer bulk operations to eliminate shared-lock
     /// overhead.  Restore to `"NORMAL"` when done.  Must be called outside a transaction.

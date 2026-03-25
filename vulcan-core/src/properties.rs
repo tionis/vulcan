@@ -167,6 +167,7 @@ pub fn extract_indexed_properties(
     }))
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
@@ -302,7 +303,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     })
 }
 
-/// Load a lightweight index of all notes keyed by file_name (basename without extension).
+/// Load a lightweight index of all notes keyed by `file_name` (basename without extension).
 /// Loads only core document fields and frontmatter properties; tags and links are left empty
 /// since they require expensive batch queries. Notes in the current view should be overlaid
 /// on top of this index so their tags/links are available.
@@ -328,7 +329,7 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
     let mut map = HashMap::new();
     for row in rows {
         let (path, file_name, file_ext, file_mtime, file_size, props_json) = row?;
-        let properties = serde_json::from_str(&props_json).unwrap_or(Value::Object(Default::default()));
+        let properties = serde_json::from_str(&props_json).unwrap_or(Value::Object(serde_json::Map::default()));
         map.insert(
             file_name.clone(),
             NoteRecord {
