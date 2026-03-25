@@ -27,31 +27,31 @@ use vulcan_core::{
     drop_vector_model, evaluate_base_file, execute_query_report, export_static_search_index,
     index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
     link_mentions, list_checkpoints, list_saved_reports, list_vector_models, load_saved_report,
-    merge_tags, move_note,
-    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
-    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
-    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
-    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
-    resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
-    suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache, watch_vault,
-    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport,
-    BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, InitSummary, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
-    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery,
-    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
-    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
-    VectorRepairReport, StoredModelInfo, WatchOptions, WatchReport,
+    merge_tags, move_note, query_backlinks, query_change_report, query_graph_analytics,
+    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
+    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
+    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
+    repair_vectors_with_progress, resolve_note_reference, save_saved_report,
+    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
+    vector_duplicates, verify_cache, watch_vault, BacklinkRecord, BacklinksReport, BaseViewGroupBy,
+    BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DuplicateSuggestionsReport, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorReport,
+    RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
+    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, StoredModelInfo, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
+    VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 
 #[derive(Debug)]
@@ -2046,8 +2046,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 Ok(())
             }
             VectorsCommand::Models { export } => {
-                let models =
-                    list_vector_models(&paths).map_err(CliError::operation)?;
+                let models = list_vector_models(&paths).map_err(CliError::operation)?;
                 let export = resolve_cli_export(export)?;
                 print_vector_models_report(
                     cli.output,
@@ -2059,14 +2058,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 Ok(())
             }
             VectorsCommand::DropModel { key } => {
-                let dropped =
-                    drop_vector_model(&paths, key).map_err(CliError::operation)?;
+                let dropped = drop_vector_model(&paths, key).map_err(CliError::operation)?;
                 if dropped {
                     if cli.output == OutputFormat::Json {
-                        println!(
-                            "{}",
-                            serde_json::json!({"dropped": true, "cache_key": key})
-                        );
+                        println!("{}", serde_json::json!({"dropped": true, "cache_key": key}));
                     } else {
                         eprintln!("Dropped model: {key}");
                     }

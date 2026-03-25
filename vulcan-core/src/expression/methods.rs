@@ -1,7 +1,9 @@
 use serde_json::Value;
 
 use crate::expression::ast::Expr;
-use crate::expression::eval::{as_number, evaluate, is_truthy, number_to_value, value_to_display, EvalContext};
+use crate::expression::eval::{
+    as_number, evaluate, is_truthy, number_to_value, value_to_display, EvalContext,
+};
 use crate::expression::functions::{date_components, format_date};
 
 pub fn call_method(
@@ -49,13 +51,12 @@ pub fn call_method(
 
 // ── String methods ───────────────────────────────────────────────────
 
-#[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn string_method(
-    s: &str,
-    method: &str,
-    args: &[Expr],
-    ctx: &EvalContext,
-) -> Result<Value, String> {
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn string_method(s: &str, method: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     match method {
         "contains" => {
             let needle = eval_string_arg(args, 0, ctx)?;
@@ -168,9 +169,10 @@ fn string_method(
             };
             if let Some(lookup) = ctx.note_lookup {
                 if let Some(source_note) = lookup.get(source_name) {
-                    let found = source_note.links.iter().any(|l| {
-                        parse_wikilink_target(l) == target_name.as_str()
-                    });
+                    let found = source_note
+                        .links
+                        .iter()
+                        .any(|l| parse_wikilink_target(l) == target_name.as_str());
                     return Ok(Value::Bool(found));
                 }
             }
@@ -209,12 +211,7 @@ fn title_case(s: &str) -> String {
 // ── Number methods ───────────────────────────────────────────────────
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn number_method(
-    n: f64,
-    method: &str,
-    args: &[Expr],
-    ctx: &EvalContext,
-) -> Result<Value, String> {
+fn number_method(n: f64, method: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     match method {
         "abs" => Ok(number_to_value(n.abs())),
         "ceil" => Ok(number_to_value(n.ceil())),
@@ -242,12 +239,7 @@ fn number_method(
 
 // ── Date methods ─────────────────────────────────────────────────────
 
-fn date_method(
-    ms: i64,
-    method: &str,
-    args: &[Expr],
-    ctx: &EvalContext,
-) -> Result<Value, String> {
+fn date_method(ms: i64, method: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let (year, month, day, hour, minute, second, millisecond) = date_components(ms);
 
     match method {
@@ -297,7 +289,11 @@ fn date_method(
 
 // ── Array methods ────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn array_method(
     arr: &[Value],
     method: &str,
@@ -312,13 +308,17 @@ fn array_method(
         "containsAll" => {
             let needles = eval_all_args(args, ctx)?;
             Ok(Value::Bool(
-                needles.iter().all(|n| arr.iter().any(|v| values_equal(v, n))),
+                needles
+                    .iter()
+                    .all(|n| arr.iter().any(|v| values_equal(v, n))),
             ))
         }
         "containsAny" => {
             let needles = eval_all_args(args, ctx)?;
             Ok(Value::Bool(
-                needles.iter().any(|n| arr.iter().any(|v| values_equal(v, n))),
+                needles
+                    .iter()
+                    .any(|n| arr.iter().any(|v| values_equal(v, n))),
             ))
         }
         "isEmpty" => Ok(Value::Bool(arr.is_empty())),
@@ -384,9 +384,7 @@ fn array_method(
                     locals: ctx.locals.clone(),
                     note_lookup: ctx.note_lookup,
                 };
-                local_ctx
-                    .locals
-                    .insert("value".to_string(), item.clone());
+                local_ctx.locals.insert("value".to_string(), item.clone());
                 local_ctx
                     .locals
                     .insert("index".to_string(), Value::Number(i.into()));
@@ -410,9 +408,7 @@ fn array_method(
                     locals: ctx.locals.clone(),
                     note_lookup: ctx.note_lookup,
                 };
-                local_ctx
-                    .locals
-                    .insert("value".to_string(), item.clone());
+                local_ctx.locals.insert("value".to_string(), item.clone());
                 local_ctx
                     .locals
                     .insert("index".to_string(), Value::Number(i.into()));
@@ -434,9 +430,7 @@ fn array_method(
                     locals: ctx.locals.clone(),
                     note_lookup: ctx.note_lookup,
                 };
-                local_ctx
-                    .locals
-                    .insert("value".to_string(), item.clone());
+                local_ctx.locals.insert("value".to_string(), item.clone());
                 local_ctx
                     .locals
                     .insert("index".to_string(), Value::Number(i.into()));
@@ -459,9 +453,7 @@ fn object_method(
 ) -> Value {
     match method {
         "isEmpty" => Value::Bool(map.is_empty()),
-        "keys" => Value::Array(
-            map.keys().map(|k| Value::String(k.clone())).collect(),
-        ),
+        "keys" => Value::Array(map.keys().map(|k| Value::String(k.clone())).collect()),
         "values" => Value::Array(map.values().cloned().collect()),
         _ => Value::Null,
     }
@@ -484,10 +476,12 @@ fn eval_string_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Str
 }
 
 fn eval_all_string_args(args: &[Expr], ctx: &EvalContext) -> Result<Vec<String>, String> {
-    args.iter().map(|e| {
-        let val = evaluate(e, ctx)?;
-        Ok(value_to_display(&val))
-    }).collect()
+    args.iter()
+        .map(|e| {
+            let val = evaluate(e, ctx)?;
+            Ok(value_to_display(&val))
+        })
+        .collect()
 }
 
 fn eval_number_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<f64, String> {
@@ -536,7 +530,7 @@ mod tests {
             document_path: "folder/note.md".to_string(),
             file_name: "note".to_string(),
             file_ext: "md".to_string(),
-            file_mtime: 1700000000,
+            file_mtime: 1_700_000_000,
             file_size: 1234,
             properties: serde_json::json!({"status": "done", "items": [1, 2, 3, 2]}),
             tags: vec![],
@@ -575,10 +569,7 @@ mod tests {
 
     #[test]
     fn string_trim() {
-        assert_eq!(
-            eval(r#""  hi  ".trim()"#),
-            Value::String("hi".to_string())
-        );
+        assert_eq!(eval(r#""  hi  ".trim()"#), Value::String("hi".to_string()));
     }
 
     #[test]
@@ -629,14 +620,8 @@ mod tests {
 
     #[test]
     fn string_contains_all_any() {
-        assert_eq!(
-            eval(r#""hello".containsAll("h", "e")"#),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            eval(r#""hello".containsAny("x", "e")"#),
-            Value::Bool(true)
-        );
+        assert_eq!(eval(r#""hello".containsAll("h", "e")"#), Value::Bool(true));
+        assert_eq!(eval(r#""hello".containsAny("x", "e")"#), Value::Bool(true));
     }
 
     // ── Number methods ──────────────────────────────────────────────
@@ -694,26 +679,17 @@ mod tests {
 
     #[test]
     fn array_unique() {
-        assert_eq!(
-            eval("[1, 2, 2, 3].unique()"),
-            serde_json::json!([1, 2, 3])
-        );
+        assert_eq!(eval("[1, 2, 2, 3].unique()"), serde_json::json!([1, 2, 3]));
     }
 
     #[test]
     fn array_flat() {
-        assert_eq!(
-            eval("[[1, 2], [3]].flat()"),
-            serde_json::json!([1, 2, 3])
-        );
+        assert_eq!(eval("[[1, 2], [3]].flat()"), serde_json::json!([1, 2, 3]));
     }
 
     #[test]
     fn array_slice() {
-        assert_eq!(
-            eval("[1, 2, 3, 4].slice(1, 3)"),
-            serde_json::json!([2, 3])
-        );
+        assert_eq!(eval("[1, 2, 3, 4].slice(1, 3)"), serde_json::json!([2, 3]));
     }
 
     #[test]
@@ -734,19 +710,16 @@ mod tests {
 
     #[test]
     fn array_reduce() {
-        assert_eq!(eval("[1, 2, 3].reduce(acc + value, 0)"), serde_json::json!(6));
+        assert_eq!(
+            eval("[1, 2, 3].reduce(acc + value, 0)"),
+            serde_json::json!(6)
+        );
     }
 
     #[test]
     fn array_contains_all_any() {
-        assert_eq!(
-            eval("[1, 2, 3].containsAll(2, 3)"),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            eval("[1, 2, 3].containsAny(3, 4)"),
-            Value::Bool(true)
-        );
+        assert_eq!(eval("[1, 2, 3].containsAll(2, 3)"), Value::Bool(true));
+        assert_eq!(eval("[1, 2, 3].containsAny(3, 4)"), Value::Bool(true));
     }
 
     // ── Object methods ──────────────────────────────────────────────
@@ -765,7 +738,7 @@ mod tests {
 
     #[test]
     fn object_is_empty() {
-        assert_eq!(eval(r#"{}.isEmpty()"#), Value::Bool(true));
+        assert_eq!(eval(r"{}.isEmpty()"), Value::Bool(true));
     }
 
     // ── Universal methods ───────────────────────────────────────────
@@ -785,10 +758,7 @@ mod tests {
 
     #[test]
     fn to_string_method() {
-        assert_eq!(
-            eval("(123).toString()"),
-            Value::String("123".to_string())
-        );
+        assert_eq!(eval("(123).toString()"), Value::String("123".to_string()));
     }
 
     // ── Global functions ────────────────────────────────────────────
@@ -813,6 +783,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn number_function() {
         assert_eq!(eval(r#"number("3.14")"#), serde_json::json!(3.14));
     }

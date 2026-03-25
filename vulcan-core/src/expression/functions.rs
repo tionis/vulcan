@@ -1,7 +1,9 @@
 use serde_json::Value;
 
 use crate::expression::ast::Expr;
-use crate::expression::eval::{as_number, evaluate, is_truthy, number_to_value, value_to_display, EvalContext};
+use crate::expression::eval::{
+    as_number, evaluate, is_truthy, number_to_value, value_to_display, EvalContext,
+};
 
 #[allow(clippy::too_many_lines)]
 pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -17,8 +19,9 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "date" => {
             let val = eval_arg(args, 0, ctx)?;
             match &val {
-                Value::String(s) => Ok(parse_date_string(s)
-                    .map_or(Value::Null, |ms| Value::Number(ms.into()))),
+                Value::String(s) => {
+                    Ok(parse_date_string(s).map_or(Value::Null, |ms| Value::Number(ms.into())))
+                }
                 Value::Number(_) => Ok(val),
                 _ => Ok(Value::Null),
             }
@@ -99,8 +102,9 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "duration" => {
             let val = eval_arg(args, 0, ctx)?;
             match &val {
-                Value::String(s) => Ok(parse_duration_string(s)
-                    .map_or(Value::Null, |ms| Value::Number(ms.into()))),
+                Value::String(s) => {
+                    Ok(parse_duration_string(s).map_or(Value::Null, |ms| Value::Number(ms.into())))
+                }
                 _ => Ok(Value::Null),
             }
         }
@@ -291,8 +295,11 @@ mod tests {
     #[test]
     fn test_parse_date_with_time() {
         let ms = parse_date_string("2025-06-15 14:30:00").unwrap();
-        let (y, m, d, h, min, s, _) = date_components(ms);
-        assert_eq!((y, m, d, h, min, s), (2025, 6, 15, 14, 30, 0));
+        let (year, month, day, hour, minute, second, _) = date_components(ms);
+        assert_eq!(
+            (year, month, day, hour, minute, second),
+            (2025, 6, 15, 14, 30, 0)
+        );
     }
 
     #[test]
@@ -307,7 +314,10 @@ mod tests {
     fn test_format_date() {
         let ms = parse_date_string("2025-06-15 14:30:45").unwrap();
         assert_eq!(format_date(ms, "YYYY-MM-DD"), "2025-06-15");
-        assert_eq!(format_date(ms, "YYYY-MM-DD HH:mm:ss"), "2025-06-15 14:30:45");
+        assert_eq!(
+            format_date(ms, "YYYY-MM-DD HH:mm:ss"),
+            "2025-06-15 14:30:45"
+        );
     }
 
     #[test]

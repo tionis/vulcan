@@ -626,8 +626,10 @@ fn batch_filter_vector_hits(
             "SELECT DISTINCT document_id FROM tags WHERE document_id IN ({id_placeholders}) AND tag_text = ?{}",
             doc_ids.len() + 1
         );
-        let mut tag_params: Vec<&dyn rusqlite::types::ToSql> =
-            doc_ids.iter().map(|id| *id as &dyn rusqlite::types::ToSql).collect();
+        let mut tag_params: Vec<&dyn rusqlite::types::ToSql> = doc_ids
+            .iter()
+            .map(|id| *id as &dyn rusqlite::types::ToSql)
+            .collect();
         tag_params.push(&tag);
         let mut tag_stmt = connection.prepare(&tag_sql)?;
         let tagged_ids: HashSet<String> = tag_stmt
@@ -650,8 +652,10 @@ fn batch_filter_vector_hits(
             "SELECT DISTINCT document_id FROM property_values WHERE document_id IN ({id_placeholders}) AND key = ?{}",
             remaining_ids.len() + 1
         );
-        let mut prop_params: Vec<&dyn rusqlite::types::ToSql> =
-            remaining_ids.iter().map(|id| &**id as &dyn rusqlite::types::ToSql).collect();
+        let mut prop_params: Vec<&dyn rusqlite::types::ToSql> = remaining_ids
+            .iter()
+            .map(|id| &**id as &dyn rusqlite::types::ToSql)
+            .collect();
         prop_params.push(&property_key);
         let mut prop_stmt = connection.prepare(&prop_sql)?;
         let property_ids: HashSet<String> = prop_stmt

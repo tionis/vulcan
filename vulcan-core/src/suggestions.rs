@@ -1,4 +1,3 @@
-use aho_corasick::AhoCorasick;
 use crate::graph::{resolve_note_reference, GraphQueryError};
 use crate::parser::parse_document;
 use crate::refactor::{RefactorChange, RefactorFileReport, RefactorReport};
@@ -8,6 +7,7 @@ use crate::{
     load_vault_config, query_notes, CacheError, LinkResolutionMode, LinkStylePreference, NoteQuery,
     VaultPaths,
 };
+use aho_corasick::AhoCorasick;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -175,7 +175,13 @@ pub fn suggest_mentions(
         let source = fs::read_to_string(paths.vault_root().join(&path))?;
         let parsed = parse_document(&source, &config);
         let blocked = blocked_ranges(&source, &parsed);
-        suggestions.extend(find_note_mentions(&path, &source, &candidates, &blocked, &automaton));
+        suggestions.extend(find_note_mentions(
+            &path,
+            &source,
+            &candidates,
+            &blocked,
+            &automaton,
+        ));
     }
 
     suggestions.sort_by(|left, right| {
@@ -561,7 +567,8 @@ fn merge_candidates(
     }
 
     // Pre-compute lowercased filenames to avoid re-allocating in the inner loop
-    let lowercased: Vec<String> = notes.iter()
+    let lowercased: Vec<String> = notes
+        .iter()
         .map(|n| n.filename.to_ascii_lowercase())
         .collect();
 

@@ -111,13 +111,13 @@ pub use vector::{
     cluster_vectors, drop_vector_model, index_vectors, index_vectors_with_progress,
     inspect_vector_queue, list_vector_models, query_related_notes, query_vector_neighbors,
     rebuild_vectors, rebuild_vectors_with_progress, repair_vectors, repair_vectors_with_progress,
-    vector_duplicates, ClusterAssignment,
-    ClusterDocumentCount, ClusterError, ClusterQuery, ClusterReport, ClusterSummary,
-    RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, VectorDuplicatePair,
-    VectorDuplicatesError, VectorDuplicatesQuery, VectorDuplicatesReport, VectorError,
-    VectorIndexError, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport,
-    VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, StoredModelInfo,
+    vector_duplicates, ClusterAssignment, ClusterDocumentCount, ClusterError, ClusterQuery,
+    ClusterReport, ClusterSummary, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
+    StoredModelInfo, VectorDuplicatePair, VectorDuplicatesError, VectorDuplicatesQuery,
+    VectorDuplicatesReport, VectorError, VectorIndexError, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
+    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
+    VectorRepairReport,
 };
 pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchReport};
 
