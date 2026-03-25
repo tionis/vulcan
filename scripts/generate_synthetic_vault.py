@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import random
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date, timedelta
@@ -24,19 +26,19 @@ START_DATE = date(2024, 1, 1)
 ALL_DATES = [START_DATE + timedelta(days=i) for i in range(366)]  # 2024 is a leap year
 
 
-def get_path_for_note(note_id):
+def get_path_for_note(note_id, output_dir):
     """Determine the file path for a given note ID."""
     folder_id = note_id % FOLDERS
     folder_name = f"Folder_{folder_id:03d}"
     filename = f"Note_{note_id:06d}.md"
-    return os.path.join(OUTPUT_DIR, folder_name, filename)
+    return os.path.join(output_dir, folder_name, filename)
 
 
 def generate_note(args):
     """Generate the content for a single note and write it to disk."""
-    note_id, total_notes = args
+    note_id, total_notes, output_dir = args
 
-    file_path = get_path_for_note(note_id)
+    file_path = get_path_for_note(note_id, output_dir)
 
     # Use a per-note seed so output is deterministic but varied.
     rng = random.Random(note_id)
@@ -88,7 +90,7 @@ def main():
 
     # Using ProcessPoolExecutor to heavily parallelize file generation
     chunk_size = 500
-    args_iter = ((i, NUM_NOTES) for i in range(NUM_NOTES))
+    args_iter = ((i, NUM_NOTES, OUTPUT_DIR) for i in range(NUM_NOTES))
 
     completed = 0
     with ProcessPoolExecutor() as executor:
@@ -102,4 +104,12 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate a synthetic Obsidian vault for benchmarking")
+    parser.add_argument("--output-dir", default=OUTPUT_DIR, help="Output directory (default: synthetic_vault)")
+    parser.add_argument("--notes", type=int, default=NUM_NOTES, help="Number of notes to generate")
+    parser.add_argument("--links", type=int, default=LINKS_PER_NOTE, help="Links per note")
+    args = parser.parse_args()
+    OUTPUT_DIR = args.output_dir
+    NUM_NOTES = args.notes
+    LINKS_PER_NOTE = args.links
     main()
