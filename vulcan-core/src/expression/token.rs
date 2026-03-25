@@ -47,6 +47,7 @@ pub struct Tokenizer<'a> {
 }
 
 impl<'a> Tokenizer<'a> {
+    #[must_use]
     pub fn new(source: &'a str) -> Self {
         Self {
             source,
@@ -56,6 +57,7 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn next_token(&mut self) -> Result<Token, String> {
         self.skip_whitespace();
 

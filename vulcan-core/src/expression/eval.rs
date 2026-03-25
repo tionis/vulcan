@@ -14,12 +14,13 @@ pub struct EvalContext<'a> {
     pub now_ms: i64,
     /// Scoped variables for list.filter/map/reduce callbacks.
     pub locals: BTreeMap<String, Value>,
-    /// Vault-wide note index keyed by file_name (basename without extension).
+    /// Vault-wide note index keyed by `file_name` (basename without extension).
     /// Used to resolve `.asFile()` and `.linksTo()` on link values.
     pub note_lookup: Option<&'a HashMap<String, NoteRecord>>,
 }
 
 impl<'a> EvalContext<'a> {
+    #[must_use]
     pub fn new(note: &'a NoteRecord, formulas: &'a BTreeMap<String, Value>) -> Self {
         Self {
             note,
@@ -30,6 +31,7 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    #[must_use]
     pub fn with_note_lookup(mut self, lookup: &'a HashMap<String, NoteRecord>) -> Self {
         self.note_lookup = Some(lookup);
         self
@@ -76,7 +78,7 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
                 return Ok(ctx.note.properties.clone());
             }
             // Then check note properties
-            resolve_property(ctx, name)
+            Ok(resolve_property(ctx, name))
         }
 
         Expr::FieldAccess(receiver, field) => eval_field_access(receiver, field, ctx),
@@ -106,7 +108,7 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
                 _ => {}
             }
             let rval = evaluate(right, ctx)?;
-            eval_binary_op(&lval, *op, &rval)
+            Ok(eval_binary_op(&lval, *op, &rval))
         }
 
         Expr::UnaryOp(op, operand) => {
@@ -142,7 +144,7 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
     // Special-case: `file.X` on the implicit file object
     if let Expr::Identifier(name) = receiver {
         if name == "file" {
-            return resolve_file_field(ctx, field);
+            return Ok(resolve_file_field(ctx, field));
         }
     }
 
@@ -173,25 +175,21 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
     }
 }
 
-fn resolve_file_field(ctx: &EvalContext, field: &str) -> Result<Value, String> {
+fn resolve_file_field(ctx: &EvalContext, field: &str) -> Value {
     match field {
-        "path" => Ok(Value::String(ctx.note.document_path.clone())),
-        "name" => Ok(Value::String(ctx.note.file_name.clone())),
-        "basename" => Ok(Value::String(ctx.note.file_name.clone())),
-        "ext" => Ok(Value::String(ctx.note.file_ext.clone())),
+        "path" => Value::String(ctx.note.document_path.clone()),
+        "name" | "basename" => Value::String(ctx.note.file_name.clone()),
+        "ext" => Value::String(ctx.note.file_ext.clone()),
         "folder" => {
             let path = &ctx.note.document_path;
-            let folder = path
-                .rfind('/')
-                .map(|i| &path[..i])
-                .unwrap_or("");
-            Ok(Value::String(folder.to_string()))
+            let folder = path.rfind('/').map_or("", |i| &path[..i]);
+            Value::String(folder.to_string())
         }
-        "size" => Ok(Value::Number(ctx.note.file_size.into())),
-        "mtime" => Ok(Value::Number(ctx.note.file_mtime.into())),
+        "size" => Value::Number(ctx.note.file_size.into()),
+        "mtime" => Value::Number(ctx.note.file_mtime.into()),
         "ctime" => {
             // Use mtime as fallback since ctime is not stored
-            Ok(Value::Number(ctx.note.file_mtime.into()))
+            Value::Number(ctx.note.file_mtime.into())
         }
         "tags" => {
             let tags: Vec<Value> = ctx
@@ -200,7 +198,7 @@ fn resolve_file_field(ctx: &EvalContext, field: &str) -> Result<Value, String> {
                 .iter()
                 .map(|t| Value::String(t.clone()))
                 .collect();
-            Ok(Value::Array(tags))
+            Value::Array(tags)
         }
         "links" => {
             let links: Vec<Value> = ctx
@@ -209,20 +207,20 @@ fn resolve_file_field(ctx: &EvalContext, field: &str) -> Result<Value, String> {
                 .iter()
                 .map(|l| Value::String(l.clone()))
                 .collect();
-            Ok(Value::Array(links))
+            Value::Array(links)
         }
-        "properties" => Ok(ctx.note.properties.clone()),
-        _ => Ok(Value::Null),
+        "properties" => ctx.note.properties.clone(),
+        _ => Value::Null,
     }
 }
 
-/// Convert a NoteRecord into the file object Value returned by `.asFile()`.
+/// Convert a `NoteRecord` into the file object Value returned by `.asFile()`.
+#[must_use]
 pub fn note_to_file_object(note: &NoteRecord) -> Value {
     let folder = note
         .document_path
         .rfind('/')
-        .map(|i| &note.document_path[..i])
-        .unwrap_or("");
+        .map_or("", |i| &note.document_path[..i]);
     let tags: Vec<Value> = note.tags.iter().map(|t| Value::String(t.clone())).collect();
     let links: Vec<Value> = note.links.iter().map(|l| Value::String(l.clone())).collect();
     serde_json::json!({
@@ -242,14 +240,15 @@ pub fn note_to_file_object(note: &NoteRecord) -> Value {
 
 /// Parse the target filename from a wikilink string like `[[target]]` or `[[target|display]]`.
 /// Falls back to the raw string if it is not a wikilink (treating it as a plain filename).
+#[must_use]
 pub fn parse_wikilink_target(s: &str) -> &str {
     let s = s.trim();
     if s.starts_with("[[") && s.ends_with("]]") {
         let inner = &s[2..s.len() - 2];
         // Strip display text
-        let inner = inner.find('|').map(|i| &inner[..i]).unwrap_or(inner);
+        let inner = inner.find('|').map_or(inner, |i| &inner[..i]);
         // Strip heading/block anchor
-        let inner = inner.find('#').map(|i| &inner[..i]).unwrap_or(inner);
+        let inner = inner.find('#').map_or(inner, |i| &inner[..i]);
         inner.trim()
     } else {
         s
@@ -281,8 +280,7 @@ fn call_file_method(method: &str, args: &[crate::expression::ast::Expr], ctx: &E
                 .note
                 .properties
                 .as_object()
-                .map(|m| m.contains_key(prop) && m.get(prop) != Some(&Value::Null))
-                .unwrap_or(false);
+                .is_some_and(|m| m.contains_key(prop) && m.get(prop) != Some(&Value::Null));
             Ok(Value::Bool(has))
         }
         "inFolder" => {
@@ -305,10 +303,7 @@ fn call_file_method(method: &str, args: &[crate::expression::ast::Expr], ctx: &E
         }
         "asLink" => {
             let path = &ctx.note.document_path;
-            let basename = path
-                .rfind('/')
-                .map(|i| &path[i + 1..])
-                .unwrap_or(path);
+            let basename = path.rfind('/').map_or(path.as_str(), |i| &path[i + 1..]);
             let basename = basename.trim_end_matches(".md");
             Ok(Value::String(format!("[[{basename}]]")))
         }
@@ -316,15 +311,15 @@ fn call_file_method(method: &str, args: &[crate::expression::ast::Expr], ctx: &E
     }
 }
 
-fn resolve_property(ctx: &EvalContext, name: &str) -> Result<Value, String> {
+fn resolve_property(ctx: &EvalContext, name: &str) -> Value {
     if let Some(props) = ctx.note.properties.as_object() {
-        Ok(props.get(name).cloned().unwrap_or(Value::Null))
+        props.get(name).cloned().unwrap_or(Value::Null)
     } else {
-        Ok(Value::Null)
+        Value::Null
     }
 }
 
-fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Result<Value, String> {
+fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Value {
     match op {
         BinOp::Add => eval_add(left, right),
         BinOp::Sub => eval_sub(left, right),
@@ -332,69 +327,71 @@ fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Result<Value, Strin
         BinOp::Div => {
             let b = as_number(right);
             if b == 0.0 {
-                return Ok(Value::Null);
+                return Value::Null;
             }
             eval_arithmetic(left, right, |a, b| a / b)
         }
-        BinOp::Eq => Ok(Value::Bool(values_equal(left, right))),
-        BinOp::Ne => Ok(Value::Bool(!values_equal(left, right))),
-        BinOp::Gt => Ok(Value::Bool(compare_values(left, right) == Some(std::cmp::Ordering::Greater))),
-        BinOp::Lt => Ok(Value::Bool(compare_values(left, right) == Some(std::cmp::Ordering::Less))),
-        BinOp::Ge => Ok(Value::Bool(matches!(
+        BinOp::Eq => Value::Bool(values_equal(left, right)),
+        BinOp::Ne => Value::Bool(!values_equal(left, right)),
+        BinOp::Gt => Value::Bool(compare_values(left, right) == Some(std::cmp::Ordering::Greater)),
+        BinOp::Lt => Value::Bool(compare_values(left, right) == Some(std::cmp::Ordering::Less)),
+        BinOp::Ge => Value::Bool(matches!(
             compare_values(left, right),
             Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-        ))),
-        BinOp::Le => Ok(Value::Bool(matches!(
+        )),
+        BinOp::Le => Value::Bool(matches!(
             compare_values(left, right),
             Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-        ))),
+        )),
         BinOp::And | BinOp::Or => unreachable!("handled by short-circuit"),
     }
 }
 
-fn eval_add(left: &Value, right: &Value) -> Result<Value, String> {
+#[allow(clippy::cast_precision_loss)]
+fn eval_add(left: &Value, right: &Value) -> Value {
     use crate::expression::functions::parse_duration_string;
     // Date arithmetic: number + duration_string (e.g. now() + "7d")
     if let (Value::Number(_), Value::String(s)) = (left, right) {
         if let Some(ms) = parse_duration_string(s) {
             let n = as_number(left);
-            return Ok(number_to_value(n + ms as f64));
+            return number_to_value(n + ms as f64);
         }
     }
     if let (Value::String(s), Value::Number(_)) = (left, right) {
         if let Some(ms) = parse_duration_string(s) {
             let n = as_number(right);
-            return Ok(number_to_value(ms as f64 + n));
+            return number_to_value(ms as f64 + n);
         }
     }
     // String concatenation if either side is a string
     match (left, right) {
-        (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
-        (Value::String(a), _) => Ok(Value::String(format!("{a}{}", value_to_display(right)))),
-        (_, Value::String(b)) => Ok(Value::String(format!("{}{b}", value_to_display(left)))),
+        (Value::String(a), Value::String(b)) => Value::String(format!("{a}{b}")),
+        (Value::String(a), _) => Value::String(format!("{a}{}", value_to_display(right))),
+        (_, Value::String(b)) => Value::String(format!("{}{b}", value_to_display(left))),
         _ => eval_arithmetic(left, right, |a, b| a + b),
     }
 }
 
-fn eval_sub(left: &Value, right: &Value) -> Result<Value, String> {
+#[allow(clippy::cast_precision_loss)]
+fn eval_sub(left: &Value, right: &Value) -> Value {
     use crate::expression::functions::parse_duration_string;
     // Date arithmetic: number - duration_string (e.g. now() - "7d")
     if let (Value::Number(_), Value::String(s)) = (left, right) {
         if let Some(ms) = parse_duration_string(s) {
             let n = as_number(left);
-            return Ok(number_to_value(n - ms as f64));
+            return number_to_value(n - ms as f64);
         }
     }
     eval_arithmetic(left, right, |a, b| a - b)
 }
 
-fn eval_arithmetic(left: &Value, right: &Value, f: fn(f64, f64) -> f64) -> Result<Value, String> {
+fn eval_arithmetic(left: &Value, right: &Value, f: fn(f64, f64) -> f64) -> Value {
     let a = as_number(left);
     let b = as_number(right);
     if a.is_nan() || b.is_nan() {
-        return Ok(Value::Null);
+        return Value::Null;
     }
-    Ok(number_to_value(f(a, b)))
+    number_to_value(f(a, b))
 }
 
 fn values_equal(left: &Value, right: &Value) -> bool {
@@ -419,6 +416,7 @@ fn compare_values(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
+#[must_use]
 pub fn is_truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -430,6 +428,7 @@ pub fn is_truthy(value: &Value) -> bool {
     }
 }
 
+#[must_use]
 pub fn as_number(value: &Value) -> f64 {
     match value {
         Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
@@ -440,17 +439,20 @@ pub fn as_number(value: &Value) -> f64 {
     }
 }
 
+#[must_use]
 pub fn value_to_display(value: &Value) -> String {
     match value {
         Value::Null => "null".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => {
             let f = n.as_f64().unwrap_or(0.0);
+            // Intentional: check if float is exactly an integer value
+            #[allow(clippy::float_cmp)]
             if f == f.trunc() && f.abs() < 1e15 {
-                format!("{}", f as i64)
-            } else {
-                n.to_string()
+                #[allow(clippy::cast_possible_truncation)]
+                return format!("{}", f as i64);
             }
+            n.to_string()
         }
         Value::String(s) => s.clone(),
         Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
@@ -458,15 +460,17 @@ pub fn value_to_display(value: &Value) -> String {
 }
 
 pub fn number_to_value(n: f64) -> Value {
+    // Intentional: check if float is exactly an integer value within i64 range
+    #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
     if n == n.trunc() && n.abs() < (i64::MAX as f64) {
-        Value::Number(serde_json::Number::from(n as i64))
-    } else {
-        serde_json::Number::from_f64(n)
-            .map(Value::Number)
-            .unwrap_or(Value::Null)
+        #[allow(clippy::cast_possible_truncation)]
+        return Value::Number(serde_json::Number::from(n as i64));
     }
+    serde_json::Number::from_f64(n)
+        .map_or(Value::Null, Value::Number)
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

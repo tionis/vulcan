@@ -235,9 +235,8 @@ impl<'a> Parser<'a> {
                 if self.current != Token::RBrace {
                     loop {
                         let key = match self.advance()? {
-                            Token::Str(s) => s,
-                            Token::Ident(s) => s,
-                            other => return Err(format!("expected object key, got {:?}", other)),
+                            Token::Str(s) | Token::Ident(s) => s,
+                            other => return Err(format!("expected object key, got {other:?}")),
                         };
                         self.expect(&Token::Colon)?;
                         let value = self.parse_or()?;
@@ -251,7 +250,7 @@ impl<'a> Parser<'a> {
                 self.expect(&Token::RBrace)?;
                 Ok(Expr::Object(entries))
             }
-            other => Err(format!("unexpected token {:?}", other)),
+            other => Err(format!("unexpected token {other:?}")),
         }
     }
 
