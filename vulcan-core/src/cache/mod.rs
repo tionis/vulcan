@@ -92,6 +92,27 @@ impl CacheDatabase {
             rebuild(transaction)
         })
     }
+
+    /// Enable or disable foreign key checks on this connection.
+    ///
+    /// Foreign key checks must be changed outside of a transaction.  It is the caller's
+    /// responsibility to ensure this is called at the right point and to restore the
+    /// setting to `true` after bulk writes are complete.
+    pub fn set_foreign_keys(&self, enabled: bool) -> Result<(), CacheError> {
+        self.connection
+            .pragma_update(None, "foreign_keys", if enabled { "ON" } else { "OFF" })
+            .map_err(CacheError::from)
+    }
+
+    /// Set the SQLite locking mode for this connection.
+    ///
+    /// Use `"EXCLUSIVE"` during single-writer bulk operations to eliminate shared-lock
+    /// overhead.  Restore to `"NORMAL"` when done.  Must be called outside a transaction.
+    pub fn set_locking_mode(&self, mode: &str) -> Result<(), CacheError> {
+        self.connection
+            .pragma_update(None, "locking_mode", mode)
+            .map_err(CacheError::from)
+    }
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), CacheError> {

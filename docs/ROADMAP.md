@@ -611,7 +611,7 @@ Eliminate redundant link scans across graph operations by caching the adjacency 
 - [ ] Refactor `query_graph_analytics()`, `query_graph_hubs()`, `query_graph_dead_ends()`, `query_graph_moc_candidates()` to accept `&GraphAdjacency` instead of re-querying
 - [ ] For CLI dispatch: load `GraphAdjacency` once per command invocation and pass it through
 - [ ] Also refactor `load_indexed_notes()` to return a shared `IndexedNoteSet` that can be reused across graph operations in the same invocation
-- [ ] `resolve_note_identifier()` currently does a linear scan over `&[IndexedNote]` with sequential predicate matching (path → filename → alias). Build a HashMap index on first call, similar to the `ResolverIndex` pattern already used in `resolver.rs`
+- [x] `resolve_note_identifier()` currently does a linear scan over `&[IndexedNote]` with sequential predicate matching (path → filename → alias). Build a HashMap index on first call, similar to the `ResolverIndex` pattern already used in `resolver.rs`
 
 **Expected improvement:** Graph commands that internally compute multiple metrics go from N link-query round trips to 1. For `graph analytics` on a large vault this saves a full table scan.
 
@@ -665,13 +665,13 @@ Replace in-memory hash loading with a SQL-side comparison for identifying pendin
 **Current bottleneck:** `index_vectors_with_progress()` in `vulcan-core/src/vector.rs` calls `store.load_hashes()` which loads ALL chunk hashes from the vector table into a `HashMap<String, Vec<u8>>`. Then it iterates all current chunks in Rust to find mismatches. For 50k+ chunks this allocates a large HashMap and does O(N) Rust-side comparison.
 
 **Implementation:**
-- [ ] Add a `pending_chunk_ids(current_chunks: &[(chunk_id, content_hash)])` method to `VectorStore` / `SqliteVecStore`
-- [ ] Implementation: create a temp table with current chunk_id + content_hash pairs, then `SELECT chunk_id FROM temp WHERE NOT EXISTS (SELECT 1 FROM vectors_table WHERE vectors_table.chunk_id = temp.chunk_id AND vectors_table.content_hash = temp.content_hash)`
-- [ ] Similarly for stale detection: `SELECT chunk_id FROM vectors_table WHERE chunk_id NOT IN (SELECT chunk_id FROM temp)`
-- [ ] This avoids loading all hashes into memory and lets SQLite use its indexes
-- [ ] Fall back to current approach if temp table creation fails (defensive)
-- [ ] The `delete_chunks` call for stale chunks remains unchanged
-- [ ] Unit tests: existing vector index tests must produce identical results
+- [x] Add a `pending_chunk_ids(current_chunks: &[(chunk_id, content_hash)])` method to `VectorStore` / `SqliteVecStore`
+- [x] Implementation: create a temp table with current chunk_id + content_hash pairs, then `SELECT chunk_id FROM temp WHERE NOT EXISTS (SELECT 1 FROM vectors_table WHERE vectors_table.chunk_id = temp.chunk_id AND vectors_table.content_hash = temp.content_hash)`
+- [x] Similarly for stale detection: `SELECT chunk_id FROM vectors_table WHERE chunk_id NOT IN (SELECT chunk_id FROM temp)`
+- [x] This avoids loading all hashes into memory and lets SQLite use its indexes
+- [x] Fall back to current approach if temp table creation fails (defensive)
+- [x] The `delete_chunks` call for stale chunks remains unchanged
+- [x] Unit tests: existing vector index tests must produce identical results
 
 **Expected improvement:** Eliminates O(N) memory allocation for hash HashMap; comparison done in SQLite with index support. Most beneficial when the majority of chunks are already indexed (common case for incremental re-index).
 
@@ -685,9 +685,9 @@ Investigate and apply remaining SQLite tuning for bulk insert workloads.
 
 **Implementation:**
 - [ ] Profile the scan write phase with `perf` or `flamegraph` to identify the actual bottleneck (B-tree page splits vs. index maintenance vs. FK checks)
-- [ ] Test disabling FK checks during bulk scan (`PRAGMA foreign_keys = OFF` within the scan transaction, re-enable after) — FKs are validated on INSERT which adds overhead for every link/heading/tag row
+- [x] Test disabling FK checks during bulk scan (`PRAGMA foreign_keys = OFF` within the scan transaction, re-enable after) — FKs are validated on INSERT which adds overhead for every link/heading/tag row
 - [ ] Test increasing `page_size` from default 4096 to 8192 or 16384 for better B-tree fanout on large datasets
-- [ ] Test `PRAGMA locking_mode = EXCLUSIVE` during scan (already single-writer, so no concurrency loss)
+- [ ] Test `PRAGMA locking_mode = EXCLUSIVE` during scan (already single-writer, so no concurrency loss) — skipped: causes "database is locked" when other connections exist (e.g. in tests); requires single-connection guarantee
 - [ ] Benchmark each change independently; only keep changes that show measurable improvement
 - [ ] Document findings in code comments for future reference
 
