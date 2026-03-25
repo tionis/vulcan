@@ -633,8 +633,7 @@ fn evaluate_base_view(
     // Build a vault-wide note index for link resolution (asFile / linksTo).
     // Start with a lightweight full-vault index (properties only, no tags/links),
     // then overlay the current query's notes which have tags/links fully loaded.
-    let mut note_index: HashMap<String, NoteRecord> =
-        load_note_index(paths).unwrap_or_default();
+    let mut note_index: HashMap<String, NoteRecord> = load_note_index(paths).unwrap_or_default();
     for note in &notes {
         note_index.insert(note.file_name.clone(), note.clone());
     }
@@ -642,7 +641,13 @@ fn evaluate_base_view(
     let columns = build_view_columns(property_display_names, &view);
     let mut rows = Vec::new();
     for note in notes {
-        let formulas = evaluate_formulas(&note, &view.formulas, diagnostics, view.name.as_deref(), &note_index);
+        let formulas = evaluate_formulas(
+            &note,
+            &view.formulas,
+            diagnostics,
+            view.name.as_deref(),
+            &note_index,
+        );
         let cells = columns
             .iter()
             .map(|column| {
@@ -773,12 +778,17 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
     // Merge top-level formulas into views (view formulas take precedence)
     for view in &mut views {
         for (key, expression) in &base_formulas {
-            view.formulas.entry(key.clone()).or_insert_with(|| expression.clone());
+            view.formulas
+                .entry(key.clone())
+                .or_insert_with(|| expression.clone());
         }
     }
 
     for key in root.keys().filter_map(serde_yaml::Value::as_str) {
-        if !matches!(key, "source" | "views" | "filters" | "properties" | "formulas") {
+        if !matches!(
+            key,
+            "source" | "views" | "filters" | "properties" | "formulas"
+        ) {
             diagnostics.push(BasesDiagnostic {
                 path: Some(key.to_string()),
                 message: format!("unsupported top-level base field `{key}`"),
@@ -826,8 +836,7 @@ fn parse_view(
     for key in mapping.keys().filter_map(serde_yaml::Value::as_str) {
         if !matches!(
             key,
-            "name" | "type" | "filters" | "sort" | "formulas" | "order" | "groupBy"
-                | "columnSize"
+            "name" | "type" | "filters" | "sort" | "formulas" | "order" | "groupBy" | "columnSize"
         ) {
             diagnostics.push(BasesDiagnostic {
                 path: Some(format!("views[{index}].{key}")),
@@ -1562,9 +1571,10 @@ mod tests {
             report.views[0].rows[0].cells.get("due"),
             Some(&Value::String("2026-04-01".to_string()))
         );
-        assert!(report.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("unknown function")));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unknown function")));
         assert!(report
             .diagnostics
             .iter()

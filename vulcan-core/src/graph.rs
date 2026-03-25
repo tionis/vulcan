@@ -201,7 +201,11 @@ impl NoteIndex {
             // Deduplicate: a note may be in this list twice (once for "foo", once for "foo.md").
             let unique: Vec<usize> = {
                 let mut seen = std::collections::HashSet::new();
-                indices.iter().copied().filter(|i| seen.insert(*i)).collect()
+                indices
+                    .iter()
+                    .copied()
+                    .filter(|i| seen.insert(*i))
+                    .collect()
             };
             match unique.as_slice() {
                 [single] => {

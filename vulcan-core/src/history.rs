@@ -325,10 +325,8 @@ pub(crate) fn record_scan_checkpoint_incremental(
 
     // Build a set of changed doc IDs for quick lookup, and also collect
     // the current document IDs (path→id) so we know which previous rows are still valid.
-    let changed_set: std::collections::HashSet<&str> = changed_document_ids
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let changed_set: std::collections::HashSet<&str> =
+        changed_document_ids.iter().map(String::as_str).collect();
 
     // Insert the checkpoint header row first (FK parent for checkpoint_documents).
     // Counts will be updated after all document rows are inserted.
@@ -395,8 +393,7 @@ pub(crate) fn record_scan_checkpoint_incremental(
     // Compute fresh state only for changed documents.
     if !changed_document_ids.is_empty() {
         let now = current_unix_timestamp()?;
-        let changed_states =
-            load_document_states_for_ids(&transaction, changed_document_ids, now)?;
+        let changed_states = load_document_states_for_ids(&transaction, changed_document_ids, now)?;
         for state in &changed_states {
             insert_stmt.execute(params![
                 &checkpoint_id,
@@ -667,7 +664,11 @@ fn load_document_states_for_ids(
         return Ok(Vec::new());
     }
 
-    let placeholders = document_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let placeholders = document_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
 
     // Load document basics.
     let sql = format!(
@@ -675,18 +676,15 @@ fn load_document_states_for_ids(
          FROM documents WHERE id IN ({placeholders}) ORDER BY path"
     );
     let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(
-        rusqlite::params_from_iter(document_ids.iter()),
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        },
-    )?;
+    let rows = statement.query_map(rusqlite::params_from_iter(document_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
     let documents = rows.collect::<Result<Vec<_>, _>>()?;
 
     // Compute link/property/embedding hashes only for these documents.

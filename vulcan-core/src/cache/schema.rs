@@ -316,9 +316,8 @@ pub(crate) fn restore_fts_triggers(transaction: &Transaction<'_>) -> Result<(), 
 /// Use this after bulk writes with triggers disabled — the content table is already up to date,
 /// so we only need to re-sync the FTS virtual table.
 pub(crate) fn rebuild_fts_index(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
-    transaction.execute_batch(
-        "INSERT INTO search_chunks_fts(search_chunks_fts) VALUES ('rebuild');",
-    )?;
+    transaction
+        .execute_batch("INSERT INTO search_chunks_fts(search_chunks_fts) VALUES ('rebuild');")?;
     Ok(())
 }
 

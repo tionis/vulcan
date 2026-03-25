@@ -465,6 +465,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn decimal_number() {
         assert_eq!(tokenize("3.14"), vec![Token::Number(3.14)]);
     }

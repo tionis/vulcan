@@ -223,8 +223,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             ))
         },
     )?;
-    let mut doc_ids_and_notes: Vec<(String, NoteRecord)> =
-        rows.collect::<Result<Vec<_>, _>>()?;
+    let mut doc_ids_and_notes: Vec<(String, NoteRecord)> = rows.collect::<Result<Vec<_>, _>>()?;
 
     // Batch-load tags and links for only the matching documents
     if !doc_ids_and_notes.is_empty() {
@@ -232,11 +231,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             .iter()
             .map(|(id, _)| id.as_str())
             .collect();
-        let placeholders = doc_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
+        let placeholders = doc_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
 
         let mut tag_map: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
@@ -329,7 +324,8 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
     let mut map = HashMap::new();
     for row in rows {
         let (path, file_name, file_ext, file_mtime, file_size, props_json) = row?;
-        let properties = serde_json::from_str(&props_json).unwrap_or(Value::Object(serde_json::Map::default()));
+        let properties =
+            serde_json::from_str(&props_json).unwrap_or(Value::Object(serde_json::Map::default()));
         map.insert(
             file_name.clone(),
             NoteRecord {
@@ -356,9 +352,7 @@ pub(crate) struct NoteFilterSql {
     pub params: Vec<SqlValue>,
 }
 
-pub(crate) fn build_note_filter_clause(
-    filters: &[String],
-) -> Result<NoteFilterSql, PropertyError> {
+pub(crate) fn build_note_filter_clause(filters: &[String]) -> Result<NoteFilterSql, PropertyError> {
     let parsed = filters
         .iter()
         .map(|filter| parse_filter_expression(filter))
@@ -434,7 +428,11 @@ pub(crate) fn build_note_filter_clause(
         clause.push_str(&filter_sql_clause(filter, &mut params)?);
     }
 
-    Ok(NoteFilterSql { cte, clause, params })
+    Ok(NoteFilterSql {
+        cte,
+        clause,
+        params,
+    })
 }
 
 pub(crate) fn rebuild_property_catalog(
@@ -477,9 +475,8 @@ pub(crate) fn refresh_property_catalog_for_documents(
 
     // Collect all property keys that appear in the changed documents (before or after update).
     // We need to refresh counts for these keys.
-    let sql = format!(
-        "SELECT DISTINCT key FROM property_values WHERE document_id IN ({placeholders})"
-    );
+    let sql =
+        format!("SELECT DISTINCT key FROM property_values WHERE document_id IN ({placeholders})");
     let mut statement = transaction.prepare(&sql)?;
     let rows = statement.query_map(
         rusqlite::params_from_iter(changed_document_ids.iter()),
@@ -496,9 +493,8 @@ pub(crate) fn refresh_property_catalog_for_documents(
     }
 
     // Use numbered params: ?1..?N for keys, ?{N+1} for namespace.
-    let key_placeholders: Vec<String> = (1..=affected_keys.len())
-        .map(|i| format!("?{i}"))
-        .collect();
+    let key_placeholders: Vec<String> =
+        (1..=affected_keys.len()).map(|i| format!("?{i}")).collect();
     let key_list = key_placeholders.join(", ");
     let ns_param = affected_keys.len() + 1;
 
@@ -508,10 +504,7 @@ pub(crate) fn refresh_property_catalog_for_documents(
     let delete_sql = format!(
         "DELETE FROM property_catalog WHERE key IN ({key_list}) AND namespace = ?{ns_param}"
     );
-    transaction.execute(
-        &delete_sql,
-        rusqlite::params_from_iter(params.iter()),
-    )?;
+    transaction.execute(&delete_sql, rusqlite::params_from_iter(params.iter()))?;
 
     let insert_sql = format!(
         "INSERT INTO property_catalog (key, observed_type, usage_count, namespace)
@@ -520,10 +513,7 @@ pub(crate) fn refresh_property_catalog_for_documents(
          WHERE key IN ({key_list})
          GROUP BY key, value_type"
     );
-    transaction.execute(
-        &insert_sql,
-        rusqlite::params_from_iter(params.iter()),
-    )?;
+    transaction.execute(&insert_sql, rusqlite::params_from_iter(params.iter()))?;
 
     insert_configured_property_types(transaction, configured_types)?;
 
@@ -1002,8 +992,7 @@ fn filter_sql_clause(
             params.push(SqlValue::Text(key.clone()));
             params.push(SqlValue::Text(format!("{value}/")));
             params.push(SqlValue::Text(format!("{value}0")));
-            Ok(
-                "EXISTS (\
+            Ok("EXISTS (\
                     SELECT 1 FROM property_list_items \
                     WHERE property_list_items.document_id = documents.id \
                     AND property_list_items.key = ? AND property_list_items.value_text = ? \
@@ -1012,8 +1001,8 @@ fn filter_sql_clause(
                     WHERE property_list_items.document_id = documents.id \
                     AND property_list_items.key = ? \
                     AND property_list_items.value_text >= ? AND property_list_items.value_text < ? \
-                )".to_string(),
-            )
+                )"
+            .to_string())
         }
         (FilterField::Property(key), FilterOperator::StartsWith, FilterValue::Text(value)) => {
             params.push(SqlValue::Text(key.clone()));
@@ -1025,13 +1014,15 @@ fn filter_sql_clause(
         (FilterField::Property(key), operator, value) => {
             property_scalar_clause(key, operator, value, params)
         }
-        (field, FilterOperator::Contains | FilterOperator::HasTag, _) => Err(PropertyError::InvalidFilter(match field {
-            FilterField::Property(key) => key.clone(),
-            FilterField::FilePath => "file.path".to_string(),
-            FilterField::FileName => "file.name".to_string(),
-            FilterField::FileExt => "file.ext".to_string(),
-            FilterField::FileMtime => "file.mtime".to_string(),
-        })),
+        (field, FilterOperator::Contains | FilterOperator::HasTag, _) => {
+            Err(PropertyError::InvalidFilter(match field {
+                FilterField::Property(key) => key.clone(),
+                FilterField::FilePath => "file.path".to_string(),
+                FilterField::FileName => "file.name".to_string(),
+                FilterField::FileExt => "file.ext".to_string(),
+                FilterField::FileMtime => "file.mtime".to_string(),
+            }))
+        }
         (field, operator, value) => Ok(file_field_clause(field, operator, value, params)?),
     }
 }

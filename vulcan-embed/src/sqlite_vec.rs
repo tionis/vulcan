@@ -99,8 +99,7 @@ impl VectorStore for SqliteVecStore<'_> {
                 let dims_i64 = i64::try_from(model.dimensions)
                     .map_err(|error| format!("dimensions overflow i64: {error}"))?;
                 // Recreate if dimensions changed or table is missing.
-                *existing_dims != dims_i64
-                    || !table_exists(self.connection, existing_table)?
+                *existing_dims != dims_i64 || !table_exists(self.connection, existing_table)?
             }
             None => true,
         };
@@ -161,9 +160,7 @@ impl VectorStore for SqliteVecStore<'_> {
 
         let mut statement = self
             .connection
-            .prepare(&format!(
-                "SELECT chunk_id, content_hash FROM [{table}]"
-            ))
+            .prepare(&format!("SELECT chunk_id, content_hash FROM [{table}]"))
             .map_err(|error| format!("failed to prepare vector hash query: {error}"))?;
         let rows = statement
             .query_map([], |row| {
@@ -199,15 +196,12 @@ impl VectorStore for SqliteVecStore<'_> {
                     content_hash TEXT NOT NULL
                 )"
             ))
-            .map_err(|error| {
-                format!("failed to create temp table for hash comparison: {error}")
-            })?;
+            .map_err(|error| format!("failed to create temp table for hash comparison: {error}"))?;
 
         // Insert all current (chunk_id, content_hash) pairs.
         {
-            let insert_sql = format!(
-                "INSERT INTO [{temp_table}] (chunk_id, content_hash) VALUES (?1, ?2)"
-            );
+            let insert_sql =
+                format!("INSERT INTO [{temp_table}] (chunk_id, content_hash) VALUES (?1, ?2)");
             let transaction = self
                 .connection
                 .unchecked_transaction()
@@ -450,16 +444,21 @@ impl VectorStore for SqliteVecStore<'_> {
 
         let mut models = Vec::new();
         for row in rows {
-            let (cache_key, table_name, provider_name, model_name, dimensions, normalized, is_active) =
-                row.map_err(|error| format!("failed to read model row: {error}"))?;
+            let (
+                cache_key,
+                table_name,
+                provider_name,
+                model_name,
+                dimensions,
+                normalized,
+                is_active,
+            ) = row.map_err(|error| format!("failed to read model row: {error}"))?;
 
             let chunk_count = if table_exists(self.connection, &table_name)? {
                 self.connection
-                    .query_row(
-                        &format!("SELECT COUNT(*) FROM [{table_name}]"),
-                        [],
-                        |row| row.get::<_, i64>(0),
-                    )
+                    .query_row(&format!("SELECT COUNT(*) FROM [{table_name}]"), [], |row| {
+                        row.get::<_, i64>(0)
+                    })
                     .map(|c| usize::try_from(c).unwrap_or(0))
                     .unwrap_or(0)
             } else {
@@ -656,11 +655,9 @@ fn ensure_registry_table(connection: &Connection) -> Result<(), String> {
 fn migrate_legacy_state(connection: &Connection) -> Result<(), String> {
     // Check if legacy vector_index_state has data AND registry is empty.
     let legacy_exists: bool = connection
-        .query_row(
-            "SELECT COUNT(*) FROM vector_index_state",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
+        .query_row("SELECT COUNT(*) FROM vector_index_state", [], |row| {
+            row.get::<_, i64>(0)
+        })
         .map(|c| c > 0)
         .unwrap_or(false);
 
@@ -669,11 +666,9 @@ fn migrate_legacy_state(connection: &Connection) -> Result<(), String> {
     }
 
     let registry_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM vector_model_registry",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM vector_model_registry", [], |row| {
+            row.get(0)
+        })
         .map_err(|error| format!("failed to count registry entries: {error}"))?;
 
     if registry_count > 0 {
@@ -783,7 +778,9 @@ fn migrate_legacy_state(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn load_active_model_info(connection: &Connection) -> Result<(Option<String>, Option<String>), String> {
+fn load_active_model_info(
+    connection: &Connection,
+) -> Result<(Option<String>, Option<String>), String> {
     let result: Option<(String, String)> = connection
         .query_row(
             "SELECT cache_key, table_name FROM vector_model_registry WHERE is_active = 1",
@@ -813,7 +810,13 @@ fn table_exists(connection: &Connection, name: &str) -> Result<bool, String> {
 fn sanitized_table_name(cache_key: &str) -> String {
     let sanitized: String = cache_key
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("vectors_{sanitized}")
 }
@@ -937,7 +940,12 @@ mod tests {
         }
     }
 
-    fn test_vector(model: &StoredModel, chunk_id: &str, hash: &str, embedding: Vec<f32>) -> StoredVector {
+    fn test_vector(
+        model: &StoredModel,
+        chunk_id: &str,
+        hash: &str,
+        embedding: Vec<f32>,
+    ) -> StoredVector {
         StoredVector {
             chunk_id: chunk_id.to_string(),
             provider_name: model.provider_name.clone(),
@@ -1012,7 +1020,9 @@ mod tests {
         assert!(store.load_hashes().expect("hashes should load").is_empty());
 
         // Switch back to model A — vectors should still be there.
-        store.set_active_model(&model_a.cache_key).expect("switch back should work");
+        store
+            .set_active_model(&model_a.cache_key)
+            .expect("switch back should work");
         let hashes = store.load_hashes().expect("hashes should load");
         assert_eq!(hashes.get("chunk-1"), Some(&"hash-1".to_string()));
 
@@ -1033,14 +1043,18 @@ mod tests {
             .upsert(&[test_vector(&model, "chunk-1", "hash-1", vec![1.0, 0.0])])
             .expect("vector should insert");
 
-        let dropped = store.drop_model(&model.cache_key).expect("drop should succeed");
+        let dropped = store
+            .drop_model(&model.cache_key)
+            .expect("drop should succeed");
         assert!(dropped);
 
         let models = store.list_models().expect("list should work");
         assert!(models.is_empty());
 
         // Dropping again returns false.
-        let dropped_again = store.drop_model(&model.cache_key).expect("second drop should succeed");
+        let dropped_again = store
+            .drop_model(&model.cache_key)
+            .expect("second drop should succeed");
         assert!(!dropped_again);
     }
 
@@ -1076,13 +1090,17 @@ mod tests {
             .expect("cross-model delete should succeed");
 
         // Check model A.
-        store.set_active_model(&model_a.cache_key).expect("switch to A");
+        store
+            .set_active_model(&model_a.cache_key)
+            .expect("switch to A");
         let hashes_a = store.load_hashes().expect("hashes A");
         assert!(!hashes_a.contains_key("chunk-1"));
         assert!(hashes_a.contains_key("chunk-2"));
 
         // Check model B.
-        store.set_active_model(&model_b.cache_key).expect("switch to B");
+        store
+            .set_active_model(&model_b.cache_key)
+            .expect("switch to B");
         let hashes_b = store.load_hashes().expect("hashes B");
         assert!(!hashes_b.contains_key("chunk-1"));
         assert!(hashes_b.contains_key("chunk-2"));
@@ -1140,10 +1158,14 @@ mod tests {
             .expect("legacy vector should insert");
 
         // Now create the store — this should trigger migration.
-        let store = SqliteVecStore::new(&connection).expect("store should initialize with migration");
+        let store =
+            SqliteVecStore::new(&connection).expect("store should initialize with migration");
 
         // Verify active model.
-        let model = store.current_model().expect("model should load").expect("model should exist");
+        let model = store
+            .current_model()
+            .expect("model should load")
+            .expect("model should exist");
         assert_eq!(model.cache_key, "openai-compatible:legacy-model");
         assert_eq!(model.model_name, "legacy-model");
 

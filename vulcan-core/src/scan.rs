@@ -2,12 +2,10 @@ use crate::cache::{drop_fts_triggers, rebuild_fts_index, restore_fts_triggers, C
 use crate::extraction::extract_attachment_chunks;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
 use crate::properties::{
-    extract_indexed_properties, rebuild_property_catalog,
-    refresh_property_catalog_for_documents, IndexedProperties,
+    extract_indexed_properties, rebuild_property_catalog, refresh_property_catalog_for_documents,
+    IndexedProperties,
 };
-use crate::resolver::{
-    LinkResolutionProblem, ResolverDocument, ResolverIndex, ResolverLink,
-};
+use crate::resolver::{LinkResolutionProblem, ResolverDocument, ResolverIndex, ResolverLink};
 use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
 use ignore::WalkBuilder;
@@ -535,8 +533,7 @@ fn prepare_incremental_file(
                 (hash, Some(bytes))
             };
 
-        let needs_reindex =
-            hash != cached.content_hash || cached.parser_version != current_version;
+        let needs_reindex = hash != cached.content_hash || cached.parser_version != current_version;
 
         if !needs_reindex {
             return Ok(IncrementalPrepResult::MetadataOnly {
@@ -654,10 +651,7 @@ fn apply_incremental_scan(
                 });
             }
             None => {
-                work_items.push(IncrementalWorkItem {
-                    file,
-                    cached: None,
-                });
+                work_items.push(IncrementalWorkItem { file, cached: None });
             }
         }
     }
@@ -715,7 +709,9 @@ fn apply_incremental_scan(
                     &content_hash,
                     match &derived {
                         PreparedDerivedContent::Note(parsed) => parsed.raw_frontmatter.as_deref(),
-                        PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => None,
+                        PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => {
+                            None
+                        }
                     },
                     current_version,
                 )?;
@@ -822,7 +818,9 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(err) => {
-                    let mut guard = first_error.lock().expect("error lock should not be poisoned");
+                    let mut guard = first_error
+                        .lock()
+                        .expect("error lock should not be poisoned");
                     if guard.is_none() {
                         *guard = Some(ScanError::Ignore(err));
                     }
@@ -842,8 +840,9 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
                 Err(_) => match fs::metadata(path) {
                     Ok(m) => m,
                     Err(err) => {
-                        let mut guard =
-                            first_error.lock().expect("error lock should not be poisoned");
+                        let mut guard = first_error
+                            .lock()
+                            .expect("error lock should not be poisoned");
                         if guard.is_none() {
                             *guard = Some(ScanError::Io(err));
                         }
@@ -880,8 +879,9 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
             {
                 Ok(mtime) => mtime,
                 Err(err) => {
-                    let mut guard =
-                        first_error.lock().expect("error lock should not be poisoned");
+                    let mut guard = first_error
+                        .lock()
+                        .expect("error lock should not be poisoned");
                     if guard.is_none() {
                         *guard = Some(err);
                     }
@@ -906,11 +906,16 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
         })
     });
 
-    if let Some(err) = first_error.into_inner().expect("error lock should not be poisoned") {
+    if let Some(err) = first_error
+        .into_inner()
+        .expect("error lock should not be poisoned")
+    {
         return Err(err);
     }
 
-    let mut files = files.into_inner().expect("files lock should not be poisoned");
+    let mut files = files
+        .into_inner()
+        .expect("files lock should not be poisoned");
     files.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(files)
 }
@@ -1079,7 +1084,6 @@ fn insert_or_update_document(
     Ok(())
 }
 
-
 fn apply_prepared_full_scan_document(
     transaction: &Transaction<'_>,
     config: &crate::VaultConfig,
@@ -1099,7 +1103,14 @@ fn apply_prepared_full_scan_document(
     )?;
     match &prepared.derived {
         PreparedDerivedContent::Note(parsed) => {
-            replace_derived_rows(transaction, id, &prepared.file.filename, true, config, parsed)?;
+            replace_derived_rows(
+                transaction,
+                id,
+                &prepared.file.filename,
+                true,
+                config,
+                parsed,
+            )?;
         }
         PreparedDerivedContent::Attachment(chunks) => {
             replace_attachment_rows(transaction, id, &prepared.file.filename, true, chunks)?;
@@ -1292,9 +1303,7 @@ fn insert_chunks_with_search(
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ",
         )?;
-        for (chunk, (chunk_id, heading_path_json)) in
-            chunks.iter().zip(&chunk_ids_and_headings)
-        {
+        for (chunk, (chunk_id, heading_path_json)) in chunks.iter().zip(&chunk_ids_and_headings) {
             statement.execute(params![
                 chunk_id,
                 document_id,
@@ -1457,7 +1466,6 @@ fn insert_tags(
     }
     Ok(())
 }
-
 
 fn load_reusable_chunk_ids(
     transaction: &Transaction<'_>,
@@ -1667,7 +1675,6 @@ fn clear_derived_rows(
     Ok(())
 }
 
-
 fn flatten_heading_path(heading_path: &str) -> Result<String, ScanError> {
     let values = serde_json::from_str::<Vec<String>>(heading_path)
         .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
@@ -1684,8 +1691,8 @@ fn resolve_all_links(
     let links = load_resolver_links(transaction)?;
     let index = ResolverIndex::build(&documents);
 
-    let mut update_statement = transaction
-        .prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
+    let mut update_statement =
+        transaction.prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
     let mut diag_statement = transaction.prepare_cached(
         "
         INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
@@ -1698,8 +1705,7 @@ fn resolve_all_links(
         // Only UPDATE links that actually resolved — unresolved and external links
         // already have NULL from the INSERT, so writing NULL again is wasted work.
         if resolution.resolved_target_id.is_some() {
-            update_statement
-                .execute(params![link.id, resolution.resolved_target_id])?;
+            update_statement.execute(params![link.id, resolution.resolved_target_id])?;
         }
 
         if let Some(problem) = resolution.problem {
@@ -1707,11 +1713,8 @@ fn resolve_all_links(
                 Ulid::new().to_string(),
                 link.resolver_link.source_document_id,
                 resolution_problem_message(&problem, &link.resolver_link),
-                serde_json::to_string(&resolution_problem_detail(
-                    &problem,
-                    &link.resolver_link
-                ))
-                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                serde_json::to_string(&resolution_problem_detail(&problem, &link.resolver_link))
+                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
                 &timestamp,
             ])?;
         }
@@ -1760,24 +1763,21 @@ fn resolve_changed_links(
         "
     );
     let mut statement = transaction.prepare(&sql)?;
-    let rows = statement.query_map(
-        rusqlite::params_from_iter(changed_document_ids),
-        |row| {
-            Ok(ResolverLinkRow {
-                id: row.get(0)?,
-                resolver_link: ResolverLink {
-                    source_document_id: row.get(1)?,
-                    source_path: row.get(2)?,
-                    target_path_candidate: row.get(3)?,
-                    link_kind: parse_link_kind(&row.get::<_, String>(4)?),
-                },
-            })
-        },
-    )?;
+    let rows = statement.query_map(rusqlite::params_from_iter(changed_document_ids), |row| {
+        Ok(ResolverLinkRow {
+            id: row.get(0)?,
+            resolver_link: ResolverLink {
+                source_document_id: row.get(1)?,
+                source_path: row.get(2)?,
+                target_path_candidate: row.get(3)?,
+                link_kind: parse_link_kind(&row.get::<_, String>(4)?),
+            },
+        })
+    })?;
     let links = rows.collect::<Result<Vec<_>, _>>()?;
 
-    let mut update_statement = transaction
-        .prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
+    let mut update_statement =
+        transaction.prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
     let mut diag_statement = transaction.prepare_cached(
         "
         INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
@@ -1788,19 +1788,15 @@ fn resolve_changed_links(
     for link in &links {
         let resolution = index.resolve(&link.resolver_link, mode);
         if resolution.resolved_target_id.is_some() {
-            update_statement
-                .execute(params![link.id, resolution.resolved_target_id])?;
+            update_statement.execute(params![link.id, resolution.resolved_target_id])?;
         }
         if let Some(problem) = resolution.problem {
             diag_statement.execute(params![
                 Ulid::new().to_string(),
                 link.resolver_link.source_document_id,
                 resolution_problem_message(&problem, &link.resolver_link),
-                serde_json::to_string(&resolution_problem_detail(
-                    &problem,
-                    &link.resolver_link
-                ))
-                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                serde_json::to_string(&resolution_problem_detail(&problem, &link.resolver_link))
+                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
                 &timestamp,
             ])?;
         }

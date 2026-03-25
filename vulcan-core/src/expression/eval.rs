@@ -83,11 +83,7 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
 
         Expr::FieldAccess(receiver, field) => eval_field_access(receiver, field, ctx),
 
-        Expr::FormulaRef(name) => Ok(ctx
-            .formulas
-            .get(name)
-            .cloned()
-            .unwrap_or(Value::Null)),
+        Expr::FormulaRef(name) => Ok(ctx.formulas.get(name).cloned().unwrap_or(Value::Null)),
 
         Expr::BinaryOp(left, op, right) => {
             let lval = evaluate(left, ctx)?;
@@ -165,10 +161,7 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
         },
 
         // Object field access
-        Value::Object(map) => Ok(map
-            .get(field)
-            .cloned()
-            .unwrap_or(Value::Null)),
+        Value::Object(map) => Ok(map.get(field).cloned().unwrap_or(Value::Null)),
 
         // Number fields (none in Obsidian, but support for consistency)
         _ => Ok(Value::Null),
@@ -222,7 +215,11 @@ pub fn note_to_file_object(note: &NoteRecord) -> Value {
         .rfind('/')
         .map_or("", |i| &note.document_path[..i]);
     let tags: Vec<Value> = note.tags.iter().map(|t| Value::String(t.clone())).collect();
-    let links: Vec<Value> = note.links.iter().map(|l| Value::String(l.clone())).collect();
+    let links: Vec<Value> = note
+        .links
+        .iter()
+        .map(|l| Value::String(l.clone()))
+        .collect();
     serde_json::json!({
         "path": note.document_path,
         "name": note.file_name,
@@ -255,7 +252,11 @@ pub fn parse_wikilink_target(s: &str) -> &str {
     }
 }
 
-fn call_file_method(method: &str, args: &[crate::expression::ast::Expr], ctx: &EvalContext) -> Result<Value, String> {
+fn call_file_method(
+    method: &str,
+    args: &[crate::expression::ast::Expr],
+    ctx: &EvalContext,
+) -> Result<Value, String> {
     use crate::expression::methods::eval_arg;
     match method {
         "hasTag" => {
@@ -407,9 +408,10 @@ fn values_equal(left: &Value, right: &Value) -> bool {
 
 fn compare_values(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
     match (left, right) {
-        (Value::Number(a), Value::Number(b)) => {
-            a.as_f64().unwrap_or(0.0).partial_cmp(&b.as_f64().unwrap_or(0.0))
-        }
+        (Value::Number(a), Value::Number(b)) => a
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&b.as_f64().unwrap_or(0.0)),
         (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
         (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
         _ => None,
@@ -466,8 +468,7 @@ pub fn number_to_value(n: f64) -> Value {
         #[allow(clippy::cast_possible_truncation)]
         return Value::Number(serde_json::Number::from(n as i64));
     }
-    serde_json::Number::from_f64(n)
-        .map_or(Value::Null, Value::Number)
+    serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -489,7 +490,7 @@ mod tests {
             document_path: "folder/note.md".to_string(),
             file_name: "note".to_string(),
             file_ext: "md".to_string(),
-            file_mtime: 1700000000,
+            file_mtime: 1_700_000_000,
             file_size: 1234,
             properties: serde_json::json!({"status": "done", "count": 42, "tags": ["a", "b"]}),
             tags: vec!["tag1".to_string(), "tag2".to_string()],
@@ -561,30 +562,18 @@ mod tests {
             eval("file.path"),
             Value::String("folder/note.md".to_string())
         );
-        assert_eq!(
-            eval("file.name"),
-            Value::String("note".to_string())
-        );
-        assert_eq!(
-            eval("file.basename"),
-            Value::String("note".to_string())
-        );
+        assert_eq!(eval("file.name"), Value::String("note".to_string()));
+        assert_eq!(eval("file.basename"), Value::String("note".to_string()));
         assert_eq!(eval("file.ext"), Value::String("md".to_string()));
         assert_eq!(eval("file.folder"), Value::String("folder".to_string()));
         assert_eq!(eval("file.size"), serde_json::json!(1234));
-        assert_eq!(eval("file.mtime"), serde_json::json!(1700000000));
+        assert_eq!(eval("file.mtime"), serde_json::json!(1_700_000_000));
     }
 
     #[test]
     fn eval_file_tags_and_links() {
-        assert_eq!(
-            eval("file.tags"),
-            serde_json::json!(["tag1", "tag2"])
-        );
-        assert_eq!(
-            eval("file.links"),
-            serde_json::json!(["other.md"])
-        );
+        assert_eq!(eval("file.tags"), serde_json::json!(["tag1", "tag2"]));
+        assert_eq!(eval("file.links"), serde_json::json!(["other.md"]));
     }
 
     #[test]
@@ -660,7 +649,7 @@ mod tests {
             document_path: "folder/note.md".to_string(),
             file_name: "note".to_string(),
             file_ext: "md".to_string(),
-            file_mtime: 1700000000,
+            file_mtime: 1_700_000_000,
             file_size: 1234,
             properties: serde_json::json!({"author": "[[alice]]"}),
             tags: vec![],
@@ -677,7 +666,7 @@ mod tests {
             document_path: "people/alice.md".to_string(),
             file_name: "alice".to_string(),
             file_ext: "md".to_string(),
-            file_mtime: 1700000001,
+            file_mtime: 1_700_000_001,
             file_size: 500,
             properties: serde_json::json!({"role": "editor"}),
             tags: vec!["person".to_string()],
@@ -688,12 +677,24 @@ mod tests {
 
         // asFile() on a wikilink returns the file object
         let file_obj = eval_with_lookup(r#""[[alice]]".asFile()"#, &lookup);
-        assert_eq!(file_obj.get("name").unwrap(), &Value::String("alice".to_string()));
-        assert_eq!(file_obj.get("ext").unwrap(), &Value::String("md".to_string()));
-        assert_eq!(file_obj.get("properties").unwrap().get("role").unwrap(), &Value::String("editor".to_string()));
+        assert_eq!(
+            file_obj.get("name").unwrap(),
+            &Value::String("alice".to_string())
+        );
+        assert_eq!(
+            file_obj.get("ext").unwrap(),
+            &Value::String("md".to_string())
+        );
+        assert_eq!(
+            file_obj.get("properties").unwrap().get("role").unwrap(),
+            &Value::String("editor".to_string())
+        );
 
         // asFile() on unknown link returns null
-        assert_eq!(eval_with_lookup(r#""[[nobody]]".asFile()"#, &lookup), Value::Null);
+        assert_eq!(
+            eval_with_lookup(r#""[[nobody]]".asFile()"#, &lookup),
+            Value::Null
+        );
 
         // linksTo() checks outbound links of the source note
         assert_eq!(

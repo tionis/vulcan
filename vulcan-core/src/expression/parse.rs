@@ -16,7 +16,10 @@ impl<'a> Parser<'a> {
     pub fn parse(mut self) -> Result<Expr, String> {
         let expr = self.parse_or()?;
         if self.current != Token::Eof {
-            return Err(format!("unexpected token {:?} after expression", self.current));
+            return Err(format!(
+                "unexpected token {:?} after expression",
+                self.current
+            ));
         }
         Ok(expr)
     }
@@ -370,7 +373,10 @@ mod tests {
     fn parse_unary() {
         assert_eq!(
             parse("!completed"),
-            Expr::UnaryOp(UnOp::Not, Box::new(Expr::Identifier("completed".to_string())))
+            Expr::UnaryOp(
+                UnOp::Not,
+                Box::new(Expr::Identifier("completed".to_string()))
+            )
         );
         assert_eq!(
             parse("-5"),
