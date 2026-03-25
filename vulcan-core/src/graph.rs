@@ -134,6 +134,131 @@ struct IndexedNote {
     aliases: Vec<String>,
 }
 
+struct NoteIndex {
+    notes: Vec<IndexedNote>,
+    by_path: HashMap<String, usize>,
+    by_filename: HashMap<String, Vec<usize>>,
+    by_alias: HashMap<String, Vec<usize>>,
+}
+
+impl NoteIndex {
+    fn build(notes: Vec<IndexedNote>) -> Self {
+        let mut by_path = HashMap::with_capacity(notes.len());
+        let mut by_filename: HashMap<String, Vec<usize>> = HashMap::with_capacity(notes.len());
+        let mut by_alias: HashMap<String, Vec<usize>> = HashMap::new();
+
+        for (index, note) in notes.iter().enumerate() {
+            // Index by lowercase full path and by path without .md extension.
+            by_path.insert(note.path.to_ascii_lowercase(), index);
+            let stripped = strip_markdown_extension(&note.path).to_ascii_lowercase();
+            if stripped != note.path.to_ascii_lowercase() {
+                by_path.entry(stripped).or_insert(index);
+            }
+
+            // Index by lowercase filename and by filename with .md appended.
+            let lower_filename = note.filename.to_ascii_lowercase();
+            by_filename
+                .entry(lower_filename.clone())
+                .or_default()
+                .push(index);
+            by_filename
+                .entry(format!("{lower_filename}.md"))
+                .or_default()
+                .push(index);
+
+            // Index each alias in lowercase.
+            for alias in &note.aliases {
+                by_alias
+                    .entry(alias.to_ascii_lowercase())
+                    .or_default()
+                    .push(index);
+            }
+        }
+
+        Self {
+            notes,
+            by_path,
+            by_filename,
+            by_alias,
+        }
+    }
+
+    fn resolve(&self, identifier: &str) -> Result<ResolvedNote, GraphQueryError> {
+        let lower = identifier.to_ascii_lowercase();
+
+        // Priority 1: exact path match (O(1)).
+        if let Some(&index) = self.by_path.get(&lower) {
+            let note = &self.notes[index];
+            return Ok(ResolvedNote {
+                id: note.id.clone(),
+                path: note.path.clone(),
+                matched_by: NoteMatchKind::Path,
+            });
+        }
+
+        // Priority 2: filename match — may be ambiguous.
+        if let Some(indices) = self.by_filename.get(&lower) {
+            // Deduplicate: a note may be in this list twice (once for "foo", once for "foo.md").
+            let unique: Vec<usize> = {
+                let mut seen = std::collections::HashSet::new();
+                indices.iter().copied().filter(|i| seen.insert(*i)).collect()
+            };
+            match unique.as_slice() {
+                [single] => {
+                    let note = &self.notes[*single];
+                    return Ok(ResolvedNote {
+                        id: note.id.clone(),
+                        path: note.path.clone(),
+                        matched_by: NoteMatchKind::Filename,
+                    });
+                }
+                [] => {}
+                _ => {
+                    let mut paths = unique
+                        .iter()
+                        .map(|&i| self.notes[i].path.clone())
+                        .collect::<Vec<_>>();
+                    paths.sort();
+                    return Err(GraphQueryError::AmbiguousIdentifier {
+                        identifier: identifier.to_string(),
+                        matches: paths,
+                    });
+                }
+            }
+        }
+
+        // Priority 3: alias match — may be ambiguous.
+        if let Some(indices) = self.by_alias.get(&lower) {
+            match indices.as_slice() {
+                [single] => {
+                    let note = &self.notes[*single];
+                    return Ok(ResolvedNote {
+                        id: note.id.clone(),
+                        path: note.path.clone(),
+                        matched_by: NoteMatchKind::Alias,
+                    });
+                }
+                [] => {}
+                _ => {
+                    let mut paths = indices
+                        .iter()
+                        .map(|&i| self.notes[i].path.clone())
+                        .collect::<Vec<_>>();
+                    paths.sort();
+                    return Err(GraphQueryError::AmbiguousIdentifier {
+                        identifier: identifier.to_string(),
+                        matches: paths,
+                    });
+                }
+            }
+        }
+
+        Err(GraphQueryError::NoteNotFound {
+            identifier: identifier.to_string(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedNote {
     id: String,
@@ -228,8 +353,8 @@ pub fn resolve_note_reference(
     identifier: &str,
 ) -> Result<NoteReference, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let note = resolve_note_identifier(&notes, identifier)?;
+    let index = load_note_index(&connection)?;
+    let note = index.resolve(identifier)?;
 
     Ok(NoteReference {
         id: note.id,
@@ -240,9 +365,10 @@ pub fn resolve_note_reference(
 
 pub fn list_note_identities(paths: &VaultPaths) -> Result<Vec<NoteIdentity>, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
+    let index = load_note_index(&connection)?;
 
-    Ok(notes
+    Ok(index
+        .notes
         .into_iter()
         .map(|note| NoteIdentity {
             path: note.path,
@@ -257,8 +383,8 @@ pub fn query_links(
     identifier: &str,
 ) -> Result<OutgoingLinksReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let note = resolve_note_identifier(&notes, identifier)?;
+    let index = load_note_index(&connection)?;
+    let note = index.resolve(identifier)?;
     let mut source_cache = HashMap::new();
     let mut statement = connection.prepare(
         "
@@ -319,8 +445,8 @@ pub fn query_backlinks(
     identifier: &str,
 ) -> Result<BacklinksReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let note = resolve_note_identifier(&notes, identifier)?;
+    let index = load_note_index(&connection)?;
+    let note = index.resolve(identifier)?;
     let mut source_cache = HashMap::new();
     let mut statement = connection.prepare(
         "
@@ -371,18 +497,23 @@ pub fn query_graph_path(
     to_identifier: &str,
 ) -> Result<GraphPathReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let from = resolve_note_identifier(&notes, from_identifier)?;
-    let to = resolve_note_identifier(&notes, to_identifier)?;
+    let index = load_note_index(&connection)?;
+    let from = index.resolve(from_identifier)?;
+    let to = index.resolve(to_identifier)?;
     let adjacency = note_adjacency(&connection)?;
+    // Build an id → path lookup from the index for path resolution.
+    let path_by_id = index
+        .notes
+        .iter()
+        .map(|note| (note.id.as_str(), note.path.as_str()))
+        .collect::<HashMap<_, _>>();
     let path = shortest_path(&adjacency, &from.id, &to.id)
         .unwrap_or_default()
         .into_iter()
         .map(|id| {
-            notes
-                .iter()
-                .find(|note| note.id == id)
-                .map(|note| note.path.clone())
+            path_by_id
+                .get(id.as_str())
+                .map(|p| (*p).to_string())
                 .unwrap_or(id)
         })
         .collect::<Vec<_>>();
@@ -396,9 +527,10 @@ pub fn query_graph_path(
 
 pub fn query_graph_hubs(paths: &VaultPaths) -> Result<GraphHubsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
+    let index = load_note_index(&connection)?;
     let counts = note_link_counts(&connection)?;
-    let mut scored = notes
+    let mut scored = index
+        .notes
         .into_iter()
         .map(|note| {
             let (inbound, outbound) = counts.get(&note.id).copied().unwrap_or((0, 0));
@@ -424,9 +556,10 @@ pub fn query_graph_hubs(paths: &VaultPaths) -> Result<GraphHubsReport, GraphQuer
 
 pub fn query_graph_moc_candidates(paths: &VaultPaths) -> Result<GraphMocReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
+    let index = load_note_index(&connection)?;
     let counts = note_link_counts(&connection)?;
-    let mut candidates = notes
+    let mut candidates = index
+        .notes
         .into_iter()
         .filter_map(|note| {
             let (inbound, outbound) = counts.get(&note.id).copied().unwrap_or((0, 0));
@@ -476,9 +609,10 @@ pub fn query_graph_moc_candidates(paths: &VaultPaths) -> Result<GraphMocReport, 
 
 pub fn query_graph_dead_ends(paths: &VaultPaths) -> Result<GraphDeadEndsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
+    let index = load_note_index(&connection)?;
     let counts = note_link_counts(&connection)?;
-    let mut dead_ends = notes
+    let mut dead_ends = index
+        .notes
         .into_iter()
         .filter(|note| counts.get(&note.id).map_or(0, |(_, outbound)| *outbound) == 0)
         .map(|note| note.path)
@@ -492,13 +626,15 @@ pub fn query_graph_components(
     paths: &VaultPaths,
 ) -> Result<GraphComponentsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
+    let index = load_note_index(&connection)?;
     let undirected = undirected_note_adjacency(&connection)?;
-    let path_by_id = notes
+    let path_by_id = index
+        .notes
         .iter()
         .map(|note| (note.id.clone(), note.path.clone()))
         .collect::<HashMap<_, _>>();
-    let mut remaining = notes
+    let mut remaining = index
+        .notes
         .iter()
         .map(|note| note.id.clone())
         .collect::<BTreeSet<_>>();
@@ -537,23 +673,25 @@ pub fn query_graph_components(
 
 pub fn query_graph_analytics(paths: &VaultPaths) -> Result<GraphAnalyticsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
+    let index = load_note_index(&connection)?;
     let counts = note_link_counts(&connection)?;
     let resolved_note_links = total_resolved_note_links(&connection)?;
-    let orphan_notes = notes
+    let orphan_notes = index
+        .notes
         .iter()
         .filter(|note| counts.get(&note.id).copied().unwrap_or((0, 0)) == (0, 0))
         .count();
+    let note_count = index.notes.len();
 
     Ok(GraphAnalyticsReport {
-        note_count: notes.len(),
+        note_count,
         attachment_count: count_documents_by_extension_group(&connection, "attachment")?,
         base_count: count_documents_by_extension_group(&connection, "base")?,
         resolved_note_links,
-        average_outbound_links: if notes.is_empty() {
+        average_outbound_links: if note_count == 0 {
             0.0
         } else {
-            count_as_f64(resolved_note_links) / count_as_f64(notes.len())
+            count_as_f64(resolved_note_links) / count_as_f64(note_count)
         },
         orphan_notes,
         top_tags: top_tag_counts(&connection)?,
@@ -567,6 +705,11 @@ fn open_existing_cache(paths: &VaultPaths) -> Result<Connection, GraphQueryError
     }
 
     Ok(Connection::open(paths.cache_db())?)
+}
+
+fn load_note_index(connection: &Connection) -> Result<NoteIndex, GraphQueryError> {
+    let notes = load_indexed_notes(connection)?;
+    Ok(NoteIndex::build(notes))
 }
 
 fn load_indexed_notes(connection: &Connection) -> Result<Vec<IndexedNote>, GraphQueryError> {
@@ -598,73 +741,6 @@ fn load_indexed_notes(connection: &Connection) -> Result<Vec<IndexedNote>, Graph
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(GraphQueryError::from)
-}
-
-fn resolve_note_identifier(
-    notes: &[IndexedNote],
-    identifier: &str,
-) -> Result<ResolvedNote, GraphQueryError> {
-    for (match_kind, predicate) in [
-        (
-            NoteMatchKind::Path,
-            matches_path as fn(&IndexedNote, &str) -> bool,
-        ),
-        (
-            NoteMatchKind::Filename,
-            matches_filename as fn(&IndexedNote, &str) -> bool,
-        ),
-        (
-            NoteMatchKind::Alias,
-            matches_alias as fn(&IndexedNote, &str) -> bool,
-        ),
-    ] {
-        let matches = notes
-            .iter()
-            .filter(|note| predicate(note, identifier))
-            .collect::<Vec<_>>();
-
-        match matches.as_slice() {
-            [] => {}
-            [single] => {
-                return Ok(ResolvedNote {
-                    id: single.id.clone(),
-                    path: single.path.clone(),
-                    matched_by: match_kind,
-                });
-            }
-            _ => {
-                let mut paths = matches
-                    .into_iter()
-                    .map(|note| note.path.clone())
-                    .collect::<Vec<_>>();
-                paths.sort();
-                return Err(GraphQueryError::AmbiguousIdentifier {
-                    identifier: identifier.to_string(),
-                    matches: paths,
-                });
-            }
-        }
-    }
-
-    Err(GraphQueryError::NoteNotFound {
-        identifier: identifier.to_string(),
-    })
-}
-
-fn matches_path(note: &IndexedNote, identifier: &str) -> bool {
-    note.path.eq_ignore_ascii_case(identifier)
-        || strip_markdown_extension(&note.path).eq_ignore_ascii_case(identifier)
-}
-
-fn matches_filename(note: &IndexedNote, identifier: &str) -> bool {
-    note.filename.eq_ignore_ascii_case(identifier)
-        || format!("{}.md", note.filename).eq_ignore_ascii_case(identifier)
-}
-
-fn matches_alias(note: &IndexedNote, identifier: &str) -> bool {
-    note.aliases
-        .iter()
-        .any(|alias| alias.eq_ignore_ascii_case(identifier))
 }
 
 fn strip_markdown_extension(path: &str) -> &str {
