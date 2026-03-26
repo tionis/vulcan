@@ -14,9 +14,9 @@ use std::io;
 use std::time::Duration;
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
-    list_note_identities, list_tagged_note_identities, list_tags, query_notes, scan_vault,
-    search_vault, NamedCount, NoteIdentity, NoteQuery, ScanMode, SearchHit, SearchQuery,
-    VaultPaths,
+    list_note_identities, list_tagged_note_identities, list_tags, move_note, query_notes,
+    scan_vault, search_vault, NamedCount, NoteIdentity, NoteQuery, ScanMode, SearchHit,
+    SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
@@ -91,6 +91,23 @@ fn run_event_loop(
                         }
                     }
                 }
+                BrowseAction::Move {
+                    source_path,
+                    destination,
+                } => match move_note(&state.paths, &source_path, &destination, false) {
+                    Ok(summary) => {
+                        state.clear_move_prompt();
+                        if let Err(error) = state.reload_after_move(&summary.destination_path) {
+                            state.set_status(error);
+                        } else {
+                            state.set_status(format!(
+                                "Moved {} -> {}.",
+                                summary.source_path, summary.destination_path
+                            ));
+                        }
+                    }
+                    Err(error) => state.set_status(error.to_string()),
+                },
             }
         }
     }
@@ -149,9 +166,7 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
     frame.render_widget(preview, body[1]);
 
     let footer = Paragraph::new(vec![
-        Line::from(
-            "Keys: Enter/e edit, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit",
-        ),
+        Line::from(state.key_help_line()),
         Line::from(format!("      {}", state.mode_help_line())),
         Line::from(format!(
             "Mode: {} | {} filtered / {} total",
@@ -176,6 +191,10 @@ enum BrowseAction {
     Continue,
     Quit,
     Edit(String),
+    Move {
+        source_path: String,
+        destination: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +234,21 @@ impl BrowseMode {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MovePrompt {
+    source_path: String,
+    destination: String,
+}
+
+impl MovePrompt {
+    fn new(source_path: &str) -> Self {
+        Self {
+            source_path: source_path.to_string(),
+            destination: source_path.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct BrowseState {
     paths: VaultPaths,
@@ -223,6 +257,7 @@ struct BrowseState {
     full_text: FullTextState,
     tag_filter: TagFilterState,
     property_filter: PropertyFilterState,
+    move_prompt: Option<MovePrompt>,
     mode: BrowseMode,
     status: String,
 }
@@ -241,12 +276,17 @@ impl BrowseState {
             full_text: FullTextState::default(),
             tag_filter: TagFilterState::new(paths.clone(), tags),
             property_filter: PropertyFilterState::new(paths),
+            move_prompt: None,
             mode: BrowseMode::Fuzzy,
             status: "Ready.".to_string(),
         })
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> BrowseAction {
+        if self.move_prompt.is_some() {
+            return self.handle_move_prompt_key(key.code);
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('f') | KeyCode::Char('F') => {
@@ -281,6 +321,11 @@ impl BrowseState {
                 self.mode = BrowseMode::Fuzzy;
                 BrowseAction::Continue
             }
+            KeyCode::Char('m') if self.mode == BrowseMode::Fuzzy => {
+                self.clear_status();
+                self.open_move_prompt();
+                BrowseAction::Continue
+            }
             KeyCode::Enter | KeyCode::Char('e') if self.mode == BrowseMode::Fuzzy => {
                 if let Some(path) = self.selected_path().map(str::to_string) {
                     BrowseAction::Edit(path)
@@ -296,6 +341,40 @@ impl BrowseState {
                 }
                 BrowseAction::Continue
             }
+        }
+    }
+
+    fn handle_move_prompt_key(&mut self, code: KeyCode) -> BrowseAction {
+        let Some(prompt) = self.move_prompt.as_mut() else {
+            return BrowseAction::Continue;
+        };
+
+        match code {
+            KeyCode::Esc => {
+                self.move_prompt = None;
+                self.clear_status();
+                BrowseAction::Continue
+            }
+            KeyCode::Enter => {
+                let destination = prompt.destination.trim().to_string();
+                if destination.is_empty() {
+                    self.set_status("Destination path cannot be empty.");
+                    return BrowseAction::Continue;
+                }
+                BrowseAction::Move {
+                    source_path: prompt.source_path.clone(),
+                    destination,
+                }
+            }
+            KeyCode::Backspace => {
+                prompt.destination.pop();
+                BrowseAction::Continue
+            }
+            KeyCode::Char(character) => {
+                prompt.destination.push(character);
+                BrowseAction::Continue
+            }
+            _ => BrowseAction::Continue,
         }
     }
 
@@ -345,6 +424,22 @@ impl BrowseState {
         Ok(())
     }
 
+    fn reload_after_move(&mut self, destination: &str) -> Result<(), String> {
+        let notes = load_notes(&self.paths)?;
+        self.all_notes = notes.clone();
+        self.picker.replace_notes_preserve_selection(notes);
+        self.picker.select_path(destination);
+        self.full_text.refresh_results(&self.paths)?;
+        self.full_text.select_path(destination);
+        self.tag_filter
+            .refresh_results(&self.paths, &self.all_notes)?;
+        self.tag_filter.select_path(destination);
+        self.property_filter
+            .refresh_results(&self.paths, &self.all_notes);
+        self.property_filter.select_path(destination);
+        Ok(())
+    }
+
     fn refresh_preview(&mut self) {
         match self.mode {
             BrowseMode::Fuzzy => self.picker.refresh_preview(),
@@ -364,6 +459,9 @@ impl BrowseState {
     }
 
     fn query(&self) -> &str {
+        if let Some(prompt) = self.move_prompt.as_ref() {
+            return &prompt.destination;
+        }
         match self.mode {
             BrowseMode::Fuzzy => self.picker.query(),
             BrowseMode::FullText => self.full_text.query(),
@@ -372,12 +470,27 @@ impl BrowseState {
         }
     }
 
-    fn query_title(&self) -> &'static str {
-        self.mode.query_title()
+    fn query_title(&self) -> String {
+        self.move_prompt.as_ref().map_or_else(
+            || self.mode.query_title().to_string(),
+            |prompt| format!("Move Note ({})", prompt.source_path),
+        )
     }
 
-    fn mode_help_line(&self) -> &'static str {
-        self.mode.help_line()
+    fn key_help_line(&self) -> String {
+        if self.move_prompt.is_some() {
+            "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
+        } else {
+            "Keys: Enter/e edit, m move, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit"
+                .to_string()
+        }
+    }
+
+    fn mode_help_line(&self) -> String {
+        self.move_prompt.as_ref().map_or_else(
+            || self.mode.help_line().to_string(),
+            |_| "type the destination path, then press Enter to rename or move".to_string(),
+        )
     }
 
     fn list_items(&self) -> Vec<String> {
@@ -460,9 +573,24 @@ impl BrowseState {
         self.status.clear();
     }
 
+    fn clear_move_prompt(&mut self) {
+        self.move_prompt = None;
+    }
+
+    fn open_move_prompt(&mut self) {
+        match self.selected_path() {
+            Some(path) => self.move_prompt = Some(MovePrompt::new(path)),
+            None => self.set_status("No matching note selected."),
+        }
+    }
+
     fn status_line(&self) -> String {
         if !self.status.is_empty() {
             return self.status.clone();
+        }
+
+        if let Some(prompt) = self.move_prompt.as_ref() {
+            return format!("Moving {}", prompt.source_path);
         }
 
         match self.mode {
@@ -534,6 +662,16 @@ impl FullTextState {
                 self.refresh_results(paths)
             }
             _ => Ok(()),
+        }
+    }
+
+    fn select_path(&mut self, path: &str) {
+        if let Some(index) = self
+            .hits
+            .iter()
+            .position(|hit| hit.document_path.as_str() == path)
+        {
+            self.selected_index = Some(index);
         }
     }
 
@@ -632,6 +770,10 @@ impl TagFilterState {
 
     fn selected_index(&self) -> Option<usize> {
         self.picker.selected_index()
+    }
+
+    fn select_path(&mut self, path: &str) {
+        self.picker.select_path(path);
     }
 
     fn filtered_count(&self) -> usize {
@@ -745,6 +887,10 @@ impl PropertyFilterState {
 
     fn selected_index(&self) -> Option<usize> {
         self.picker.selected_index()
+    }
+
+    fn select_path(&mut self, path: &str) {
+        self.picker.select_path(path);
     }
 
     fn filtered_count(&self) -> usize {
@@ -1080,6 +1226,70 @@ mod tests {
         let action = state.handle_key(key(KeyCode::Char('e')));
 
         assert_eq!(action, BrowseAction::Edit("Projects/Alpha.md".to_string()));
+    }
+
+    #[test]
+    fn m_opens_move_prompt_for_selected_note() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Projects/Alpha.md", "Alpha");
+        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
+            .expect("state should build");
+
+        let action = state.handle_key(key(KeyCode::Char('m')));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "Move Note (Projects/Alpha.md)");
+        assert_eq!(state.query(), "Projects/Alpha.md");
+        assert_eq!(
+            state.mode_help_line(),
+            "type the destination path, then press Enter to rename or move"
+        );
+    }
+
+    #[test]
+    fn move_action_renames_note_and_reloads_selection() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Home.md", "Link to [[Projects/Alpha]].");
+        write_note(temp_dir.path(), "Projects/Alpha.md", "# Alpha");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths.clone(),
+            vec![note("Home.md", &[]), note("Projects/Alpha.md", &[])],
+        )
+        .expect("state should build");
+        state.picker.select_path("Projects/Alpha.md");
+
+        state.handle_key(key(KeyCode::Char('m')));
+        for _ in 0.."Projects/Alpha.md".len() {
+            state.handle_key(key(KeyCode::Backspace));
+        }
+        for character in "Archive/Alpha.md".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+
+        let action = state.handle_key(key(KeyCode::Enter));
+        let BrowseAction::Move {
+            source_path,
+            destination,
+        } = action
+        else {
+            panic!("expected move action");
+        };
+        move_note(&paths, &source_path, &destination, false).expect("move should succeed");
+        state.clear_move_prompt();
+        state
+            .reload_after_move(&destination)
+            .expect("browse state should reload after move");
+
+        assert_eq!(state.selected_path(), Some("Archive/Alpha.md"));
+        assert!(temp_dir.path().join("Archive/Alpha.md").exists());
+        assert!(!temp_dir.path().join("Projects/Alpha.md").exists());
+        let home =
+            fs::read_to_string(temp_dir.path().join("Home.md")).expect("home should be readable");
+        assert!(!home.contains("[[Projects/Alpha]]"));
+        assert!(home.contains("[[Alpha]]"));
     }
 
     #[test]
