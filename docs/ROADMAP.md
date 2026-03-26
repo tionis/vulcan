@@ -1083,9 +1083,9 @@ vulcan template insert <template> --append     # append to end (default)
 
 #### 9.7.4 Obsidian template folder discovery
 
-- [ ] If `.obsidian/` config specifies a template folder location, vulcan discovers and uses it as an additional template source
-- [ ] Template list (`vulcan template --list`) shows templates from both `.vulcan/templates/` and the Obsidian template folder, with source indicated
-- [ ] On conflict (same template name in both locations): `.vulcan/templates/` takes precedence, with a warning
+- [x] If `.obsidian/` config specifies a template folder location, vulcan discovers and uses it as an additional template source
+- [x] Template list (`vulcan template --list`) shows templates from both `.vulcan/templates/` and the Obsidian template folder, with source indicated
+- [x] On conflict (same template name in both locations): `.vulcan/templates/` takes precedence, with a warning
 
 ---
 

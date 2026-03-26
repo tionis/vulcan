@@ -515,6 +515,7 @@ Behavior:
 ### `template`
 
 `vulcan template` creates a note from `.vulcan/templates/*.md`.
+If `.obsidian/templates.json` configures a template folder, Vulcan also discovers templates there and reports the source in `--list`.
 
 Examples:
 
@@ -527,6 +528,7 @@ vulcan template meeting
 Behavior:
 
 - `NAME` can be the full template filename or the filename stem.
+- `.vulcan/templates` takes precedence over the Obsidian template folder when the same template name exists in both places.
 - If `--path` is omitted, Vulcan creates `<date>-<template-name>.md` in the vault root.
 - In an interactive terminal, the rendered note is opened in the editor before the rescan.
 - Default `{{date}}` and `{{time}}` formats come from `[templates]` in `.vulcan/config.toml`.

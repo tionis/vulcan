@@ -231,6 +231,7 @@ impl Default for InboxConfig {
 pub struct TemplatesConfig {
     pub date_format: String,
     pub time_format: String,
+    pub obsidian_folder: Option<PathBuf>,
 }
 
 impl Default for TemplatesConfig {
@@ -238,6 +239,7 @@ impl Default for TemplatesConfig {
         Self {
             date_format: "YYYY-MM-DD".to_string(),
             time_format: "HH:mm".to_string(),
+            obsidian_folder: None,
         }
     }
 }
@@ -377,6 +379,13 @@ struct ObsidianTemplatesConfig {
     date_format: Option<String>,
     #[serde(rename = "timeFormat")]
     time_format: Option<String>,
+    #[serde(
+        rename = "folder",
+        alias = "templateFolder",
+        alias = "folderPath",
+        alias = "templateFolderPath"
+    )]
+    folder: Option<String>,
 }
 
 #[must_use]
@@ -580,6 +589,10 @@ fn apply_obsidian_template_defaults(config: &mut VaultConfig, obsidian: Obsidian
     if let Some(time_format) = obsidian.time_format {
         config.templates.time_format = time_format;
     }
+
+    if let Some(folder) = obsidian.folder {
+        config.templates.obsidian_folder = Some(normalize_template_folder(&folder));
+    }
 }
 
 fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConfig) {
@@ -672,6 +685,10 @@ fn normalize_attachment_folder(path: &str) -> PathBuf {
     }
 }
 
+fn normalize_template_folder(path: &str) -> PathBuf {
+    PathBuf::from(path.trim_matches('/'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,6 +732,7 @@ mod tests {
         fs::write(
             vault_root.join(".obsidian/templates.json"),
             r#"{
+              "folder": "Shared Templates",
               "dateFormat": "dddd, MMMM Do YYYY",
               "timeFormat": "hh:mm A"
             }"#,
@@ -733,6 +751,10 @@ mod tests {
         assert_eq!(loaded.config.scan.browse_mode, AutoScanMode::Background);
         assert_eq!(loaded.config.templates.date_format, "dddd, MMMM Do YYYY");
         assert_eq!(loaded.config.templates.time_format, "hh:mm A");
+        assert_eq!(
+            loaded.config.templates.obsidian_folder,
+            Some(PathBuf::from("Shared Templates"))
+        );
         assert_eq!(
             loaded.config.property_types.get("status"),
             Some(&"text".to_string())
