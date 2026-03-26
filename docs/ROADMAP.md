@@ -733,7 +733,7 @@ vulcan edit --new [path]     # create new note, open in editor
 - [x] If `<note>` is ambiguous or omitted: spawn the existing note picker TUI, Enter opens selected note in editor
 - [x] `vulcan edit --new <path>`: create a new empty note (or from template if 9.4.3 is implemented), open in editor
 - [x] After editor exits: run an incremental rescan of the edited file to update the cache
-- [ ] If auto-commit is enabled (8.3): commit the change after rescan
+- [x] If auto-commit is enabled (8.3): commit the change after rescan
 - [x] Reuse `open_in_editor()` and `with_terminal_suspended()` from `bases_tui.rs` — extract these into a shared `editor.rs` utility module in `vulcan-cli/src/`
 - [x] Non-interactive fallback: if not a TTY, print an error rather than spawning a picker
 - [x] Integration test: create a temp vault, run `edit --new`, verify file exists and cache is updated
@@ -750,7 +750,7 @@ vulcan browse
 - [x] Start in the note picker view (extend existing `NotePickerState` from `note_picker.rs`)
 - [x] Enter opens selected note in `$EDITOR`; on editor exit, return to picker with previous query and selection preserved
 - [x] After each editor exit: incremental rescan of the edited file, refresh the note list
-- [ ] If auto-commit is enabled (8.3): commit after each editor session
+- [x] If auto-commit is enabled (8.3): commit after each editor session
 
 **Search mode hotkeys** (toggled in the picker's input bar):
 - [x] Default / `/`: fuzzy path/alias/filename filter (current behavior)
@@ -771,7 +771,7 @@ vulcan browse
 **UI details:**
 - [x] Status bar at bottom: vault name, total note count, filtered count, last scan timestamp, current search mode indicator
 - [x] Footer keybinding hints update to reflect current mode
-- [ ] Resize-safe layout (reuse `ratatui` constraint-based layout)
+- [x] Resize-safe layout (reuse `ratatui` constraint-based layout)
 
 **Incremental shipping layers:**
 1. **Layer 1 — Edit loop:** Picker → editor → picker with rescan. Minimal viable `browse`.
@@ -827,21 +827,21 @@ scope = "vulcan-only"
 # exclude = [".obsidian/workspace.json", ".obsidian/workspace-mobile.json"]
 ```
 
-- [ ] Add `[git]` section to `VaultConfig` with `GitConfig` struct: `auto_commit: bool`, `trigger: GitTrigger`, `message: String`, `scope: GitScope`, `exclude: Vec<String>`
-- [ ] Add `[git]` section to `DEFAULT_CONFIG_TEMPLATE` (commented out, with defaults shown)
-- [ ] New module `vulcan-core/src/git.rs`:
+- [x] Add `[git]` section to `VaultConfig` with `GitConfig` struct: `auto_commit: bool`, `trigger: GitTrigger`, `message: String`, `scope: GitScope`, `exclude: Vec<String>`
+- [x] Add `[git]` section to `DEFAULT_CONFIG_TEMPLATE` (commented out, with defaults shown)
+- [x] New module `vulcan-core/src/git.rs`:
   - `is_git_repo(vault_root) -> bool`: check for `.git` directory or `git rev-parse --git-dir`
   - `auto_commit(paths, config, action, changed_files) -> Result<AutoCommitReport>`: stage files, create commit
   - `git_log(vault_root, file_path, limit) -> Result<Vec<GitLogEntry>>`: file history for browse TUI
   - `git_status(vault_root) -> Result<GitStatusReport>`: uncommitted changes summary
   - Shell out to `git` CLI (not libgit2) to keep dependencies light
   - Exclude `.vulcan/` and configured exclude paths from staging
-- [ ] `AutoCommitReport` struct: `committed: bool`, `message: String`, `files: Vec<String>`, `sha: Option<String>`
-- [ ] Call `auto_commit()` after successful execution of mutating commands: `move`, `update`, `unset`, `rename-property`, `merge-tags`, `rename-alias`, `rename-heading`, `rename-block-ref`, `link-mentions`, `rewrite`, `edit`, and browse TUI edits
-- [ ] `--no-commit` flag on all mutating CLI commands to suppress auto-commit for one invocation
-- [ ] If `auto_commit = true` but vault is not a git repo: emit a warning diagnostic, do not error
-- [ ] If `trigger = "scan"`: also commit after `scan` and `watch` detect and process external changes
-- [ ] Integration test: enable auto-commit in config, run a mutation, verify git log shows the commit with expected message
+- [x] `AutoCommitReport` struct: `committed: bool`, `message: String`, `files: Vec<String>`, `sha: Option<String>`
+- [x] Call `auto_commit()` after successful execution of mutating commands: `move`, `update`, `unset`, `rename-property`, `merge-tags`, `rename-alias`, `rename-heading`, `rename-block-ref`, `link-mentions`, `rewrite`, `edit`, and browse TUI edits
+- [x] `--no-commit` flag on all mutating CLI commands to suppress auto-commit for one invocation
+- [x] If `auto_commit = true` but vault is not a git repo: emit a warning diagnostic, do not error
+- [x] If `trigger = "scan"`: also commit after `scan` and `watch` detect and process external changes
+- [x] Integration test: enable auto-commit in config, run a mutation, verify git log shows the commit with expected message
 
 ### 9.4 Additional CLI commands
 
@@ -851,11 +851,11 @@ scope = "vulcan-only"
 vulcan diff [note] [--since <checkpoint>]
 ```
 
-- [ ] Show what changed in a specific note since last scan, checkpoint, or git HEAD
-- [ ] If git is available: show `git diff` for the file, rendered with context
-- [ ] If no git: fall back to comparing current content against cached content hash (show "changed" / "unchanged" / "new")
-- [ ] `--output json` support
-- [ ] Builds on existing `changes` command but focused on a single note with richer output
+- [x] Show what changed in a specific note since last scan, checkpoint, or git HEAD
+- [x] If git is available: show `git diff` for the file, rendered with context
+- [x] If no git: fall back to comparing current content against cached content hash (show "changed" / "unchanged" / "new")
+- [x] `--output json` support
+- [x] Builds on existing `changes` command but focused on a single note with richer output
 
 #### 9.4.2 `inbox` — quick capture
 
@@ -865,8 +865,8 @@ vulcan inbox --file <path>     # append file contents
 echo "idea" | vulcan inbox -   # read from stdin
 ```
 
-- [ ] Append text to a configurable inbox note
-- [ ] Config in `.vulcan/config.toml`:
+- [x] Append text to a configurable inbox note
+- [x] Config in `.vulcan/config.toml`:
   ```toml
   [inbox]
   path = "Inbox.md"         # relative to vault root
@@ -874,10 +874,10 @@ echo "idea" | vulcan inbox -   # read from stdin
   timestamp = true           # prepend ISO timestamp to each entry
   heading = "## Inbox"       # optional: append under this heading (create if missing)
   ```
-- [ ] Create the inbox note if it doesn't exist
-- [ ] Incremental rescan after append
-- [ ] Auto-commit if enabled
-- [ ] `--output json` returns `{ "path": "Inbox.md", "appended": true }`
+- [x] Create the inbox note if it doesn't exist
+- [x] Incremental rescan after append
+- [x] Auto-commit if enabled
+- [x] `--output json` returns `{ "path": "Inbox.md", "appended": true }`
 
 #### 9.4.3 `template` — create note from template
 
@@ -886,12 +886,12 @@ vulcan template [name] [--path <output-path>]
 vulcan template --list
 ```
 
-- [ ] Templates stored in `.vulcan/templates/` as regular markdown files
-- [ ] Template variables: `{{title}}` (derived from output path), `{{date}}`, `{{time}}`, `{{datetime}}`, `{{uuid}}`
-- [ ] `--list` shows available templates
-- [ ] If `--path` is omitted, prompt for path (or use template's own filename with date prefix)
-- [ ] After creation: open in `$EDITOR` if TTY, then rescan
-- [ ] Auto-commit if enabled
+- [x] Templates stored in `.vulcan/templates/` as regular markdown files
+- [x] Template variables: `{{title}}` (derived from output path), `{{date}}`, `{{time}}`, `{{datetime}}`, `{{uuid}}`
+- [x] `--list` shows available templates
+- [x] If `--path` is omitted, prompt for path (or use template's own filename with date prefix)
+- [x] After creation: open in `$EDITOR` if TTY, then rescan
+- [x] Auto-commit if enabled
 
 #### 9.4.4 `open` — open note in Obsidian
 
@@ -899,11 +899,11 @@ vulcan template --list
 vulcan open [note]
 ```
 
-- [ ] Open a note in the Obsidian desktop app via `obsidian://open?vault=<name>&file=<path>` URI
-- [ ] Vault name derived from folder name or `.obsidian/` config
-- [ ] Uses `xdg-open` (Linux), `open` (macOS), or `start` (Windows) to launch the URI
-- [ ] Note resolution follows the same path/filename/alias/picker logic as other commands
-- [ ] Useful for quickly jumping from CLI analysis to visual Obsidian editing
+- [x] Open a note in the Obsidian desktop app via `obsidian://open?vault=<name>&file=<path>` URI
+- [x] Vault name derived from folder name or `.obsidian/` config
+- [x] Uses `xdg-open` (Linux), `open` (macOS), or `start` (Windows) to launch the URI
+- [x] Note resolution follows the same path/filename/alias/picker logic as other commands
+- [x] Useful for quickly jumping from CLI analysis to visual Obsidian editing
 
 ---
 

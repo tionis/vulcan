@@ -517,6 +517,12 @@ struct TemplateCreateReport {
     opened_editor: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct OpenReport {
+    path: String,
+    uri: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TemplateVariables {
     title: String,
@@ -1246,6 +1252,97 @@ fn markdown_heading_level(line: &str) -> Option<usize> {
         .then_some(hashes)
 }
 
+fn run_open_command(
+    paths: &VaultPaths,
+    note: Option<&str>,
+    interactive_note_selection: bool,
+) -> Result<OpenReport, CliError> {
+    let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
+    let resolved = resolve_note_reference(paths, &note).map_err(CliError::operation)?;
+    let uri = build_obsidian_uri(paths, &resolved.path);
+    launch_uri(&uri)?;
+
+    Ok(OpenReport {
+        path: resolved.path,
+        uri,
+    })
+}
+
+fn build_obsidian_uri(paths: &VaultPaths, path: &str) -> String {
+    let vault_name = paths
+        .vault_root()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("vault");
+    format!(
+        "obsidian://open?vault={}&file={}",
+        percent_encode(vault_name),
+        percent_encode(path)
+    )
+}
+
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                char::from(byte).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+fn launch_uri(uri: &str) -> Result<(), CliError> {
+    let mut command = ProcessCommand::new(open_uri_program());
+    for arg in open_uri_args(uri) {
+        command.arg(arg);
+    }
+    let status = command.status().map_err(CliError::operation)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(CliError::operation(format!(
+            "launcher exited with status {status} for {uri}"
+        )))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_uri_program() -> &'static str {
+    "xdg-open"
+}
+
+#[cfg(target_os = "macos")]
+fn open_uri_program() -> &'static str {
+    "open"
+}
+
+#[cfg(target_os = "windows")]
+fn open_uri_program() -> &'static str {
+    "cmd"
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn open_uri_program() -> &'static str {
+    "xdg-open"
+}
+
+#[cfg(target_os = "windows")]
+fn open_uri_args(uri: &str) -> Vec<String> {
+    vec![
+        "/C".to_string(),
+        "start".to_string(),
+        String::new(),
+        uri.to_string(),
+    ]
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_uri_args(uri: &str) -> Vec<String> {
+    vec![uri.to_string()]
+}
+
 fn saved_export_format(format: ExportFormat) -> SavedExportFormat {
     match format {
         ExportFormat::Csv => SavedExportFormat::Csv,
@@ -1779,6 +1876,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_edit_report(cli.output, &report);
             Ok(())
         }
+        Command::Open { ref note } => {
+            let report = run_open_command(&paths, note.as_deref(), interactive_note_selection)?;
+            print_open_report(cli.output, &report)
+        }
         Command::Browse { no_commit } => {
             if cli.output != OutputFormat::Human || !stdout_is_tty || !io::stdin().is_terminal() {
                 return Err(CliError::operation(
@@ -1831,7 +1932,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 ref group_by,
                 group_desc,
                 dry_run,
+                no_commit,
             } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
                 let spec = BaseViewSpec {
                     name: Some(name.clone()),
                     view_type: "table".to_string(),
@@ -1846,15 +1950,28 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 };
                 let report =
                     bases_view_add(&paths, file, spec, *dry_run).map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "bases-view-add", std::slice::from_ref(file))
+                        .map_err(CliError::operation)?;
+                }
                 print_bases_view_edit_report(cli.output, &report)
             }
             BasesCommand::ViewDelete {
                 ref file,
                 ref name,
                 dry_run,
+                no_commit,
             } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
                 let report =
                     bases_view_delete(&paths, file, name, *dry_run).map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "bases-view-delete", std::slice::from_ref(file))
+                        .map_err(CliError::operation)?;
+                }
                 print_bases_view_edit_report(cli.output, &report)
             }
             BasesCommand::ViewRename {
@@ -1862,9 +1979,17 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 ref old_name,
                 ref new_name,
                 dry_run,
+                no_commit,
             } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
                 let report = bases_view_rename(&paths, file, old_name, new_name, *dry_run)
                     .map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "bases-view-rename", std::slice::from_ref(file))
+                        .map_err(CliError::operation)?;
+                }
                 print_bases_view_edit_report(cli.output, &report)
             }
             BasesCommand::ViewEdit {
@@ -1878,7 +2003,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 ref group_by,
                 group_desc,
                 dry_run,
+                no_commit,
             } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
                 let patch = BaseViewPatch {
                     add_filters: add_filters.clone(),
                     remove_filters: remove_filters.clone(),
@@ -1913,6 +2041,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 };
                 let report = bases_view_edit(&paths, file, name, patch, *dry_run)
                     .map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "bases-view-edit", std::slice::from_ref(file))
+                        .map_err(CliError::operation)?;
+                }
                 print_bases_view_edit_report(cli.output, &report)
             }
         },
@@ -4628,6 +4761,16 @@ fn print_template_create_report(
     }
 }
 
+fn print_open_report(output: OutputFormat, report: &OpenReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Opened {} in Obsidian", report.path);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_static_search_index_report(
     output: OutputFormat,
     report: &vulcan_core::StaticSearchIndexReport,
@@ -6164,6 +6307,21 @@ mod tests {
     }
 
     #[test]
+    fn build_obsidian_uri_uses_vault_name_and_percent_encoding() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("My Vault");
+        fs::create_dir_all(&vault_root).expect("vault root should be created");
+        let paths = VaultPaths::new(&vault_root);
+
+        let uri = build_obsidian_uri(&paths, "Notes/Hello World.md");
+
+        assert_eq!(
+            uri,
+            "obsidian://open?vault=My%20Vault&file=Notes%2FHello%20World.md"
+        );
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn parses_links_and_backlinks_commands() {
         let rebuild =
@@ -6247,6 +6405,7 @@ mod tests {
         let inbox = Cli::try_parse_from(["vulcan", "inbox", "idea"]).expect("cli should parse");
         let template = Cli::try_parse_from(["vulcan", "template", "daily", "--path", "Notes/Day"])
             .expect("cli should parse");
+        let open = Cli::try_parse_from(["vulcan", "open", "Home"]).expect("cli should parse");
         let link_mentions = Cli::try_parse_from(["vulcan", "link-mentions", "Home", "--dry-run"])
             .expect("cli should parse");
         let rewrite = Cli::try_parse_from([
@@ -6534,6 +6693,12 @@ mod tests {
                 list: false,
                 path: Some("Notes/Day".to_string()),
                 no_commit: false,
+            }
+        );
+        assert_eq!(
+            open.command,
+            Command::Open {
+                note: Some("Home".to_string())
             }
         );
         assert_eq!(
