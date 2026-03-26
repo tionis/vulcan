@@ -13,6 +13,7 @@ Command Groups:
 
 Docs:
   User guide: docs/cli.md
+  Interactive help: vulcan edit --help and vulcan browse --help
   Query/filter reference: vulcan notes --help and vulcan search --help
   Machine-readable schema: vulcan describe";
 
@@ -123,6 +124,139 @@ Values:
 Examples:
   vulcan rewrite --where 'status = draft' --find TODO --replace DONE --dry-run
   vulcan rewrite --where 'file.path starts_with \"Projects/\"' --find alpha --replace beta";
+
+const BASES_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  eval         evaluate a .base file and print its current rows
+  tui          inspect a .base file interactively
+  view-add     add a validated view definition
+  view-delete  remove a view definition
+  view-rename  rename a view
+  view-edit    adjust filters, columns, sort, and grouping
+
+Notes:
+  view-* commands rewrite the parsed .base model instead of patching YAML text blindly.
+  Mutating bases commands support --dry-run and --no-commit.
+
+Examples:
+  vulcan bases eval release.base
+  vulcan bases tui release.base
+  vulcan bases view-add release.base Inbox --filter 'status = idea' --column file.name";
+
+const BROWSE_COMMAND_AFTER_HELP: &str = "\
+Browse modes:
+  default      fuzzy note picker with live preview
+  Ctrl-F       indexed full-text search with snippet preview
+  Ctrl-T       tag filter mode
+  Ctrl-P       property filter mode
+  /            return to fuzzy mode
+
+Keys:
+  Enter/e      edit the selected note
+  n            create a new note
+  m            move or rename the selected note
+  b            open backlinks for the selected note
+  l            open outgoing links for the selected note
+  d            show doctor diagnostics for the selected note
+  g            show git history for the selected file
+  Esc          quit the browser
+
+Notes:
+  Single-letter browse actions only fire when the fuzzy query is empty.
+  After edits, creates, and moves, Vulcan rescans affected files and refreshes the browser.
+  In backlinks/outgoing-link views, `o` opens the selected .base file in the Bases TUI.
+
+Examples:
+  vulcan browse
+  vulcan browse --no-commit";
+
+const EDIT_COMMAND_AFTER_HELP: &str = "\
+Behavior:
+  If NOTE is omitted in an interactive terminal, Vulcan opens the note picker.
+  With --new, Vulcan creates the target path first (appending .md when missing).
+
+Notes:
+  The editor is chosen from $VISUAL, then $EDITOR, then `vi`.
+  After the editor exits, Vulcan runs an incremental scan of the edited file.
+
+Examples:
+  vulcan edit Projects/Alpha
+  vulcan edit
+  vulcan edit --new Inbox/Idea";
+
+const DIFF_COMMAND_AFTER_HELP: &str = "\
+Comparison source:
+  --since <checkpoint> compares against a named checkpoint.
+  Otherwise, git-backed vaults compare the note against git HEAD.
+  Without git, Vulcan reports cache-level changes since the last scan.
+
+Notes:
+  Git-backed diffs include unified diff text in human and JSON output.
+  Cache-backed diffs report which note, link, property, or embedding records changed.
+
+Examples:
+  vulcan diff Projects/Alpha
+  vulcan diff --since weekly Projects/Alpha
+  vulcan diff";
+
+const INBOX_COMMAND_AFTER_HELP: &str = "\
+Configuration:
+  Inbox settings live under [inbox] in .vulcan/config.toml.
+  path       relative note path to append to
+  format     entry template; supports {text}, {date}, {time}, {datetime}
+  timestamp  prepend the current datetime automatically
+  heading    optional heading to append under (created if missing)
+
+Input:
+  Pass TEXT directly, use `-` to read from stdin, or use --file <PATH>.
+  Vulcan creates the inbox note automatically when it does not exist.
+
+Examples:
+  vulcan inbox \"Call Alice about launch notes\"
+  echo \"idea\" | vulcan inbox -
+  vulcan inbox --file scratch.txt";
+
+const TEMPLATE_COMMAND_AFTER_HELP: &str = "\
+Template source:
+  Templates live under .vulcan/templates as regular .md files.
+  NAME can be the full filename or the filename stem.
+
+Variables:
+  {{title}} {{date}} {{time}} {{datetime}} {{uuid}}
+
+Notes:
+  If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.
+  In an interactive terminal, the new note is opened in $VISUAL/$EDITOR after rendering.
+
+Examples:
+  vulcan template --list
+  vulcan template daily --path Daily/2026-03-26
+  vulcan template meeting";
+
+const OPEN_COMMAND_AFTER_HELP: &str = "\
+Behavior:
+  Resolves NOTE by path, filename, or alias.
+  If NOTE is omitted in an interactive terminal, Vulcan opens the note picker.
+  Launches obsidian://open?vault=<vault>&file=<path> through the platform opener.
+
+Examples:
+  vulcan open Projects/Alpha
+  vulcan open Daily/2026-03-26
+  vulcan open";
+
+const DESCRIBE_COMMAND_AFTER_HELP: &str = "\
+Output:
+  describe prints the runtime CLI schema, including subcommands, options, defaults,
+  possible values, and embedded after-help text.
+
+Examples:
+  vulcan describe
+  vulcan --output json describe > vulcan-schema.json";
+
+const COMPLETIONS_COMMAND_AFTER_HELP: &str = "\
+Examples:
+  vulcan completions bash > ~/.local/share/bash-completion/completions/vulcan
+  vulcan completions fish > ~/.config/fish/completions/vulcan.fish";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -726,7 +860,10 @@ pub enum Command {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Evaluate read-only Bases views")]
+    #[command(
+        about = "Evaluate and maintain Bases views",
+        after_help = BASES_COMMAND_AFTER_HELP
+    )]
     Bases {
         #[command(subcommand)]
         command: BasesCommand,
@@ -761,7 +898,10 @@ pub enum Command {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Show one note's changes since git HEAD, the last scan, or a checkpoint")]
+    #[command(
+        about = "Show one note's changes since git HEAD, the last scan, or a checkpoint",
+        after_help = DIFF_COMMAND_AFTER_HELP
+    )]
     Diff {
         #[arg(
             help = "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively"
@@ -770,7 +910,10 @@ pub enum Command {
         #[arg(long, help = "Named checkpoint to compare against instead of git HEAD")]
         since: Option<String>,
     },
-    #[command(about = "Append a quick capture entry to the configured inbox note")]
+    #[command(
+        about = "Append a quick capture entry to the configured inbox note",
+        after_help = INBOX_COMMAND_AFTER_HELP
+    )]
     Inbox {
         #[arg(help = "Text to append, or `-` to read from stdin")]
         text: Option<String>,
@@ -779,7 +922,10 @@ pub enum Command {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Create a note from a template under .vulcan/templates")]
+    #[command(
+        about = "Create a note from a template under .vulcan/templates",
+        after_help = TEMPLATE_COMMAND_AFTER_HELP
+    )]
     Template {
         #[arg(help = "Template name or filename stem")]
         name: Option<String>,
@@ -820,12 +966,18 @@ pub enum Command {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Open a persistent note browser TUI")]
+    #[command(
+        about = "Open a persistent note browser TUI",
+        after_help = BROWSE_COMMAND_AFTER_HELP
+    )]
     Browse {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Open a note in $VISUAL/$EDITOR and refresh the cache afterwards")]
+    #[command(
+        about = "Open a note in $VISUAL/$EDITOR and refresh the cache afterwards",
+        after_help = EDIT_COMMAND_AFTER_HELP
+    )]
     Edit {
         #[arg(
             help = "Note path, filename, or alias to edit; with --new, the new note path to create"
@@ -836,7 +988,10 @@ pub enum Command {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Open a note in the Obsidian desktop app")]
+    #[command(
+        about = "Open a note in the Obsidian desktop app",
+        after_help = OPEN_COMMAND_AFTER_HELP
+    )]
     Open {
         #[arg(
             help = "Note path, filename, or alias to open; omit in a TTY session to pick interactively"
@@ -1060,9 +1215,15 @@ Examples:
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Describe the CLI schema and command surface")]
+    #[command(
+        about = "Describe the CLI schema and command surface",
+        after_help = DESCRIBE_COMMAND_AFTER_HELP
+    )]
     Describe,
-    #[command(about = "Generate shell completion scripts")]
+    #[command(
+        about = "Generate shell completion scripts",
+        after_help = COMPLETIONS_COMMAND_AFTER_HELP
+    )]
     Completions {
         #[arg(help = "Shell to generate completions for")]
         shell: Shell,
