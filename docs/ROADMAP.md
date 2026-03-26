@@ -1009,20 +1009,20 @@ Wire all new search capabilities into the browse TUI's Ctrl-F mode.
 The `SearchQuery` struct in `vulcan-core/src/search.rs` is the single input contract shared by the CLI, browse TUI, and HTTP `/search` endpoint. New capabilities must be reflected here so all surfaces stay in sync.
 
 - [x] Add `sort: Option<SearchSort>` field to `SearchQuery`. Enum values: `Relevance` (default), `PathAsc`, `PathDesc`, `ModifiedNewest`, `ModifiedOldest`, `CreatedNewest`, `CreatedOldest`. Used by keyword/hybrid search to choose between BM25 ranking and SQL ORDER BY.
-- [ ] Add `match_case: Option<bool>` field to `SearchQuery`. When `Some(true)`, all terms are treated as case-sensitive (applies to the global toggle; individual `match-case:` / `ignore-case:` inline operators override per-term). Default `None` means case-insensitive.
+- [x] Add `match_case: Option<bool>` field to `SearchQuery`. When `Some(true)`, all terms are treated as case-sensitive (applies to the global toggle; individual `match-case:` / `ignore-case:` inline operators override per-term). Default `None` means case-insensitive.
 - [x] Extend `SearchPlan` with `parsed_query_explanation: Vec<String>` — human-readable breakdown of the parsed query (boolean structure, operators, property filters). Populated when `explain = true`.
-- [ ] Extend `SearchHit` with `matched_line: Option<usize>` — the 1-based line number of the best match within the chunk, when available (useful for `line:` and `match-case:` post-filters that already inspect individual lines).
-- [ ] HTTP `/search` endpoint (`serve.rs`): add query parameters `sort`, `match_case` mapping to the new `SearchQuery` fields. All new fields serialise into the JSON response via the existing `SearchReport` derive.
+- [x] Extend `SearchHit` with `matched_line: Option<usize>` — the 1-based line number of the best match within the chunk, when available (useful for `line:` and `match-case:` post-filters that already inspect individual lines).
+- [x] HTTP `/search` endpoint (`serve.rs`): add query parameters `sort`, `match_case` mapping to the new `SearchQuery` fields. All new fields serialise into the JSON response via the existing `SearchReport` derive.
 - [ ] Phase 10 daemon: when the axum-based `/search` route replaces the hand-rolled endpoint, carry forward all query parameters. The `SearchQuery` struct is `Deserialize`, so the axum handler can deserialise directly from query params with `axum::extract::Query<SearchQuery>` (or a thin wrapper).
 
 #### 9.6.9 Explain and diagnostics
 
 Richer search-plan explanation for debugging complex queries across all surfaces.
 
-- [ ] `vulcan search --explain` CLI output: after the existing score breakdown, print a "Query plan" section showing the boolean tree, active operators, property filters, sort order, and regex patterns — one line per component.
-- [ ] JSON output (`--output json` and HTTP API): the `SearchPlan.parsed_query_explanation` array provides the same information machine-readably.
+- [x] `vulcan search --explain` CLI output: after the existing score breakdown, print a "Query plan" section showing the boolean tree, active operators, property filters, sort order, and regex patterns — one line per component.
+- [x] JSON output (`--output json` and HTTP API): the `SearchPlan.parsed_query_explanation` array provides the same information machine-readably.
 - [ ] Browse TUI `Ctrl-E` explain pane (from 9.6.7) renders `parsed_query_explanation` lines in a scrollable overlay.
-- [ ] When no results are found: the explanation includes suggestions (e.g., "did you mean `content:` instead of `contents:`?", "no tasks found in matched files for `task-todo:`").
+- [x] When no results are found: the explanation includes suggestions (e.g., "did you mean `content:` instead of `contents:`?", "no tasks found in matched files for `task-todo:`").
 
 #### 9.6.10 Cross-cutting integration notes
 

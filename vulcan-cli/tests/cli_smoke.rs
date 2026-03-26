@@ -137,7 +137,10 @@ fn search_help_documents_query_and_filter_syntax() {
                 .and(predicate::str::contains("section:(dog cat)"))
                 .and(predicate::str::contains("task:docs"))
                 .and(predicate::str::contains("task-todo:followup"))
+                .and(predicate::str::contains("ignore-case:Bob"))
+                .and(predicate::str::contains("--match-case"))
                 .and(predicate::str::contains("--sort <SORT>"))
+                .and(predicate::str::contains("vulcan search Bob --match-case"))
                 .and(predicate::str::contains(
                     "vulcan search dashboard --sort path-desc",
                 ))
@@ -1414,6 +1417,71 @@ fn search_sort_orders_results_and_reports_sort_plan() {
         .expect("parsed query explanation should be an array")
         .iter()
         .any(|line| line == "SORT modified-newest"));
+}
+
+#[test]
+fn search_match_case_flag_reports_matched_line_and_no_result_suggestions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    fs::write(vault_root.join("Upper.md"), "Bob builds dashboards.")
+        .expect("upper note should write");
+    fs::write(vault_root.join("Lower.md"), "bob builds dashboards.")
+        .expect("lower note should write");
+    run_scan(&vault_root);
+
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let match_case_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "--fields",
+            "document_path,matched_line",
+            "search",
+            "Bob",
+            "--match-case",
+        ])
+        .assert()
+        .success();
+    let match_case_rows = parse_stdout_json_lines(&match_case_assert);
+    assert_eq!(match_case_rows.len(), 1);
+    assert_eq!(match_case_rows[0]["document_path"], "Upper.md");
+    assert_eq!(match_case_rows[0]["matched_line"], 1);
+
+    let no_result_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "--fields",
+            "no_results,parsed_query_explanation",
+            "search",
+            "contents:Bob task-todo:ship",
+            "--explain",
+        ])
+        .assert()
+        .success();
+    let no_result_rows = parse_stdout_json_lines(&no_result_assert);
+    assert_eq!(no_result_rows.len(), 1);
+    assert_eq!(no_result_rows[0]["no_results"], true);
+    let explanation = no_result_rows[0]["parsed_query_explanation"]
+        .as_array()
+        .expect("parsed query explanation should be an array");
+    assert!(explanation
+        .iter()
+        .any(|line| line == "SUGGESTION did you mean `content:` instead of `contents:`?"));
+    assert!(explanation
+        .iter()
+        .any(|line| line == "SUGGESTION no tasks found in matched files for `task-todo:`"));
 }
 
 #[test]

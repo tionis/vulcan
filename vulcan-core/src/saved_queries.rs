@@ -94,6 +94,8 @@ pub enum SavedReportQuery {
         context_size: usize,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sort: Option<SearchSort>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        match_case: Option<bool>,
         #[serde(default, skip_serializing_if = "is_false")]
         raw_query: bool,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -290,7 +292,8 @@ mod tests {
                 filters: vec!["reviewed = true".to_string()],
                 context_size: 24,
                 sort: Some(SearchSort::PathDesc),
-                raw_query: true,
+                match_case: Some(true),
+                raw_query: false,
                 fuzzy: true,
             },
         };
