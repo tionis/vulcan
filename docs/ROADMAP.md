@@ -949,6 +949,7 @@ read_only = true  # no mutation endpoints
 - [ ] `vulcan daemon config list` — show registered vaults (paths, IDs, status)
 - [ ] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
 - [ ] Vault auto-discovery: optionally scan a directory for vaults (e.g., `scan_dir = "/home/user/vaults"`)
+- **Forward reference:** Phase 17 replaces the per-vault token model with multi-user accounts, groups, and per-vault roles. The token infrastructure here (argon2 hashing, Bearer auth middleware) is reused — Phase 17 extends it, not replaces it.
 
 ### 10.3 REST API
 
@@ -1119,7 +1120,7 @@ trait SyncBackend: Send + Sync {
 - [ ] Static SPA assets embedded in the binary at compile time (e.g., `rust-embed` or `include_dir`)
 - [ ] Alternatively: separate frontend repo that builds to static files, daemon serves them
 - [ ] Framework choice: lightweight (Svelte, Solid, or vanilla + htmx) — TBD at implementation time
-- [ ] Auth: reuse daemon token auth, with a login page for browser sessions (cookie or localStorage token)
+- [ ] Auth: multi-user login page (username/password or API key), browser sessions via cookie or localStorage token. Uses the user management and ACL system from Phase 17. All API calls and rendered views respect the authenticated user's permissions.
 
 ### 13.2 Admin panel
 
@@ -1284,10 +1285,14 @@ trait SyncBackend: Send + Sync {
 
 ### 16.4 Access control
 
-- [ ] Public read / authenticated write (default)
-- [ ] Fully public (no auth)
-- [ ] Fully private (auth required for read and write)
-- [ ] Per-folder or per-tag visibility rules (future)
+Uses the full ACL system from Phase 17. Wiki mode adds vault-level access presets that configure the underlying ACL rules:
+
+- [ ] **Public read / authenticated write** (default): unauthenticated users get `viewer` access, authenticated users use their vault role
+- [ ] **Fully public**: unauthenticated users get `viewer` access, no login required for any read operation
+- [ ] **Fully private**: no unauthenticated access, all users must log in
+- [ ] **Per-folder and per-tag visibility**: configured via ACL rules from Phase 17.2 — e.g., hide `GM-Only/` from the `players` group
+- [ ] **Document-level secrets**: `[!secret]` callouts and restricted embeds from Phase 17.4 are enforced in wiki rendering
+- [ ] **Share links**: external share tokens from Phase 17.5 provide read access to specific notes/folders without requiring an account
 
 ### 16.5 Live collaborative editing
 
@@ -1315,6 +1320,266 @@ Automerge compiles to `wasm32`, enabling browser-side editing without a live ser
 
 ---
 
+## Phase 17: User Management & Access Control
+
+**Goal:** Multi-user identity, group-based permissions, fine-grained ACLs, document-level secrets, and external share links. Provides the authorization layer that all web-facing features depend on.
+
+**Depends on:** Phase 10 (daemon). Sub-phases 17.1–17.3 must be complete before Phase 13 ships. Sub-phases 17.4–17.5 are needed by Phase 16.
+
+**Design principle: ACLs are not a cache.** User accounts, group memberships, ACL rules, sessions, and share tokens are authoritative state — they must never be stored in a vault's cache DB (which can be deleted and regenerated at any time). User/group configuration lives in human-editable TOML files in the daemon config directory. High-churn transactional data (sessions, API keys, share tokens) lives in a small authoritative SQLite database alongside the config.
+
+### 17.1 User & group storage
+
+```
+~/.config/vulcan/
+├── daemon.toml          # daemon config (from Phase 10)
+├── users.toml           # user accounts and group definitions
+└── auth.db              # sessions, API keys, share tokens (SQLite)
+```
+
+**Users and groups** are defined in `users.toml` — low churn, human-editable, can be version-controlled:
+
+```toml
+[users.alice]
+display_name = "Alice"
+email = "alice@example.com"
+password_hash = "$argon2id$v=19$..."
+disabled = false
+
+[users.bob]
+display_name = "Bob"
+password_hash = "$argon2id$v=19$..."
+
+[groups.gm]
+display_name = "Game Masters"
+members = ["alice"]
+
+[groups.players]
+display_name = "Players"
+members = ["bob", "charlie"]
+```
+
+**Transactional auth data** lives in `auth.db` (not a cache — back up with daemon config):
+
+```sql
+sessions:    id, user_id, token_hash, created_at, expires_at
+api_keys:    id, user_id, key_hash, label, scopes (JSON), created_at, expires_at
+share_tokens: id, vault_id, resource, permission, token_hash, created_by,
+              password_hash (nullable), created_at, expires_at
+```
+
+**CLI management commands:**
+
+- [ ] `vulcan auth user add <username>` — create user, prompt for password
+- [ ] `vulcan auth user remove <username>` — remove user (with confirmation)
+- [ ] `vulcan auth user list` — list users with status
+- [ ] `vulcan auth user disable/enable <username>` — toggle without deleting
+- [ ] `vulcan auth group add <group> [--members alice,bob]` — create group
+- [ ] `vulcan auth group remove <group>` — remove group
+- [ ] `vulcan auth group members <group> add/remove <username>` — manage membership
+- [ ] `vulcan auth apikey create <username> [--scope vault:personal:editor] [--expires 90d]` — generate API key
+- [ ] `vulcan auth apikey revoke <key-id>` — revoke key
+- [ ] `vulcan auth apikey list [--user username]` — list active keys
+
+**API endpoints for user management** (owner/admin only):
+
+- [ ] `GET /auth/users` — list users
+- [ ] `POST /auth/users` — create user
+- [ ] `PATCH /auth/users/{username}` — update user
+- [ ] `DELETE /auth/users/{username}` — remove user
+- [ ] `GET /auth/groups` — list groups
+- [ ] `POST /auth/groups` — create group
+- [ ] `PATCH /auth/groups/{group}` — update membership
+- [ ] `POST /auth/session` — login (returns session token)
+- [ ] `DELETE /auth/session` — logout
+
+### 17.2 Vault roles & ACL rules
+
+**Vault roles** assign coarse permissions per user or group per vault. Configured in `daemon.toml` alongside vault registration:
+
+```toml
+[[vault]]
+id = "campaign"
+path = "/home/user/vaults/campaign"
+
+# Default role for authenticated users not otherwise listed
+default_role = "viewer"
+
+[[vault.roles]]
+principal = "user:alice"
+role = "owner"
+
+[[vault.roles]]
+principal = "group:gm"
+role = "owner"
+
+[[vault.roles]]
+principal = "group:players"
+role = "editor"
+```
+
+**Role hierarchy:**
+
+| Role | Read | Write | Manage ACLs | Vault config |
+|------|------|-------|-------------|--------------|
+| `owner` | yes | yes | yes | yes |
+| `editor` | yes | yes | no | no |
+| `viewer` | yes | no | no | no |
+| `none` | no | no | no | no |
+
+**Fine-grained ACL rules** override the vault role for specific resources. Stored in vault config (`.vulcan/config.toml`) so they travel with the vault:
+
+```toml
+# .vulcan/config.toml — ACL rules section
+
+[[acl]]
+principal = "group:players"
+resource = "folder:GM-Only/"
+permission = "none"          # players cannot see anything in GM-Only/
+
+[[acl]]
+principal = "user:bob"
+resource = "folder:Characters/Bob/"
+permission = "editor"        # bob can edit his own character folder
+
+[[acl]]
+principal = "*"
+resource = "tag:secret"
+permission = "none"          # notes tagged #secret are hidden from everyone except owners
+
+[[acl]]
+principal = "group:gm"
+resource = "tag:secret"
+permission = "owner"         # GMs can see and edit #secret notes
+```
+
+**Resource specifiers:**
+
+- `folder:<path>` — applies to all notes under the folder (recursive)
+- `tag:<tag>` — applies to notes carrying the tag
+- `note:<path>` — applies to a single note
+
+**Evaluation order:** explicit deny (`none`) > most-specific grant > less-specific grant > vault role > default_role > no access. `owner` vault role bypasses all ACL rules (always has full access).
+
+**CLI commands:**
+
+- [ ] `vulcan auth acl add <vault> --principal <p> --resource <r> --permission <perm>` — add ACL rule
+- [ ] `vulcan auth acl remove <vault> <rule-id>` — remove rule
+- [ ] `vulcan auth acl list <vault>` — show effective rules
+- [ ] `vulcan auth acl check <vault> <username> <path>` — test effective permission for a user on a note (useful for debugging)
+
+### 17.3 Permission-filtered queries
+
+**Core abstraction:** A `PermissionFilter` that resolves a user's effective permissions for a vault and produces a set of allowed/denied document IDs (or a SQL subquery). Every query function in `vulcan-core` accepts an optional `PermissionFilter`. When `None` (CLI local mode, owner), no filtering. When `Some`, results are restricted.
+
+**Enforcement strategy — filter at the query layer, not post-hoc:**
+
+| Feature | Enforcement |
+|---|---|
+| **Search (FTS + hybrid)** | Allowed-document CTE joined into FTS query; denied docs never appear in results or hit counts |
+| **Graph (stats, paths, hubs, components)** | Nodes filtered to allowed set; edges to/from denied notes appear as dangling links (no target name or content) |
+| **Backlinks** | Only backlinks from readable notes are returned |
+| **Vectors / similarity** | Candidate set filtered before ranking; denied notes excluded from neighbor results |
+| **Properties / Bases queries** | `WHERE` clause includes permission predicate |
+| **Note content (`GET /{id}/notes/{path}`)** | 403 if no read permission |
+| **Transclusions / embeds** | Embed of a denied note renders as `[restricted content]` |
+| **Activity feed / changes** | Events filtered to permitted documents only |
+| **Git history / diffs** | File-level diffs filtered to readable paths |
+| **Automerge collab (Phase 16)** | WebSocket handshake checks permission: `editor`+ can edit, `viewer` can observe (read-only cursor), `none` rejected |
+
+**Implementation:**
+
+- [ ] `PermissionFilter` struct in `vulcan-core`: takes user identity + vault ACL config, resolves effective permission per document
+- [ ] Method to generate SQL CTE or `IN (...)` clause for allowed document IDs
+- [ ] Integrate into all query functions: `search`, `backlinks`, `graph_*`, `vector_neighbors`, `property_query`, `bases_evaluate`
+- [ ] Daemon middleware: extract authenticated user from request, build `PermissionFilter`, pass to handlers
+- [ ] CLI local mode: no filter (local user has full access to their own vault)
+- [ ] Integration tests: verify that denied documents are invisible across search, graph, backlinks, and vector queries
+- [ ] Performance: cache the allowed-document set per request (resolve once, reuse across queries in the same request)
+
+### 17.4 Document-level secrets
+
+Two complementary mechanisms for embedding restricted content within otherwise-accessible notes.
+
+**Mechanism A: Folder/tag ACLs + embeds (comes free from 17.2)**
+
+Use the existing ACL system to restrict folders or tags, then embed restricted content into shared notes:
+
+```markdown
+# Lord Blackwood
+Noble of the Eastern Provinces. Known for his generous charity work.
+
+The townsfolk speak highly of Lord Blackwood's patronage of the arts.
+
+![[GM-Only/NPCs/Blackwood Secrets]]
+```
+
+The embedded note `GM-Only/NPCs/Blackwood Secrets.md` is in a restricted folder. When rendered for a player, the embed shows `[restricted content]`. When rendered for a GM, the full content is inlined.
+
+- [ ] Embed rendering respects ACLs: check reader's permission on the embedded target
+- [ ] Restricted embeds render as a styled `[restricted content]` placeholder (not silently omitted — the reader knows something exists)
+- [ ] Search does not leak restricted embed content in snippets
+
+**Mechanism B: Secret callouts**
+
+For inline secrets co-located with their context — avoids splitting content across files:
+
+```markdown
+# Lord Blackwood
+Noble of the Eastern Provinces.
+
+> [!secret gm]
+> Actually a vampire. CR 15. Plans to betray the party in session 12.
+> Weakness: silver weapons, holy water.
+
+## Public Knowledge
+The townsfolk speak highly of Lord Blackwood...
+```
+
+The `[!secret <role-or-group>]` callout type is stripped from rendered output for users who do not match the specified principal. The principal can be a role name (`owner`, `editor`), a group name, or a username.
+
+- [ ] Parser recognizes `[!secret <principal>]` callout variant; extracts principal and content range
+- [ ] `ParsedDocument` stores secret regions with their required principal
+- [ ] Rendering pipeline strips secret callout body for unauthorized users
+- [ ] Search: secret callout text is indexed but filtered from results/snippets for unauthorized users (uses the same `PermissionFilter` mechanism — secret regions map to a permission check on the principal)
+- [ ] Editor UI: secret callouts visually distinguished (e.g., lock icon, colored border) so authors can see what's hidden
+- [ ] Nesting: secret callouts inside regular callouts work; nested secret callouts use the most restrictive principal
+
+**Design note:** Both mechanisms protect content at the web/API layer only. The raw `.md` files on disk contain all content in plaintext. Users with filesystem access (CLI, Obsidian, git) see everything. This is intentional — the ACL layer protects the web-facing collaborative interface, not the underlying files.
+
+### 17.5 External share links
+
+Share links allow unauthenticated access to specific content — useful for sharing with people who don't have accounts (e.g., guest players in a pen-and-paper session).
+
+```
+https://host/s/{share_token}
+```
+
+- [ ] `POST /{id}/shares` — create share: `{ "resource": "note:Handouts/Map.md", "permission": "view", "expires": "2026-04-30", "password": null }`
+- [ ] `GET /{id}/shares` — list active shares (owner only)
+- [ ] `DELETE /{id}/shares/{share_id}` — revoke share
+- [ ] `GET /s/{token}` — resolve share, render content (no auth required)
+- [ ] Share tokens stored in `auth.db`, hashed with argon2
+- [ ] Resource types: `note:<path>` (single note), `folder:<path>` (folder and children), `tag:<tag>` (all notes with tag)
+- [ ] Permission: `view` (read-only rendered content) or `view-raw` (download markdown source)
+- [ ] Optional password protection: share link prompts for password before rendering
+- [ ] Expiry: shares can have an expiration date or be permanent until revoked
+- [ ] Share respects document-level secrets: a shared note still strips `[!secret]` callouts the share's effective role cannot see (shares have an effective role of `viewer` unless configured otherwise)
+- [ ] Rate limiting on share endpoints to prevent enumeration
+- [ ] CLI: `vulcan auth share create <vault> <resource> [--expires 30d] [--password]`
+
+### 17.6 Future: OIDC / SSO integration
+
+Planned but not in initial scope. Deferred until the local user/group system is stable.
+
+- [ ] OIDC provider configuration in `daemon.toml`: issuer URL, client ID/secret, scopes
+- [ ] Login flow: browser redirects to IdP, daemon handles callback, creates/updates local user from claims
+- [ ] Group mapping: map OIDC claims/groups to local groups (e.g., IdP group `campaign-gm` → local group `gm`)
+- [ ] Hybrid mode: local accounts and OIDC accounts coexist, OIDC users auto-provisioned on first login
+- [ ] Token refresh and session management integrated with `auth.db`
+
+---
+
 ## Dependency graph
 
 ```
@@ -1329,9 +1594,11 @@ Phase 1 (Core indexing)
                                     ↓                    ↓                         ↓
                           Phase 8 (Performance)  Phase 9 (CLI refinements)  Phase 10 (Multi-vault daemon)
                                                    ↓                          ↓             ↓
-                                                 9.3 ──────→ Phase 11 (Git versioning)  Phase 13 (WebUI browse)
+                                                 9.3 ──────→ Phase 11 (Git versioning)  Phase 17 (User mgmt & ACL)
                                                                 ↓                         ↓
-                                                        Phase 12 (Sync)           Phase 14 (WebUI write + Automerge)
+                                                        Phase 12 (Sync)           Phase 13 (WebUI browse)
+                                                                                    ↓
+                                                                            Phase 14 (WebUI write + Automerge)
                                                                                     ↓
                                                         Phase 15 (Extensibility) ← Phase 10
                                                                                     ↓
@@ -1343,8 +1610,10 @@ Phase 1 (Core indexing)
 Phase 8 (Performance) is independent and can proceed in parallel with Phases 9 and 10 after Phase 7.
 Phases 9 and 10 can proceed in parallel after Phase 7.
 Phase 11 requires 9.3 (git module) and 10 (daemon). Phase 12 requires 10 and 11.
-Phase 13 requires 10. Phase 14 requires 13 and 10's write endpoints. Phase 14 introduces Automerge as the document model.
-Phase 15 requires 10. Phase 16 requires 13 and 14 (including the Automerge foundation from 14 for live collaboration).
+Phase 17 requires 10 (daemon). Sub-phases 17.1–17.3 (users, groups, ACLs, permission-filtered queries) must complete before Phase 13.
+Phase 13 requires 10 and 17.1–17.3. Phase 14 requires 13 and 10's write endpoints. Phase 14 introduces Automerge as the document model.
+Phase 15 requires 10. Phase 16 requires 13, 14, and 17.4–17.5 (document secrets, share links). Phase 16 also uses the Automerge foundation from Phase 14.
+Phase 17.6 (OIDC/SSO) is a future direction — deferred until the local auth system is stable.
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 
 ---
@@ -1354,6 +1623,7 @@ Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap s
 | Crate | Type | Purpose |
 |-------|------|---------|
 | `vulcan-daemon` | lib | axum router, middleware, vault registry, daemon lifecycle |
+| `vulcan-auth` | lib | User/group management, ACL evaluation, permission filtering, session/token handling |
 | `vulcan-sync` | lib | Sync backend trait and implementations (obsidian-headless, git remote, passive) |
 
 The `vulcan-cli` binary gains the `daemon` subcommand group by depending on `vulcan-daemon`.
@@ -1370,3 +1640,4 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `argon2` | Token hashing | 10 |
 | `automerge` | CRDT document model for collaborative editing | 14 |
 | `rust-embed` or `include_dir` | Embed static WebUI assets | 13 |
+| `openidconnect` | OIDC client for SSO integration | 17.6 |
