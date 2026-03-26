@@ -514,7 +514,7 @@ Behavior:
 
 ### `template`
 
-`vulcan template` creates a note from `.vulcan/templates/*.md`.
+`vulcan template` creates notes from templates, and `vulcan template insert` inserts rendered templates into existing notes.
 If `.obsidian/templates.json` configures a template folder, Vulcan also discovers templates there and reports the source in `--list`.
 
 Examples:
@@ -523,6 +523,8 @@ Examples:
 vulcan template --list
 vulcan template daily --path Daily/2026-03-26
 vulcan template meeting
+vulcan template insert daily Projects/Alpha
+vulcan template insert daily --prepend
 ```
 
 Behavior:
@@ -532,6 +534,11 @@ Behavior:
 - If `--path` is omitted, Vulcan creates `<date>-<template-name>.md` in the vault root.
 - In an interactive terminal, the rendered note is opened in the editor before the rescan.
 - Default `{{date}}` and `{{time}}` formats come from `[templates]` in `.vulcan/config.toml`.
+- `template insert` renders `{{title}}` and the other template variables against the target note.
+- `template insert` appends by default; `--prepend` inserts after the target note's frontmatter.
+- If the insert target note is omitted in an interactive terminal, Vulcan opens the note picker.
+- Template frontmatter is merged on insert: existing scalar values are preserved, missing keys are added, and list properties are union-merged.
+- After either template creation or template insertion, Vulcan runs an incremental scan and then auto-commits if enabled.
 
 Supported template variables:
 
@@ -556,8 +563,6 @@ Supported Moment-style tokens for `{{date:...}}` and `{{time:...}}`:
 - `ss`, `s`
 - `A`, `a`
 - `MMMM`, `MMM`
-
-Remaining planned enhancements in Roadmap 9.7 are template insertion into existing notes, frontmatter property merging during insertion, and Obsidian template-folder discovery.
 
 ## Saved reports, exports, and automation
 

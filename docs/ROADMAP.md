@@ -1061,9 +1061,9 @@ Extend the existing `template` command (9.4.3) with Obsidian-compatible template
 
 #### 9.7.2 Template property merging
 
-- [ ] When a template contains YAML frontmatter properties, merge them into the target note's frontmatter on insertion
-- [ ] Merge strategy: template properties are added; existing note properties are not overwritten; list properties (e.g., `tags`) are union-merged
-- [ ] Template variables within frontmatter values are expanded: `date: "{{date}}"` becomes `date: "2026-03-26"`
+- [x] When a template contains YAML frontmatter properties, merge them into the target note's frontmatter on insertion
+- [x] Merge strategy: template properties are added; existing note properties are not overwritten; list properties (e.g., `tags`) are union-merged
+- [x] Template variables within frontmatter values are expanded: `date: "{{date}}"` becomes `date: "2026-03-26"`
 
 #### 9.7.3 Template insertion into existing notes
 
@@ -1073,13 +1073,13 @@ vulcan template insert <template> --prepend    # prepend after frontmatter
 vulcan template insert <template> --append     # append to end (default)
 ```
 
-- [ ] `vulcan template insert <template> [note]`: insert template content into an existing note (append by default)
-- [ ] `--prepend`: insert after frontmatter but before body content
-- [ ] `--append`: insert at end of file (default)
-- [ ] If `[note]` is omitted: spawn the note picker to select target
-- [ ] Template variables are expanded during insertion
-- [ ] Property merging (9.7.2) is applied to the target note's frontmatter
-- [ ] Incremental rescan and auto-commit after insertion
+- [x] `vulcan template insert <template> [note]`: insert template content into an existing note (append by default)
+- [x] `--prepend`: insert after frontmatter but before body content
+- [x] `--append`: insert at end of file (default)
+- [x] If `[note]` is omitted: spawn the note picker to select target
+- [x] Template variables are expanded during insertion
+- [x] Property merging (9.7.2) is applied to the target note's frontmatter
+- [x] Incremental rescan and auto-commit after insertion
 
 #### 9.7.4 Obsidian template folder discovery
 

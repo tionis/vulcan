@@ -9,7 +9,8 @@ mod serve;
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ExportArgs,
     ExportCommand, ExportFormat, GraphCommand, OutputFormat, RefreshMode, RepairCommand,
-    SavedCommand, SearchMode, SearchSortArg, SuggestCommand, VectorQueueCommand, VectorsCommand,
+    SavedCommand, SearchMode, SearchSortArg, SuggestCommand, TemplateSubcommand,
+    VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -564,6 +565,15 @@ struct TemplateCreateReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TemplateInsertReport {
+    template: String,
+    template_source: String,
+    note: String,
+    mode: String,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct TemplateSummary {
     name: String,
     source: String,
@@ -585,7 +595,12 @@ struct TemplateDiscovery {
     warnings: Vec<String>,
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateInsertMode {
+    Append,
+    Prepend,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PreparedTemplateInsertion {
     merged_frontmatter: Option<YamlMapping>,
@@ -593,7 +608,6 @@ struct PreparedTemplateInsertion {
     template_body: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 enum TemplateInsertionError {
     NoteFrontmatterNotMapping,
@@ -827,10 +841,12 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Describe
         | Command::Cache { .. }
         | Command::Inbox { .. }
-        | Command::Template { .. }
         | Command::Batch { .. }
         | Command::Automation { .. }
         | Command::Scan { .. } => false,
+        Command::Template { command, .. } => {
+            matches!(command, Some(TemplateSubcommand::Insert { .. }))
+        }
     }
 }
 
@@ -1205,9 +1221,61 @@ fn run_template_command(
     }))
 }
 
+fn run_template_insert_command(
+    paths: &VaultPaths,
+    template_name: &str,
+    note: Option<&str>,
+    mode: TemplateInsertMode,
+    no_commit: bool,
+    interactive_note_selection: bool,
+) -> Result<TemplateInsertReport, CliError> {
+    let config = load_vault_config(paths).config;
+    let templates = discover_templates(paths, config.templates.obsidian_folder.as_deref())?;
+    let template = resolve_template_file(paths, &templates.templates, template_name)?;
+    let target_identifier = resolve_note_argument(
+        paths,
+        note,
+        interactive_note_selection,
+        "template insert target note",
+    )?;
+    let resolved =
+        resolve_note_reference(paths, &target_identifier).map_err(CliError::operation)?;
+    let target_path = resolved.path;
+    let target_absolute = paths.vault_root().join(&target_path);
+    let target_source = fs::read_to_string(&target_absolute).map_err(CliError::operation)?;
+    let rendered_template = render_template_contents(
+        &fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?,
+        &template_variables_for_path(&target_path, TemplateTimestamp::current()),
+        &config.templates,
+    );
+    let updated = apply_template_insertion_mode(
+        prepare_template_insertion(&target_source, &rendered_template)
+            .map_err(CliError::operation)?,
+        mode,
+    )
+    .map_err(CliError::operation)?;
+    fs::write(&target_absolute, updated).map_err(CliError::operation)?;
+
+    run_incremental_scan(paths, OutputFormat::Human, false)?;
+    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+    warn_auto_commit_if_needed(&auto_commit);
+    auto_commit
+        .commit(paths, "template insert", std::slice::from_ref(&target_path))
+        .map_err(CliError::operation)?;
+
+    Ok(TemplateInsertReport {
+        template: template.name,
+        template_source: template.source.to_string(),
+        note: target_path,
+        mode: mode.as_str().to_string(),
+        warnings: template.warning.into_iter().collect(),
+    })
+}
+
 enum TemplateCommandResult {
     List(TemplateListReport),
     Create(TemplateCreateReport),
+    Insert(TemplateInsertReport),
 }
 
 fn discover_templates(
@@ -1337,7 +1405,6 @@ fn template_output_path(
     .map_err(CliError::operation)
 }
 
-#[allow(dead_code)]
 fn prepare_template_insertion(
     target_source: &str,
     rendered_template: &str,
@@ -1353,7 +1420,6 @@ fn prepare_template_insertion(
     })
 }
 
-#[allow(dead_code)]
 fn parse_frontmatter_document(
     source: &str,
     template_document: bool,
@@ -1381,7 +1447,6 @@ fn parse_frontmatter_document(
     Ok((Some(mapping), source[body_start..].to_string()))
 }
 
-#[allow(dead_code)]
 fn merge_template_frontmatter(
     target_frontmatter: Option<YamlMapping>,
     template_frontmatter: Option<YamlMapping>,
@@ -1403,7 +1468,6 @@ fn merge_template_frontmatter(
     }
 }
 
-#[allow(dead_code)]
 fn merge_template_property_value(existing: &mut YamlValue, template: &YamlValue) {
     if let (Some(existing_items), Some(template_items)) =
         (existing.as_sequence_mut(), template.as_sequence())
@@ -1416,7 +1480,6 @@ fn merge_template_property_value(existing: &mut YamlValue, template: &YamlValue)
     }
 }
 
-#[allow(dead_code)]
 fn render_note_from_parts(
     frontmatter: &Option<YamlMapping>,
     body: &str,
@@ -1429,7 +1492,55 @@ fn render_note_from_parts(
     Ok(rendered)
 }
 
-#[allow(dead_code)]
+fn apply_template_insertion_mode(
+    prepared: PreparedTemplateInsertion,
+    mode: TemplateInsertMode,
+) -> Result<String, TemplateInsertionError> {
+    let body = match mode {
+        TemplateInsertMode::Append => {
+            append_template_body(&prepared.target_body, &prepared.template_body)
+        }
+        TemplateInsertMode::Prepend => {
+            prepend_template_body(&prepared.target_body, &prepared.template_body)
+        }
+    };
+
+    render_note_from_parts(&prepared.merged_frontmatter, &body)
+}
+
+fn append_template_body(target_body: &str, template_body: &str) -> String {
+    merge_body_sections(target_body, template_body, false)
+}
+
+fn prepend_template_body(target_body: &str, template_body: &str) -> String {
+    merge_body_sections(template_body, target_body, true)
+}
+
+fn merge_body_sections(first: &str, second: &str, preserve_second_leading_space: bool) -> String {
+    let first = first.trim_end_matches('\n');
+    let second = if preserve_second_leading_space {
+        second.trim_end_matches('\n')
+    } else {
+        second.trim_matches('\n')
+    };
+
+    match (first.is_empty(), second.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!("{first}\n"),
+        (true, false) => format!("{second}\n"),
+        (false, false) => format!("{first}\n\n{second}\n"),
+    }
+}
+
+impl TemplateInsertMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Prepend => "prepend",
+        }
+    }
+}
+
 fn format_frontmatter_block(frontmatter: &YamlMapping) -> Result<String, TemplateInsertionError> {
     let mut yaml = serde_yaml::to_string(&YamlValue::Mapping(frontmatter.clone()))
         .map_err(TemplateInsertionError::YamlSerialize)?;
@@ -1442,7 +1553,6 @@ fn format_frontmatter_block(frontmatter: &YamlMapping) -> Result<String, Templat
     Ok(format!("---\n{yaml}---\n"))
 }
 
-#[allow(dead_code)]
 fn find_frontmatter_block(source: &str) -> Option<(usize, usize, usize)> {
     let mut lines = source.split_inclusive('\n');
     let first_line = lines.next()?;
@@ -3378,23 +3488,53 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_inbox_report(cli.output, &report)
         }
         Command::Template {
+            ref command,
             ref name,
             list,
             ref path,
             no_commit,
-        } => match run_template_command(
-            &paths,
-            name.as_deref(),
-            list,
-            path.as_deref(),
-            no_commit,
-            stdout_is_tty,
-        )? {
-            TemplateCommandResult::List(report) => print_template_list_report(cli.output, &report),
-            TemplateCommandResult::Create(report) => {
-                print_template_create_report(cli.output, &report)
+        } => {
+            let result = match command {
+                Some(TemplateSubcommand::Insert {
+                    template,
+                    note,
+                    prepend,
+                    append: _,
+                    no_commit,
+                }) => TemplateCommandResult::Insert(run_template_insert_command(
+                    &paths,
+                    template,
+                    note.as_deref(),
+                    if *prepend {
+                        TemplateInsertMode::Prepend
+                    } else {
+                        TemplateInsertMode::Append
+                    },
+                    *no_commit,
+                    interactive_note_selection,
+                )?),
+                None => run_template_command(
+                    &paths,
+                    name.as_deref(),
+                    list,
+                    path.as_deref(),
+                    no_commit,
+                    stdout_is_tty,
+                )?,
+            };
+
+            match result {
+                TemplateCommandResult::List(report) => {
+                    print_template_list_report(cli.output, &report)
+                }
+                TemplateCommandResult::Create(report) => {
+                    print_template_create_report(cli.output, &report)
+                }
+                TemplateCommandResult::Insert(report) => {
+                    print_template_insert_report(cli.output, &report)
+                }
             }
-        },
+        }
         Command::LinkMentions {
             ref note,
             dry_run,
@@ -5423,6 +5563,25 @@ fn print_template_create_report(
     }
 }
 
+fn print_template_insert_report(
+    output: OutputFormat,
+    report: &TemplateInsertReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "Inserted {} into {} ({}, {})",
+                report.template, report.note, report.mode, report.template_source
+            );
+            for warning in &report.warnings {
+                eprintln!("Warning: {warning}");
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_open_report(output: OutputFormat, report: &OpenReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
@@ -7197,6 +7356,95 @@ mod tests {
         assert!(contents.contains("ID "));
     }
 
+    #[test]
+    fn template_insert_command_prepends_and_merges_frontmatter() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        fs::create_dir_all(paths.vulcan_dir().join("templates")).expect("template dir");
+        fs::write(
+            temp_dir.path().join("Home.md"),
+            "---\nstatus: done\ntags:\n- team\n- shipped\nowner: Alice\n---\n# Existing\n",
+        )
+        .expect("target note should be written");
+        fs::write(
+            paths.vulcan_dir().join("templates").join("daily.md"),
+            "---\nstatus: backlog\ncreated: \"{{date}}\"\ntags:\n- team\n- release\n---\n\n## Inserted\n",
+        )
+        .expect("template should be written");
+        vulcan_core::scan_vault(&paths, ScanMode::Incremental).expect("scan should succeed");
+
+        let report = run_template_insert_command(
+            &paths,
+            "daily",
+            Some("Home"),
+            TemplateInsertMode::Prepend,
+            false,
+            false,
+        )
+        .expect("template insert should succeed");
+
+        assert_eq!(report.note, "Home.md");
+        assert_eq!(report.mode, "prepend");
+        let updated =
+            fs::read_to_string(temp_dir.path().join("Home.md")).expect("updated note should exist");
+        let (frontmatter, body) =
+            parse_frontmatter_document(&updated, false).expect("updated note should parse");
+        let frontmatter = YamlValue::Mapping(frontmatter.expect("frontmatter should exist"));
+        assert_eq!(frontmatter["status"], YamlValue::String("done".to_string()));
+        assert_eq!(frontmatter["owner"], YamlValue::String("Alice".to_string()));
+        assert_eq!(
+            frontmatter["created"],
+            YamlValue::String(TemplateTimestamp::current().default_date_string())
+        );
+        assert_eq!(
+            frontmatter["tags"],
+            serde_yaml::from_str::<YamlValue>("- team\n- shipped\n- release\n")
+                .expect("tags should parse"),
+        );
+        assert_eq!(body, "\n## Inserted\n\n# Existing\n");
+    }
+
+    #[test]
+    fn template_insert_command_appends_and_auto_commits() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        fs::create_dir_all(paths.vulcan_dir().join("templates")).expect("template dir");
+        fs::write(temp_dir.path().join("Home.md"), "# Existing\n")
+            .expect("target note should be written");
+        fs::write(
+            paths.vulcan_dir().join("templates").join("daily.md"),
+            "## Inserted\n",
+        )
+        .expect("template should be written");
+        fs::write(paths.config_file(), "[git]\nauto_commit = true\n")
+            .expect("config should be written");
+        vulcan_core::scan_vault(&paths, ScanMode::Incremental).expect("scan should succeed");
+        init_git_repo(temp_dir.path());
+        run_git(temp_dir.path(), &["add", "Home.md", ".vulcan/config.toml"]);
+        run_git(temp_dir.path(), &["commit", "-m", "Initial"]);
+
+        let report = run_template_insert_command(
+            &paths,
+            "daily",
+            Some("Home"),
+            TemplateInsertMode::Append,
+            false,
+            false,
+        )
+        .expect("template insert should succeed");
+
+        assert_eq!(report.note, "Home.md");
+        assert_eq!(report.mode, "append");
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("Home.md")).expect("updated note should exist"),
+            "# Existing\n\n## Inserted\n",
+        );
+        assert_eq!(
+            git_head_summary(temp_dir.path()),
+            "vulcan template insert: Home.md"
+        );
+    }
+
     fn test_template_timestamp(
         year: i64,
         month: i64,
@@ -7330,6 +7578,9 @@ mod tests {
         let inbox = Cli::try_parse_from(["vulcan", "inbox", "idea"]).expect("cli should parse");
         let template = Cli::try_parse_from(["vulcan", "template", "daily", "--path", "Notes/Day"])
             .expect("cli should parse");
+        let template_insert =
+            Cli::try_parse_from(["vulcan", "template", "insert", "daily", "Home", "--prepend"])
+                .expect("cli should parse");
         let open = Cli::try_parse_from(["vulcan", "open", "Home"]).expect("cli should parse");
         let link_mentions = Cli::try_parse_from(["vulcan", "link-mentions", "Home", "--dry-run"])
             .expect("cli should parse");
@@ -7618,9 +7869,26 @@ mod tests {
         assert_eq!(
             template.command,
             Command::Template {
+                command: None,
                 name: Some("daily".to_string()),
                 list: false,
                 path: Some("Notes/Day".to_string()),
+                no_commit: false,
+            }
+        );
+        assert_eq!(
+            template_insert.command,
+            Command::Template {
+                command: Some(TemplateSubcommand::Insert {
+                    template: "daily".to_string(),
+                    note: Some("Home".to_string()),
+                    prepend: true,
+                    append: false,
+                    no_commit: false,
+                }),
+                name: None,
+                list: false,
+                path: None,
                 no_commit: false,
             }
         );
