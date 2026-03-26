@@ -765,7 +765,7 @@ vulcan browse
 - [x] `l`: switch to an outgoing links view for the selected note
 - [x] `d`: run doctor on this specific note, show diagnostics in a temporary pane
 - [x] `n`: create new note — prompt for path, open in editor, return to picker
-- [ ] `g`: show git log for this file (if vault is a git repo), displayed in a scrollable pane
+- [x] `g`: show git log for this file (if vault is a git repo), displayed in a scrollable pane
 - [x] `o`: if the selected file is a `.base` file, open it in the bases TUI (`bases tui`)
 
 **UI details:**

@@ -17,10 +17,11 @@ use std::time::{Duration, SystemTime};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
-    doctor_vault, evaluate_base_file, list_note_identities, list_tagged_note_identities, list_tags,
-    move_note, query_backlinks, query_links, query_notes, scan_vault, search_vault, BacklinkRecord,
-    DoctorDiagnosticIssue, DoctorLinkIssue, NamedCount, NoteIdentity, NoteQuery,
-    OutgoingLinkRecord, ResolutionStatus, ScanMode, SearchHit, SearchQuery, VaultPaths,
+    doctor_vault, evaluate_base_file, git_log, is_git_repo, list_note_identities,
+    list_tagged_note_identities, list_tags, move_note, query_backlinks, query_links, query_notes,
+    scan_vault, search_vault, BacklinkRecord, DoctorDiagnosticIssue, DoctorLinkIssue, GitLogEntry,
+    NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, ResolutionStatus, ScanMode, SearchHit,
+    SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
@@ -327,6 +328,7 @@ struct BrowseState {
     property_filter: PropertyFilterState,
     backlinks_view: Option<BacklinksViewState>,
     links_view: Option<OutgoingLinksViewState>,
+    git_view: Option<GitLogViewState>,
     doctor_view: Option<DoctorViewState>,
     new_note_prompt: Option<NewNotePrompt>,
     move_prompt: Option<MovePrompt>,
@@ -352,6 +354,7 @@ impl BrowseState {
             property_filter: PropertyFilterState::new(paths),
             backlinks_view: None,
             links_view: None,
+            git_view: None,
             doctor_view: None,
             new_note_prompt: None,
             move_prompt: None,
@@ -367,6 +370,9 @@ impl BrowseState {
         }
         if self.move_prompt.is_some() {
             return self.handle_move_prompt_key(key.code);
+        }
+        if self.git_view.is_some() {
+            return self.handle_git_key(key.code);
         }
         if self.doctor_view.is_some() {
             return self.handle_doctor_key(key.code);
@@ -446,6 +452,15 @@ impl BrowseState {
                 }
                 BrowseAction::Continue
             }
+            KeyCode::Char('g')
+                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
+            {
+                self.clear_status();
+                if let Err(error) = self.open_git_view() {
+                    self.set_status(error);
+                }
+                BrowseAction::Continue
+            }
             KeyCode::Char('n')
                 if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
             {
@@ -471,6 +486,29 @@ impl BrowseState {
                 }
                 BrowseAction::Continue
             }
+        }
+    }
+
+    fn handle_git_key(&mut self, code: KeyCode) -> BrowseAction {
+        let Some(view) = self.git_view.as_mut() else {
+            return BrowseAction::Continue;
+        };
+
+        match code {
+            KeyCode::Esc => {
+                self.git_view = None;
+                self.clear_status();
+                BrowseAction::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                view.move_selection(-1);
+                BrowseAction::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                view.move_selection(1);
+                BrowseAction::Continue
+            }
+            _ => BrowseAction::Continue,
         }
     }
 
@@ -681,6 +719,9 @@ impl BrowseState {
             .refresh_results(&self.paths, &self.all_notes)?;
         self.property_filter
             .refresh_results(&self.paths, &self.all_notes);
+        if let Some(view) = self.git_view.as_mut() {
+            view.reload(self.paths.vault_root())?;
+        }
         if let Some(view) = self.doctor_view.as_mut() {
             view.reload(&self.paths)?;
         }
@@ -725,6 +766,9 @@ impl BrowseState {
     }
 
     fn selected_path(&self) -> Option<&str> {
+        if let Some(view) = self.git_view.as_ref() {
+            return Some(view.path());
+        }
         if let Some(view) = self.doctor_view.as_ref() {
             return Some(view.note_path());
         }
@@ -743,6 +787,9 @@ impl BrowseState {
     }
 
     fn query(&self) -> &str {
+        if let Some(view) = self.git_view.as_ref() {
+            return view.path();
+        }
         if let Some(view) = self.doctor_view.as_ref() {
             return view.note_path();
         }
@@ -767,6 +814,9 @@ impl BrowseState {
     }
 
     fn query_title(&self) -> String {
+        if let Some(view) = self.git_view.as_ref() {
+            return format!("Git Log ({})", view.path());
+        }
         if let Some(view) = self.doctor_view.as_ref() {
             return format!("Doctor ({})", view.note_path());
         }
@@ -786,6 +836,9 @@ impl BrowseState {
     }
 
     fn key_help_line(&self) -> String {
+        if self.git_view.is_some() {
+            return "Keys: Esc back, j/k move".to_string();
+        }
         if self.doctor_view.is_some() {
             return "Keys: Esc back, j/k move".to_string();
         }
@@ -801,11 +854,14 @@ impl BrowseState {
         if self.move_prompt.is_some() {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
-            "Keys: Enter/e edit, n new, m move, b backlinks, l links, d doctor, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
+            "Keys: Enter/e edit, n new, m move, b backlinks, l links, d doctor, g git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
         }
     }
 
     fn mode_help_line(&self) -> String {
+        if self.git_view.is_some() {
+            return "view git history for the selected file; Esc returns to browse".to_string();
+        }
         if self.doctor_view.is_some() {
             return "view doctor diagnostics for the selected note; Esc returns to browse"
                 .to_string();
@@ -826,7 +882,9 @@ impl BrowseState {
     }
 
     fn list_title(&self) -> &'static str {
-        if self.doctor_view.is_some() {
+        if self.git_view.is_some() {
+            "Git Log"
+        } else if self.doctor_view.is_some() {
             "Diagnostics"
         } else if self.backlinks_view.is_some() {
             "Backlinks"
@@ -838,6 +896,9 @@ impl BrowseState {
     }
 
     fn list_items(&self) -> Vec<String> {
+        if let Some(view) = self.git_view.as_ref() {
+            return view.list_items();
+        }
         if let Some(view) = self.doctor_view.as_ref() {
             return view.list_items();
         }
@@ -873,6 +934,9 @@ impl BrowseState {
     }
 
     fn selected_index(&self) -> Option<usize> {
+        if let Some(view) = self.git_view.as_ref() {
+            return view.selected_index();
+        }
         if let Some(view) = self.doctor_view.as_ref() {
             return view.selected_index();
         }
@@ -891,6 +955,9 @@ impl BrowseState {
     }
 
     fn preview_title(&self) -> String {
+        if let Some(view) = self.git_view.as_ref() {
+            return view.preview_title();
+        }
         if let Some(view) = self.doctor_view.as_ref() {
             return view.preview_title();
         }
@@ -915,6 +982,9 @@ impl BrowseState {
     }
 
     fn preview_lines(&self) -> Vec<Line<'static>> {
+        if let Some(view) = self.git_view.as_ref() {
+            return view.preview_lines();
+        }
         if let Some(view) = self.doctor_view.as_ref() {
             return view.preview_lines();
         }
@@ -933,6 +1003,9 @@ impl BrowseState {
     }
 
     fn filtered_count(&self) -> usize {
+        if let Some(view) = self.git_view.as_ref() {
+            return view.filtered_count();
+        }
         if let Some(view) = self.doctor_view.as_ref() {
             return view.filtered_count();
         }
@@ -999,6 +1072,7 @@ impl BrowseState {
         };
         self.backlinks_view = Some(BacklinksViewState::load(&self.paths, &path)?);
         self.links_view = None;
+        self.git_view = None;
         self.doctor_view = None;
         Ok(())
     }
@@ -1010,6 +1084,7 @@ impl BrowseState {
         };
         self.links_view = Some(OutgoingLinksViewState::load(&self.paths, &path)?);
         self.backlinks_view = None;
+        self.git_view = None;
         self.doctor_view = None;
         Ok(())
     }
@@ -1022,6 +1097,22 @@ impl BrowseState {
         self.doctor_view = Some(DoctorViewState::load(&self.paths, &path)?);
         self.backlinks_view = None;
         self.links_view = None;
+        self.git_view = None;
+        Ok(())
+    }
+
+    fn open_git_view(&mut self) -> Result<(), String> {
+        if !is_git_repo(self.paths.vault_root()) {
+            return Err("Vault is not a git repo.".to_string());
+        }
+        let Some(path) = self.selected_path().map(str::to_string) else {
+            self.set_status("No matching note selected.");
+            return Ok(());
+        };
+        self.git_view = Some(GitLogViewState::load(self.paths.vault_root(), &path)?);
+        self.backlinks_view = None;
+        self.links_view = None;
+        self.doctor_view = None;
         Ok(())
     }
 
@@ -1035,6 +1126,9 @@ impl BrowseState {
         }
         if self.new_note_prompt.is_some() {
             return "Creating new note".to_string();
+        }
+        if let Some(view) = self.git_view.as_ref() {
+            return format!("Git log for {}", view.path());
         }
         if let Some(view) = self.doctor_view.as_ref() {
             return format!("Doctor for {}", view.note_path());
@@ -1082,6 +1176,115 @@ impl BrowseState {
         } else {
             self.mode.label()
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GitLogViewState {
+    path: String,
+    entries: Vec<GitLogEntry>,
+    selected_index: Option<usize>,
+}
+
+impl GitLogViewState {
+    fn load(vault_root: &std::path::Path, path: &str) -> Result<Self, String> {
+        let entries = git_log(vault_root, path, 100).map_err(|error| error.to_string())?;
+        let selected_index = (!entries.is_empty()).then_some(0);
+        Ok(Self {
+            path: path.to_string(),
+            entries,
+            selected_index,
+        })
+    }
+
+    fn reload(&mut self, vault_root: &std::path::Path) -> Result<(), String> {
+        let selected_commit = self.selected_entry().map(|entry| entry.commit.clone());
+        self.entries = git_log(vault_root, &self.path, 100).map_err(|error| error.to_string())?;
+        self.selected_index = selected_commit
+            .and_then(|commit| self.entries.iter().position(|entry| entry.commit == commit));
+        self.clamp_selection();
+        Ok(())
+    }
+
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn filtered_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    fn preview_title(&self) -> String {
+        self.selected_entry().map_or_else(
+            || format!("Git Log: {}", self.path),
+            |entry| format!("Commit: {}", short_commit(&entry.commit)),
+        )
+    }
+
+    fn preview_lines(&self) -> Vec<Line<'static>> {
+        let Some(entry) = self.selected_entry() else {
+            return vec![Line::from("No git history for this file.")];
+        };
+
+        vec![
+            Line::from(format!("Summary: {}", entry.summary)),
+            Line::from(format!("Commit: {}", entry.commit)),
+            Line::from(format!(
+                "Author: {} <{}>",
+                entry.author_name, entry.author_email
+            )),
+            Line::from(format!("Date: {}", entry.committed_at)),
+        ]
+    }
+
+    fn list_items(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{} {} {}",
+                    short_commit(&entry.commit),
+                    entry.committed_at,
+                    entry.summary
+                )
+            })
+            .collect()
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.entries.len();
+        if len == 0 {
+            self.selected_index = None;
+            return;
+        }
+
+        let current = self.selected_index.unwrap_or(0);
+        let step = delta.unsigned_abs();
+        let next = if delta.is_negative() {
+            current.saturating_sub(step)
+        } else {
+            current.saturating_add(step)
+        }
+        .min(len - 1);
+        self.selected_index = Some(next);
+    }
+
+    fn clamp_selection(&mut self) {
+        let len = self.entries.len();
+        self.selected_index = if len == 0 {
+            None
+        } else {
+            Some(self.selected_index.unwrap_or(0).min(len - 1))
+        };
+    }
+
+    fn selected_entry(&self) -> Option<&GitLogEntry> {
+        self.selected_index
+            .and_then(|index| self.entries.get(index))
     }
 }
 
@@ -1569,6 +1772,10 @@ fn outgoing_link_target_label(link: &OutgoingLinkRecord) -> String {
         .clone()
         .or_else(|| link.target_path_candidate.clone())
         .unwrap_or_else(|| "(self)".to_string())
+}
+
+fn short_commit(commit: &str) -> &str {
+    commit.get(..7).unwrap_or(commit)
 }
 
 fn resolution_status_label(status: ResolutionStatus) -> &'static str {
@@ -2156,6 +2363,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn note(path: &str, aliases: &[&str]) -> NoteIdentity {
@@ -2189,6 +2397,22 @@ mod tests {
 
     fn scan_fixture(paths: &VaultPaths) {
         scan_vault(paths, ScanMode::Full).expect("vault scan should succeed");
+    }
+
+    fn run_git(vault_root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(vault_root)
+            .args(args)
+            .status()
+            .expect("git should launch");
+        assert!(status.success(), "git command failed: {:?}", args);
+    }
+
+    fn init_git_repo(vault_root: &Path) {
+        run_git(vault_root, &["init"]);
+        run_git(vault_root, &["config", "user.name", "Vulcan Test"]);
+        run_git(vault_root, &["config", "user.email", "vulcan@example.com"]);
     }
 
     #[test]
@@ -2444,6 +2668,58 @@ mod tests {
             action,
             BrowseAction::OpenBaseTui("release.base".to_string())
         );
+    }
+
+    #[test]
+    fn g_opens_git_log_view_for_selected_note() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Projects/Alpha.md", "# Alpha\n");
+        scan_fixture(&paths);
+        run_git(temp_dir.path(), &["add", "Projects/Alpha.md"]);
+        run_git(temp_dir.path(), &["commit", "-m", "Add alpha"]);
+        write_note(temp_dir.path(), "Projects/Alpha.md", "# Alpha\nUpdated\n");
+        run_git(temp_dir.path(), &["add", "Projects/Alpha.md"]);
+        run_git(temp_dir.path(), &["commit", "-m", "Update alpha"]);
+
+        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
+            .expect("state should build");
+        state.picker.select_path("Projects/Alpha.md");
+
+        let action = state.handle_key(key(KeyCode::Char('g')));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "Git Log (Projects/Alpha.md)");
+        assert_eq!(state.list_title(), "Git Log");
+        assert_eq!(state.filtered_count(), 2);
+        assert_eq!(
+            state.mode_help_line(),
+            "view git history for the selected file; Esc returns to browse"
+        );
+        assert!(state.list_items()[0].contains("Update alpha"));
+    }
+
+    #[test]
+    fn git_view_esc_returns_to_browse() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Projects/Alpha.md", "# Alpha\n");
+        scan_fixture(&paths);
+        run_git(temp_dir.path(), &["add", "Projects/Alpha.md"]);
+        run_git(temp_dir.path(), &["commit", "-m", "Add alpha"]);
+
+        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
+            .expect("state should build");
+        state.picker.select_path("Projects/Alpha.md");
+        state.handle_key(key(KeyCode::Char('g')));
+
+        let action = state.handle_key(key(KeyCode::Esc));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "Browse (/ fuzzy search)");
+        assert_eq!(state.selected_path(), Some("Projects/Alpha.md"));
     }
 
     #[test]
