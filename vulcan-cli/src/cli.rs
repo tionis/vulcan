@@ -188,6 +188,8 @@ pub enum BasesCommand {
         group_desc: bool,
         #[arg(long, help = "Preview the view without writing changes")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Delete a view from a .base file")]
     ViewDelete {
@@ -197,6 +199,8 @@ pub enum BasesCommand {
         name: String,
         #[arg(long, help = "Preview without writing changes")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Rename a view in a .base file")]
     ViewRename {
@@ -208,6 +212,8 @@ pub enum BasesCommand {
         new_name: String,
         #[arg(long, help = "Preview without writing changes")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Edit a view in a .base file")]
     ViewEdit {
@@ -231,6 +237,8 @@ pub enum BasesCommand {
         group_desc: bool,
         #[arg(long, help = "Preview changes without writing")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
 }
 
@@ -827,6 +835,13 @@ pub enum Command {
         new: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
+    },
+    #[command(about = "Open a note in the Obsidian desktop app")]
+    Open {
+        #[arg(
+            help = "Note path, filename, or alias to open; omit in a TTY session to pick interactively"
+        )]
+        note: Option<String>,
     },
     #[command(about = "Run vector indexing and similarity commands")]
     Vectors {

@@ -220,18 +220,49 @@ fn run_event_loop(
 }
 
 fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
+    let area = frame.area();
+    if area.height < 7 || area.width < 32 {
+        let compact = Paragraph::new(vec![
+            Line::from(state.status_bar_line()),
+            Line::from(format!(
+                "Selected: {}",
+                state.selected_path().unwrap_or("none")
+            )),
+            Line::from(format!("Status: {}", state.status_line())),
+        ])
+        .block(
+            Block::default()
+                .title("Browse")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+        frame.render_widget(compact, area);
+        return;
+    }
+
+    let query_height = if area.height >= 10 { 3 } else { 2 };
+    let footer_height = if area.height >= 14 { 5 } else { 3 };
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(12),
-            Constraint::Length(5),
+            Constraint::Length(query_height),
+            Constraint::Min(1),
+            Constraint::Length(footer_height),
         ])
-        .split(frame.area());
+        .split(area);
 
     let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .direction(if area.width < 90 {
+            Direction::Vertical
+        } else {
+            Direction::Horizontal
+        })
+        .constraints(if area.width < 90 {
+            [Constraint::Percentage(52), Constraint::Percentage(48)]
+        } else {
+            [Constraint::Percentage(52), Constraint::Percentage(48)]
+        })
         .split(layout[1]);
 
     let query = Paragraph::new(state.query().to_string()).block(
@@ -269,19 +300,27 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
         .wrap(Wrap { trim: false });
     frame.render_widget(preview, body[1]);
 
-    let footer = Paragraph::new(vec![
-        Line::from(state.status_bar_line()),
-        Line::from(state.key_help_line()),
-        Line::from(format!("      {}", state.mode_help_line())),
-        Line::from(format!("Status: {}", state.status_line())),
-    ])
-    .block(
-        Block::default()
-            .title("Browse")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
-    )
-    .wrap(Wrap { trim: false });
+    let footer_lines = if footer_height >= 5 {
+        vec![
+            Line::from(state.status_bar_line()),
+            Line::from(state.key_help_line()),
+            Line::from(format!("      {}", state.mode_help_line())),
+            Line::from(format!("Status: {}", state.status_line())),
+        ]
+    } else {
+        vec![
+            Line::from(state.status_bar_line()),
+            Line::from(format!("Status: {}", state.status_line())),
+        ]
+    };
+    let footer = Paragraph::new(footer_lines)
+        .block(
+            Block::default()
+                .title("Browse")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
     frame.render_widget(footer, layout[2]);
 }
 
@@ -2398,6 +2437,8 @@ fn highlighted_snippet_line(line: &str) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use std::fs;
     use std::path::Path;
     use std::process::Command;
@@ -2896,6 +2937,23 @@ mod tests {
         assert!(line.contains("Mode: fuzzy"));
         assert!(line.contains("Notes: 1 filtered / 1 total"));
         assert!(line.contains("Last scan:"));
+    }
+
+    #[test]
+    fn draw_handles_small_terminal_sizes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("browse-vault");
+        let paths = VaultPaths::new(&vault_root);
+        write_note(&vault_root, "Home.md", "# Home");
+        scan_fixture(&paths);
+        let state =
+            BrowseState::new(paths, vec![note("Home.md", &[])]).expect("state should build");
+
+        let backend = TestBackend::new(36, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal should build");
+        terminal
+            .draw(|frame| draw(frame, &state))
+            .expect("small browse render should succeed");
     }
 
     #[test]
