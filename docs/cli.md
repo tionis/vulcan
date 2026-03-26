@@ -255,6 +255,7 @@ vulcan search dashboard
 vulcan search 'dashboard "release notes" -draft'
 vulcan search dashboard --where 'reviewed = true'
 vulcan search 'tag:index path:People/ has:status owned'
+vulcan search Bob --match-case
 vulcan search dashboard --sort path-desc
 vulcan search dashboard --sort modified-newest
 ```
@@ -282,6 +283,7 @@ Supported inline filters inside the query text:
 - `file:<filename-fragment>`: match the filename only, not the full path
 - `content:<term>`: restrict the term to note body content, excluding title, aliases, and headings
 - `match-case:<term>`: require an exact-case match after the normal FTS candidate search
+- `ignore-case:<term>`: override a global case-sensitive search for one term
 - `task:<term>`: require the term to appear on a Markdown task line
 - `task-todo:<term>`: require the term to appear on an incomplete task (`- [ ]`)
 - `task-done:<term>`: require the term to appear on a completed task (`- [x]`)
@@ -293,11 +295,17 @@ Useful search flags:
 - `--path-prefix <PREFIX>`: require a path prefix
 - `--has-property <KEY>`: require the property to exist
 - `--mode <keyword|hybrid>`: select keyword-only or keyword+vector search
+- `--match-case`: require case-sensitive matching by default for unscoped terms
 - `--sort <relevance|path-asc|path-desc|modified-newest|modified-oldest|created-newest|created-oldest>`: override result ordering
 - `--context-size <N>`: snippet context size
 - `--raw-query`: pass SQLite FTS5 syntax through unchanged
 - `--fuzzy`: retry empty searches with typo-tolerant expansion
 - `--explain`: include the parsed boolean tree, active filters, and scoring details
+
+Additional explain behavior:
+
+- When `--explain` finds no hits, Vulcan includes query suggestions such as likely operator typos and task-specific hints.
+- JSON search output includes `matched_line` when Vulcan can identify the best line within the matched chunk.
 
 Raw FTS5 example:
 

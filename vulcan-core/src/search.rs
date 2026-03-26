@@ -114,6 +114,8 @@ pub struct SearchQuery {
     pub mode: SearchMode,
     #[serde(default)]
     pub sort: Option<SearchSort>,
+    #[serde(default)]
+    pub match_case: Option<bool>,
     pub limit: Option<usize>,
     pub context_size: usize,
     #[serde(default)]
@@ -135,6 +137,7 @@ impl Default for SearchQuery {
             provider: None,
             mode: SearchMode::Keyword,
             sort: None,
+            match_case: None,
             limit: None,
             context_size: 18,
             raw_query: false,
@@ -224,6 +227,8 @@ pub struct SearchHit {
     pub chunk_id: String,
     pub heading_path: Vec<String>,
     pub snippet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_line: Option<usize>,
     pub rank: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explain: Option<SearchHitExplain>,
@@ -239,9 +244,11 @@ struct PreparedSearchQuery {
     filters: Vec<String>,
     filter_expressions: Vec<FilterExpression>,
     sort: SearchSort,
+    match_case: Option<bool>,
     file_terms: Vec<String>,
     content_terms: Vec<SearchTerm>,
     match_case_terms: Vec<String>,
+    ignore_case_terms: Vec<String>,
     task_terms: Vec<String>,
     task_todo_terms: Vec<String>,
     task_done_terms: Vec<String>,
@@ -277,6 +284,7 @@ enum SearchScope {
 struct SearchTerm {
     text: String,
     quoted: bool,
+    case_override: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,6 +324,7 @@ struct InlineFilterState {
     file_terms: Vec<String>,
     content_terms: Vec<SearchTerm>,
     match_case_terms: Vec<String>,
+    ignore_case_terms: Vec<String>,
     task_terms: Vec<String>,
     task_todo_terms: Vec<String>,
     task_done_terms: Vec<String>,
@@ -344,6 +353,11 @@ pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchRep
             hits = execute_search(paths, connection, query, &prepared)?;
         }
     }
+    let suggestions = if query.explain && hits.is_empty() {
+        no_result_suggestions(&query.text, &prepared)
+    } else {
+        Vec::new()
+    };
 
     Ok(SearchReport {
         query: query.text.clone(),
@@ -352,7 +366,7 @@ pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchRep
         path_prefix: prepared.path_prefix.clone(),
         has_property: prepared.has_property.clone(),
         filters: prepared.filters.clone(),
-        plan: query.explain.then(|| prepared.plan()),
+        plan: query.explain.then(|| prepared.plan(&suggestions)),
         hits,
     })
 }
@@ -561,6 +575,7 @@ fn keyword_search_hits(
                     )
                 })?,
                 snippet: row.get(3)?,
+                matched_line: None,
                 rank: row.get(4)?,
                 explain: None,
             },
@@ -571,15 +586,31 @@ fn keyword_search_hits(
         })
     })?;
     let mut candidates = rows.collect::<Result<Vec<_>, _>>()?;
-    apply_content_filters(&mut candidates, &prepared.content_terms);
-    apply_scope_filters(connection, &mut candidates, prepared.expression.as_ref())?;
+    let default_case_sensitive = prepared.match_case.unwrap_or(false);
+    apply_content_filters(
+        &mut candidates,
+        &prepared.content_terms,
+        default_case_sensitive,
+    );
+    apply_scope_filters(
+        connection,
+        &mut candidates,
+        prepared.expression.as_ref(),
+        default_case_sensitive,
+    )?;
     apply_task_filters(
         &mut candidates,
         &prepared.task_terms,
         &prepared.task_todo_terms,
         &prepared.task_done_terms,
+        default_case_sensitive,
     );
-    apply_match_case_filters(&mut candidates, &prepared.match_case_terms);
+    apply_case_filters(
+        &mut candidates,
+        prepared.expression.as_ref(),
+        default_case_sensitive,
+    );
+    annotate_matched_lines(&mut candidates, prepared, default_case_sensitive);
     let mut hits = candidates
         .into_iter()
         .map(|candidate| candidate.hit)
@@ -607,16 +638,23 @@ fn keyword_search_hits(
     Ok(hits)
 }
 
-fn apply_content_filters(candidates: &mut Vec<SearchCandidate>, terms: &[SearchTerm]) {
+fn apply_content_filters(
+    candidates: &mut Vec<SearchCandidate>,
+    terms: &[SearchTerm],
+    default_case_sensitive: bool,
+) {
     if terms.is_empty() {
         return;
     }
 
     candidates.retain(|candidate| {
-        let content = candidate.content.to_lowercase();
-        terms
-            .iter()
-            .all(|term| content.contains(&term.text.to_lowercase()))
+        terms.iter().all(|term| {
+            text_contains_term(
+                &candidate.content,
+                &term.text,
+                term_case_sensitive(term, default_case_sensitive),
+            )
+        })
     });
 }
 
@@ -624,6 +662,7 @@ fn apply_scope_filters(
     connection: &Connection,
     candidates: &mut Vec<SearchCandidate>,
     expression: Option<&SearchExpr>,
+    default_case_sensitive: bool,
 ) -> Result<(), SearchError> {
     let Some(expression) =
         expression.filter(|expression| expression_requires_post_filter(expression))
@@ -644,6 +683,7 @@ fn apply_scope_filters(
             section_contexts
                 .get(candidate.hit.document_path.as_str())
                 .map(Vec::as_slice),
+            default_case_sensitive,
         )
     });
     Ok(())
@@ -684,6 +724,18 @@ fn expression_contains_or(expression: &SearchExpr) -> bool {
     }
 }
 
+fn expression_contains_case_override(expression: &SearchExpr) -> bool {
+    match expression {
+        SearchExpr::Term(term) => term.case_override.is_some(),
+        SearchExpr::BracketFilter(_) | SearchExpr::Regex(_) => false,
+        SearchExpr::Scoped { expression, .. } => expression_contains_case_override(expression),
+        SearchExpr::And(children) | SearchExpr::Or(children) => {
+            children.iter().any(expression_contains_case_override)
+        }
+        SearchExpr::Not(child) => expression_contains_case_override(child),
+    }
+}
+
 fn expression_requires_post_filter(expression: &SearchExpr) -> bool {
     expression_contains_scope(expression) || expression_contains_regex(expression)
 }
@@ -705,10 +757,23 @@ fn expression_contains_section_scope(expression: &SearchExpr) -> bool {
     }
 }
 
+fn term_case_sensitive(term: &SearchTerm, default_case_sensitive: bool) -> bool {
+    term.case_override.unwrap_or(default_case_sensitive)
+}
+
+fn text_contains_term(text: &str, term: &str, case_sensitive: bool) -> bool {
+    if case_sensitive {
+        text.contains(term)
+    } else {
+        text.to_lowercase().contains(&term.to_lowercase())
+    }
+}
+
 fn candidate_matches_scope_filters(
     expression: &SearchExpr,
     candidate: &SearchCandidate,
     sections: Option<&[String]>,
+    default_case_sensitive: bool,
 ) -> bool {
     match expression {
         SearchExpr::Term(_) => true,
@@ -717,21 +782,28 @@ fn candidate_matches_scope_filters(
         SearchExpr::Scoped { scope, expression } => {
             if *scope == SearchScope::Section {
                 sections.is_some_and(|sections| {
-                    sections
-                        .iter()
-                        .any(|section| text_expression_matches(expression, section))
+                    sections.iter().any(|section| {
+                        text_expression_matches(expression, section, default_case_sensitive)
+                    })
                 })
             } else {
-                scoped_expression_matches(*scope, expression, &candidate.content)
+                scoped_expression_matches(
+                    *scope,
+                    expression,
+                    &candidate.content,
+                    default_case_sensitive,
+                )
             }
         }
-        SearchExpr::And(children) => children
-            .iter()
-            .all(|child| candidate_matches_scope_filters(child, candidate, sections)),
-        SearchExpr::Or(children) => children
-            .iter()
-            .any(|child| candidate_matches_scope_filters(child, candidate, sections)),
-        SearchExpr::Not(child) => !candidate_matches_scope_filters(child, candidate, sections),
+        SearchExpr::And(children) => children.iter().all(|child| {
+            candidate_matches_scope_filters(child, candidate, sections, default_case_sensitive)
+        }),
+        SearchExpr::Or(children) => children.iter().any(|child| {
+            candidate_matches_scope_filters(child, candidate, sections, default_case_sensitive)
+        }),
+        SearchExpr::Not(child) => {
+            !candidate_matches_scope_filters(child, candidate, sections, default_case_sensitive)
+        }
     }
 }
 
@@ -742,11 +814,16 @@ fn regex_matches_candidate(regex: &SearchRegexTerm, candidate: &SearchCandidate)
     }
 }
 
-fn scoped_expression_matches(scope: SearchScope, expression: &SearchExpr, content: &str) -> bool {
+fn scoped_expression_matches(
+    scope: SearchScope,
+    expression: &SearchExpr,
+    content: &str,
+    default_case_sensitive: bool,
+) -> bool {
     split_scope_segments(scope, content)
         .into_iter()
         .filter(|segment| !segment.trim().is_empty())
-        .any(|segment| text_expression_matches(expression, segment))
+        .any(|segment| text_expression_matches(expression, segment, default_case_sensitive))
 }
 
 fn split_scope_segments<'a>(scope: SearchScope, content: &'a str) -> Vec<&'a str> {
@@ -833,29 +910,44 @@ fn load_document_section_contexts(
         .collect())
 }
 
-fn text_expression_matches(expression: &SearchExpr, text: &str) -> bool {
+fn text_expression_matches(
+    expression: &SearchExpr,
+    text: &str,
+    default_case_sensitive: bool,
+) -> bool {
     match expression {
-        SearchExpr::Term(term) => text.to_lowercase().contains(&term.text.to_lowercase()),
+        SearchExpr::Term(term) => text_contains_term(
+            text,
+            &term.text,
+            term_case_sensitive(term, default_case_sensitive),
+        ),
         SearchExpr::BracketFilter(_) => true,
         SearchExpr::Regex(regex) => match regex.target {
             SearchRegexTarget::Content => regex.regex.is_match(text),
             SearchRegexTarget::Path => false,
         },
         SearchExpr::Scoped { scope, expression } => {
-            scoped_expression_matches(*scope, expression, text)
+            scoped_expression_matches(*scope, expression, text, default_case_sensitive)
         }
         SearchExpr::And(children) => children
             .iter()
-            .all(|child| text_expression_matches(child, text)),
+            .all(|child| text_expression_matches(child, text, default_case_sensitive)),
         SearchExpr::Or(children) => children
             .iter()
-            .any(|child| text_expression_matches(child, text)),
-        SearchExpr::Not(child) => !text_expression_matches(child, text),
+            .any(|child| text_expression_matches(child, text, default_case_sensitive)),
+        SearchExpr::Not(child) => !text_expression_matches(child, text, default_case_sensitive),
     }
 }
 
-fn apply_match_case_filters(candidates: &mut Vec<SearchCandidate>, terms: &[String]) {
-    if terms.is_empty() {
+fn apply_case_filters(
+    candidates: &mut Vec<SearchCandidate>,
+    expression: Option<&SearchExpr>,
+    default_case_sensitive: bool,
+) {
+    let Some(expression) = expression else {
+        return;
+    };
+    if !default_case_sensitive && !expression_contains_case_override(expression) {
         return;
     }
 
@@ -864,7 +956,7 @@ fn apply_match_case_filters(candidates: &mut Vec<SearchCandidate>, terms: &[Stri
             "{}\n{}\n{}\n{}",
             candidate.content, candidate.document_title, candidate.aliases, candidate.headings
         );
-        terms.iter().all(|term| haystack.contains(term))
+        text_expression_matches(expression, &haystack, default_case_sensitive)
     });
 }
 
@@ -873,6 +965,7 @@ fn apply_task_filters(
     task_terms: &[String],
     task_todo_terms: &[String],
     task_done_terms: &[String],
+    default_case_sensitive: bool,
 ) {
     if task_terms.is_empty() && task_todo_terms.is_empty() && task_done_terms.is_empty() {
         return;
@@ -885,9 +978,22 @@ fn apply_task_filters(
             .filter_map(parse_task_line)
             .collect::<Vec<_>>();
 
-        matches_task_terms(&task_lines, task_terms, TaskMatch::Any)
-            && matches_task_terms(&task_lines, task_todo_terms, TaskMatch::Todo)
-            && matches_task_terms(&task_lines, task_done_terms, TaskMatch::Done)
+        matches_task_terms(
+            &task_lines,
+            task_terms,
+            TaskMatch::Any,
+            default_case_sensitive,
+        ) && matches_task_terms(
+            &task_lines,
+            task_todo_terms,
+            TaskMatch::Todo,
+            default_case_sensitive,
+        ) && matches_task_terms(
+            &task_lines,
+            task_done_terms,
+            TaskMatch::Done,
+            default_case_sensitive,
+        )
     });
 }
 
@@ -898,7 +1004,12 @@ enum TaskMatch {
     Done,
 }
 
-fn matches_task_terms(task_lines: &[TaskLine<'_>], terms: &[String], mode: TaskMatch) -> bool {
+fn matches_task_terms(
+    task_lines: &[TaskLine<'_>],
+    terms: &[String],
+    mode: TaskMatch,
+    case_sensitive: bool,
+) -> bool {
     if terms.is_empty() {
         return true;
     }
@@ -911,7 +1022,7 @@ fn matches_task_terms(task_lines: &[TaskLine<'_>], terms: &[String], mode: TaskM
                 TaskMatch::Todo => !line.done,
                 TaskMatch::Done => line.done,
             })
-            .any(|line| line.text.to_lowercase().contains(&term.to_lowercase()))
+            .any(|line| text_contains_term(line.text, term, case_sensitive))
     })
 }
 
@@ -944,6 +1055,166 @@ fn parse_task_line(line: &str) -> Option<TaskLine<'_>> {
         });
     }
     None
+}
+
+fn annotate_matched_lines(
+    candidates: &mut [SearchCandidate],
+    prepared: &PreparedSearchQuery,
+    default_case_sensitive: bool,
+) {
+    for candidate in candidates {
+        candidate.hit.matched_line =
+            matched_line_for_candidate(candidate, prepared, default_case_sensitive);
+    }
+}
+
+fn matched_line_for_candidate(
+    candidate: &SearchCandidate,
+    prepared: &PreparedSearchQuery,
+    default_case_sensitive: bool,
+) -> Option<usize> {
+    if let Some(expression) = prepared.expression.as_ref() {
+        if let Some(line) =
+            matched_line_for_expression(expression, &candidate.content, default_case_sensitive)
+        {
+            return Some(line);
+        }
+    }
+
+    if let Some(line) = first_matching_line_for_terms(
+        &candidate.content,
+        &prepared.content_terms,
+        default_case_sensitive,
+    ) {
+        return Some(line);
+    }
+
+    first_matching_task_line(
+        &candidate.content,
+        &prepared.task_terms,
+        &prepared.task_todo_terms,
+        &prepared.task_done_terms,
+        default_case_sensitive,
+    )
+}
+
+fn matched_line_for_expression(
+    expression: &SearchExpr,
+    content: &str,
+    default_case_sensitive: bool,
+) -> Option<usize> {
+    match expression {
+        SearchExpr::Scoped {
+            scope: SearchScope::Line,
+            expression,
+        } => content.lines().enumerate().find_map(|(index, line)| {
+            text_expression_matches(expression, line, default_case_sensitive).then_some(index + 1)
+        }),
+        SearchExpr::Scoped {
+            scope: SearchScope::Block,
+            expression,
+        } => {
+            let mut line_offset = 1_usize;
+            for block in content.split("\n\n") {
+                let block_line_count = block.lines().count().max(1);
+                if text_expression_matches(expression, block, default_case_sensitive) {
+                    return first_matching_line_in_text(expression, block, default_case_sensitive)
+                        .map(|line| line_offset + line - 1)
+                        .or(Some(line_offset));
+                }
+                line_offset += block_line_count + 1;
+            }
+            None
+        }
+        SearchExpr::Scoped { expression, .. } => {
+            matched_line_for_expression(expression, content, default_case_sensitive)
+        }
+        _ => first_matching_line_in_text(expression, content, default_case_sensitive),
+    }
+}
+
+fn first_matching_line_in_text(
+    expression: &SearchExpr,
+    content: &str,
+    default_case_sensitive: bool,
+) -> Option<usize> {
+    content.lines().enumerate().find_map(|(index, line)| {
+        line_matches_positive_expression_part(expression, line, default_case_sensitive)
+            .then_some(index + 1)
+    })
+}
+
+fn line_matches_positive_expression_part(
+    expression: &SearchExpr,
+    line: &str,
+    default_case_sensitive: bool,
+) -> bool {
+    match expression {
+        SearchExpr::Term(term) => text_contains_term(
+            line,
+            &term.text,
+            term_case_sensitive(term, default_case_sensitive),
+        ),
+        SearchExpr::BracketFilter(_) => false,
+        SearchExpr::Regex(regex) => match regex.target {
+            SearchRegexTarget::Content => regex.regex.is_match(line),
+            SearchRegexTarget::Path => false,
+        },
+        SearchExpr::Scoped { expression, .. } => {
+            line_matches_positive_expression_part(expression, line, default_case_sensitive)
+        }
+        SearchExpr::And(children) | SearchExpr::Or(children) => children.iter().any(|child| {
+            line_matches_positive_expression_part(child, line, default_case_sensitive)
+        }),
+        SearchExpr::Not(_) => false,
+    }
+}
+
+fn first_matching_line_for_terms(
+    content: &str,
+    terms: &[SearchTerm],
+    default_case_sensitive: bool,
+) -> Option<usize> {
+    content.lines().enumerate().find_map(|(index, line)| {
+        terms
+            .iter()
+            .any(|term| {
+                text_contains_term(
+                    line,
+                    &term.text,
+                    term_case_sensitive(term, default_case_sensitive),
+                )
+            })
+            .then_some(index + 1)
+    })
+}
+
+fn first_matching_task_line(
+    content: &str,
+    task_terms: &[String],
+    task_todo_terms: &[String],
+    task_done_terms: &[String],
+    default_case_sensitive: bool,
+) -> Option<usize> {
+    if task_terms.is_empty() && task_todo_terms.is_empty() && task_done_terms.is_empty() {
+        return None;
+    }
+
+    content.lines().enumerate().find_map(|(index, line)| {
+        let task_line = parse_task_line(line)?;
+        let matches_any = task_terms
+            .iter()
+            .any(|term| text_contains_term(task_line.text, term, default_case_sensitive));
+        let matches_todo = !task_line.done
+            && task_todo_terms
+                .iter()
+                .any(|term| text_contains_term(task_line.text, term, default_case_sensitive));
+        let matches_done = task_line.done
+            && task_done_terms
+                .iter()
+                .any(|term| text_contains_term(task_line.text, term, default_case_sensitive));
+        (matches_any || matches_todo || matches_done).then_some(index + 1)
+    })
 }
 
 fn hybrid_search_hits(
@@ -998,6 +1269,7 @@ fn hybrid_search_hits(
                 chunk_id: hit.chunk_id.clone(),
                 heading_path: hit.heading_path.clone(),
                 snippet: hit.snippet.clone(),
+                matched_line: None,
                 rank: 0.0,
                 explain: None,
             });
@@ -1296,6 +1568,11 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
         ));
     }
     if query.raw_query {
+        if query.match_case == Some(true) {
+            return Err(SearchError::InvalidQuery(
+                "global match-case is not supported with --raw-query".to_string(),
+            ));
+        }
         let filter_expressions = parse_search_filter_expressions(&query.filters)?;
         return Ok(PreparedSearchQuery {
             effective_query: trimmed.to_string(),
@@ -1306,9 +1583,11 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
             filters: query.filters.clone(),
             filter_expressions,
             sort: query.sort.unwrap_or_default(),
+            match_case: query.match_case,
             file_terms: Vec::new(),
             content_terms: Vec::new(),
             match_case_terms: Vec::new(),
+            ignore_case_terms: Vec::new(),
             task_terms: Vec::new(),
             task_todo_terms: Vec::new(),
             task_done_terms: Vec::new(),
@@ -1366,9 +1645,11 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
         filters,
         filter_expressions,
         sort: query.sort.unwrap_or_default(),
+        match_case: query.match_case,
         file_terms: filter_state.file_terms,
         content_terms: filter_state.content_terms,
         match_case_terms: filter_state.match_case_terms,
+        ignore_case_terms: filter_state.ignore_case_terms,
         task_terms: filter_state.task_terms,
         task_todo_terms: filter_state.task_todo_terms,
         task_done_terms: filter_state.task_done_terms,
@@ -1422,7 +1703,11 @@ fn lex_search_query(text: &str) -> Vec<LexedToken> {
             if index < characters.len() && characters[index] == '"' {
                 index += 1;
             }
-            tokens.push(LexedToken::Term(SearchTerm { text, quoted: true }));
+            tokens.push(LexedToken::Term(SearchTerm {
+                text,
+                quoted: true,
+                case_override: None,
+            }));
             continue;
         }
 
@@ -1467,6 +1752,7 @@ fn lex_search_query(text: &str) -> Vec<LexedToken> {
         tokens.push(LexedToken::Term(SearchTerm {
             text,
             quoted: false,
+            case_override: None,
         }));
     }
 
@@ -1781,6 +2067,7 @@ fn scoped_operator_from_term(term: &SearchTerm) -> Option<(SearchScope, Option<S
     let inline_term = (!value.trim().is_empty()).then(|| SearchTerm {
         text: value.trim().to_string(),
         quoted: false,
+        case_override: None,
     });
     Some((scope, inline_term))
 }
@@ -1790,7 +2077,8 @@ fn is_or_token(token: &LexedToken) -> bool {
         token,
         LexedToken::Term(SearchTerm {
             text,
-            quoted: false
+            quoted: false,
+            ..
         }) if text.eq_ignore_ascii_case("or")
     )
 }
@@ -1826,6 +2114,7 @@ fn extract_inline_filters(
                     state.content_terms.push(SearchTerm {
                         text: value.to_string(),
                         quoted: false,
+                        case_override: None,
                     });
                     state.positive_terms += 1;
                     return None;
@@ -1836,6 +2125,16 @@ fn extract_inline_filters(
                     return Some(SearchExpr::Term(SearchTerm {
                         text: value.to_string(),
                         quoted: false,
+                        case_override: Some(true),
+                    }));
+                }
+                if let Some(value) = inline_filter_value(&term.text, "ignore-case") {
+                    state.ignore_case_terms.push(value.to_string());
+                    state.positive_terms += 1;
+                    return Some(SearchExpr::Term(SearchTerm {
+                        text: value.to_string(),
+                        quoted: false,
+                        case_override: Some(false),
                     }));
                 }
                 if let Some(value) = inline_filter_value(&term.text, "task") {
@@ -1844,6 +2143,7 @@ fn extract_inline_filters(
                     return Some(SearchExpr::Term(SearchTerm {
                         text: value.to_string(),
                         quoted: false,
+                        case_override: None,
                     }));
                 }
                 if let Some(value) = inline_filter_value(&term.text, "task-todo") {
@@ -1852,6 +2152,7 @@ fn extract_inline_filters(
                     return Some(SearchExpr::Term(SearchTerm {
                         text: value.to_string(),
                         quoted: false,
+                        case_override: None,
                     }));
                 }
                 if let Some(value) = inline_filter_value(&term.text, "task-done") {
@@ -1860,6 +2161,7 @@ fn extract_inline_filters(
                     return Some(SearchExpr::Term(SearchTerm {
                         text: value.to_string(),
                         quoted: false,
+                        case_override: None,
                     }));
                 }
             }
@@ -2255,6 +2557,83 @@ fn display_search_sort(sort: SearchSort) -> &'static str {
     }
 }
 
+fn no_result_suggestions(raw_query: &str, prepared: &PreparedSearchQuery) -> Vec<String> {
+    let mut suggestions = unknown_operator_suggestions(raw_query);
+    if !prepared.task_terms.is_empty() {
+        suggestions.push("SUGGESTION no tasks found in matched files for `task:`".to_string());
+    }
+    if !prepared.task_todo_terms.is_empty() {
+        suggestions.push("SUGGESTION no tasks found in matched files for `task-todo:`".to_string());
+    }
+    if !prepared.task_done_terms.is_empty() {
+        suggestions.push("SUGGESTION no tasks found in matched files for `task-done:`".to_string());
+    }
+    if prepared.match_case == Some(true) {
+        suggestions.push(
+            "SUGGESTION try `ignore-case:` on one term or rerun without global match-case"
+                .to_string(),
+        );
+    }
+    suggestions
+}
+
+fn unknown_operator_suggestions(raw_query: &str) -> Vec<String> {
+    let known = [
+        "tag",
+        "path",
+        "has",
+        "property",
+        "file",
+        "content",
+        "match-case",
+        "ignore-case",
+        "task",
+        "task-todo",
+        "task-done",
+        "line",
+        "block",
+        "section",
+    ];
+    let mut suggestions = Vec::new();
+    let mut seen = HashSet::new();
+
+    for token in raw_query
+        .split(|character: char| character.is_whitespace() || matches!(character, '(' | ')'))
+        .filter(|token| !token.is_empty())
+    {
+        let normalized = token.trim_start_matches('-');
+        let Some((prefix, _)) = normalized.split_once(':') else {
+            continue;
+        };
+        if prefix.is_empty()
+            || known
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            continue;
+        }
+
+        let lower_prefix = prefix.to_lowercase();
+        let suggestion = known
+            .iter()
+            .filter_map(|candidate| {
+                let distance = levenshtein(&lower_prefix, candidate);
+                (distance <= 2).then_some((distance, *candidate))
+            })
+            .min_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(right.1)))
+            .map(|(_, candidate)| candidate);
+
+        if let Some(candidate) = suggestion {
+            let message = format!("SUGGESTION did you mean `{candidate}:` instead of `{prefix}:`?");
+            if seen.insert(message.clone()) {
+                suggestions.push(message);
+            }
+        }
+    }
+
+    suggestions
+}
+
 fn fuzzy_expansion_map(expansions: &[SearchFuzzyExpansion]) -> HashMap<String, Vec<String>> {
     expansions
         .iter()
@@ -2463,7 +2842,7 @@ impl PreparedSearchQuery {
         self.fuzzy_expansions = expansions;
     }
 
-    fn plan(&self) -> SearchPlan {
+    fn plan(&self, suggestions: &[String]) -> SearchPlan {
         let mut parsed_query_explanation = self.expression.as_ref().map_or_else(
             || vec![format!("RAW FTS5: {}", self.effective_query)],
             explain_search_expression,
@@ -2493,6 +2872,11 @@ impl PreparedSearchQuery {
                 .map(|term| format!("FILTER match-case:{term}")),
         );
         parsed_query_explanation.extend(
+            self.ignore_case_terms
+                .iter()
+                .map(|term| format!("FILTER ignore-case:{term}")),
+        );
+        parsed_query_explanation.extend(
             self.task_terms
                 .iter()
                 .map(|term| format!("FILTER task:{term}")),
@@ -2507,9 +2891,15 @@ impl PreparedSearchQuery {
                 .iter()
                 .map(|term| format!("FILTER task-done:{term}")),
         );
+        if self.match_case == Some(true) {
+            parsed_query_explanation.push("FILTER match-case:*".to_string());
+        } else if self.match_case == Some(false) {
+            parsed_query_explanation.push("FILTER ignore-case:*".to_string());
+        }
         parsed_query_explanation
             .extend(self.filters.iter().map(|filter| format!("WHERE {filter}")));
         parsed_query_explanation.push(format!("SORT {}", display_search_sort(self.sort)));
+        parsed_query_explanation.extend_from_slice(suggestions);
 
         SearchPlan {
             effective_query: self.effective_query.clone(),
@@ -2927,12 +3317,77 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Upper.md".to_string()]
         );
+        assert_eq!(report.hits[0].matched_line, Some(1));
         assert!(report
             .plan
             .expect("plan should exist")
             .parsed_query_explanation
             .iter()
             .any(|line| line == "FILTER match-case:Bob"));
+    }
+
+    #[test]
+    fn search_global_match_case_and_ignore_case_override_work() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("Upper.md"), "Bob builds dashboards.")
+            .expect("note should write");
+        fs::write(vault_root.join("Lower.md"), "bob builds dashboards.")
+            .expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let strict_report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "Bob".to_string(),
+                match_case: Some(true),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("global match-case search should succeed");
+        assert_eq!(
+            strict_report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Upper.md".to_string()]
+        );
+        assert!(strict_report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER match-case:*"));
+
+        let override_report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "ignore-case:Bob".to_string(),
+                match_case: Some(true),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("ignore-case override search should succeed");
+        assert_eq!(
+            override_report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Lower.md".to_string(), "Upper.md".to_string()]
+        );
+        assert!(override_report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER ignore-case:Bob"));
     }
 
     #[test]
@@ -2964,12 +3419,61 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["SameLine.md".to_string()]
         );
+        assert_eq!(report.hits[0].matched_line, Some(1));
         assert!(report
             .plan
             .expect("plan should exist")
             .parsed_query_explanation
             .iter()
             .any(|line| line == "LINE"));
+    }
+
+    #[test]
+    fn search_explain_adds_no_result_suggestions() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("Release.md"), "release notes only").expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "contents:release task-todo:ship".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        assert!(report.hits.is_empty());
+        let explanation = &report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation;
+        assert!(explanation
+            .iter()
+            .any(|line| line == "SUGGESTION did you mean `content:` instead of `contents:`?"));
+        assert!(explanation
+            .iter()
+            .any(|line| line == "SUGGESTION no tasks found in matched files for `task-todo:`"));
+    }
+
+    #[test]
+    fn search_rejects_global_match_case_with_raw_query() {
+        let error = prepare_search_query(&SearchQuery {
+            text: "Bob".to_string(),
+            raw_query: true,
+            match_case: Some(true),
+            ..SearchQuery::default()
+        })
+        .expect_err("raw query with global match-case should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "global match-case is not supported with --raw-query"
+        );
     }
 
     #[test]

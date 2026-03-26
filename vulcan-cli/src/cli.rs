@@ -74,6 +74,7 @@ Search query syntax:
     file:meeting
     content:release
     match-case:Bob
+    ignore-case:Bob
     task:docs
     task-todo:followup
     task-done:ship
@@ -116,6 +117,7 @@ Examples:
   vulcan search 'task-todo:followup task-done:ship'
   vulcan search 'line:(mix flour) block:(oven timer)'
   vulcan search dashboard --where 'reviewed = true'
+  vulcan search Bob --match-case
   vulcan search dashboard --sort path-desc
   vulcan search dashboard --sort modified-newest";
 
@@ -644,6 +646,8 @@ pub enum SavedCommand {
         has_property: Option<String>,
         #[arg(long, value_enum, help = "Override result ordering")]
         sort: Option<SearchSortArg>,
+        #[arg(long, help = "Require case-sensitive matching for unscoped terms")]
+        match_case: bool,
         #[arg(
             long = "context-size",
             default_value_t = 18,
@@ -876,6 +880,8 @@ pub enum Command {
         has_property: Option<String>,
         #[arg(long, value_enum, help = "Persist a non-default result ordering")]
         sort: Option<SearchSortArg>,
+        #[arg(long, help = "Persist case-sensitive matching as the default")]
+        match_case: bool,
         #[arg(
             long = "context-size",
             default_value_t = 18,

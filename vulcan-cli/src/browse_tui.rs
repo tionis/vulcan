@@ -2098,6 +2098,7 @@ impl FullTextState {
                 provider: None,
                 mode: SearchMode::Keyword,
                 sort: None,
+                match_case: None,
                 limit: Some(FULL_TEXT_LIMIT),
                 context_size: FULL_TEXT_CONTEXT_SIZE,
                 raw_query: false,

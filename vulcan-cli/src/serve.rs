@@ -243,6 +243,7 @@ fn route_request(
                     _ => vulcan_core::search::SearchMode::Keyword,
                 },
                 sort,
+                match_case: parse_optional_bool(&request.query, "match_case"),
                 limit: parse_optional_usize(&request.query, "limit"),
                 context_size: parse_optional_usize(&request.query, "context_size").unwrap_or(18),
                 raw_query: parse_optional_bool(&request.query, "raw_query").unwrap_or(false),
@@ -591,6 +592,39 @@ mod tests {
                 "Alpha.md".to_string(),
             ]
         );
+
+        handle.shutdown().expect("server should shut down");
+    }
+
+    #[test]
+    fn serve_search_supports_match_case_and_matched_line() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("Upper.md"), "Bob builds dashboards.")
+            .expect("upper note should write");
+        fs::write(vault_root.join("Lower.md"), "bob builds dashboards.")
+            .expect("lower note should write");
+        scan_vault(&VaultPaths::new(&vault_root), ScanMode::Full).expect("scan should succeed");
+
+        let handle = spawn_server(
+            VaultPaths::new(&vault_root),
+            ServeOptions {
+                bind: "127.0.0.1:0".to_string(),
+                watch: false,
+                debounce_ms: 50,
+                auth_token: None,
+            },
+        )
+        .expect("server should start");
+
+        let response = get_json(handle.addr(), "/search?q=Bob&match_case=true", None);
+        let hits = response["result"]["hits"]
+            .as_array()
+            .expect("hits should be an array");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["document_path"], "Upper.md");
+        assert_eq!(hits[0]["matched_line"], 1);
 
         handle.shutdown().expect("server should shut down");
     }

@@ -1540,6 +1540,7 @@ fn execute_saved_report(
             filters,
             context_size,
             sort,
+            match_case,
             raw_query,
             fuzzy,
         } => Ok(SavedExecution::Search(
@@ -1554,6 +1555,7 @@ fn execute_saved_report(
                     provider,
                     mode: *mode,
                     sort: *sort,
+                    match_case: *match_case,
                     limit: controls.requested_result_limit(),
                     context_size: *context_size,
                     raw_query: *raw_query,
@@ -2597,6 +2599,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref path_prefix,
             ref has_property,
             sort,
+            match_case,
             context_size,
             raw_query,
             fuzzy,
@@ -2614,6 +2617,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     provider: cli.provider.clone(),
                     mode: cli_search_mode(mode),
                     sort: sort.map(cli_search_sort),
+                    match_case: match_case.then_some(true),
                     limit: cli.limit.map(|limit| limit.saturating_add(cli.offset)),
                     context_size,
                     raw_query,
@@ -2689,6 +2693,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 path_prefix,
                 has_property,
                 sort,
+                match_case,
                 context_size,
                 raw_query,
                 fuzzy,
@@ -2710,6 +2715,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         filters: filters.clone(),
                         context_size: *context_size,
                         sort: sort.map(cli_search_sort),
+                        match_case: match_case.then_some(true),
                         raw_query: *raw_query,
                         fuzzy: *fuzzy,
                     },
@@ -3331,6 +3337,7 @@ fn print_saved_report_definition(
                     filters,
                     context_size,
                     sort,
+                    match_case,
                     raw_query,
                     fuzzy,
                 } => {
@@ -3351,6 +3358,9 @@ fn print_saved_report_definition(
                     println!("Context size: {context_size}");
                     if let Some(sort) = sort {
                         println!("Sort: {}", display_search_sort(*sort));
+                    }
+                    if *match_case == Some(true) {
+                        println!("Match case: true");
                     }
                     if *raw_query {
                         println!("Raw query: true");
@@ -5282,6 +5292,30 @@ fn backlink_rows(report: &BacklinksReport, backlinks: &[BacklinkRecord]) -> Vec<
 }
 
 fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
+    if hits.is_empty() && report.plan.is_some() {
+        return vec![serde_json::json!({
+            "query": report.query,
+            "mode": report.mode,
+            "tag": report.tag,
+            "path_prefix": report.path_prefix,
+            "has_property": report.has_property,
+            "filters": report.filters,
+            "effective_query": report.plan.as_ref().map(|plan| plan.effective_query.clone()),
+            "parsed_query_explanation": report
+                .plan
+                .as_ref()
+                .map(|plan| plan.parsed_query_explanation.clone()),
+            "document_path": Value::Null,
+            "chunk_id": Value::Null,
+            "heading_path": Vec::<String>::new(),
+            "snippet": Value::Null,
+            "matched_line": Value::Null,
+            "rank": Value::Null,
+            "explain": Value::Null,
+            "no_results": true,
+        })];
+    }
+
     hits.iter()
         .map(|hit| {
             serde_json::json!({
@@ -5300,6 +5334,7 @@ fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
                 "chunk_id": hit.chunk_id,
                 "heading_path": hit.heading_path,
                 "snippet": hit.snippet,
+                "matched_line": hit.matched_line,
                 "rank": hit.rank,
                 "explain": hit.explain,
             })
@@ -5663,6 +5698,9 @@ fn print_search_hit(index: usize, hit: &SearchHit, palette: AnsiPalette) {
 
     println!("{}. {}", index + 1, palette.bold(&location));
     println!("   {}: {:.3}", palette.cyan("Rank"), hit.rank);
+    if let Some(line) = hit.matched_line {
+        println!("   {}: {line}", palette.cyan("Line"));
+    }
 
     if let Some(explain) = hit.explain.as_ref() {
         println!(
@@ -6767,6 +6805,7 @@ mod tests {
                 path_prefix: Some("People/".to_string()),
                 has_property: Some("status".to_string()),
                 sort: None,
+                match_case: false,
                 context_size: 24,
                 raw_query: false,
                 fuzzy: true,
@@ -7060,6 +7099,7 @@ mod tests {
                     path_prefix: None,
                     has_property: None,
                     sort: None,
+                    match_case: false,
                     context_size: 18,
                     raw_query: true,
                     fuzzy: true,
