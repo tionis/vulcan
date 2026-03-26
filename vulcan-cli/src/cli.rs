@@ -762,6 +762,26 @@ pub enum Command {
         #[arg(long, help = "Named checkpoint to compare against instead of git HEAD")]
         since: Option<String>,
     },
+    #[command(about = "Append a quick capture entry to the configured inbox note")]
+    Inbox {
+        #[arg(help = "Text to append, or `-` to read from stdin")]
+        text: Option<String>,
+        #[arg(long, help = "Read appended text from a file")]
+        file: Option<PathBuf>,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Create a note from a template under .vulcan/templates")]
+    Template {
+        #[arg(help = "Template name or filename stem")]
+        name: Option<String>,
+        #[arg(long, help = "List available templates")]
+        list: bool,
+        #[arg(long, help = "Output path for the new note")]
+        path: Option<String>,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
     #[command(about = "Run multiple saved reports for automation and scheduled jobs")]
     Batch {
         #[arg(help = "Saved report names to run")]
