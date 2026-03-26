@@ -133,6 +133,7 @@ fn search_help_documents_query_and_filter_syntax() {
                 ))
                 .and(predicate::str::contains("tag:index"))
                 .and(predicate::str::contains("[status:done]"))
+                .and(predicate::str::contains("/\\d{4}-\\d{2}-\\d{2}/"))
                 .and(predicate::str::contains("section:(dog cat)"))
                 .and(predicate::str::contains("task:docs"))
                 .and(predicate::str::contains("task-todo:followup"))
@@ -1162,6 +1163,63 @@ fn search_inline_bracket_property_filters_work() {
             predicate::str::contains("\"document_path\":\"Done.md\"")
                 .and(predicate::str::contains("\"document_path\":\"Backlog.md\"")),
         );
+}
+
+#[test]
+fn search_inline_regex_filters_work() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Journal")).expect("journal dir should exist");
+    fs::write(vault_root.join("Notes.md"), "Meeting on 2026-03-26.").expect("note should write");
+    fs::write(
+        vault_root.join("Journal/2026-03-26.md"),
+        "Daily notes without a date in body.",
+    )
+    .expect("note should write");
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,parsed_query_explanation",
+            "search",
+            "/\\d{4}-\\d{2}-\\d{2}/",
+            "--explain",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"Notes.md\"")
+                .and(predicate::str::contains("Journal/2026-03-26.md").not())
+                .and(predicate::str::contains(
+                    "REGEX /\\\\d{4}-\\\\d{2}-\\\\d{2}/",
+                )),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "search",
+            "path:/2026-03-\\d{2}/",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"document_path\":\"Journal/2026-03-26.md\"",
+        ));
 }
 
 #[test]
