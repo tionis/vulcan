@@ -18,6 +18,7 @@ use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use serde::Serialize;
 use serde_json::{Map, Value};
+use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use serve::{serve_forever, ServeOptions};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
@@ -110,6 +111,42 @@ const BASES_MAX_COLUMN_WIDTH: usize = 28;
 enum RefreshTarget {
     Command,
     Browse,
+}
+
+impl Display for TemplateInsertionError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoteFrontmatterNotMapping => {
+                formatter.write_str("target note frontmatter must be a YAML mapping")
+            }
+            Self::NoteFrontmatterParse(error) => {
+                write!(
+                    formatter,
+                    "failed to parse target note frontmatter: {error}"
+                )
+            }
+            Self::TemplateFrontmatterNotMapping => {
+                formatter.write_str("template frontmatter must be a YAML mapping")
+            }
+            Self::TemplateFrontmatterParse(error) => {
+                write!(formatter, "failed to parse template frontmatter: {error}")
+            }
+            Self::YamlSerialize(error) => {
+                write!(formatter, "failed to serialize merged frontmatter: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TemplateInsertionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NoteFrontmatterParse(error)
+            | Self::TemplateFrontmatterParse(error)
+            | Self::YamlSerialize(error) => Some(error),
+            Self::NoteFrontmatterNotMapping | Self::TemplateFrontmatterNotMapping => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -546,6 +583,24 @@ struct TemplateCandidate {
 struct TemplateDiscovery {
     templates: Vec<TemplateCandidate>,
     warnings: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedTemplateInsertion {
+    merged_frontmatter: Option<YamlMapping>,
+    target_body: String,
+    template_body: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+enum TemplateInsertionError {
+    NoteFrontmatterNotMapping,
+    NoteFrontmatterParse(serde_yaml::Error),
+    TemplateFrontmatterNotMapping,
+    TemplateFrontmatterParse(serde_yaml::Error),
+    YamlSerialize(serde_yaml::Error),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1280,6 +1335,132 @@ fn template_output_path(
         },
     )
     .map_err(CliError::operation)
+}
+
+#[allow(dead_code)]
+fn prepare_template_insertion(
+    target_source: &str,
+    rendered_template: &str,
+) -> Result<PreparedTemplateInsertion, TemplateInsertionError> {
+    let (target_frontmatter, target_body) = parse_frontmatter_document(target_source, false)?;
+    let (template_frontmatter, template_body) =
+        parse_frontmatter_document(rendered_template, true)?;
+
+    Ok(PreparedTemplateInsertion {
+        merged_frontmatter: merge_template_frontmatter(target_frontmatter, template_frontmatter),
+        target_body,
+        template_body,
+    })
+}
+
+#[allow(dead_code)]
+fn parse_frontmatter_document(
+    source: &str,
+    template_document: bool,
+) -> Result<(Option<YamlMapping>, String), TemplateInsertionError> {
+    let Some((yaml_start, yaml_end, body_start)) = find_frontmatter_block(source) else {
+        return Ok((None, source.to_string()));
+    };
+
+    let raw_yaml = &source[yaml_start..yaml_end];
+    let value = serde_yaml::from_str::<YamlValue>(raw_yaml).map_err(|error| {
+        if template_document {
+            TemplateInsertionError::TemplateFrontmatterParse(error)
+        } else {
+            TemplateInsertionError::NoteFrontmatterParse(error)
+        }
+    })?;
+    let mapping = value.as_mapping().cloned().ok_or_else(|| {
+        if template_document {
+            TemplateInsertionError::TemplateFrontmatterNotMapping
+        } else {
+            TemplateInsertionError::NoteFrontmatterNotMapping
+        }
+    })?;
+
+    Ok((Some(mapping), source[body_start..].to_string()))
+}
+
+#[allow(dead_code)]
+fn merge_template_frontmatter(
+    target_frontmatter: Option<YamlMapping>,
+    template_frontmatter: Option<YamlMapping>,
+) -> Option<YamlMapping> {
+    match (target_frontmatter, template_frontmatter) {
+        (None, None) => None,
+        (Some(target), None) => Some(target),
+        (None, Some(template)) => Some(template),
+        (Some(mut target), Some(template)) => {
+            for (key, template_value) in template {
+                if let Some(existing_value) = target.get_mut(&key) {
+                    merge_template_property_value(existing_value, &template_value);
+                } else {
+                    target.insert(key, template_value);
+                }
+            }
+            Some(target)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn merge_template_property_value(existing: &mut YamlValue, template: &YamlValue) {
+    if let (Some(existing_items), Some(template_items)) =
+        (existing.as_sequence_mut(), template.as_sequence())
+    {
+        for template_item in template_items {
+            if !existing_items.iter().any(|item| item == template_item) {
+                existing_items.push(template_item.clone());
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn render_note_from_parts(
+    frontmatter: &Option<YamlMapping>,
+    body: &str,
+) -> Result<String, TemplateInsertionError> {
+    let mut rendered = String::new();
+    if let Some(frontmatter) = frontmatter {
+        rendered.push_str(&format_frontmatter_block(frontmatter)?);
+    }
+    rendered.push_str(body);
+    Ok(rendered)
+}
+
+#[allow(dead_code)]
+fn format_frontmatter_block(frontmatter: &YamlMapping) -> Result<String, TemplateInsertionError> {
+    let mut yaml = serde_yaml::to_string(&YamlValue::Mapping(frontmatter.clone()))
+        .map_err(TemplateInsertionError::YamlSerialize)?;
+    if let Some(stripped) = yaml.strip_prefix("---\n") {
+        yaml = stripped.to_string();
+    }
+    if !yaml.ends_with('\n') {
+        yaml.push('\n');
+    }
+    Ok(format!("---\n{yaml}---\n"))
+}
+
+#[allow(dead_code)]
+fn find_frontmatter_block(source: &str) -> Option<(usize, usize, usize)> {
+    let mut lines = source.split_inclusive('\n');
+    let first_line = lines.next()?;
+    if !matches!(first_line, "---\n" | "---\r\n" | "---") {
+        return None;
+    }
+
+    let yaml_start = first_line.len();
+    let mut offset = yaml_start;
+    for line in lines {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if trimmed == "---" {
+            return Some((yaml_start, offset, offset + line.len()));
+        }
+        offset += line.len();
+    }
+
+    None
 }
 
 fn inbox_input_text(text: Option<&str>, file: Option<&PathBuf>) -> Result<String, CliError> {
@@ -6933,6 +7114,55 @@ mod tests {
             .expect("created note should be readable");
         assert!(contents.contains("# Vulcan Today"));
         assert!(!contents.contains("# Obsidian Today"));
+    }
+
+    #[test]
+    fn prepare_template_insertion_merges_frontmatter_without_overwriting_existing_values() {
+        let timestamp = test_template_timestamp(2026, 3, 26, 17, 4, 5);
+        let variables = template_variables_for_path("Projects/Alpha.md", timestamp);
+        let rendered_template = render_template_contents(
+            "---\nstatus: backlog\ncreated: \"{{date}}\"\ntags:\n- team\n- release\n---\n\n## Template Section\n",
+            &variables,
+            &TemplatesConfig::default(),
+        );
+
+        let prepared = prepare_template_insertion(
+            "---\nstatus: done\ntags:\n- team\n- shipped\nowner: Alice\n---\n# Existing\n",
+            &rendered_template,
+        )
+        .expect("template insertion should be prepared");
+
+        let merged_frontmatter = prepared
+            .merged_frontmatter
+            .expect("merged frontmatter should be present");
+        let merged = YamlValue::Mapping(merged_frontmatter);
+        assert_eq!(merged["status"], YamlValue::String("done".to_string()));
+        assert_eq!(merged["owner"], YamlValue::String("Alice".to_string()));
+        assert_eq!(
+            merged["created"],
+            YamlValue::String("2026-03-26".to_string())
+        );
+        assert_eq!(
+            merged["tags"],
+            serde_yaml::from_str::<YamlValue>("- team\n- shipped\n- release\n")
+                .expect("tags should parse")
+        );
+        assert_eq!(prepared.target_body, "# Existing\n");
+        assert_eq!(prepared.template_body, "\n## Template Section\n");
+    }
+
+    #[test]
+    fn prepare_template_insertion_uses_template_frontmatter_when_target_has_none() {
+        let prepared = prepare_template_insertion(
+            "# Existing\n",
+            "---\nstatus: backlog\n---\nTemplate body\n",
+        )
+        .expect("template insertion should be prepared");
+
+        let rendered = render_note_from_parts(&prepared.merged_frontmatter, &prepared.target_body)
+            .expect("note should render");
+        assert!(rendered.starts_with("---\nstatus: backlog\n---\n# Existing\n"));
+        assert_eq!(prepared.template_body, "Template body\n");
     }
 
     #[test]
