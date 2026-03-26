@@ -1,3 +1,4 @@
+use crate::bases_tui;
 use crate::editor::{open_in_editor, with_terminal_suspended};
 use crate::note_picker::{handle_picker_key, NotePickerState, PickerAction};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -16,8 +17,8 @@ use std::time::{Duration, SystemTime};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
-    doctor_vault, list_note_identities, list_tagged_note_identities, list_tags, move_note,
-    query_backlinks, query_links, query_notes, scan_vault, search_vault, BacklinkRecord,
+    doctor_vault, evaluate_base_file, list_note_identities, list_tagged_note_identities, list_tags,
+    move_note, query_backlinks, query_links, query_notes, scan_vault, search_vault, BacklinkRecord,
     DoctorDiagnosticIssue, DoctorLinkIssue, NamedCount, NoteIdentity, NoteQuery,
     OutgoingLinkRecord, ResolutionStatus, ScanMode, SearchHit, SearchQuery, VaultPaths,
 };
@@ -92,6 +93,28 @@ fn run_event_loop(
                             state.refresh_preview();
                             state.set_status(error.to_string());
                         }
+                    }
+                }
+                BrowseAction::OpenBaseTui(path) => {
+                    let paths = state.paths.clone();
+                    let open_result = with_terminal_suspended(terminal, || {
+                        let report =
+                            evaluate_base_file(&paths, &path).map_err(|error| error.to_string())?;
+                        bases_tui::run_bases_tui(&paths, &path, &report)
+                            .map_err(|error| error.to_string())?;
+                        scan_vault(&paths, ScanMode::Incremental)
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    });
+                    match open_result {
+                        Ok(()) => {
+                            if let Err(error) = state.reload_after_edit() {
+                                state.set_status(error);
+                            } else {
+                                state.set_status(format!("Opened bases TUI for {path}."));
+                            }
+                        }
+                        Err(error) => state.set_status(error.to_string()),
                     }
                 }
                 BrowseAction::Create(path) => {
@@ -229,6 +252,7 @@ enum BrowseAction {
     Continue,
     Quit,
     Edit(String),
+    OpenBaseTui(String),
     Create(String),
     Move {
         source_path: String,
@@ -515,6 +539,13 @@ impl BrowseState {
                 self.clear_status();
                 BrowseAction::Continue
             }
+            KeyCode::Char('o') => match view.selected_path() {
+                Some(path) if is_base_path(path) => BrowseAction::OpenBaseTui(path.to_string()),
+                _ => {
+                    self.set_status("Selected file is not a .base file.");
+                    BrowseAction::Continue
+                }
+            },
             KeyCode::Enter | KeyCode::Char('e') => {
                 if let Some(path) = view.selected_path().map(str::to_string) {
                     BrowseAction::Edit(path)
@@ -546,6 +577,13 @@ impl BrowseState {
                 self.clear_status();
                 BrowseAction::Continue
             }
+            KeyCode::Char('o') => match view.selected_path() {
+                Some(path) if is_base_path(path) => BrowseAction::OpenBaseTui(path.to_string()),
+                _ => {
+                    self.set_status("Selected file is not a .base file.");
+                    BrowseAction::Continue
+                }
+            },
             KeyCode::Enter | KeyCode::Char('e') => {
                 if let Some(path) = view.selected_path().map(str::to_string) {
                     BrowseAction::Edit(path)
@@ -752,10 +790,10 @@ impl BrowseState {
             return "Keys: Esc back, j/k move".to_string();
         }
         if self.backlinks_view.is_some() {
-            return "Keys: Enter/e edit source note, Esc back, j/k move".to_string();
+            return "Keys: Enter/e edit source note, o open base, Esc back, j/k move".to_string();
         }
         if self.links_view.is_some() {
-            return "Keys: Enter/e edit target note, Esc back, j/k move".to_string();
+            return "Keys: Enter/e edit target note, o open base, Esc back, j/k move".to_string();
         }
         if self.new_note_prompt.is_some() {
             return "Keys: Enter create, Esc cancel, Backspace edit path".to_string();
@@ -1539,6 +1577,10 @@ fn resolution_status_label(status: ResolutionStatus) -> &'static str {
         ResolutionStatus::Unresolved => "unresolved",
         ResolutionStatus::External => "external",
     }
+}
+
+fn is_base_path(path: &str) -> bool {
+    path.ends_with(".base")
 }
 
 fn last_scan_label(paths: &VaultPaths) -> String {
@@ -2374,6 +2416,34 @@ mod tests {
         assert_eq!(action, BrowseAction::Continue);
         assert_eq!(state.query_title(), "Browse (/ fuzzy search)");
         assert_eq!(state.selected_path(), Some("Projects/Alpha.md"));
+    }
+
+    #[test]
+    fn o_requests_bases_tui_for_selected_base_link() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Projects/Alpha.md",
+            "Links: [[release.base]].",
+        );
+        fs::write(
+            temp_dir.path().join("release.base"),
+            "filters:\n  and:\n    - 'file.ext == \"md\"'\nviews:\n  - name: Release Table\n    type: table\n",
+        )
+        .expect("base file should be written");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
+            .expect("state should build");
+        state.picker.select_path("Projects/Alpha.md");
+        state.handle_key(key(KeyCode::Char('l')));
+
+        let action = state.handle_key(key(KeyCode::Char('o')));
+
+        assert_eq!(
+            action,
+            BrowseAction::OpenBaseTui("release.base".to_string())
+        );
     }
 
     #[test]
