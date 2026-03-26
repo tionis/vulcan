@@ -1,4 +1,5 @@
 use crate::bases_tui;
+use crate::commit::AutoCommitPolicy;
 use crate::editor::{open_in_editor, with_terminal_suspended};
 use crate::note_picker::{handle_picker_key, NotePickerState, PickerAction};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -11,6 +12,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::time::{Duration, SystemTime};
@@ -27,13 +29,17 @@ use vulcan_core::{
 const FULL_TEXT_LIMIT: usize = 200;
 const FULL_TEXT_CONTEXT_SIZE: usize = 18;
 
-pub fn run_browse_tui(paths: &VaultPaths) -> Result<(), io::Error> {
+pub fn run_browse_tui(paths: &VaultPaths, no_commit: bool) -> Result<(), io::Error> {
     if !paths.cache_db().exists() {
         scan_vault(paths, ScanMode::Incremental).map_err(io::Error::other)?;
     }
 
     let mut state = BrowseState::new(paths.clone(), load_notes(paths).map_err(io::Error::other)?)
         .map_err(io::Error::other)?;
+    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+    if let Some(message) = auto_commit.warning() {
+        state.set_status(format!("Warning: {message}."));
+    }
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -42,7 +48,7 @@ pub fn run_browse_tui(paths: &VaultPaths) -> Result<(), io::Error> {
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
 
-    let result = run_event_loop(&mut terminal, &mut state);
+    let result = run_event_loop(&mut terminal, &mut state, &auto_commit);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -58,6 +64,7 @@ fn load_notes(paths: &VaultPaths) -> Result<Vec<NoteIdentity>, String> {
 fn run_event_loop(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     state: &mut BrowseState,
+    auto_commit: &AutoCommitPolicy,
 ) -> Result<(), io::Error> {
     loop {
         terminal.draw(|frame| draw(frame, state))?;
@@ -86,6 +93,14 @@ fn run_event_loop(
                         Ok(()) => {
                             if let Err(error) = state.reload_after_edit() {
                                 state.set_status(error);
+                            } else if let Err(error) = auto_commit.commit(
+                                &state.paths,
+                                "browse",
+                                std::slice::from_ref(&path),
+                            ) {
+                                state.set_status(format!(
+                                    "Updated {path}, but auto-commit failed: {error}"
+                                ));
                             } else {
                                 state.set_status(format!("Updated {path}."));
                             }
@@ -151,6 +166,14 @@ fn run_event_loop(
                             state.clear_new_note_prompt();
                             if let Err(error) = state.reload_after_new_note(&relative_path) {
                                 state.set_status(error);
+                            } else if let Err(error) = auto_commit.commit(
+                                &state.paths,
+                                "browse",
+                                std::slice::from_ref(&relative_path),
+                            ) {
+                                state.set_status(format!(
+                                    "Created {relative_path}, but auto-commit failed: {error}"
+                                ));
                             } else {
                                 state.set_status(format!("Created {relative_path}."));
                             }
@@ -166,6 +189,20 @@ fn run_event_loop(
                         state.clear_move_prompt();
                         if let Err(error) = state.reload_after_move(&summary.destination_path) {
                             state.set_status(error);
+                        } else if let Err(error) = auto_commit.commit(
+                            &state.paths,
+                            "browse",
+                            &std::iter::once(summary.source_path.clone())
+                                .chain(std::iter::once(summary.destination_path.clone()))
+                                .chain(summary.rewritten_files.iter().map(|file| file.path.clone()))
+                                .collect::<BTreeSet<_>>()
+                                .into_iter()
+                                .collect::<Vec<_>>(),
+                        ) {
+                            state.set_status(format!(
+                                "Moved {} -> {}, but auto-commit failed: {error}",
+                                summary.source_path, summary.destination_path
+                            ));
                         } else {
                             state.set_status(format!(
                                 "Moved {} -> {}.",

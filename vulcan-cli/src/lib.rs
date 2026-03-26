@@ -1,6 +1,7 @@
 mod bases_tui;
 mod browse_tui;
 mod cli;
+mod commit;
 mod editor;
 mod note_picker;
 mod serve;
@@ -11,6 +12,7 @@ pub use cli::{
     SearchMode, SuggestCommand, VectorQueueCommand, VectorsCommand,
 };
 
+use crate::commit::AutoCommitPolicy;
 use crate::editor::open_in_editor;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
@@ -617,6 +619,29 @@ fn run_incremental_scan(
     .map_err(CliError::operation)
 }
 
+fn warn_auto_commit_if_needed(policy: &AutoCommitPolicy) {
+    if let Some(message) = policy.warning() {
+        eprintln!("warning: {message}");
+    }
+}
+
+fn refactor_changed_files(report: &RefactorReport) -> Vec<String> {
+    report.files.iter().map(|file| file.path.clone()).collect()
+}
+
+fn bulk_mutation_changed_files(report: &BulkMutationReport) -> Vec<String> {
+    report.files.iter().map(|file| file.path.clone()).collect()
+}
+
+fn move_changed_files(summary: &MoveSummary) -> Vec<String> {
+    std::iter::once(summary.source_path.clone())
+        .chain(std::iter::once(summary.destination_path.clone()))
+        .chain(summary.rewritten_files.iter().map(|file| file.path.clone()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn resolve_edit_path(
     paths: &VaultPaths,
     cli: &Cli,
@@ -1198,7 +1223,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_graph_trends_report(cli.output, &report, &list_controls, export.as_ref())
             }
         },
-        Command::Edit { ref note, new } => {
+        Command::Edit {
+            ref note,
+            new,
+            no_commit,
+        } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let report = run_edit_command(
                 &paths,
                 cli,
@@ -1207,16 +1238,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 note.as_deref(),
                 new,
             )?;
+            auto_commit
+                .commit(&paths, "edit", std::slice::from_ref(&report.path))
+                .map_err(CliError::operation)?;
             print_edit_report(cli.output, &report);
             Ok(())
         }
-        Command::Browse => {
+        Command::Browse { no_commit } => {
             if cli.output != OutputFormat::Human || !stdout_is_tty || !io::stdin().is_terminal() {
                 return Err(CliError::operation(
                     "browse requires an interactive terminal with `--output human`",
                 ));
             }
-            browse_tui::run_browse_tui(&paths).map_err(CliError::operation)
+            browse_tui::run_browse_tui(&paths, no_commit).map_err(CliError::operation)
         }
         Command::Completions { shell } => {
             let mut command = Cli::command();
@@ -1445,8 +1479,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref source,
             ref dest,
             dry_run,
+            no_commit,
         } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let summary = move_note(&paths, source, dest, dry_run).map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "move", &move_changed_files(&summary))
+                    .map_err(CliError::operation)?;
+            }
             print_move_summary(cli.output, &summary)?;
             Ok(())
         }
@@ -1454,8 +1496,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref old,
             ref new,
             dry_run,
+            no_commit,
         } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let report = rename_property(&paths, old, new, dry_run).map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "rename-property", &refactor_changed_files(&report))
+                    .map_err(CliError::operation)?;
+            }
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
@@ -1463,8 +1513,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref source,
             ref dest,
             dry_run,
+            no_commit,
         } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let report = merge_tags(&paths, source, dest, dry_run).map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "merge-tags", &refactor_changed_files(&report))
+                    .map_err(CliError::operation)?;
+            }
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
@@ -1473,7 +1531,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref old,
             ref new,
             dry_run,
+            no_commit,
         } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let note = resolve_note_argument(
                 &paths,
                 Some(note.as_str()),
@@ -1482,6 +1543,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             let report =
                 rename_alias(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "rename-alias", &refactor_changed_files(&report))
+                    .map_err(CliError::operation)?;
+            }
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
@@ -1490,7 +1556,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref old,
             ref new,
             dry_run,
+            no_commit,
         } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let note = resolve_note_argument(
                 &paths,
                 Some(note.as_str()),
@@ -1499,6 +1568,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             let report =
                 rename_heading(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "rename-heading", &refactor_changed_files(&report))
+                    .map_err(CliError::operation)?;
+            }
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
@@ -1507,7 +1581,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref old,
             ref new,
             dry_run,
+            no_commit,
         } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let note = resolve_note_argument(
                 &paths,
                 Some(note.as_str()),
@@ -1516,6 +1593,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             let report =
                 rename_block_ref(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "rename-block-ref", &refactor_changed_files(&report))
+                    .map_err(CliError::operation)?;
+            }
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
@@ -1560,7 +1642,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 auth_token: auth_token.clone(),
             },
         ),
-        Command::Watch { debounce_ms } => {
+        Command::Watch {
+            debounce_ms,
+            no_commit,
+        } => {
+            let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             if cli.output == OutputFormat::Human && stdout_is_tty {
                 println!(
                     "Watching {} (debounce {}ms)",
@@ -1569,7 +1656,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 );
             }
             watch_vault(&paths, &WatchOptions { debounce_ms }, |report| {
-                print_watch_report(cli.output, &report)
+                print_watch_report(cli.output, &report)?;
+                if !report.startup
+                    && report.summary.added + report.summary.updated + report.summary.deleted > 0
+                {
+                    auto_commit
+                        .commit(&paths, "scan", &report.paths)
+                        .map_err(CliError::operation)?;
+                }
+                Ok::<(), CliError>(())
             })
             .map_err(CliError::operation)
         }
@@ -1639,18 +1734,34 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref key,
             ref value,
             dry_run,
+            no_commit,
         } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let report = bulk_set_property(&paths, filters, key, Some(value.as_str()), dry_run)
                 .map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "update", &bulk_mutation_changed_files(&report))
+                    .map_err(CliError::operation)?;
+            }
             print_bulk_mutation_report(cli.output, &report)
         }
         Command::Unset {
             ref filters,
             ref key,
             dry_run,
+            no_commit,
         } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let report = bulk_set_property(&paths, filters, key, None, dry_run)
                 .map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "unset", &bulk_mutation_changed_files(&report))
+                    .map_err(CliError::operation)?;
+            }
             print_bulk_mutation_report(cli.output, &report)
         }
         Command::Notes {
@@ -1933,9 +2044,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 export.as_ref(),
             )
         }
-        Command::LinkMentions { ref note, dry_run } => {
+        Command::LinkMentions {
+            ref note,
+            dry_run,
+            no_commit,
+        } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let report =
                 link_mentions(&paths, note.as_deref(), dry_run).map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "link-mentions", &refactor_changed_files(&report))
+                    .map_err(CliError::operation)?;
+            }
             print_refactor_report(cli.output, &report)
         }
         Command::Rewrite {
@@ -1943,9 +2065,17 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref find,
             ref replace,
             dry_run,
+            no_commit,
         } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let report = bulk_replace(&paths, filters, find, replace, dry_run)
                 .map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(&paths, "rewrite", &refactor_changed_files(&report))
+                    .map_err(CliError::operation)?;
+            }
             print_refactor_report(cli.output, &report)
         }
         Command::Batch { ref names, all } => {
@@ -2191,7 +2321,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 Ok(())
             }
         },
-        Command::Scan { full } => {
+        Command::Scan { full, no_commit } => {
+            let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit);
             let mut progress = (cli.output == OutputFormat::Human)
                 .then(|| ScanProgressReporter::new(use_stderr_color));
             let summary = scan_vault_with_progress(
@@ -2208,6 +2340,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 },
             )
             .map_err(CliError::operation)?;
+            if summary.added + summary.updated + summary.deleted > 0 {
+                auto_commit
+                    .commit(&paths, "scan", &[])
+                    .map_err(CliError::operation)?;
+            }
             print_scan_summary(cli.output, &summary, use_stdout_color);
             Ok(())
         }
@@ -5215,6 +5352,39 @@ fn append_change_rows(rows: &mut Vec<Value>, anchor: &str, kind: ChangeKind, ite
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::fs;
+    use std::process::Command as ProcessCommand;
+    use tempfile::TempDir;
+
+    fn run_git(vault_root: &Path, args: &[&str]) {
+        let status = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(vault_root)
+            .args(args)
+            .status()
+            .expect("git should launch");
+        assert!(status.success(), "git command failed: {:?}", args);
+    }
+
+    fn init_git_repo(vault_root: &Path) {
+        run_git(vault_root, &["init"]);
+        run_git(vault_root, &["config", "user.name", "Vulcan Test"]);
+        run_git(vault_root, &["config", "user.email", "vulcan@example.com"]);
+    }
+
+    fn git_head_summary(vault_root: &Path) -> String {
+        let output = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(vault_root)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .expect("git log should launch");
+        assert!(output.status.success(), "git log should succeed");
+        String::from_utf8(output.stdout)
+            .expect("git stdout should be utf8")
+            .trim()
+            .to_string()
+    }
 
     #[test]
     fn formats_eta_compactly_for_progress_reporting() {
@@ -5241,6 +5411,42 @@ mod tests {
                 dry_run: false,
                 fail_on_issues: false,
             }
+        );
+    }
+
+    #[test]
+    fn edit_new_auto_commit_creates_git_commit() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        fs::create_dir_all(temp_dir.path().join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            temp_dir.path().join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .expect("config should be written");
+
+        let original_editor = std::env::var_os("EDITOR");
+        std::env::set_var("EDITOR", "true");
+
+        let result = run_from([
+            "vulcan",
+            "--vault",
+            temp_dir.path().to_str().expect("temp dir should be utf8"),
+            "edit",
+            "--new",
+            "Notes/Idea.md",
+        ]);
+
+        match original_editor {
+            Some(value) => std::env::set_var("EDITOR", value),
+            None => std::env::remove_var("EDITOR"),
+        }
+
+        result.expect("edit should succeed");
+        assert!(temp_dir.path().join("Notes/Idea.md").exists());
+        assert_eq!(
+            git_head_summary(temp_dir.path()),
+            "vulcan edit: Notes/Idea.md"
         );
     }
 
@@ -5427,7 +5633,13 @@ mod tests {
                 command: RepairCommand::Fts { dry_run: true }
             }
         );
-        assert_eq!(watch.command, Command::Watch { debounce_ms: 125 });
+        assert_eq!(
+            watch.command,
+            Command::Watch {
+                debounce_ms: 125,
+                no_commit: false,
+            }
+        );
         assert_eq!(
             serve.command,
             Command::Serve {
@@ -5588,6 +5800,7 @@ mod tests {
             Command::LinkMentions {
                 note: Some("Home".to_string()),
                 dry_run: true,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5597,6 +5810,7 @@ mod tests {
                 find: "release".to_string(),
                 replace: "launch".to_string(),
                 dry_run: true,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5658,7 +5872,7 @@ mod tests {
                 export: ExportArgs::default(),
             }
         );
-        assert_eq!(browse.command, Command::Browse);
+        assert_eq!(browse.command, Command::Browse { no_commit: false });
         assert_eq!(
             related_picker.command,
             Command::Related {
@@ -5671,6 +5885,7 @@ mod tests {
             Command::Edit {
                 note: Some("Home".to_string()),
                 new: false,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5678,6 +5893,7 @@ mod tests {
             Command::Edit {
                 note: Some("Notes/Idea".to_string()),
                 new: true,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5685,7 +5901,8 @@ mod tests {
             Command::Move {
                 source: "Projects/Alpha.md".to_string(),
                 dest: "Archive/Alpha.md".to_string(),
-                dry_run: true
+                dry_run: true,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5696,6 +5913,7 @@ mod tests {
                 old: "status".to_string(),
                 new: "phase".to_string(),
                 dry_run: true,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5706,6 +5924,7 @@ mod tests {
                 source: "project".to_string(),
                 dest: "initiative".to_string(),
                 dry_run: true,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5724,6 +5943,7 @@ mod tests {
                 old: "Start".to_string(),
                 new: "Landing".to_string(),
                 dry_run: true,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5742,6 +5962,7 @@ mod tests {
                 old: "Status".to_string(),
                 new: "Progress".to_string(),
                 dry_run: true,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5760,6 +5981,7 @@ mod tests {
                 old: "alpha-status".to_string(),
                 new: "alpha-progress".to_string(),
                 dry_run: true,
+                no_commit: false,
             }
         );
         assert_eq!(
@@ -5878,7 +6100,13 @@ mod tests {
         assert_eq!(cli.limit, Some(10));
         assert_eq!(cli.offset, 2);
         assert!(cli.verbose);
-        assert_eq!(cli.command, Command::Scan { full: true });
+        assert_eq!(
+            cli.command,
+            Command::Scan {
+                full: true,
+                no_commit: false,
+            }
+        );
     }
 
     #[test]
