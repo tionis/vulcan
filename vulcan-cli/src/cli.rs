@@ -5,11 +5,11 @@ use std::path::PathBuf;
 const ROOT_AFTER_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
-  Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest
+  Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest, diff
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
-  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
-  Maintenance: move, doctor, cache, link-mentions, rewrite, describe, completions
+  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template
+  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions
 
 Docs:
   User guide: docs/cli.md
@@ -752,6 +752,15 @@ pub enum Command {
         checkpoint: Option<String>,
         #[command(flatten)]
         export: ExportArgs,
+    },
+    #[command(about = "Show one note's changes since git HEAD, the last scan, or a checkpoint")]
+    Diff {
+        #[arg(
+            help = "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively"
+        )]
+        note: Option<String>,
+        #[arg(long, help = "Named checkpoint to compare against instead of git HEAD")]
+        since: Option<String>,
     },
     #[command(about = "Run multiple saved reports for automation and scheduled jobs")]
     Batch {
