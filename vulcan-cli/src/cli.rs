@@ -598,6 +598,8 @@ pub enum Command {
             help = "Event coalescing window in milliseconds"
         )]
         debounce_ms: u64,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Serve local cache-backed HTTP APIs for repeated queries")]
     Serve {
@@ -625,6 +627,8 @@ pub enum Command {
     Scan {
         #[arg(long, help = "Force a full scan instead of incremental reconciliation")]
         full: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "List outgoing links for a note")]
     Links {
@@ -780,7 +784,10 @@ pub enum Command {
         export: ExportArgs,
     },
     #[command(about = "Open a persistent note browser TUI")]
-    Browse,
+    Browse {
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
     #[command(about = "Open a note in $VISUAL/$EDITOR and refresh the cache afterwards")]
     Edit {
         #[arg(
@@ -789,6 +796,8 @@ pub enum Command {
         note: Option<String>,
         #[arg(long, help = "Create a new note instead of resolving an existing one")]
         new: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Run vector indexing and similarity commands")]
     Vectors {
@@ -803,6 +812,8 @@ pub enum Command {
         dest: String,
         #[arg(long, help = "Report rewrite changes without moving files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Convert unambiguous plain-text note mentions into links")]
     LinkMentions {
@@ -810,6 +821,8 @@ pub enum Command {
         note: Option<String>,
         #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(
         about = "Apply a literal find/replace across notes selected by filters",
@@ -827,6 +840,8 @@ pub enum Command {
         replace: String,
         #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Inspect the vault for broken or suspicious state")]
     Doctor {
@@ -870,6 +885,8 @@ Examples:
         value: String,
         #[arg(long, help = "Report planned changes without modifying files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(
         about = "Remove a frontmatter property from notes selected by query filters",
@@ -891,6 +908,8 @@ Examples:
         key: String,
         #[arg(long, help = "Report planned removals without modifying files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Rename a frontmatter property key across notes")]
     RenameProperty {
@@ -900,6 +919,8 @@ Examples:
         new: String,
         #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Merge one tag into another across frontmatter and note bodies")]
     MergeTags {
@@ -909,6 +930,8 @@ Examples:
         dest: String,
         #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Rename an alias inside one note's frontmatter")]
     RenameAlias {
@@ -920,6 +943,8 @@ Examples:
         new: String,
         #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Rename a heading and rewrite inbound heading links")]
     RenameHeading {
@@ -931,6 +956,8 @@ Examples:
         new: String,
         #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Rename a block reference and rewrite inbound block links")]
     RenameBlockRef {
@@ -942,6 +969,8 @@ Examples:
         new: String,
         #[arg(long, help = "Report planned rewrites without modifying files")]
         dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Inspect and maintain the SQLite cache")]
     Cache {
