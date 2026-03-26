@@ -445,6 +445,7 @@ This is Vulcan's primary configuration file, stored in the `.vulcan/` directory 
 - Whether to prefer wikilink or Markdown-link syntax for generated links
 - Attachment folder path override
 - Automatic cache refresh policy for cache-backed commands (`[scan]`)
+- Template default date/time formats for `{{date}}` / `{{time}}` (`[templates]`)
 
 ### `.vulcan/config.local.toml` (optional device-local override)
 
@@ -476,6 +477,7 @@ If an `.obsidian` directory is present, the following files are read to provide 
   - `strictLineBreaks`: affects Markdown rendering semantics, relevant if the tool ever produces rendered output.
 
 - **`.obsidian/types.json`** — Property type assignments (text, number, date, checkbox, etc.). Used to seed the property catalog. Without this file, the tool infers types from observed values but may produce weaker type diagnostics.
+- **`.obsidian/templates.json`** — Templates core-plugin settings. Vulcan may read `dateFormat` and `timeFormat` as defaults for Obsidian-compatible template rendering when `.vulcan` does not override them.
 
 **Low priority but useful:**
 

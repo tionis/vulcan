@@ -35,7 +35,7 @@ pub use config::{
     create_default_config, default_config_template, load_vault_config, AttachmentExtractionConfig,
     AutoScanMode, ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigLoadResult,
     EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, InboxConfig, LinkResolutionMode,
-    LinkStylePreference, ScanConfig, VaultConfig,
+    LinkStylePreference, ScanConfig, TemplatesConfig, VaultConfig,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,

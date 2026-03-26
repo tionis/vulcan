@@ -241,6 +241,12 @@ fn inbox_and_template_help_document_config_and_variables() {
                 .and(predicate::str::contains(
                     "{{title}} {{date}} {{time}} {{datetime}} {{uuid}}",
                 ))
+                .and(predicate::str::contains(
+                    "{{date:YYYY-MM-DD}} {{time:HH:mm}}",
+                ))
+                .and(predicate::str::contains(
+                    "Default template date/time formats live under [templates]",
+                ))
                 .and(predicate::str::contains("vulcan template --list"))
                 .and(predicate::str::contains(
                     "Vulcan creates <date>-<template-name>.md",

@@ -54,6 +54,10 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # format = "- {text}"
 # timestamp = true
 # heading = "## Inbox"
+
+# [templates]
+# date_format = "YYYY-MM-DD"
+# time_format = "HH:mm"
 "###;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,6 +228,21 @@ impl Default for InboxConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplatesConfig {
+    pub date_format: String,
+    pub time_format: String,
+}
+
+impl Default for TemplatesConfig {
+    fn default() -> Self {
+        Self {
+            date_format: "YYYY-MM-DD".to_string(),
+            time_format: "HH:mm".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanConfig {
     pub default_mode: AutoScanMode,
     pub browse_mode: AutoScanMode,
@@ -251,6 +270,7 @@ pub struct VaultConfig {
     pub extraction: Option<AttachmentExtractionConfig>,
     pub git: GitConfig,
     pub inbox: InboxConfig,
+    pub templates: TemplatesConfig,
 }
 
 impl Default for VaultConfig {
@@ -267,6 +287,7 @@ impl Default for VaultConfig {
             extraction: None,
             git: GitConfig::default(),
             inbox: InboxConfig::default(),
+            templates: TemplatesConfig::default(),
         }
     }
 }
@@ -292,6 +313,7 @@ struct PartialVulcanConfig {
     extraction: Option<AttachmentExtractionConfig>,
     git: Option<PartialGitConfig>,
     inbox: Option<PartialInboxConfig>,
+    templates: Option<PartialTemplatesConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -332,6 +354,12 @@ struct PartialInboxConfig {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct PartialTemplatesConfig {
+    date_format: Option<String>,
+    time_format: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct ObsidianAppConfig {
     #[serde(rename = "useMarkdownLinks")]
     use_markdown_links: Option<bool>,
@@ -341,6 +369,14 @@ struct ObsidianAppConfig {
     attachment_folder_path: Option<String>,
     #[serde(rename = "strictLineBreaks")]
     strict_line_breaks: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianTemplatesConfig {
+    #[serde(rename = "dateFormat")]
+    date_format: Option<String>,
+    #[serde(rename = "timeFormat")]
+    time_format: Option<String>,
 }
 
 #[must_use]
@@ -375,6 +411,10 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
 
     if let Some(obsidian_app) = load_obsidian_app_config(paths, &mut diagnostics) {
         apply_obsidian_defaults(&mut config, obsidian_app);
+    }
+
+    if let Some(obsidian_templates) = load_obsidian_templates_config(paths, &mut diagnostics) {
+        apply_obsidian_template_defaults(&mut config, obsidian_templates);
     }
 
     config.property_types = load_obsidian_property_types(paths, &mut diagnostics);
@@ -440,6 +480,15 @@ fn load_obsidian_property_types(
         });
         BTreeMap::new()
     }
+}
+
+fn load_obsidian_templates_config(
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<ObsidianTemplatesConfig> {
+    let path = paths.vault_root().join(".obsidian/templates.json");
+
+    load_json_file(&path, diagnostics)
 }
 
 fn load_vulcan_overrides(
@@ -523,6 +572,16 @@ fn apply_obsidian_defaults(config: &mut VaultConfig, obsidian: ObsidianAppConfig
     }
 }
 
+fn apply_obsidian_template_defaults(config: &mut VaultConfig, obsidian: ObsidianTemplatesConfig) {
+    if let Some(date_format) = obsidian.date_format {
+        config.templates.date_format = date_format;
+    }
+
+    if let Some(time_format) = obsidian.time_format {
+        config.templates.time_format = time_format;
+    }
+}
+
 fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConfig) {
     if let Some(scan) = overrides.scan {
         if let Some(default_mode) = scan.default_mode {
@@ -594,6 +653,15 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             config.inbox.heading = Some(heading);
         }
     }
+
+    if let Some(templates) = overrides.templates {
+        if let Some(date_format) = templates.date_format {
+            config.templates.date_format = date_format;
+        }
+        if let Some(time_format) = templates.time_format {
+            config.templates.time_format = time_format;
+        }
+    }
 }
 
 fn normalize_attachment_folder(path: &str) -> PathBuf {
@@ -644,6 +712,14 @@ mod tests {
             }"#,
         )
         .expect("types config should be written");
+        fs::write(
+            vault_root.join(".obsidian/templates.json"),
+            r#"{
+              "dateFormat": "dddd, MMMM Do YYYY",
+              "timeFormat": "hh:mm A"
+            }"#,
+        )
+        .expect("templates config should be written");
         let paths = VaultPaths::new(vault_root);
 
         let loaded = load_vault_config(&paths);
@@ -655,6 +731,8 @@ mod tests {
         assert!(loaded.config.strict_line_breaks);
         assert_eq!(loaded.config.scan.default_mode, AutoScanMode::Blocking);
         assert_eq!(loaded.config.scan.browse_mode, AutoScanMode::Background);
+        assert_eq!(loaded.config.templates.date_format, "dddd, MMMM Do YYYY");
+        assert_eq!(loaded.config.templates.time_format, "hh:mm A");
         assert_eq!(
             loaded.config.property_types.get("status"),
             Some(&"text".to_string())
@@ -724,6 +802,10 @@ path = "Capture/Inbox.md"
 format = "* {datetime} {text}"
 timestamp = false
 heading = "## Notes"
+
+[templates]
+date_format = "DD/MM/YYYY"
+time_format = "HH:mm:ss"
 "###,
         )
         .expect("vulcan config should be written");
@@ -779,6 +861,8 @@ heading = "## Notes"
         assert_eq!(loaded.config.inbox.format, "* {datetime} {text}");
         assert!(!loaded.config.inbox.timestamp);
         assert_eq!(loaded.config.inbox.heading.as_deref(), Some("## Notes"));
+        assert_eq!(loaded.config.templates.date_format, "DD/MM/YYYY");
+        assert_eq!(loaded.config.templates.time_format, "HH:mm:ss");
     }
 
     #[test]
@@ -818,6 +902,9 @@ auto_commit = false
 
 [inbox]
 path = "Inbox.md"
+
+[templates]
+date_format = "YYYY-MM-DD"
 "###,
         )
         .expect("shared config should be written");
@@ -835,6 +922,10 @@ auto_commit = true
 
 [inbox]
 path = "Device/Inbox.md"
+
+[templates]
+date_format = "DD.MM.YYYY"
+time_format = "HH:mm:ss"
 "###,
         )
         .expect("local config should be written");
@@ -847,6 +938,8 @@ path = "Device/Inbox.md"
         assert_eq!(loaded.config.chunking.target_size, 2_048);
         assert!(loaded.config.git.auto_commit);
         assert_eq!(loaded.config.inbox.path, "Device/Inbox.md");
+        assert_eq!(loaded.config.templates.date_format, "DD.MM.YYYY");
+        assert_eq!(loaded.config.templates.time_format, "HH:mm:ss");
     }
 
     #[test]

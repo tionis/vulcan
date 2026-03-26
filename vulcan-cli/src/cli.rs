@@ -256,6 +256,11 @@ Template source:
 
 Variables:
   {{title}} {{date}} {{time}} {{datetime}} {{uuid}}
+  {{date:YYYY-MM-DD}} {{time:HH:mm}} {{date:dddd, MMMM Do YYYY}}
+
+Configuration:
+  Default template date/time formats live under [templates] in .vulcan/config.toml.
+  date_format applies to {{date}} and time_format applies to {{time}}.
 
 Notes:
   If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.
