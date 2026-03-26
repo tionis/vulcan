@@ -69,13 +69,13 @@ fn run_event_loop(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PickerAction {
+pub(crate) enum PickerAction {
     Continue,
     Cancel,
     Select,
 }
 
-fn handle_picker_key(state: &mut NotePickerState, code: KeyCode) -> PickerAction {
+pub(crate) fn handle_picker_key(state: &mut NotePickerState, code: KeyCode) -> PickerAction {
     match code {
         KeyCode::Esc => PickerAction::Cancel,
         KeyCode::Enter => PickerAction::Select,
@@ -176,7 +176,7 @@ fn draw(frame: &mut Frame<'_>, state: &NotePickerState) {
 }
 
 #[derive(Debug, Clone)]
-struct NotePickerState {
+pub(crate) struct NotePickerState {
     paths: VaultPaths,
     notes: Vec<NoteIdentity>,
     query: String,
@@ -185,7 +185,7 @@ struct NotePickerState {
 }
 
 impl NotePickerState {
-    fn new(paths: VaultPaths, notes: Vec<NoteIdentity>, query: &str) -> Self {
+    pub(crate) fn new(paths: VaultPaths, notes: Vec<NoteIdentity>, query: &str) -> Self {
         let mut state = Self {
             paths,
             notes,
@@ -197,7 +197,7 @@ impl NotePickerState {
         state
     }
 
-    fn filtered_notes(&self) -> Vec<(i32, &NoteIdentity)> {
+    pub(crate) fn filtered_notes(&self) -> Vec<(i32, &NoteIdentity)> {
         let mut filtered = self
             .notes
             .iter()
@@ -209,6 +209,26 @@ impl NotePickerState {
                 .then_with(|| left.path.cmp(&right.path))
         });
         filtered
+    }
+
+    pub(crate) fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    pub(crate) fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub(crate) fn total_notes(&self) -> usize {
+        self.notes.len()
+    }
+
+    pub(crate) fn filtered_count(&self) -> usize {
+        self.filtered_notes().len()
+    }
+
+    pub(crate) fn selected_path(&self) -> Option<&str> {
+        self.selected_note().map(|note| note.path.as_str())
     }
 
     fn selected_note(&self) -> Option<&NoteIdentity> {
@@ -256,14 +276,30 @@ impl NotePickerState {
         self.refresh_preview();
     }
 
-    fn refresh_preview(&mut self) {
+    pub(crate) fn replace_notes_preserve_selection(&mut self, notes: Vec<NoteIdentity>) {
+        let selected_path = self.selected_note().map(|note| note.path.clone());
+        self.notes = notes;
+        let filtered = self.filtered_notes();
+        self.selected_index = selected_path.and_then(|selected_path| {
+            filtered
+                .iter()
+                .position(|(_, note)| note.path == selected_path)
+        });
+        if self.selected_index.is_none() {
+            self.clamp_selection();
+        } else {
+            self.refresh_preview();
+        }
+    }
+
+    pub(crate) fn refresh_preview(&mut self) {
         self.preview = self.selected_note().map_or_else(
             || vec!["No matches.".to_string()],
             |note| load_preview(&self.paths, &note.path),
         );
     }
 
-    fn preview_lines(&self) -> Vec<Line<'static>> {
+    pub(crate) fn preview_lines(&self) -> Vec<Line<'static>> {
         self.preview
             .iter()
             .take(18)
