@@ -8,8 +8,8 @@ mod serve;
 
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ExportArgs,
-    ExportCommand, ExportFormat, GraphCommand, OutputFormat, RepairCommand, SavedCommand,
-    SearchMode, SuggestCommand, VectorQueueCommand, VectorsCommand,
+    ExportCommand, ExportFormat, GraphCommand, OutputFormat, RefreshMode, RepairCommand,
+    SavedCommand, SearchMode, SuggestCommand, VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -34,18 +34,18 @@ use vulcan_core::{
     drop_vector_model, evaluate_base_file, execute_query_report, export_static_search_index,
     git_status, index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
     link_mentions, list_checkpoints, list_saved_reports, list_vector_models, load_saved_report,
-    merge_tags, move_note, query_backlinks, query_change_report, query_graph_analytics,
-    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
-    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
-    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
-    repair_vectors_with_progress, resolve_note_reference, save_saved_report,
+    load_vault_config, merge_tags, move_note, query_backlinks, query_change_report,
+    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
+    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
+    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
+    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    repair_fts, repair_vectors_with_progress, resolve_note_reference, save_saved_report,
     scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
-    vector_duplicates, verify_cache, watch_vault, BacklinkRecord, BacklinksReport, BaseViewGroupBy,
-    BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
+    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport,
+    BulkMutationReport, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport,
+    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery,
+    ClusterReport, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
     DuplicateSuggestionsReport, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
     GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
     GraphTrendsReport, InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
@@ -105,6 +105,12 @@ impl std::error::Error for CliError {}
 
 const SCAN_PROGRESS_STEP: usize = 250;
 const BASES_MAX_COLUMN_WIDTH: usize = 28;
+
+#[derive(Clone, Copy)]
+enum RefreshTarget {
+    Command,
+    Browse,
+}
 
 #[derive(Clone, Copy)]
 struct AnsiPalette {
@@ -662,6 +668,96 @@ fn run_incremental_scan(
         }
     })
     .map_err(CliError::operation)
+}
+
+fn refresh_mode_for_target(paths: &VaultPaths, cli: &Cli, target: RefreshTarget) -> AutoScanMode {
+    if let Some(mode) = cli.refresh {
+        return match mode {
+            RefreshMode::Off => AutoScanMode::Off,
+            RefreshMode::Blocking => AutoScanMode::Blocking,
+            RefreshMode::Background => AutoScanMode::Background,
+        };
+    }
+
+    let scan_config = load_vault_config(paths).config.scan;
+    match target {
+        RefreshTarget::Command => scan_config.default_mode,
+        RefreshTarget::Browse => scan_config.browse_mode,
+    }
+}
+
+fn command_uses_auto_refresh(command: &Command) -> bool {
+    match command {
+        Command::Backlinks { .. }
+        | Command::Graph { .. }
+        | Command::Open { .. }
+        | Command::Cluster { .. }
+        | Command::Doctor { .. }
+        | Command::Move { .. }
+        | Command::RenameProperty { .. }
+        | Command::MergeTags { .. }
+        | Command::RenameAlias { .. }
+        | Command::RenameHeading { .. }
+        | Command::RenameBlockRef { .. }
+        | Command::Links { .. }
+        | Command::Query { .. }
+        | Command::Update { .. }
+        | Command::Unset { .. }
+        | Command::Notes { .. }
+        | Command::Search { .. }
+        | Command::Changes { .. }
+        | Command::Diff { .. }
+        | Command::LinkMentions { .. }
+        | Command::Rewrite { .. }
+        | Command::Related { .. } => true,
+        Command::Edit { new, .. } => !new,
+        Command::Browse { .. } => false,
+        Command::Bases { command } => matches!(
+            command,
+            BasesCommand::Eval { .. } | BasesCommand::Tui { .. }
+        ),
+        Command::Suggest { .. } => true,
+        Command::Saved { command } => matches!(command, SavedCommand::Run { .. }),
+        Command::Checkpoint { .. } => true,
+        Command::Export { command } => matches!(command, ExportCommand::SearchIndex { .. }),
+        Command::Vectors { command } => matches!(
+            command,
+            VectorsCommand::Related { .. }
+                | VectorsCommand::Neighbors { .. }
+                | VectorsCommand::Duplicates { .. }
+        ),
+        Command::Init
+        | Command::Rebuild { .. }
+        | Command::Repair { .. }
+        | Command::Serve { .. }
+        | Command::Watch { .. }
+        | Command::Completions { .. }
+        | Command::Describe
+        | Command::Cache { .. }
+        | Command::Inbox { .. }
+        | Command::Template { .. }
+        | Command::Batch { .. }
+        | Command::Automation { .. }
+        | Command::Scan { .. } => false,
+    }
+}
+
+fn maybe_auto_refresh_command_cache(
+    paths: &VaultPaths,
+    cli: &Cli,
+    use_stderr_color: bool,
+) -> Result<(), CliError> {
+    if !command_uses_auto_refresh(&cli.command) {
+        return Ok(());
+    }
+
+    match refresh_mode_for_target(paths, cli, RefreshTarget::Command) {
+        AutoScanMode::Off => Ok(()),
+        AutoScanMode::Blocking | AutoScanMode::Background => {
+            run_incremental_scan(paths, cli.output, use_stderr_color)?;
+            Ok(())
+        }
+    }
 }
 
 fn warn_auto_commit_if_needed(policy: &AutoCommitPolicy) {
@@ -1758,6 +1854,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let stderr_is_tty = io::stderr().is_terminal();
     let use_stdout_color = color_enabled_for_terminal(stdout_is_tty);
     let use_stderr_color = color_enabled_for_terminal(stderr_is_tty);
+    maybe_auto_refresh_command_cache(&paths, cli, use_stderr_color)?;
     let interactive_note_selection = interactive_note_selection_allowed(cli, stdout_is_tty);
 
     match cli.command {
@@ -1886,7 +1983,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     "browse requires an interactive terminal with `--output human`",
                 ));
             }
-            browse_tui::run_browse_tui(&paths, no_commit).map_err(CliError::operation)
+            let refresh_mode = refresh_mode_for_target(&paths, cli, RefreshTarget::Browse);
+            browse_tui::run_browse_tui(&paths, refresh_mode, no_commit).map_err(CliError::operation)
         }
         Command::Completions { shell } => {
             let mut command = Cli::command();
@@ -6436,6 +6534,8 @@ mod tests {
             .expect("cli should parse");
         let related = Cli::try_parse_from(["vulcan", "related", "Home"]).expect("cli should parse");
         let browse = Cli::try_parse_from(["vulcan", "browse"]).expect("cli should parse");
+        let refreshed_browse = Cli::try_parse_from(["vulcan", "--refresh", "background", "browse"])
+            .expect("cli should parse");
         let edit = Cli::try_parse_from(["vulcan", "edit", "Home"]).expect("cli should parse");
         let edit_new = Cli::try_parse_from(["vulcan", "edit", "--new", "Notes/Idea"])
             .expect("cli should parse");
@@ -6779,6 +6879,12 @@ mod tests {
             }
         );
         assert_eq!(browse.command, Command::Browse { no_commit: false });
+        assert_eq!(browse.refresh, None);
+        assert_eq!(refreshed_browse.refresh, Some(RefreshMode::Background));
+        assert_eq!(
+            refreshed_browse.command,
+            Command::Browse { no_commit: false }
+        );
         assert_eq!(
             related_picker.command,
             Command::Related {

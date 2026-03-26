@@ -15,7 +15,10 @@ Docs:
   User guide: docs/cli.md
   Interactive help: vulcan edit --help and vulcan browse --help
   Query/filter reference: vulcan notes --help and vulcan search --help
-  Machine-readable schema: vulcan describe";
+  Machine-readable schema: vulcan describe
+
+Freshness:
+  Override automatic cache refresh with --refresh <off|blocking|background>";
 
 const NOTES_COMMAND_AFTER_HELP: &str = "\
 Sort keys:
@@ -162,12 +165,15 @@ Keys:
   Esc          quit the browser
 
 Notes:
+  browse honors [scan].browse_mode in config; --refresh overrides it per invocation.
+  `background` opens immediately on current cache contents, then reloads when the scan completes.
   Single-letter browse actions only fire when the fuzzy query is empty.
   After edits, creates, and moves, Vulcan rescans affected files and refreshes the browser.
   In backlinks/outgoing-link views, `o` opens the selected .base file in the Bases TUI.
 
 Examples:
   vulcan browse
+  vulcan --refresh background browse
   vulcan browse --no-commit";
 
 const EDIT_COMMAND_AFTER_HELP: &str = "\
@@ -268,6 +274,13 @@ pub enum OutputFormat {
 pub enum ExportFormat {
     Csv,
     Jsonl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RefreshMode {
+    Off,
+    Blocking,
+    Background,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args, Default)]
@@ -1255,6 +1268,14 @@ pub struct Cli {
         help = "Output format"
     )]
     pub output: OutputFormat,
+
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        help = "Override automatic cache refresh mode for cache-backed commands"
+    )]
+    pub refresh: Option<RefreshMode>,
 
     #[arg(
         long,
