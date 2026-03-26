@@ -954,10 +954,10 @@ Extend `prepare_search_query()` to recognise additional Obsidian-style inline op
 - [x] Implement `file:` operator (SQL filename filter)
 - [x] Implement `content:` operator (FTS5 column filter syntax)
 - [x] Implement `match-case:` operator (post-FTS case-sensitive filter)
-- [ ] Implement `section:` operator (heading-group co-occurrence). Requires joining FTS hits back to `chunks.heading_path` to group chunks that share a heading ancestor; then checking that all sub-query terms appear within the same group. May need a `heading_id` or `section_id` column in `search_chunk_content` if grouping by JSON heading_path is too slow.
+- [x] Implement `section:` operator (heading-group co-occurrence). Requires joining FTS hits back to `chunks.heading_path` to group chunks that share a heading ancestor; then checking that all sub-query terms appear within the same group. May need a `heading_id` or `section_id` column in `search_chunk_content` if grouping by JSON heading_path is too slow.
 - [x] Implement `line:` operator (single-line co-occurrence filter). Post-FTS: for each hit chunk, split `content` on newlines and check that at least one line contains all sub-query terms.
 - [x] Implement `block:` operator (paragraph co-occurrence filter). Post-FTS: split chunk content on blank-line boundaries (`\n\n`), require all terms in one block. The existing `paragraph` chunk strategy already splits on these boundaries — when chunks use that strategy, block co-occurrence is chunk co-occurrence and no post-filtering is needed.
-- [ ] All operators support nested sub-queries: `section:(dog cat)`, `line:(mix flour)`
+- [x] All operators support nested sub-queries: `section:(dog cat)`, `line:(mix flour)`
 
 #### 9.6.3 Task search operators
 

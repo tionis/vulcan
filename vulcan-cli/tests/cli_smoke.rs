@@ -132,6 +132,7 @@ fn search_help_documents_query_and_filter_syntax() {
                     "plain terms are ANDed: dashboard status",
                 ))
                 .and(predicate::str::contains("tag:index"))
+                .and(predicate::str::contains("section:(dog cat)"))
                 .and(predicate::str::contains("task:docs"))
                 .and(predicate::str::contains("task-todo:followup"))
                 .and(predicate::str::contains(
@@ -1072,6 +1073,43 @@ fn search_line_and_block_operators_work() {
         .stdout(
             predicate::str::contains("\"document_path\":\"SameBlock.md\"")
                 .and(predicate::str::contains("SplitBlock.md").not()),
+        );
+}
+
+#[test]
+fn search_section_operator_works_across_heading_chunks() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    fs::write(
+        vault_root.join("SameSection.md"),
+        "# Plan\n\ndog checklist\n\ncat summary",
+    )
+    .expect("note should write");
+    fs::write(
+        vault_root.join("SplitSection.md"),
+        "# Dogs\n\ndog checklist\n\n# Cats\n\ncat summary",
+    )
+    .expect("note should write");
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "search",
+            "section:(dog cat)",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"SameSection.md\"")
+                .and(predicate::str::contains("SplitSection.md").not()),
         );
 }
 
