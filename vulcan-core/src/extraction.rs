@@ -240,6 +240,7 @@ mod tests {
             strict_line_breaks: false,
             property_types: std::collections::BTreeMap::default(),
             embedding: None,
+            ..VaultConfig::default()
         };
 
         let chunks = extract_attachment_chunks(&config, &attachment_path, "guide.pdf")

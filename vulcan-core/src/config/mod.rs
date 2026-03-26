@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_CONFIG_TEMPLATE: &str = r#"# Vulcan configuration
+const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # Settings in this file override compatible values from `.obsidian/app.json`.
 
 # [chunking]
@@ -34,7 +34,20 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r#"# Vulcan configuration
 # args = ["-c", "case \"$2\" in pdf) pdftotext \"$1\" - ;; png|jpg|jpeg|webp) tesseract \"$1\" stdout ;; *) exit 0 ;; esac", "sh", "{path}", "{extension}"]
 # extensions = ["pdf", "png", "jpg", "jpeg", "webp"]
 # max_output_bytes = 262144
-"#;
+
+# [git]
+# auto_commit = false
+# trigger = "mutation"
+# message = "vulcan {action}: {files}"
+# scope = "vulcan-only"
+# exclude = [".obsidian/workspace.json", ".obsidian/workspace-mobile.json"]
+
+# [inbox]
+# path = "Inbox.md"
+# format = "- {text}"
+# timestamp = true
+# heading = "## Inbox"
+"###;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -132,6 +145,63 @@ impl AttachmentExtractionConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GitTrigger {
+    #[default]
+    Mutation,
+    Scan,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GitScope {
+    #[default]
+    VulcanOnly,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitConfig {
+    pub auto_commit: bool,
+    pub trigger: GitTrigger,
+    pub message: String,
+    pub scope: GitScope,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+impl Default for GitConfig {
+    fn default() -> Self {
+        Self {
+            auto_commit: false,
+            trigger: GitTrigger::Mutation,
+            message: "vulcan {action}: {files}".to_string(),
+            scope: GitScope::VulcanOnly,
+            exclude: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxConfig {
+    pub path: String,
+    pub format: String,
+    pub timestamp: bool,
+    pub heading: Option<String>,
+}
+
+impl Default for InboxConfig {
+    fn default() -> Self {
+        Self {
+            path: "Inbox.md".to_string(),
+            format: "- {text}".to_string(),
+            timestamp: true,
+            heading: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultConfig {
     pub chunking: ChunkingConfig,
@@ -142,6 +212,8 @@ pub struct VaultConfig {
     pub property_types: BTreeMap<String, String>,
     pub embedding: Option<EmbeddingProviderConfig>,
     pub extraction: Option<AttachmentExtractionConfig>,
+    pub git: GitConfig,
+    pub inbox: InboxConfig,
 }
 
 impl Default for VaultConfig {
@@ -155,6 +227,8 @@ impl Default for VaultConfig {
             property_types: BTreeMap::new(),
             embedding: None,
             extraction: None,
+            git: GitConfig::default(),
+            inbox: InboxConfig::default(),
         }
     }
 }
@@ -177,6 +251,8 @@ struct PartialVulcanConfig {
     links: Option<PartialLinksConfig>,
     embedding: Option<EmbeddingProviderConfig>,
     extraction: Option<AttachmentExtractionConfig>,
+    git: Option<PartialGitConfig>,
+    inbox: Option<PartialInboxConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -191,6 +267,23 @@ struct PartialLinksConfig {
     resolution: Option<LinkResolutionMode>,
     style: Option<LinkStylePreference>,
     attachment_folder: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialGitConfig {
+    auto_commit: Option<bool>,
+    trigger: Option<GitTrigger>,
+    message: Option<String>,
+    scope: Option<GitScope>,
+    exclude: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialInboxConfig {
+    path: Option<String>,
+    format: Option<String>,
+    timestamp: Option<bool>,
+    heading: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -406,6 +499,37 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
     if let Some(extraction) = overrides.extraction {
         config.extraction = Some(extraction);
     }
+    if let Some(git) = overrides.git {
+        if let Some(auto_commit) = git.auto_commit {
+            config.git.auto_commit = auto_commit;
+        }
+        if let Some(trigger) = git.trigger {
+            config.git.trigger = trigger;
+        }
+        if let Some(message) = git.message {
+            config.git.message = message;
+        }
+        if let Some(scope) = git.scope {
+            config.git.scope = scope;
+        }
+        if let Some(exclude) = git.exclude {
+            config.git.exclude = exclude;
+        }
+    }
+    if let Some(inbox) = overrides.inbox {
+        if let Some(path) = inbox.path {
+            config.inbox.path = path;
+        }
+        if let Some(format) = inbox.format {
+            config.inbox.format = format;
+        }
+        if let Some(timestamp) = inbox.timestamp {
+            config.inbox.timestamp = timestamp;
+        }
+        if let Some(heading) = inbox.heading {
+            config.inbox.heading = Some(heading);
+        }
+    }
 }
 
 fn normalize_attachment_folder(path: &str) -> PathBuf {
@@ -492,7 +616,7 @@ mod tests {
         .expect("app config should be written");
         fs::write(
             vault_root.join(".vulcan/config.toml"),
-            r#"[chunking]
+            r###"[chunking]
 strategy = "fixed"
 target_size = 512
 overlap = 64
@@ -517,7 +641,20 @@ command = "sh"
 args = ["-c", "cat \"$1.txt\"", "sh", "{path}"]
 extensions = ["pdf", "png"]
 max_output_bytes = 4096
-"#,
+
+[git]
+auto_commit = true
+trigger = "scan"
+message = "vault sync: {count}"
+scope = "all"
+exclude = [".obsidian/workspace.json"]
+
+[inbox]
+path = "Capture/Inbox.md"
+format = "* {datetime} {text}"
+timestamp = false
+heading = "## Notes"
+"###,
         )
         .expect("vulcan config should be written");
         let paths = VaultPaths::new(vault_root);
@@ -558,6 +695,18 @@ max_output_bytes = 4096
                 .extensions,
             vec!["pdf".to_string(), "png".to_string()]
         );
+        assert!(loaded.config.git.auto_commit);
+        assert_eq!(loaded.config.git.trigger, GitTrigger::Scan);
+        assert_eq!(loaded.config.git.message, "vault sync: {count}");
+        assert_eq!(loaded.config.git.scope, GitScope::All);
+        assert_eq!(
+            loaded.config.git.exclude,
+            vec![".obsidian/workspace.json".to_string()]
+        );
+        assert_eq!(loaded.config.inbox.path, "Capture/Inbox.md");
+        assert_eq!(loaded.config.inbox.format, "* {datetime} {text}");
+        assert!(!loaded.config.inbox.timestamp);
+        assert_eq!(loaded.config.inbox.heading.as_deref(), Some("## Notes"));
     }
 
     #[test]
