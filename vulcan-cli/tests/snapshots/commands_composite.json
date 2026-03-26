@@ -613,7 +613,7 @@
       },
       {
         "about": "Search indexed note content",
-        "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'",
+        "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'\n  vulcan search dashboard --sort path-desc\n  vulcan search dashboard --sort modified-newest",
         "name": "search",
         "options": [
           {
@@ -683,6 +683,25 @@
             "short": null,
             "value_names": [
               "HAS_PROPERTY"
+            ]
+          },
+          {
+            "help": "Persist a non-default result ordering",
+            "id": "sort",
+            "long": "sort",
+            "possible_values": [
+              "relevance",
+              "path-asc",
+              "path-desc",
+              "modified-newest",
+              "modified-oldest",
+              "created-newest",
+              "created-oldest"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SORT"
             ]
           },
           {
@@ -1411,7 +1430,7 @@
           },
           {
             "about": "Persist a saved search definition in .vulcan/reports",
-            "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'",
+            "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'\n  vulcan search dashboard --sort path-desc\n  vulcan search dashboard --sort modified-newest",
             "name": "search",
             "options": [
               {
@@ -1492,6 +1511,25 @@
                 "short": null,
                 "value_names": [
                   "HAS_PROPERTY"
+                ]
+              },
+              {
+                "help": "Override result ordering",
+                "id": "sort",
+                "long": "sort",
+                "possible_values": [
+                  "relevance",
+                  "path-asc",
+                  "path-desc",
+                  "modified-newest",
+                  "modified-oldest",
+                  "created-newest",
+                  "created-oldest"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SORT"
                 ]
               },
               {

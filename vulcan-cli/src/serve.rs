@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 use vulcan_core::{
     query_graph_analytics, query_notes, query_related_notes, search_vault, watch_vault_until,
-    NoteQuery, RelatedNotesQuery, SearchQuery, VaultPaths, WatchOptions, WatchReport,
+    NoteQuery, RelatedNotesQuery, SearchQuery, SearchSort, VaultPaths, WatchOptions, WatchReport,
 };
 
 #[derive(Debug, Clone)]
@@ -227,6 +227,10 @@ fn route_request(
             let Some(query) = first_param(&request.query, "q") else {
                 return Response::error(400, "missing required query parameter: q");
             };
+            let sort = match parse_optional_search_sort(&request.query, "sort") {
+                Ok(sort) => sort,
+                Err(error) => return Response::error(400, error),
+            };
             let search_query = SearchQuery {
                 text: query.to_string(),
                 tag: first_param(&request.query, "tag").map(ToOwned::to_owned),
@@ -238,6 +242,7 @@ fn route_request(
                     Some("hybrid") => vulcan_core::search::SearchMode::Hybrid,
                     _ => vulcan_core::search::SearchMode::Keyword,
                 },
+                sort,
                 limit: parse_optional_usize(&request.query, "limit"),
                 context_size: parse_optional_usize(&request.query, "context_size").unwrap_or(18),
                 raw_query: parse_optional_bool(&request.query, "raw_query").unwrap_or(false),
@@ -389,6 +394,32 @@ fn parse_optional_bool(params: &HashMap<String, Vec<String>>, key: &str) -> Opti
     })
 }
 
+fn parse_optional_search_sort(
+    params: &HashMap<String, Vec<String>>,
+    key: &str,
+) -> Result<Option<SearchSort>, String> {
+    let Some(value) = first_param(params, key) else {
+        return Ok(None);
+    };
+
+    let sort = match value {
+        "relevance" => SearchSort::Relevance,
+        "path-asc" => SearchSort::PathAsc,
+        "path-desc" => SearchSort::PathDesc,
+        "modified-newest" => SearchSort::ModifiedNewest,
+        "modified-oldest" => SearchSort::ModifiedOldest,
+        "created-newest" => SearchSort::CreatedNewest,
+        "created-oldest" => SearchSort::CreatedOldest,
+        _ => {
+            return Err(format!(
+                "invalid search sort `{value}`; expected relevance, path-asc, path-desc, modified-newest, modified-oldest, created-newest, or created-oldest"
+            ))
+        }
+    };
+
+    Ok(Some(sort))
+}
+
 fn percent_decode(value: &str) -> String {
     let mut decoded = Vec::with_capacity(value.len());
     let bytes = value.as_bytes();
@@ -451,8 +482,7 @@ mod tests {
     use serde_json::Value;
     use std::fs;
     use tempfile::TempDir;
-    use vulcan_core::scan_vault;
-    use vulcan_core::ScanMode;
+    use vulcan_core::{scan_vault, CacheDatabase, ScanMode};
 
     #[test]
     fn serve_rejects_non_loopback_without_auth_token() {
@@ -487,6 +517,80 @@ mod tests {
         assert_eq!(response["result"]["hits"][0]["document_path"], "Home.md");
         assert_eq!(repeat_response["ok"], true);
         assert_eq!(repeat_response["result"]["note_count"], 3);
+
+        handle.shutdown().expect("server should shut down");
+    }
+
+    #[test]
+    fn serve_search_supports_sort_query_param() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("Alpha.md"), "dashboard").expect("alpha note should write");
+        fs::write(vault_root.join("Beta.md"), "dashboard").expect("beta note should write");
+        fs::write(vault_root.join("Gamma.md"), "dashboard").expect("gamma note should write");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        database
+            .connection()
+            .execute(
+                "UPDATE documents SET file_mtime = ? WHERE path = ?",
+                (100_i64, "Alpha.md"),
+            )
+            .expect("alpha mtime should update");
+        database
+            .connection()
+            .execute(
+                "UPDATE documents SET file_mtime = ? WHERE path = ?",
+                (300_i64, "Beta.md"),
+            )
+            .expect("beta mtime should update");
+        database
+            .connection()
+            .execute(
+                "UPDATE documents SET file_mtime = ? WHERE path = ?",
+                (200_i64, "Gamma.md"),
+            )
+            .expect("gamma mtime should update");
+
+        let handle = spawn_server(
+            paths,
+            ServeOptions {
+                bind: "127.0.0.1:0".to_string(),
+                watch: false,
+                debounce_ms: 50,
+                auth_token: None,
+            },
+        )
+        .expect("server should start");
+
+        let response = get_json(
+            handle.addr(),
+            "/search?q=dashboard&sort=modified-newest",
+            None,
+        );
+        let hits = response["result"]["hits"]
+            .as_array()
+            .expect("hits should be an array");
+        let ordered_paths = hits
+            .iter()
+            .map(|hit| {
+                hit["document_path"]
+                    .as_str()
+                    .expect("document path should be a string")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered_paths,
+            vec![
+                "Beta.md".to_string(),
+                "Gamma.md".to_string(),
+                "Alpha.md".to_string(),
+            ]
+        );
 
         handle.shutdown().expect("server should shut down");
     }

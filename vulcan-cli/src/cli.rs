@@ -115,7 +115,9 @@ Examples:
   vulcan search 'section:(dog cat)'
   vulcan search 'task-todo:followup task-done:ship'
   vulcan search 'line:(mix flour) block:(oven timer)'
-  vulcan search dashboard --where 'reviewed = true'";
+  vulcan search dashboard --where 'reviewed = true'
+  vulcan search dashboard --sort path-desc
+  vulcan search dashboard --sort modified-newest";
 
 const REWRITE_COMMAND_AFTER_HELP: &str = "\
 Scope selection:
@@ -416,6 +418,17 @@ pub enum SearchMode {
     Hybrid,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SearchSortArg {
+    Relevance,
+    PathAsc,
+    PathDesc,
+    ModifiedNewest,
+    ModifiedOldest,
+    CreatedNewest,
+    CreatedOldest,
+}
+
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum VectorQueueCommand {
     #[command(about = "Report pending vector indexing work")]
@@ -629,6 +642,8 @@ pub enum SavedCommand {
         path_prefix: Option<String>,
         #[arg(long = "has-property", help = "Require a property key to be present")]
         has_property: Option<String>,
+        #[arg(long, value_enum, help = "Override result ordering")]
+        sort: Option<SearchSortArg>,
         #[arg(
             long = "context-size",
             default_value_t = 18,
@@ -859,6 +874,8 @@ pub enum Command {
         path_prefix: Option<String>,
         #[arg(long = "has-property", help = "Require a property key to be present")]
         has_property: Option<String>,
+        #[arg(long, value_enum, help = "Persist a non-default result ordering")]
+        sort: Option<SearchSortArg>,
         #[arg(
             long = "context-size",
             default_value_t = 18,

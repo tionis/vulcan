@@ -137,6 +137,10 @@ fn search_help_documents_query_and_filter_syntax() {
                 .and(predicate::str::contains("section:(dog cat)"))
                 .and(predicate::str::contains("task:docs"))
                 .and(predicate::str::contains("task-todo:followup"))
+                .and(predicate::str::contains("--sort <SORT>"))
+                .and(predicate::str::contains(
+                    "vulcan search dashboard --sort path-desc",
+                ))
                 .and(predicate::str::contains(
                     "Use --raw-query to pass SQLite FTS5 syntax through unchanged.",
                 ))
@@ -1296,6 +1300,120 @@ fn search_task_operators_work() {
             predicate::str::contains("\"document_path\":\"Tasks.md\"")
                 .and(predicate::str::contains("Body.md").not()),
         );
+}
+
+#[test]
+fn search_sort_orders_results_and_reports_sort_plan() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    fs::write(vault_root.join("Alpha.md"), "dashboard").expect("alpha note should write");
+    fs::write(vault_root.join("Beta.md"), "dashboard").expect("beta note should write");
+    fs::write(vault_root.join("Gamma.md"), "dashboard").expect("gamma note should write");
+    run_scan(&vault_root);
+
+    let paths = VaultPaths::new(&vault_root);
+    let database = CacheDatabase::open(&paths).expect("db should open");
+    database
+        .connection()
+        .execute(
+            "UPDATE documents SET file_mtime = ? WHERE path = ?",
+            (100_i64, "Alpha.md"),
+        )
+        .expect("alpha mtime should update");
+    database
+        .connection()
+        .execute(
+            "UPDATE documents SET file_mtime = ? WHERE path = ?",
+            (300_i64, "Beta.md"),
+        )
+        .expect("beta mtime should update");
+    database
+        .connection()
+        .execute(
+            "UPDATE documents SET file_mtime = ? WHERE path = ?",
+            (200_i64, "Gamma.md"),
+        )
+        .expect("gamma mtime should update");
+
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let path_desc_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--refresh",
+            "off",
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "search",
+            "dashboard",
+            "--sort",
+            "path-desc",
+        ])
+        .assert()
+        .success();
+    let path_desc_rows = parse_stdout_json_lines(&path_desc_assert);
+    assert_eq!(
+        path_desc_rows
+            .iter()
+            .map(|row| row["document_path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string())
+            .collect::<Vec<_>>(),
+        vec![
+            "Gamma.md".to_string(),
+            "Beta.md".to_string(),
+            "Alpha.md".to_string(),
+        ]
+    );
+
+    let modified_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--refresh",
+            "off",
+            "--output",
+            "json",
+            "--fields",
+            "document_path,parsed_query_explanation",
+            "search",
+            "dashboard",
+            "--sort",
+            "modified-newest",
+            "--explain",
+        ])
+        .assert()
+        .success();
+    let modified_rows = parse_stdout_json_lines(&modified_assert);
+    assert_eq!(
+        modified_rows
+            .iter()
+            .map(|row| row["document_path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string())
+            .collect::<Vec<_>>(),
+        vec![
+            "Beta.md".to_string(),
+            "Gamma.md".to_string(),
+            "Alpha.md".to_string(),
+        ]
+    );
+    assert!(modified_rows[0]["parsed_query_explanation"]
+        .as_array()
+        .expect("parsed query explanation should be an array")
+        .iter()
+        .any(|line| line == "SORT modified-newest"));
 }
 
 #[test]

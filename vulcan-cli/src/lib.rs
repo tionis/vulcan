@@ -9,7 +9,7 @@ mod serve;
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ExportArgs,
     ExportCommand, ExportFormat, GraphCommand, OutputFormat, RefreshMode, RepairCommand,
-    SavedCommand, SearchMode, SuggestCommand, VectorQueueCommand, VectorsCommand,
+    SavedCommand, SearchMode, SearchSortArg, SuggestCommand, VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -54,11 +54,11 @@ use vulcan_core::{
     RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
     SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
     SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, StoredModelInfo, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
-    VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
-    WatchReport,
+    SearchReport, SearchSort, StoredModelInfo, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
+    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -1539,6 +1539,7 @@ fn execute_saved_report(
             has_property,
             filters,
             context_size,
+            sort,
             raw_query,
             fuzzy,
         } => Ok(SavedExecution::Search(
@@ -1552,6 +1553,7 @@ fn execute_saved_report(
                     filters: filters.clone(),
                     provider,
                     mode: *mode,
+                    sort: *sort,
                     limit: controls.requested_result_limit(),
                     context_size: *context_size,
                     raw_query: *raw_query,
@@ -1719,6 +1721,37 @@ fn doctor_summary_has_issues(summary: &vulcan_core::DoctorSummary) -> bool {
         || summary.orphan_notes > 0
         || summary.orphan_assets > 0
         || summary.html_links > 0
+}
+
+fn cli_search_mode(mode: SearchMode) -> vulcan_core::search::SearchMode {
+    match mode {
+        SearchMode::Keyword => vulcan_core::search::SearchMode::Keyword,
+        SearchMode::Hybrid => vulcan_core::search::SearchMode::Hybrid,
+    }
+}
+
+fn cli_search_sort(sort: SearchSortArg) -> SearchSort {
+    match sort {
+        SearchSortArg::Relevance => SearchSort::Relevance,
+        SearchSortArg::PathAsc => SearchSort::PathAsc,
+        SearchSortArg::PathDesc => SearchSort::PathDesc,
+        SearchSortArg::ModifiedNewest => SearchSort::ModifiedNewest,
+        SearchSortArg::ModifiedOldest => SearchSort::ModifiedOldest,
+        SearchSortArg::CreatedNewest => SearchSort::CreatedNewest,
+        SearchSortArg::CreatedOldest => SearchSort::CreatedOldest,
+    }
+}
+
+fn display_search_sort(sort: SearchSort) -> &'static str {
+    match sort {
+        SearchSort::Relevance => "relevance",
+        SearchSort::PathAsc => "path-asc",
+        SearchSort::PathDesc => "path-desc",
+        SearchSort::ModifiedNewest => "modified-newest",
+        SearchSort::ModifiedOldest => "modified-oldest",
+        SearchSort::CreatedNewest => "created-newest",
+        SearchSort::CreatedOldest => "created-oldest",
+    }
 }
 
 fn execute_automation_run(
@@ -2563,6 +2596,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref tag,
             ref path_prefix,
             ref has_property,
+            sort,
             context_size,
             raw_query,
             fuzzy,
@@ -2578,10 +2612,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     has_property: has_property.clone(),
                     filters: filters.clone(),
                     provider: cli.provider.clone(),
-                    mode: match mode {
-                        SearchMode::Keyword => vulcan_core::search::SearchMode::Keyword,
-                        SearchMode::Hybrid => vulcan_core::search::SearchMode::Hybrid,
-                    },
+                    mode: cli_search_mode(mode),
+                    sort: sort.map(cli_search_sort),
                     limit: cli.limit.map(|limit| limit.saturating_add(cli.offset)),
                     context_size,
                     raw_query,
@@ -2656,6 +2688,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 tag,
                 path_prefix,
                 has_property,
+                sort,
                 context_size,
                 raw_query,
                 fuzzy,
@@ -2670,15 +2703,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     export: stored_export_from_args(export)?,
                     query: SavedReportQuery::Search {
                         query: query.clone(),
-                        mode: match mode {
-                            SearchMode::Keyword => vulcan_core::search::SearchMode::Keyword,
-                            SearchMode::Hybrid => vulcan_core::search::SearchMode::Hybrid,
-                        },
+                        mode: cli_search_mode(*mode),
                         tag: tag.clone(),
                         path_prefix: path_prefix.clone(),
                         has_property: has_property.clone(),
                         filters: filters.clone(),
                         context_size: *context_size,
+                        sort: sort.map(cli_search_sort),
                         raw_query: *raw_query,
                         fuzzy: *fuzzy,
                     },
@@ -3299,6 +3330,7 @@ fn print_saved_report_definition(
                     has_property,
                     filters,
                     context_size,
+                    sort,
                     raw_query,
                     fuzzy,
                 } => {
@@ -3317,6 +3349,9 @@ fn print_saved_report_definition(
                         println!("Filters: {}", filters.join(" | "));
                     }
                     println!("Context size: {context_size}");
+                    if let Some(sort) = sort {
+                        println!("Sort: {}", display_search_sort(*sort));
+                    }
                     if *raw_query {
                         println!("Raw query: true");
                     }
@@ -6731,6 +6766,7 @@ mod tests {
                 tag: Some("index".to_string()),
                 path_prefix: Some("People/".to_string()),
                 has_property: Some("status".to_string()),
+                sort: None,
                 context_size: 24,
                 raw_query: false,
                 fuzzy: true,
@@ -7023,6 +7059,7 @@ mod tests {
                     tag: None,
                     path_prefix: None,
                     has_property: None,
+                    sort: None,
                     context_size: 18,
                     raw_query: true,
                     fuzzy: true,

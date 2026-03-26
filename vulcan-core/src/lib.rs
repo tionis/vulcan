@@ -105,7 +105,7 @@ pub use scan::{
 };
 pub use search::{
     export_static_search_index, search_vault, SearchError, SearchFuzzyExpansion, SearchHit,
-    SearchHitExplain, SearchPlan, SearchQuery, SearchReport, StaticSearchIndexEntry,
+    SearchHitExplain, SearchPlan, SearchQuery, SearchReport, SearchSort, StaticSearchIndexEntry,
     StaticSearchIndexReport,
 };
 pub use suggestions::{

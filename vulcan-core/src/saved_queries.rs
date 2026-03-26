@@ -1,5 +1,5 @@
 use crate::paths::ensure_vulcan_dir;
-use crate::{search::SearchMode, VaultPaths};
+use crate::{search::SearchMode, SearchSort, VaultPaths};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -92,6 +92,8 @@ pub enum SavedReportQuery {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         filters: Vec<String>,
         context_size: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sort: Option<SearchSort>,
         #[serde(default, skip_serializing_if = "is_false")]
         raw_query: bool,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -287,6 +289,7 @@ mod tests {
                 has_property: Some("status".to_string()),
                 filters: vec!["reviewed = true".to_string()],
                 context_size: 24,
+                sort: Some(SearchSort::PathDesc),
                 raw_query: true,
                 fuzzy: true,
             },

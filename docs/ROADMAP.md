@@ -991,9 +991,9 @@ Allow regular expressions delimited by `/` in search queries.
 
 Add `--sort` to `vulcan search` and sort controls to `browse` Ctrl-F mode.
 
-- [ ] `--sort <field>`: `relevance` (default, BM25), `path-asc`, `path-desc`, `modified-newest`, `modified-oldest`, `created-newest`, `created-oldest`
+- [x] `--sort <field>`: `relevance` (default, BM25), `path-asc`, `path-desc`, `modified-newest`, `modified-oldest`, `created-newest`, `created-oldest`
 - [ ] Browse TUI: cycle sort order with a hotkey (e.g., `Ctrl-S`) in full-text search mode
-- [ ] Sort by relevance remains default; other sorts disable BM25 ranking and use SQL ORDER BY
+- [x] Sort by relevance remains default; other sorts disable BM25 ranking and use SQL ORDER BY
 
 #### 9.6.7 Browse TUI search integration
 
@@ -1008,7 +1008,7 @@ Wire all new search capabilities into the browse TUI's Ctrl-F mode.
 
 The `SearchQuery` struct in `vulcan-core/src/search.rs` is the single input contract shared by the CLI, browse TUI, and HTTP `/search` endpoint. New capabilities must be reflected here so all surfaces stay in sync.
 
-- [ ] Add `sort: Option<SearchSort>` field to `SearchQuery`. Enum values: `Relevance` (default), `PathAsc`, `PathDesc`, `ModifiedNewest`, `ModifiedOldest`, `CreatedNewest`, `CreatedOldest`. Used by keyword/hybrid search to choose between BM25 ranking and SQL ORDER BY.
+- [x] Add `sort: Option<SearchSort>` field to `SearchQuery`. Enum values: `Relevance` (default), `PathAsc`, `PathDesc`, `ModifiedNewest`, `ModifiedOldest`, `CreatedNewest`, `CreatedOldest`. Used by keyword/hybrid search to choose between BM25 ranking and SQL ORDER BY.
 - [ ] Add `match_case: Option<bool>` field to `SearchQuery`. When `Some(true)`, all terms are treated as case-sensitive (applies to the global toggle; individual `match-case:` / `ignore-case:` inline operators override per-term). Default `None` means case-insensitive.
 - [x] Extend `SearchPlan` with `parsed_query_explanation: Vec<String>` — human-readable breakdown of the parsed query (boolean structure, operators, property filters). Populated when `explain = true`.
 - [ ] Extend `SearchHit` with `matched_line: Option<usize>` — the 1-based line number of the best match within the chunk, when available (useful for `line:` and `match-case:` post-filters that already inspect individual lines).

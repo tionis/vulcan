@@ -89,6 +89,19 @@ pub enum SearchMode {
     Hybrid,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SearchSort {
+    #[default]
+    Relevance,
+    PathAsc,
+    PathDesc,
+    ModifiedNewest,
+    ModifiedOldest,
+    CreatedNewest,
+    CreatedOldest,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchQuery {
     pub text: String,
@@ -99,6 +112,8 @@ pub struct SearchQuery {
     pub filters: Vec<String>,
     pub provider: Option<String>,
     pub mode: SearchMode,
+    #[serde(default)]
+    pub sort: Option<SearchSort>,
     pub limit: Option<usize>,
     pub context_size: usize,
     #[serde(default)]
@@ -119,6 +134,7 @@ impl Default for SearchQuery {
             filters: Vec::new(),
             provider: None,
             mode: SearchMode::Keyword,
+            sort: None,
             limit: None,
             context_size: 18,
             raw_query: false,
@@ -222,6 +238,7 @@ struct PreparedSearchQuery {
     has_property: Option<String>,
     filters: Vec<String>,
     filter_expressions: Vec<FilterExpression>,
+    sort: SearchSort,
     file_terms: Vec<String>,
     content_terms: Vec<SearchTerm>,
     match_case_terms: Vec<String>,
@@ -425,6 +442,7 @@ fn keyword_search_hits(
     prepared: &PreparedSearchQuery,
     limit_override: Option<usize>,
 ) -> Result<Vec<SearchHit>, SearchError> {
+    let sort = prepared.sort;
     let has_section_scope = prepared
         .expression
         .as_ref()
@@ -523,11 +541,7 @@ fn keyword_search_hits(
         params.push(SqlValue::Text(format!("%{term}%")));
     }
     sql.push_str(&filter_sql.clause);
-    if use_fts {
-        sql.push_str(" ORDER BY 5 ASC, documents.path ASC, chunks.sequence_index ASC");
-    } else {
-        sql.push_str(" ORDER BY documents.path ASC, chunks.sequence_index ASC");
-    }
+    sql.push_str(keyword_order_clause(sort, use_fts));
     params.extend(filter_sql.params.clone());
     sql.push_str(" LIMIT ?");
     params.push(SqlValue::Integer(candidate_limit));
@@ -1010,20 +1024,122 @@ fn hybrid_search_hits(
             hit
         })
         .collect::<Vec<_>>();
-    hits.sort_by(|left, right| {
-        right
-            .rank
-            .partial_cmp(&left.rank)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| left.document_path.cmp(&right.document_path))
-            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
-    });
+    sort_hits(connection, &mut hits, prepared.sort)?;
     hits.truncate(requested_limit);
     Ok(hits)
 }
 
 fn reciprocal_rank(index: usize) -> f64 {
     1.0 / (60.0 + f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 1.0)
+}
+
+fn keyword_order_clause(sort: SearchSort, use_fts: bool) -> &'static str {
+    match sort {
+        SearchSort::Relevance if use_fts => {
+            " ORDER BY 5 ASC, documents.path ASC, chunks.sequence_index ASC"
+        }
+        SearchSort::Relevance | SearchSort::PathAsc => {
+            " ORDER BY documents.path ASC, chunks.sequence_index ASC"
+        }
+        SearchSort::PathDesc => " ORDER BY documents.path DESC, chunks.sequence_index DESC",
+        SearchSort::ModifiedNewest | SearchSort::CreatedNewest => {
+            " ORDER BY documents.file_mtime DESC, documents.path ASC, chunks.sequence_index ASC"
+        }
+        SearchSort::ModifiedOldest | SearchSort::CreatedOldest => {
+            " ORDER BY documents.file_mtime ASC, documents.path ASC, chunks.sequence_index ASC"
+        }
+    }
+}
+
+fn sort_hits(
+    connection: &Connection,
+    hits: &mut [SearchHit],
+    sort: SearchSort,
+) -> Result<(), SearchError> {
+    match sort {
+        SearchSort::Relevance => {
+            hits.sort_by(|left, right| {
+                right
+                    .rank
+                    .partial_cmp(&left.rank)
+                    .unwrap_or(Ordering::Equal)
+                    .then_with(|| left.document_path.cmp(&right.document_path))
+                    .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+            });
+            Ok(())
+        }
+        SearchSort::PathAsc => {
+            hits.sort_by(|left, right| {
+                left.document_path
+                    .cmp(&right.document_path)
+                    .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+            });
+            Ok(())
+        }
+        SearchSort::PathDesc => {
+            hits.sort_by(|left, right| {
+                right
+                    .document_path
+                    .cmp(&left.document_path)
+                    .then_with(|| right.chunk_id.cmp(&left.chunk_id))
+            });
+            Ok(())
+        }
+        SearchSort::ModifiedNewest
+        | SearchSort::ModifiedOldest
+        | SearchSort::CreatedNewest
+        | SearchSort::CreatedOldest => {
+            let file_mtimes = load_hit_file_mtimes(connection, hits)?;
+            let newest_first =
+                matches!(sort, SearchSort::ModifiedNewest | SearchSort::CreatedNewest);
+            hits.sort_by(|left, right| {
+                let left_mtime = file_mtimes
+                    .get(left.document_path.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let right_mtime = file_mtimes
+                    .get(right.document_path.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let ordering = if newest_first {
+                    right_mtime.cmp(&left_mtime)
+                } else {
+                    left_mtime.cmp(&right_mtime)
+                };
+                ordering
+                    .then_with(|| left.document_path.cmp(&right.document_path))
+                    .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+            });
+            Ok(())
+        }
+    }
+}
+
+fn load_hit_file_mtimes(
+    connection: &Connection,
+    hits: &[SearchHit],
+) -> Result<HashMap<String, i64>, SearchError> {
+    let document_paths = hits
+        .iter()
+        .map(|hit| hit.document_path.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if document_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", document_paths.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("SELECT path, file_mtime FROM documents WHERE path IN ({placeholders})");
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(document_paths.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+
+    rows.collect::<Result<HashMap<_, _>, _>>()
+        .map_err(SearchError::from)
 }
 
 fn batch_filter_vector_hits(
@@ -1189,6 +1305,7 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
             has_property: query.has_property.clone(),
             filters: query.filters.clone(),
             filter_expressions,
+            sort: query.sort.unwrap_or_default(),
             file_terms: Vec::new(),
             content_terms: Vec::new(),
             match_case_terms: Vec::new(),
@@ -1248,6 +1365,7 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
         has_property: query.has_property.clone().or(filter_state.has_property),
         filters,
         filter_expressions,
+        sort: query.sort.unwrap_or_default(),
         file_terms: filter_state.file_terms,
         content_terms: filter_state.content_terms,
         match_case_terms: filter_state.match_case_terms,
@@ -2125,6 +2243,18 @@ fn display_search_regex(regex: &SearchRegexTerm) -> String {
     }
 }
 
+fn display_search_sort(sort: SearchSort) -> &'static str {
+    match sort {
+        SearchSort::Relevance => "relevance",
+        SearchSort::PathAsc => "path-asc",
+        SearchSort::PathDesc => "path-desc",
+        SearchSort::ModifiedNewest => "modified-newest",
+        SearchSort::ModifiedOldest => "modified-oldest",
+        SearchSort::CreatedNewest => "created-newest",
+        SearchSort::CreatedOldest => "created-oldest",
+    }
+}
+
 fn fuzzy_expansion_map(expansions: &[SearchFuzzyExpansion]) -> HashMap<String, Vec<String>> {
     expansions
         .iter()
@@ -2379,6 +2509,7 @@ impl PreparedSearchQuery {
         );
         parsed_query_explanation
             .extend(self.filters.iter().map(|filter| format!("WHERE {filter}")));
+        parsed_query_explanation.push(format!("SORT {}", display_search_sort(self.sort)));
 
         SearchPlan {
             effective_query: self.effective_query.clone(),
@@ -2399,7 +2530,7 @@ impl PreparedSearchQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{scan_vault, ScanMode};
+    use crate::{scan_vault, CacheDatabase, ScanMode};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -3233,6 +3364,121 @@ mod tests {
             .fuzzy_expansions
             .iter()
             .any(|expansion| expansion.term == "dashbord"));
+    }
+
+    #[test]
+    fn search_sort_orders_results_and_explain_plan() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("Alpha.md"), "# Alpha\n\ndashboard").expect("note should write");
+        fs::write(vault_root.join("Beta.md"), "# Beta\n\ndashboard").expect("note should write");
+        fs::write(vault_root.join("Gamma.md"), "# Gamma\n\ndashboard").expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        database
+            .connection()
+            .execute(
+                "UPDATE documents SET file_mtime = ? WHERE path = ?",
+                rusqlite::params![300_i64, "Alpha.md"],
+            )
+            .expect("alpha mtime should update");
+        database
+            .connection()
+            .execute(
+                "UPDATE documents SET file_mtime = ? WHERE path = ?",
+                rusqlite::params![100_i64, "Beta.md"],
+            )
+            .expect("beta mtime should update");
+        database
+            .connection()
+            .execute(
+                "UPDATE documents SET file_mtime = ? WHERE path = ?",
+                rusqlite::params![200_i64, "Gamma.md"],
+            )
+            .expect("gamma mtime should update");
+
+        let path_desc = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "dashboard".to_string(),
+                sort: Some(SearchSort::PathDesc),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("path-desc search should succeed");
+        assert_eq!(
+            path_desc
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "Gamma.md".to_string(),
+                "Beta.md".to_string(),
+                "Alpha.md".to_string(),
+            ]
+        );
+        assert!(path_desc
+            .plan
+            .expect("path-desc plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "SORT path-desc"));
+
+        let modified_newest = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "dashboard".to_string(),
+                sort: Some(SearchSort::ModifiedNewest),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("modified-newest search should succeed");
+        assert_eq!(
+            modified_newest
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "Alpha.md".to_string(),
+                "Gamma.md".to_string(),
+                "Beta.md".to_string(),
+            ]
+        );
+        assert!(modified_newest
+            .plan
+            .expect("modified plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "SORT modified-newest"));
+
+        let created_oldest = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "dashboard".to_string(),
+                sort: Some(SearchSort::CreatedOldest),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("created-oldest search should succeed");
+        assert_eq!(
+            created_oldest
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "Beta.md".to_string(),
+                "Gamma.md".to_string(),
+                "Alpha.md".to_string(),
+            ]
+        );
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {
