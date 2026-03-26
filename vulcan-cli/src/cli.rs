@@ -69,6 +69,8 @@ Search query syntax:
     property:status
     [aliases]
     [status:done]
+    /\\d{4}-\\d{2}-\\d{2}/
+    path:/2026-03-\\d{2}/
     file:meeting
     content:release
     match-case:Bob
@@ -108,6 +110,7 @@ Examples:
   vulcan search 'dashboard \"release notes\" -draft'
   vulcan search 'tag:index path:People/ owned'
   vulcan search 'release [status:done]'
+  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'
   vulcan search 'file:meeting content:release'
   vulcan search 'section:(dog cat)'
   vulcan search 'task-todo:followup task-done:ship'

@@ -275,6 +275,8 @@ Supported inline filters inside the query text:
 - `[property]`: require a frontmatter property to exist, for example `[aliases]`
 - `[property:value]`: require a property to equal a value, for example `[status:done]`
 - `[property:value OR other]`: require one of several values, for example `[status:Draft OR Published]`
+- `/pattern/`: match note content with a Rust `regex` pattern
+- `path:/pattern/`: match note paths with a Rust `regex` pattern
 - `file:<filename-fragment>`: match the filename only, not the full path
 - `content:<term>`: restrict the term to note body content, excluding title, aliases, and headings
 - `match-case:<term>`: require an exact-case match after the normal FTS candidate search

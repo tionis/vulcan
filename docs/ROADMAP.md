@@ -982,10 +982,10 @@ Allow Obsidian-style `[property]` and `[property:value]` syntax inline in search
 
 Allow regular expressions delimited by `/` in search queries.
 
-- [ ] `/\d{4}-\d{2}-\d{2}/` matches content via regex instead of FTS keyword
-- [ ] Combinable with operators: `path:/\d{4}-\d{2}-\d{2}/` matches file paths by regex
-- [ ] Implementation: regex terms bypass FTS and run as post-scan filters (SQLite REGEXP or Rust-side filtering on content). For large vaults, FTS results can be narrowed first if mixed with keyword terms.
-- [ ] Use Rust `regex` crate (already a dependency) for JS-compatible regex flavour
+- [x] `/\d{4}-\d{2}-\d{2}/` matches content via regex instead of FTS keyword
+- [x] Combinable with operators: `path:/\d{4}-\d{2}-\d{2}/` matches file paths by regex
+- [x] Implementation: regex terms bypass FTS and run as post-scan filters (SQLite REGEXP or Rust-side filtering on content). For large vaults, FTS results can be narrowed first if mixed with keyword terms.
+- [x] Use Rust `regex` crate (already a dependency) for JS-compatible regex flavour
 
 #### 9.6.6 Search result sorting
 

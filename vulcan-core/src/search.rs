@@ -4,6 +4,7 @@ use crate::properties::{
 };
 use crate::vector::query_hybrid_candidates;
 use crate::{CacheDatabase, CacheError, PropertyError, VaultPaths};
+use regex::Regex;
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -238,6 +239,7 @@ struct PreparedSearchQuery {
 enum SearchExpr {
     Term(SearchTerm),
     BracketFilter(String),
+    Regex(SearchRegexTerm),
     Scoped {
         scope: SearchScope,
         expression: Box<SearchExpr>,
@@ -260,10 +262,27 @@ struct SearchTerm {
     quoted: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchRegexTarget {
+    Content,
+    Path,
+}
+
+#[derive(Debug, Clone)]
+struct SearchRegexTerm {
+    pattern: String,
+    target: SearchRegexTarget,
+    regex: Regex,
+}
+
 #[derive(Debug, Clone)]
 enum LexedToken {
     Term(SearchTerm),
     BracketFilter(String),
+    Regex {
+        pattern: String,
+        target: SearchRegexTarget,
+    },
     Negation,
     OpenParen,
     CloseParen,
@@ -410,15 +429,26 @@ fn keyword_search_hits(
         .expression
         .as_ref()
         .is_some_and(expression_contains_section_scope);
+    let has_regex = prepared
+        .expression
+        .as_ref()
+        .is_some_and(expression_contains_regex);
+    let full_scan_for_regex = prepared.expression.as_ref().is_some_and(|expression| {
+        expression_contains_regex(expression) && expression_contains_or(expression)
+    });
     let candidate_query = section_candidate_query(prepared)
         .filter(|_| has_section_scope)
         .unwrap_or_else(|| prepared.effective_query.clone());
     let limit = limit_override
         .or(query.limit)
         .map_or(i64::MAX, |value| i64::try_from(value).unwrap_or(i64::MAX));
-    let candidate_limit = if has_section_scope { i64::MAX } else { limit };
+    let candidate_limit = if has_section_scope || has_regex || full_scan_for_regex {
+        i64::MAX
+    } else {
+        limit
+    };
     let filter_sql = build_note_filter_clause_from_expressions(&prepared.filter_expressions)?;
-    let use_fts = !candidate_query.trim().is_empty();
+    let use_fts = !full_scan_for_regex && !candidate_query.trim().is_empty();
     let mut sql = filter_sql.cte;
     if use_fts {
         sql.push_str(&format!(
@@ -556,7 +586,7 @@ fn keyword_search_hits(
         }
     }
 
-    if has_section_scope {
+    if has_section_scope || has_regex {
         hits.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
     }
 
@@ -581,7 +611,8 @@ fn apply_scope_filters(
     candidates: &mut Vec<SearchCandidate>,
     expression: Option<&SearchExpr>,
 ) -> Result<(), SearchError> {
-    let Some(expression) = expression.filter(|expression| expression_contains_scope(expression))
+    let Some(expression) =
+        expression.filter(|expression| expression_requires_post_filter(expression))
     else {
         return Ok(());
     };
@@ -595,7 +626,7 @@ fn apply_scope_filters(
     candidates.retain(|candidate| {
         candidate_matches_scope_filters(
             expression,
-            &candidate.content,
+            candidate,
             section_contexts
                 .get(candidate.hit.document_path.as_str())
                 .map(Vec::as_slice),
@@ -608,12 +639,39 @@ fn expression_contains_scope(expression: &SearchExpr) -> bool {
     match expression {
         SearchExpr::Scoped { .. } => true,
         SearchExpr::BracketFilter(_) => false,
+        SearchExpr::Regex(_) => false,
         SearchExpr::Term(_) => false,
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             children.iter().any(expression_contains_scope)
         }
         SearchExpr::Not(child) => expression_contains_scope(child),
     }
+}
+
+fn expression_contains_regex(expression: &SearchExpr) -> bool {
+    match expression {
+        SearchExpr::Regex(_) => true,
+        SearchExpr::Term(_) | SearchExpr::BracketFilter(_) => false,
+        SearchExpr::Scoped { expression, .. } => expression_contains_regex(expression),
+        SearchExpr::And(children) | SearchExpr::Or(children) => {
+            children.iter().any(expression_contains_regex)
+        }
+        SearchExpr::Not(child) => expression_contains_regex(child),
+    }
+}
+
+fn expression_contains_or(expression: &SearchExpr) -> bool {
+    match expression {
+        SearchExpr::Or(_) => true,
+        SearchExpr::Term(_) | SearchExpr::BracketFilter(_) | SearchExpr::Regex(_) => false,
+        SearchExpr::Scoped { expression, .. } => expression_contains_or(expression),
+        SearchExpr::And(children) => children.iter().any(expression_contains_or),
+        SearchExpr::Not(child) => expression_contains_or(child),
+    }
+}
+
+fn expression_requires_post_filter(expression: &SearchExpr) -> bool {
+    expression_contains_scope(expression) || expression_contains_regex(expression)
 }
 
 fn expression_contains_section_scope(expression: &SearchExpr) -> bool {
@@ -624,6 +682,7 @@ fn expression_contains_section_scope(expression: &SearchExpr) -> bool {
         } => true,
         SearchExpr::Scoped { expression, .. } => expression_contains_section_scope(expression),
         SearchExpr::BracketFilter(_) => false,
+        SearchExpr::Regex(_) => false,
         SearchExpr::Term(_) => false,
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             children.iter().any(expression_contains_section_scope)
@@ -634,12 +693,13 @@ fn expression_contains_section_scope(expression: &SearchExpr) -> bool {
 
 fn candidate_matches_scope_filters(
     expression: &SearchExpr,
-    content: &str,
+    candidate: &SearchCandidate,
     sections: Option<&[String]>,
 ) -> bool {
     match expression {
         SearchExpr::Term(_) => true,
         SearchExpr::BracketFilter(_) => true,
+        SearchExpr::Regex(regex) => regex_matches_candidate(regex, candidate),
         SearchExpr::Scoped { scope, expression } => {
             if *scope == SearchScope::Section {
                 sections.is_some_and(|sections| {
@@ -648,16 +708,23 @@ fn candidate_matches_scope_filters(
                         .any(|section| text_expression_matches(expression, section))
                 })
             } else {
-                scoped_expression_matches(*scope, expression, content)
+                scoped_expression_matches(*scope, expression, &candidate.content)
             }
         }
         SearchExpr::And(children) => children
             .iter()
-            .all(|child| candidate_matches_scope_filters(child, content, sections)),
+            .all(|child| candidate_matches_scope_filters(child, candidate, sections)),
         SearchExpr::Or(children) => children
             .iter()
-            .any(|child| candidate_matches_scope_filters(child, content, sections)),
-        SearchExpr::Not(child) => !candidate_matches_scope_filters(child, content, sections),
+            .any(|child| candidate_matches_scope_filters(child, candidate, sections)),
+        SearchExpr::Not(child) => !candidate_matches_scope_filters(child, candidate, sections),
+    }
+}
+
+fn regex_matches_candidate(regex: &SearchRegexTerm, candidate: &SearchCandidate) -> bool {
+    match regex.target {
+        SearchRegexTarget::Content => regex.regex.is_match(&candidate.content),
+        SearchRegexTarget::Path => regex.regex.is_match(&candidate.hit.document_path),
     }
 }
 
@@ -756,6 +823,10 @@ fn text_expression_matches(expression: &SearchExpr, text: &str) -> bool {
     match expression {
         SearchExpr::Term(term) => text.to_lowercase().contains(&term.text.to_lowercase()),
         SearchExpr::BracketFilter(_) => true,
+        SearchExpr::Regex(regex) => match regex.target {
+            SearchRegexTarget::Content => regex.regex.is_match(text),
+            SearchRegexTarget::Path => false,
+        },
         SearchExpr::Scoped { scope, expression } => {
             scoped_expression_matches(*scope, expression, text)
         }
@@ -1150,8 +1221,9 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
     let expression = filtered_expression;
     let base_query = expression
         .as_ref()
-        .map(|expr| compose_fts_query(expr, &HashMap::new()))
-        .transpose()?;
+        .map(|expr| compose_optional_fts_query(expr, &HashMap::new()))
+        .transpose()?
+        .flatten();
     let content_query = render_content_filters(&filter_state.content_terms);
     let effective_query = combine_fts_clauses(base_query.as_deref(), content_query.as_deref());
     let mut semantic_parts = expression
@@ -1236,6 +1308,12 @@ fn lex_search_query(text: &str) -> Vec<LexedToken> {
             continue;
         }
 
+        if let Some((token, next_index)) = lex_prefixed_regex_token(&characters, index) {
+            tokens.push(token);
+            index = next_index;
+            continue;
+        }
+
         if characters[index] == '[' {
             index += 1;
             let start = index;
@@ -1250,10 +1328,20 @@ fn lex_search_query(text: &str) -> Vec<LexedToken> {
             continue;
         }
 
+        if characters[index] == '/' {
+            let (pattern, next_index) = read_regex_pattern(&characters, index + 1);
+            tokens.push(LexedToken::Regex {
+                pattern,
+                target: SearchRegexTarget::Content,
+            });
+            index = next_index;
+            continue;
+        }
+
         let start = index;
         while index < characters.len()
             && !characters[index].is_whitespace()
-            && !matches!(characters[index], '(' | ')' | '[' | ']')
+            && !matches!(characters[index], '(' | ')' | '[' | ']' | '/')
         {
             index += 1;
         }
@@ -1265,6 +1353,42 @@ fn lex_search_query(text: &str) -> Vec<LexedToken> {
     }
 
     tokens
+}
+
+fn lex_prefixed_regex_token(characters: &[char], index: usize) -> Option<(LexedToken, usize)> {
+    for (prefix, target) in [
+        ("path:/", SearchRegexTarget::Path),
+        ("content:/", SearchRegexTarget::Content),
+    ] {
+        let prefix_chars = prefix.chars().collect::<Vec<_>>();
+        if characters
+            .get(index..index + prefix_chars.len())
+            .is_some_and(|slice| slice == prefix_chars.as_slice())
+        {
+            let (pattern, next_index) = read_regex_pattern(characters, index + prefix_chars.len());
+            return Some((LexedToken::Regex { pattern, target }, next_index));
+        }
+    }
+
+    None
+}
+
+fn read_regex_pattern(characters: &[char], start: usize) -> (String, usize) {
+    let mut pattern = String::new();
+    let mut escaped = false;
+    let mut index = start;
+
+    while index < characters.len() {
+        let character = characters[index];
+        if character == '/' && !escaped {
+            return (pattern, index + 1);
+        }
+        escaped = character == '\\' && !escaped;
+        pattern.push(character);
+        index += 1;
+    }
+
+    (pattern, index)
 }
 
 fn inline_filter_value<'a>(token: &'a str, key: &str) -> Option<&'a str> {
@@ -1472,6 +1596,10 @@ fn parse_primary_expression(
             *index += 1;
             Ok(SearchExpr::BracketFilter(filter.clone()))
         }
+        LexedToken::Regex { pattern, target } => {
+            *index += 1;
+            Ok(SearchExpr::Regex(compile_search_regex(pattern, *target)?))
+        }
         LexedToken::OpenParen => {
             *index += 1;
             let expression = parse_or_expression(tokens, index)?;
@@ -1490,6 +1618,19 @@ fn parse_primary_expression(
             "dangling negation in search query".to_string(),
         )),
     }
+}
+
+fn compile_search_regex(
+    pattern: &str,
+    target: SearchRegexTarget,
+) -> Result<SearchRegexTerm, SearchError> {
+    Ok(SearchRegexTerm {
+        pattern: pattern.to_string(),
+        target,
+        regex: Regex::new(pattern).map_err(|error| {
+            SearchError::InvalidQuery(format!("invalid regex /{pattern}/: {error}"))
+        })?,
+    })
 }
 
 fn collapse_expression(
@@ -1629,6 +1770,12 @@ fn extract_inline_filters(
             }
             None
         }
+        SearchExpr::Regex(regex) => {
+            if !negated {
+                state.positive_terms += 1;
+            }
+            Some(SearchExpr::Regex(regex))
+        }
         SearchExpr::Scoped { scope, expression } => {
             extract_inline_filters(*expression, state, negated).map(|expression| {
                 SearchExpr::Scoped {
@@ -1674,6 +1821,7 @@ fn render_fts_expression(
     let (rendered, precedence) = match expression {
         SearchExpr::Term(term) => (render_fts_term(term, fuzzy_map), 4),
         SearchExpr::BracketFilter(_) => (String::new(), 4),
+        SearchExpr::Regex(_) => (String::new(), 4),
         SearchExpr::Scoped { expression, .. } => (
             render_fts_expression(expression, fuzzy_map, parent_precedence),
             4,
@@ -1719,6 +1867,7 @@ fn render_candidate_fts_expression(
     let (rendered, precedence) = match expression {
         SearchExpr::Term(term) => (render_fts_term(term, fuzzy_map), 4),
         SearchExpr::BracketFilter(_) => (String::new(), 4),
+        SearchExpr::Regex(_) => (String::new(), 4),
         SearchExpr::Scoped { scope, expression } => {
             if *scope == SearchScope::Section {
                 (render_section_scope_terms(expression, fuzzy_map), 4)
@@ -1879,6 +2028,7 @@ fn collect_semantic_terms(expression: &SearchExpr, negated: bool, terms: &mut Ve
         SearchExpr::Term(term) if !negated => terms.push(term.text.clone()),
         SearchExpr::Term(_) => {}
         SearchExpr::BracketFilter(_) => {}
+        SearchExpr::Regex(_) => {}
         SearchExpr::Scoped { expression, .. } => collect_semantic_terms(expression, negated, terms),
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             for child in children {
@@ -1898,6 +2048,7 @@ fn collect_positive_search_terms(
         SearchExpr::Term(term) if !negated => terms.push(term.clone()),
         SearchExpr::Term(_) => {}
         SearchExpr::BracketFilter(_) => {}
+        SearchExpr::Regex(_) => {}
         SearchExpr::Scoped { expression, .. } => {
             collect_positive_search_terms(expression, negated, terms);
         }
@@ -1924,6 +2075,9 @@ fn append_expression_lines(expression: &SearchExpr, indent: usize, lines: &mut V
         }
         SearchExpr::BracketFilter(filter) => {
             lines.push(format!("{prefix}FILTER [{filter}]"));
+        }
+        SearchExpr::Regex(regex) => {
+            lines.push(format!("{prefix}{}", display_search_regex(regex)));
         }
         SearchExpr::Scoped { scope, expression } => {
             lines.push(format!("{prefix}{}", display_search_scope(*scope)));
@@ -1964,6 +2118,13 @@ fn display_search_scope(scope: SearchScope) -> &'static str {
     }
 }
 
+fn display_search_regex(regex: &SearchRegexTerm) -> String {
+    match regex.target {
+        SearchRegexTarget::Content => format!("REGEX /{}/", regex.pattern),
+        SearchRegexTarget::Path => format!("FILTER path:/{}/", regex.pattern),
+    }
+}
+
 fn fuzzy_expansion_map(expansions: &[SearchFuzzyExpansion]) -> HashMap<String, Vec<String>> {
     expansions
         .iter()
@@ -1976,18 +2137,16 @@ fn fuzzy_expansion_map(expansions: &[SearchFuzzyExpansion]) -> HashMap<String, V
         .collect::<HashMap<_, _>>()
 }
 
-fn compose_fts_query(
+fn compose_optional_fts_query(
     expression: &SearchExpr,
     fuzzy_map: &HashMap<String, Vec<String>>,
-) -> Result<String, SearchError> {
+) -> Result<Option<String>, SearchError> {
     let rendered = render_fts_expression(expression, fuzzy_map, 0);
     if rendered.trim().is_empty() {
-        return Err(SearchError::InvalidQuery(
-            "search query must contain at least one term or quoted phrase".to_string(),
-        ));
+        return Ok(None);
     }
 
-    Ok(rendered)
+    Ok(Some(rendered))
 }
 
 fn fuzzy_expansions(
@@ -2029,6 +2188,7 @@ fn collect_fuzzy_expansions(
         }
         SearchExpr::Term(_) => {}
         SearchExpr::BracketFilter(_) => {}
+        SearchExpr::Regex(_) => {}
         SearchExpr::Scoped { expression, .. } => {
             collect_fuzzy_expansions(expression, seen, expansions, vocabulary, negated);
         }
@@ -2163,11 +2323,12 @@ impl PreparedSearchQuery {
             })
             .collect::<HashMap<_, _>>();
         let base_query = self.expression.as_ref().map(|expression| {
-            compose_fts_query(expression, &fuzzy_map)
+            compose_optional_fts_query(expression, &fuzzy_map)
                 .expect("prepared query should remain valid after fuzzy expansion")
         });
         let content_query = render_content_filters(&self.content_terms);
-        self.effective_query = combine_fts_clauses(base_query.as_deref(), content_query.as_deref());
+        self.effective_query =
+            combine_fts_clauses(base_query.flatten().as_deref(), content_query.as_deref());
         self.fuzzy_fallback_used = true;
         self.fuzzy_expansions = expansions;
     }
@@ -2970,6 +3131,73 @@ mod tests {
             bracket_or_paths,
             vec!["Backlog.md".to_string(), "Done.md".to_string()]
         );
+    }
+
+    #[test]
+    fn search_inline_regex_filters_content_and_paths() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("Journal")).expect("journal dir should exist");
+        fs::write(vault_root.join("Notes.md"), "Meeting on 2026-03-26.")
+            .expect("note should write");
+        fs::write(
+            vault_root.join("Journal/2026-03-26.md"),
+            "Daily notes without a date in body.",
+        )
+        .expect("note should write");
+        fs::write(vault_root.join("Other.md"), "Nothing relevant here.")
+            .expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let content_report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "/\\d{4}-\\d{2}-\\d{2}/".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("regex content search should succeed");
+        assert_eq!(
+            content_report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Notes.md".to_string()]
+        );
+        assert!(content_report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "REGEX /\\d{4}-\\d{2}-\\d{2}/"));
+
+        let path_report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "path:/2026-03-\\d{2}/".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("regex path search should succeed");
+        assert_eq!(
+            path_report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Journal/2026-03-26.md".to_string()]
+        );
+        assert!(path_report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER path:/2026-03-\\d{2}/"));
     }
 
     #[test]
