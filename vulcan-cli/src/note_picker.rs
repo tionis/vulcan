@@ -297,6 +297,14 @@ impl NotePickerState {
         }
     }
 
+    pub(crate) fn select_path(&mut self, path: &str) {
+        let filtered = self.filtered_notes();
+        if let Some(index) = filtered.iter().position(|(_, note)| note.path == path) {
+            self.selected_index = Some(index);
+            self.refresh_preview();
+        }
+    }
+
     pub(crate) fn refresh_preview(&mut self) {
         self.preview = self.selected_note().map_or_else(
             || vec!["No matches.".to_string()],
