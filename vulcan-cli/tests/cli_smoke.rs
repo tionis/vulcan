@@ -48,11 +48,15 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("saved"))
             .and(predicate::str::contains("checkpoint"))
             .and(predicate::str::contains("changes"))
+            .and(predicate::str::contains("diff"))
+            .and(predicate::str::contains("inbox"))
+            .and(predicate::str::contains("template"))
             .and(predicate::str::contains("batch"))
             .and(predicate::str::contains("export"))
             .and(predicate::str::contains("automation"))
             .and(predicate::str::contains("describe"))
             .and(predicate::str::contains("completions"))
+            .and(predicate::str::contains("open"))
             .and(predicate::str::contains(
                 "Initialize .vulcan/ state for a vault",
             ))
@@ -65,7 +69,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Indexing: init, scan, rebuild, repair, watch, serve",
             ))
             .and(predicate::str::contains(
-                "Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest",
+                "Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest, diff",
             ))
             .and(predicate::str::contains(
                 "Semantic: vectors, cluster, related",
@@ -74,12 +78,15 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Reports and Automation: saved, checkpoint, changes, batch, export, automation",
             ))
             .and(predicate::str::contains(
-                "Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
+                "Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template",
             ))
             .and(predicate::str::contains(
-                "Maintenance: move, doctor, cache, link-mentions, rewrite, describe, completions",
+                "Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions",
             ))
             .and(predicate::str::contains("User guide: docs/cli.md"))
+            .and(predicate::str::contains(
+                "Interactive help: vulcan edit --help and vulcan browse --help",
+            ))
             .and(predicate::str::contains("Machine-readable schema: vulcan describe")),
     );
 }
@@ -127,6 +134,123 @@ fn search_help_documents_query_and_filter_syntax() {
                 .and(predicate::str::contains("Filter syntax:"))
                 .and(predicate::str::contains(
                     "vulcan search dashboard --where 'reviewed = true'",
+                )),
+        );
+}
+
+#[test]
+fn browse_help_documents_modes_and_actions() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["browse", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Browse modes:")
+                .and(predicate::str::contains("Ctrl-F"))
+                .and(predicate::str::contains("Ctrl-T"))
+                .and(predicate::str::contains(
+                    "Single-letter browse actions only fire",
+                ))
+                .and(predicate::str::contains("vulcan browse --no-commit")),
+        );
+}
+
+#[test]
+fn edit_help_documents_picker_and_rescan_behavior() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["edit", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Behavior:")
+                .and(predicate::str::contains(
+                    "If NOTE is omitted in an interactive terminal",
+                ))
+                .and(predicate::str::contains("After the editor exits"))
+                .and(predicate::str::contains("vulcan edit --new Inbox/Idea")),
+        );
+}
+
+#[test]
+fn diff_help_documents_comparison_sources() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["diff", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Comparison source:")
+                .and(predicate::str::contains(
+                    "git-backed vaults compare the note against git HEAD",
+                ))
+                .and(predicate::str::contains(
+                    "cache-level changes since the last scan",
+                ))
+                .and(predicate::str::contains(
+                    "vulcan diff --since weekly Projects/Alpha",
+                )),
+        );
+}
+
+#[test]
+fn inbox_and_template_help_document_config_and_variables() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["inbox", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Configuration:")
+                .and(predicate::str::contains(
+                    "Inbox settings live under [inbox]",
+                ))
+                .and(predicate::str::contains("vulcan inbox --file scratch.txt")),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["template", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Template source:")
+                .and(predicate::str::contains(
+                    "{{title}} {{date}} {{time}} {{datetime}} {{uuid}}",
+                ))
+                .and(predicate::str::contains("vulcan template --list"))
+                .and(predicate::str::contains(
+                    "Vulcan creates <date>-<template-name>.md",
+                )),
+        );
+}
+
+#[test]
+fn bases_and_describe_help_document_runtime_surfaces() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["bases", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Evaluate and maintain Bases views")
+                .and(predicate::str::contains("view-add"))
+                .and(predicate::str::contains(
+                    "Mutating bases commands support --dry-run and --no-commit.",
+                )),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["describe", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Output:")
+                .and(predicate::str::contains("runtime CLI schema"))
+                .and(predicate::str::contains(
+                    "vulcan --output json describe > vulcan-schema.json",
                 )),
         );
 }
@@ -2219,6 +2343,22 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .expect("commands should be an array")
         .iter()
         .any(|command| command["name"] == "browse"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .find(|command| command["name"] == "browse")
+        .and_then(|command| command["after_help"].as_str())
+        .expect("browse after_help should be present")
+        .contains("Browse modes:"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .find(|command| command["name"] == "template")
+        .and_then(|command| command["after_help"].as_str())
+        .expect("template after_help should be present")
+        .contains("Template source:"));
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")

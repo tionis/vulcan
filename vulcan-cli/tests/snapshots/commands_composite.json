@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -178,6 +178,20 @@
             "short": null,
             "value_names": [
               "DEBOUNCE_MS"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
             ]
           }
         ],
@@ -253,6 +267,20 @@
             "short": null,
             "value_names": [
               "FULL"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
             ]
           }
         ],
@@ -808,7 +836,8 @@
         "subcommands": []
       },
       {
-        "about": "Evaluate read-only Bases views",
+        "about": "Evaluate and maintain Bases views",
+        "after_help": "Subcommands:\n  eval         evaluate a .base file and print its current rows\n  tui          inspect a .base file interactively\n  view-add     add a validated view definition\n  view-delete  remove a view definition\n  view-rename  rename a view\n  view-edit    adjust filters, columns, sort, and grouping\n\nNotes:\n  view-* commands rewrite the parsed .base model instead of patching YAML text blindly.\n  Mutating bases commands support --dry-run and --no-commit.\n\nExamples:\n  vulcan bases eval release.base\n  vulcan bases tui release.base\n  vulcan bases view-add release.base Inbox --filter 'status = idea' --column file.name",
         "name": "bases",
         "options": [],
         "subcommands": [
@@ -984,6 +1013,20 @@
                 "value_names": [
                   "DRY_RUN"
                 ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
               }
             ],
             "subcommands": []
@@ -1026,6 +1069,20 @@
                 "short": null,
                 "value_names": [
                   "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
                 ]
               }
             ],
@@ -1080,6 +1137,20 @@
                 "short": null,
                 "value_names": [
                   "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
                 ]
               }
             ],
@@ -1206,6 +1277,20 @@
                 "short": null,
                 "value_names": [
                   "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
                 ]
               }
             ],
@@ -1828,6 +1913,138 @@
         "subcommands": []
       },
       {
+        "about": "Show one note's changes since git HEAD, the last scan, or a checkpoint",
+        "after_help": "Comparison source:\n  --since <checkpoint> compares against a named checkpoint.\n  Otherwise, git-backed vaults compare the note against git HEAD.\n  Without git, Vulcan reports cache-level changes since the last scan.\n\nNotes:\n  Git-backed diffs include unified diff text in human and JSON output.\n  Cache-backed diffs report which note, link, property, or embedding records changed.\n\nExamples:\n  vulcan diff Projects/Alpha\n  vulcan diff --since weekly Projects/Alpha\n  vulcan diff",
+        "name": "diff",
+        "options": [
+          {
+            "help": "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively",
+            "id": "note",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NOTE"
+            ]
+          },
+          {
+            "help": "Named checkpoint to compare against instead of git HEAD",
+            "id": "since",
+            "long": "since",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SINCE"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Append a quick capture entry to the configured inbox note",
+        "after_help": "Configuration:\n  Inbox settings live under [inbox] in .vulcan/config.toml.\n  path       relative note path to append to\n  format     entry template; supports {text}, {date}, {time}, {datetime}\n  timestamp  prepend the current datetime automatically\n  heading    optional heading to append under (created if missing)\n\nInput:\n  Pass TEXT directly, use `-` to read from stdin, or use --file <PATH>.\n  Vulcan creates the inbox note automatically when it does not exist.\n\nExamples:\n  vulcan inbox \"Call Alice about launch notes\"\n  echo \"idea\" | vulcan inbox -\n  vulcan inbox --file scratch.txt",
+        "name": "inbox",
+        "options": [
+          {
+            "help": "Text to append, or `-` to read from stdin",
+            "id": "text",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "TEXT"
+            ]
+          },
+          {
+            "help": "Read appended text from a file",
+            "id": "file",
+            "long": "file",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILE"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Create a note from a template under .vulcan/templates",
+        "after_help": "Template source:\n  Templates live under .vulcan/templates as regular .md files.\n  NAME can be the full filename or the filename stem.\n\nVariables:\n  {{title}} {{date}} {{time}} {{datetime}} {{uuid}}\n\nNotes:\n  If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.\n  In an interactive terminal, the new note is opened in $VISUAL/$EDITOR after rendering.\n\nExamples:\n  vulcan template --list\n  vulcan template daily --path Daily/2026-03-26\n  vulcan template meeting",
+        "name": "template",
+        "options": [
+          {
+            "help": "Template name or filename stem",
+            "id": "name",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NAME"
+            ]
+          },
+          {
+            "help": "List available templates",
+            "id": "list",
+            "long": "list",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "LIST"
+            ]
+          },
+          {
+            "help": "Output path for the new note",
+            "id": "path",
+            "long": "path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "PATH"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Run multiple saved reports for automation and scheduled jobs",
         "name": "batch",
         "options": [
@@ -2084,12 +2301,29 @@
       },
       {
         "about": "Open a persistent note browser TUI",
+        "after_help": "Browse modes:\n  default      fuzzy note picker with live preview\n  Ctrl-F       indexed full-text search with snippet preview\n  Ctrl-T       tag filter mode\n  Ctrl-P       property filter mode\n  /            return to fuzzy mode\n\nKeys:\n  Enter/e      edit the selected note\n  n            create a new note\n  m            move or rename the selected note\n  b            open backlinks for the selected note\n  l            open outgoing links for the selected note\n  d            show doctor diagnostics for the selected note\n  g            show git history for the selected file\n  Esc          quit the browser\n\nNotes:\n  Single-letter browse actions only fire when the fuzzy query is empty.\n  After edits, creates, and moves, Vulcan rescans affected files and refreshes the browser.\n  In backlinks/outgoing-link views, `o` opens the selected .base file in the Bases TUI.\n\nExamples:\n  vulcan browse\n  vulcan browse --no-commit",
         "name": "browse",
-        "options": [],
+        "options": [
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
+          }
+        ],
         "subcommands": []
       },
       {
         "about": "Open a note in $VISUAL/$EDITOR and refresh the cache afterwards",
+        "after_help": "Behavior:\n  If NOTE is omitted in an interactive terminal, Vulcan opens the note picker.\n  With --new, Vulcan creates the target path first (appending .md when missing).\n\nNotes:\n  The editor is chosen from $VISUAL, then $EDITOR, then `vi`.\n  After the editor exits, Vulcan runs an incremental scan of the edited file.\n\nExamples:\n  vulcan edit Projects/Alpha\n  vulcan edit\n  vulcan edit --new Inbox/Idea",
         "name": "edit",
         "options": [
           {
@@ -2115,6 +2349,39 @@
             "short": null,
             "value_names": [
               "NEW"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Open a note in the Obsidian desktop app",
+        "after_help": "Behavior:\n  Resolves NOTE by path, filename, or alias.\n  If NOTE is omitted in an interactive terminal, Vulcan opens the note picker.\n  Launches obsidian://open?vault=<vault>&file=<path> through the platform opener.\n\nExamples:\n  vulcan open Projects/Alpha\n  vulcan open Daily/2026-03-26\n  vulcan open",
+        "name": "open",
+        "options": [
+          {
+            "help": "Note path, filename, or alias to open; omit in a TTY session to pick interactively",
+            "id": "note",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NOTE"
             ]
           }
         ],
@@ -2453,6 +2720,20 @@
             "value_names": [
               "DRY_RUN"
             ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
           }
         ],
         "subcommands": []
@@ -2484,6 +2765,20 @@
             "short": null,
             "value_names": [
               "DRY_RUN"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
             ]
           }
         ],
@@ -2539,6 +2834,20 @@
             "short": null,
             "value_names": [
               "DRY_RUN"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
             ]
           }
         ],
@@ -2644,6 +2953,20 @@
             "value_names": [
               "DRY_RUN"
             ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
           }
         ],
         "subcommands": []
@@ -2688,6 +3011,20 @@
             "value_names": [
               "DRY_RUN"
             ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
           }
         ],
         "subcommands": []
@@ -2731,6 +3068,20 @@
             "value_names": [
               "DRY_RUN"
             ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
           }
         ],
         "subcommands": []
@@ -2773,6 +3124,20 @@
             "short": null,
             "value_names": [
               "DRY_RUN"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
             ]
           }
         ],
@@ -2828,6 +3193,20 @@
             "value_names": [
               "DRY_RUN"
             ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
           }
         ],
         "subcommands": []
@@ -2882,6 +3261,20 @@
             "value_names": [
               "DRY_RUN"
             ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
           }
         ],
         "subcommands": []
@@ -2935,6 +3328,20 @@
             "short": null,
             "value_names": [
               "DRY_RUN"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
             ]
           }
         ],
@@ -3066,12 +3473,14 @@
       },
       {
         "about": "Describe the CLI schema and command surface",
+        "after_help": "Output:\n  describe prints the runtime CLI schema, including subcommands, options, defaults,\n  possible values, and embedded after-help text.\n\nExamples:\n  vulcan describe\n  vulcan --output json describe > vulcan-schema.json",
         "name": "describe",
         "options": [],
         "subcommands": []
       },
       {
         "about": "Generate shell completion scripts",
+        "after_help": "Examples:\n  vulcan completions bash > ~/.local/share/bash-completion/completions/vulcan\n  vulcan completions fish > ~/.config/fish/completions/vulcan.fish",
         "name": "completions",
         "options": [
           {
