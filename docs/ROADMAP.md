@@ -972,11 +972,11 @@ Search within task list items, leveraging the existing task/checkbox detection i
 
 Allow Obsidian-style `[property]` and `[property:value]` syntax inline in search queries, complementing the existing `--where` flag.
 
-- [ ] `[aliases]` → files where property `aliases` exists (equivalent to `has:aliases`)
-- [ ] `[status:done]` → files where `status = done` (equivalent to `--where "status = done"`)
-- [ ] `[status:Draft OR Published]` → property value is one of the listed values
-- [ ] `[aliases:null]` → property exists but has no value
-- [ ] Parse bracket expressions in `lex_search_query()` as a new token type; extract into property filters during `prepare_search_query()`
+- [x] `[aliases]` → files where property `aliases` exists (equivalent to `has:aliases`)
+- [x] `[status:done]` → files where `status = done` (equivalent to `--where "status = done"`)
+- [x] `[status:Draft OR Published]` → property value is one of the listed values
+- [x] `[aliases:null]` → property exists but has no value
+- [x] Parse bracket expressions in `lex_search_query()` as a new token type; extract into property filters during `prepare_search_query()`
 
 #### 9.6.5 Inline regex support
 

@@ -1,4 +1,7 @@
-use crate::properties::build_note_filter_clause;
+use crate::properties::{
+    build_note_filter_clause_from_expressions, parse_note_filter_expression, FilterExpression,
+    FilterField, FilterOperator, FilterValue, ParsedFilter,
+};
 use crate::vector::query_hybrid_candidates;
 use crate::{CacheDatabase, CacheError, PropertyError, VaultPaths};
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
@@ -217,6 +220,7 @@ struct PreparedSearchQuery {
     path_prefix: Option<String>,
     has_property: Option<String>,
     filters: Vec<String>,
+    filter_expressions: Vec<FilterExpression>,
     file_terms: Vec<String>,
     content_terms: Vec<SearchTerm>,
     match_case_terms: Vec<String>,
@@ -233,6 +237,7 @@ struct PreparedSearchQuery {
 #[derive(Debug, Clone)]
 enum SearchExpr {
     Term(SearchTerm),
+    BracketFilter(String),
     Scoped {
         scope: SearchScope,
         expression: Box<SearchExpr>,
@@ -258,6 +263,7 @@ struct SearchTerm {
 #[derive(Debug, Clone)]
 enum LexedToken {
     Term(SearchTerm),
+    BracketFilter(String),
     Negation,
     OpenParen,
     CloseParen,
@@ -268,6 +274,9 @@ struct InlineFilterState {
     tag: Option<String>,
     path_prefix: Option<String>,
     has_property: Option<String>,
+    filters: Vec<String>,
+    filter_expressions: Vec<FilterExpression>,
+    invalid_filter: Option<String>,
     file_terms: Vec<String>,
     content_terms: Vec<SearchTerm>,
     match_case_terms: Vec<String>,
@@ -408,7 +417,7 @@ fn keyword_search_hits(
         .or(query.limit)
         .map_or(i64::MAX, |value| i64::try_from(value).unwrap_or(i64::MAX));
     let candidate_limit = if has_section_scope { i64::MAX } else { limit };
-    let filter_sql = build_note_filter_clause(&prepared.filters)?;
+    let filter_sql = build_note_filter_clause_from_expressions(&prepared.filter_expressions)?;
     let use_fts = !candidate_query.trim().is_empty();
     let mut sql = filter_sql.cte;
     if use_fts {
@@ -598,6 +607,7 @@ fn apply_scope_filters(
 fn expression_contains_scope(expression: &SearchExpr) -> bool {
     match expression {
         SearchExpr::Scoped { .. } => true,
+        SearchExpr::BracketFilter(_) => false,
         SearchExpr::Term(_) => false,
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             children.iter().any(expression_contains_scope)
@@ -613,6 +623,7 @@ fn expression_contains_section_scope(expression: &SearchExpr) -> bool {
             ..
         } => true,
         SearchExpr::Scoped { expression, .. } => expression_contains_section_scope(expression),
+        SearchExpr::BracketFilter(_) => false,
         SearchExpr::Term(_) => false,
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             children.iter().any(expression_contains_section_scope)
@@ -628,6 +639,7 @@ fn candidate_matches_scope_filters(
 ) -> bool {
     match expression {
         SearchExpr::Term(_) => true,
+        SearchExpr::BracketFilter(_) => true,
         SearchExpr::Scoped { scope, expression } => {
             if *scope == SearchScope::Section {
                 sections.is_some_and(|sections| {
@@ -743,6 +755,7 @@ fn load_document_section_contexts(
 fn text_expression_matches(expression: &SearchExpr, text: &str) -> bool {
     match expression {
         SearchExpr::Term(term) => text.to_lowercase().contains(&term.text.to_lowercase()),
+        SearchExpr::BracketFilter(_) => true,
         SearchExpr::Scoped { scope, expression } => {
             scoped_expression_matches(*scope, expression, text)
         }
@@ -863,7 +876,7 @@ fn hybrid_search_hits(
         &prepared.semantic_text,
         candidate_limit,
     )?;
-    let filtered_paths = matching_note_paths(connection, &prepared.filters)?;
+    let filtered_paths = matching_note_paths(connection, &prepared.filter_expressions)?;
     let filtered_vector_hits =
         batch_filter_vector_hits(connection, vector_hits, prepared, filtered_paths.as_ref())?;
 
@@ -1067,12 +1080,12 @@ fn batch_filter_vector_hits(
 
 fn matching_note_paths(
     connection: &Connection,
-    filters: &[String],
+    filters: &[FilterExpression],
 ) -> Result<Option<HashSet<String>>, SearchError> {
     if filters.is_empty() {
         return Ok(None);
     }
-    let filter_sql = build_note_filter_clause(filters)?;
+    let filter_sql = build_note_filter_clause_from_expressions(filters)?;
     let mut sql = filter_sql.cte;
     sql.push_str(
         "SELECT documents.path
@@ -1096,6 +1109,7 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
         ));
     }
     if query.raw_query {
+        let filter_expressions = parse_search_filter_expressions(&query.filters)?;
         return Ok(PreparedSearchQuery {
             effective_query: trimmed.to_string(),
             semantic_text: trimmed.to_string(),
@@ -1103,6 +1117,7 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
             path_prefix: query.path_prefix.clone(),
             has_property: query.has_property.clone(),
             filters: query.filters.clone(),
+            filter_expressions,
             file_terms: Vec::new(),
             content_terms: Vec::new(),
             match_case_terms: Vec::new(),
@@ -1119,8 +1134,12 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
 
     let tokens = lex_search_query(trimmed);
     let expression = parse_search_expression(&tokens)?;
+    let mut filter_expressions = parse_search_filter_expressions(&query.filters)?;
     let mut filter_state = InlineFilterState::default();
     let filtered_expression = extract_inline_filters(expression, &mut filter_state, false);
+    if let Some(error) = filter_state.invalid_filter.take() {
+        return Err(SearchError::InvalidQuery(error));
+    }
 
     if filter_state.positive_terms == 0 {
         return Err(SearchError::InvalidQuery(
@@ -1145,6 +1164,9 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
             .map(|term| term.text.clone()),
     );
     let semantic_text = semantic_parts.join(" ");
+    let mut filters = query.filters.clone();
+    filters.extend(filter_state.filters);
+    filter_expressions.extend(filter_state.filter_expressions);
 
     Ok(PreparedSearchQuery {
         effective_query,
@@ -1152,7 +1174,8 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
         tag: query.tag.clone().or(filter_state.tag),
         path_prefix: query.path_prefix.clone().or(filter_state.path_prefix),
         has_property: query.has_property.clone().or(filter_state.has_property),
-        filters: query.filters.clone(),
+        filters,
+        filter_expressions,
         file_terms: filter_state.file_terms,
         content_terms: filter_state.content_terms,
         match_case_terms: filter_state.match_case_terms,
@@ -1213,10 +1236,24 @@ fn lex_search_query(text: &str) -> Vec<LexedToken> {
             continue;
         }
 
+        if characters[index] == '[' {
+            index += 1;
+            let start = index;
+            while index < characters.len() && characters[index] != ']' {
+                index += 1;
+            }
+            let filter = characters[start..index].iter().collect::<String>();
+            if index < characters.len() && characters[index] == ']' {
+                index += 1;
+            }
+            tokens.push(LexedToken::BracketFilter(filter));
+            continue;
+        }
+
         let start = index;
         while index < characters.len()
             && !characters[index].is_whitespace()
-            && !matches!(characters[index], '(' | ')')
+            && !matches!(characters[index], '(' | ')' | '[' | ']')
         {
             index += 1;
         }
@@ -1237,6 +1274,105 @@ fn inline_filter_value<'a>(token: &'a str, key: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+fn parse_search_filter_expressions(
+    filters: &[String],
+) -> Result<Vec<FilterExpression>, SearchError> {
+    filters
+        .iter()
+        .map(|filter| parse_note_filter_expression(filter).map(FilterExpression::Condition))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(SearchError::from)
+}
+
+fn parse_bracket_filter_expression(raw: &str) -> Result<FilterExpression, SearchError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(SearchError::InvalidQuery(
+            "empty bracket property filter".to_string(),
+        ));
+    }
+
+    let Some((key, raw_value)) = trimmed.split_once(':') else {
+        return Ok(FilterExpression::Condition(ParsedFilter {
+            field: FilterField::Property(trimmed.to_string()),
+            operator: FilterOperator::Exists,
+            value: FilterValue::Null,
+        }));
+    };
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(SearchError::InvalidQuery(format!(
+            "invalid bracket property filter: [{raw}]"
+        )));
+    }
+
+    let values = split_bracket_filter_values(raw_value.trim());
+    if values.is_empty() {
+        return Err(SearchError::InvalidQuery(format!(
+            "invalid bracket property filter: [{raw}]"
+        )));
+    }
+
+    if values.len() == 1 {
+        return Ok(FilterExpression::Condition(parse_note_filter_expression(
+            &format!("{key} = {}", values[0]),
+        )?));
+    }
+
+    let mut filters = Vec::new();
+    for value in values {
+        filters.push(parse_note_filter_expression(&format!("{key} = {value}"))?);
+    }
+    Ok(FilterExpression::Any(filters))
+}
+
+fn split_bracket_filter_values(text: &str) -> Vec<String> {
+    let characters = text.chars().collect::<Vec<_>>();
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut quote = None::<char>;
+    let mut index = 0_usize;
+
+    while index < characters.len() {
+        let character = characters[index];
+        if matches!(character, '"' | '\'') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+            }
+            current.push(character);
+            index += 1;
+            continue;
+        }
+
+        if quote.is_none()
+            && index + 3 < characters.len()
+            && characters[index..index + 4]
+                .iter()
+                .collect::<String>()
+                .eq_ignore_ascii_case(" OR ")
+        {
+            let value = current.trim();
+            if !value.is_empty() {
+                values.push(value.to_string());
+            }
+            current.clear();
+            index += 4;
+            continue;
+        }
+
+        current.push(character);
+        index += 1;
+    }
+
+    let value = current.trim();
+    if !value.is_empty() {
+        values.push(value.to_string());
+    }
+    values
 }
 
 fn quote_fts_term(term: &str) -> String {
@@ -1331,6 +1467,10 @@ fn parse_primary_expression(
             }
             *index += 1;
             Ok(SearchExpr::Term(term.clone()))
+        }
+        LexedToken::BracketFilter(filter) => {
+            *index += 1;
+            Ok(SearchExpr::BracketFilter(filter.clone()))
         }
         LexedToken::OpenParen => {
             *index += 1;
@@ -1469,6 +1609,26 @@ fn extract_inline_filters(
             }
             Some(SearchExpr::Term(term))
         }
+        SearchExpr::BracketFilter(filter) => {
+            if negated {
+                state.invalid_filter = Some(format!(
+                    "negated bracket filters are not supported: -[{filter}]"
+                ));
+                return None;
+            }
+
+            match parse_bracket_filter_expression(&filter) {
+                Ok(filter_expression) => {
+                    state.filters.push(format!("[{filter}]"));
+                    state.filter_expressions.push(filter_expression);
+                    state.positive_terms += 1;
+                }
+                Err(error) => {
+                    state.invalid_filter = Some(error.to_string());
+                }
+            }
+            None
+        }
         SearchExpr::Scoped { scope, expression } => {
             extract_inline_filters(*expression, state, negated).map(|expression| {
                 SearchExpr::Scoped {
@@ -1513,6 +1673,7 @@ fn render_fts_expression(
 ) -> String {
     let (rendered, precedence) = match expression {
         SearchExpr::Term(term) => (render_fts_term(term, fuzzy_map), 4),
+        SearchExpr::BracketFilter(_) => (String::new(), 4),
         SearchExpr::Scoped { expression, .. } => (
             render_fts_expression(expression, fuzzy_map, parent_precedence),
             4,
@@ -1557,6 +1718,7 @@ fn render_candidate_fts_expression(
 ) -> String {
     let (rendered, precedence) = match expression {
         SearchExpr::Term(term) => (render_fts_term(term, fuzzy_map), 4),
+        SearchExpr::BracketFilter(_) => (String::new(), 4),
         SearchExpr::Scoped { scope, expression } => {
             if *scope == SearchScope::Section {
                 (render_section_scope_terms(expression, fuzzy_map), 4)
@@ -1716,6 +1878,7 @@ fn collect_semantic_terms(expression: &SearchExpr, negated: bool, terms: &mut Ve
     match expression {
         SearchExpr::Term(term) if !negated => terms.push(term.text.clone()),
         SearchExpr::Term(_) => {}
+        SearchExpr::BracketFilter(_) => {}
         SearchExpr::Scoped { expression, .. } => collect_semantic_terms(expression, negated, terms),
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             for child in children {
@@ -1734,6 +1897,7 @@ fn collect_positive_search_terms(
     match expression {
         SearchExpr::Term(term) if !negated => terms.push(term.clone()),
         SearchExpr::Term(_) => {}
+        SearchExpr::BracketFilter(_) => {}
         SearchExpr::Scoped { expression, .. } => {
             collect_positive_search_terms(expression, negated, terms);
         }
@@ -1757,6 +1921,9 @@ fn append_expression_lines(expression: &SearchExpr, indent: usize, lines: &mut V
     match expression {
         SearchExpr::Term(term) => {
             lines.push(format!("{prefix}TERM {}", display_search_term(term)));
+        }
+        SearchExpr::BracketFilter(filter) => {
+            lines.push(format!("{prefix}FILTER [{filter}]"));
         }
         SearchExpr::Scoped { scope, expression } => {
             lines.push(format!("{prefix}{}", display_search_scope(*scope)));
@@ -1861,6 +2028,7 @@ fn collect_fuzzy_expansions(
             }
         }
         SearchExpr::Term(_) => {}
+        SearchExpr::BracketFilter(_) => {}
         SearchExpr::Scoped { expression, .. } => {
             collect_fuzzy_expansions(expression, seen, expansions, vocabulary, negated);
         }
@@ -2683,6 +2851,125 @@ mod tests {
             .parsed_query_explanation
             .iter()
             .any(|line| line == "FILTER task-done:ship"));
+    }
+
+    #[test]
+    fn search_bracket_property_filters_match_existing_filter_paths() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        copy_fixture_vault("basic", &vault_root.join("basic"));
+
+        let mixed_paths = VaultPaths::new(&vault_root);
+        scan_vault(&mixed_paths, ScanMode::Full).expect("scan should succeed");
+
+        let bracket_done = search_vault(
+            &mixed_paths,
+            &SearchQuery {
+                text: "release [status:done]".to_string(),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("bracket status search should succeed");
+        let where_done = search_vault(
+            &mixed_paths,
+            &SearchQuery {
+                text: "release".to_string(),
+                filters: vec!["status = done".to_string()],
+                ..SearchQuery::default()
+            },
+        )
+        .expect("where status search should succeed");
+        assert_eq!(
+            bracket_done
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            where_done
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let bracket_null = search_vault(
+            &mixed_paths,
+            &SearchQuery {
+                text: "release [notes:null]".to_string(),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("bracket null search should succeed");
+        let where_null = search_vault(
+            &mixed_paths,
+            &SearchQuery {
+                text: "release".to_string(),
+                filters: vec!["notes = null".to_string()],
+                ..SearchQuery::default()
+            },
+        )
+        .expect("where null search should succeed");
+        assert_eq!(
+            bracket_null
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            where_null
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let bracket_exists = search_vault(
+            &mixed_paths,
+            &SearchQuery {
+                text: "[aliases]".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("bracket exists search should succeed");
+        let mut bracket_exists_paths = bracket_exists
+            .hits
+            .iter()
+            .map(|hit| hit.document_path.clone())
+            .collect::<Vec<_>>();
+        bracket_exists_paths.sort();
+        assert_eq!(
+            bracket_exists_paths,
+            vec![
+                "basic/Home.md".to_string(),
+                "basic/People/Bob.md".to_string(),
+            ]
+        );
+        assert!(bracket_exists
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "WHERE [aliases]"));
+
+        let bracket_or = search_vault(
+            &mixed_paths,
+            &SearchQuery {
+                text: "[status:done OR backlog]".to_string(),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("bracket OR search should succeed");
+        let mut bracket_or_paths = bracket_or
+            .hits
+            .iter()
+            .map(|hit| hit.document_path.clone())
+            .collect::<Vec<_>>();
+        bracket_or_paths.sort();
+        assert_eq!(
+            bracket_or_paths,
+            vec!["Backlog.md".to_string(), "Done.md".to_string()]
+        );
     }
 
     #[test]

@@ -132,6 +132,7 @@ fn search_help_documents_query_and_filter_syntax() {
                     "plain terms are ANDed: dashboard status",
                 ))
                 .and(predicate::str::contains("tag:index"))
+                .and(predicate::str::contains("[status:done]"))
                 .and(predicate::str::contains("section:(dog cat)"))
                 .and(predicate::str::contains("task:docs"))
                 .and(predicate::str::contains("task-todo:followup"))
@@ -1110,6 +1111,56 @@ fn search_section_operator_works_across_heading_chunks() {
         .stdout(
             predicate::str::contains("\"document_path\":\"SameSection.md\"")
                 .and(predicate::str::contains("SplitSection.md").not()),
+        );
+}
+
+#[test]
+fn search_inline_bracket_property_filters_work() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,parsed_query_explanation",
+            "search",
+            "release [status:done]",
+            "--explain",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"Done.md\"")
+                .and(predicate::str::contains("Backlog.md").not())
+                .and(predicate::str::contains("WHERE [status:done]")),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "search",
+            "[status:done OR backlog]",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"Done.md\"")
+                .and(predicate::str::contains("\"document_path\":\"Backlog.md\"")),
         );
 }
 

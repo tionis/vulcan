@@ -67,6 +67,8 @@ Search query syntax:
     path:People/
     has:status
     property:status
+    [aliases]
+    [status:done]
     file:meeting
     content:release
     match-case:Bob
@@ -105,6 +107,7 @@ Values:
 Examples:
   vulcan search 'dashboard \"release notes\" -draft'
   vulcan search 'tag:index path:People/ owned'
+  vulcan search 'release [status:done]'
   vulcan search 'file:meeting content:release'
   vulcan search 'section:(dog cat)'
   vulcan search 'task-todo:followup task-done:ship'
