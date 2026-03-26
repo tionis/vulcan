@@ -14,8 +14,8 @@ use std::io;
 use std::time::Duration;
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
-    list_note_identities, scan_vault, search_vault, NoteIdentity, ScanMode, SearchHit, SearchQuery,
-    VaultPaths,
+    list_note_identities, list_tagged_note_identities, list_tags, scan_vault, search_vault,
+    NamedCount, NoteIdentity, ScanMode, SearchHit, SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
@@ -26,7 +26,8 @@ pub fn run_browse_tui(paths: &VaultPaths) -> Result<(), io::Error> {
         scan_vault(paths, ScanMode::Incremental).map_err(io::Error::other)?;
     }
 
-    let mut state = BrowseState::new(paths.clone(), load_notes(paths).map_err(io::Error::other)?);
+    let mut state = BrowseState::new(paths.clone(), load_notes(paths).map_err(io::Error::other)?)
+        .map_err(io::Error::other)?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -147,7 +148,7 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
     frame.render_widget(preview, body[1]);
 
     let footer = Paragraph::new(vec![
-        Line::from("Keys: Enter/e edit, Ctrl-F full-text, / fuzzy, Esc quit"),
+        Line::from("Keys: Enter/e edit, Ctrl-F full-text, Ctrl-T tags, / fuzzy, Esc quit"),
         Line::from(format!("      {}", state.mode_help_line())),
         Line::from(format!(
             "Mode: {} | {} filtered / {} total",
@@ -178,6 +179,7 @@ enum BrowseAction {
 enum BrowseMode {
     Fuzzy,
     FullText,
+    Tag,
 }
 
 impl BrowseMode {
@@ -185,6 +187,7 @@ impl BrowseMode {
         match self {
             Self::Fuzzy => "fuzzy",
             Self::FullText => "full-text",
+            Self::Tag => "tag",
         }
     }
 
@@ -192,6 +195,7 @@ impl BrowseMode {
         match self {
             Self::Fuzzy => "Browse (/ fuzzy search)",
             Self::FullText => "Browse (Ctrl-F full-text)",
+            Self::Tag => "Browse (Ctrl-T tag filter)",
         }
     }
 
@@ -199,6 +203,7 @@ impl BrowseMode {
         match self {
             Self::Fuzzy => "type to filter by path, filename, or alias",
             Self::FullText => "type to search indexed content; preview shows snippets",
+            Self::Tag => "type a tag name; notes show the best matching indexed tag",
         }
     }
 }
@@ -206,21 +211,30 @@ impl BrowseMode {
 #[derive(Debug, Clone)]
 struct BrowseState {
     paths: VaultPaths,
+    all_notes: Vec<NoteIdentity>,
     picker: NotePickerState,
     full_text: FullTextState,
+    tag_filter: TagFilterState,
     mode: BrowseMode,
     status: String,
 }
 
 impl BrowseState {
-    fn new(paths: VaultPaths, notes: Vec<NoteIdentity>) -> Self {
-        Self {
+    fn new(paths: VaultPaths, notes: Vec<NoteIdentity>) -> Result<Self, String> {
+        let tags = if paths.cache_db().exists() {
+            list_tags(&paths).map_err(|error| error.to_string())?
+        } else {
+            Vec::new()
+        };
+        Ok(Self {
             paths: paths.clone(),
-            picker: NotePickerState::new(paths, notes, ""),
+            all_notes: notes.clone(),
+            picker: NotePickerState::new(paths.clone(), notes.clone(), ""),
             full_text: FullTextState::default(),
+            tag_filter: TagFilterState::new(paths, tags),
             mode: BrowseMode::Fuzzy,
             status: "Ready.".to_string(),
-        }
+        })
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> BrowseAction {
@@ -229,6 +243,13 @@ impl BrowseState {
                 KeyCode::Char('f') | KeyCode::Char('F') => {
                     self.clear_status();
                     if let Err(error) = self.switch_mode(BrowseMode::FullText) {
+                        self.set_status(error);
+                    }
+                    return BrowseAction::Continue;
+                }
+                KeyCode::Char('t') | KeyCode::Char('T') => {
+                    self.clear_status();
+                    if let Err(error) = self.switch_mode(BrowseMode::Tag) {
                         self.set_status(error);
                     }
                     return BrowseAction::Continue;
@@ -244,7 +265,7 @@ impl BrowseState {
                 self.mode = BrowseMode::Fuzzy;
                 BrowseAction::Continue
             }
-            KeyCode::Enter | KeyCode::Char('e') => {
+            KeyCode::Enter | KeyCode::Char('e') if self.mode == BrowseMode::Fuzzy => {
                 if let Some(path) = self.selected_path().map(str::to_string) {
                     BrowseAction::Edit(path)
                 } else {
@@ -271,21 +292,31 @@ impl BrowseState {
                 Ok(())
             }
             BrowseMode::FullText => self.full_text.handle_key(&self.paths, code),
+            BrowseMode::Tag => self
+                .tag_filter
+                .handle_key(&self.paths, &self.all_notes, code),
         }
     }
 
     fn switch_mode(&mut self, mode: BrowseMode) -> Result<(), String> {
         self.mode = mode;
-        if self.mode == BrowseMode::FullText {
-            self.full_text.refresh_results(&self.paths)?;
+        match self.mode {
+            BrowseMode::FullText => self.full_text.refresh_results(&self.paths)?,
+            BrowseMode::Tag => self
+                .tag_filter
+                .refresh_results(&self.paths, &self.all_notes)?,
+            BrowseMode::Fuzzy => {}
         }
         Ok(())
     }
 
     fn reload_after_edit(&mut self) -> Result<(), String> {
         let notes = load_notes(&self.paths)?;
+        self.all_notes = notes.clone();
         self.picker.replace_notes_preserve_selection(notes);
         self.full_text.refresh_results(&self.paths)?;
+        self.tag_filter
+            .refresh_results(&self.paths, &self.all_notes)?;
         Ok(())
     }
 
@@ -293,6 +324,7 @@ impl BrowseState {
         match self.mode {
             BrowseMode::Fuzzy => self.picker.refresh_preview(),
             BrowseMode::FullText => {}
+            BrowseMode::Tag => self.tag_filter.refresh_preview(),
         }
     }
 
@@ -300,6 +332,7 @@ impl BrowseState {
         match self.mode {
             BrowseMode::Fuzzy => self.picker.selected_path(),
             BrowseMode::FullText => self.full_text.selected_path(),
+            BrowseMode::Tag => self.tag_filter.selected_path(),
         }
     }
 
@@ -307,6 +340,7 @@ impl BrowseState {
         match self.mode {
             BrowseMode::Fuzzy => self.picker.query(),
             BrowseMode::FullText => self.full_text.query(),
+            BrowseMode::Tag => self.tag_filter.query(),
         }
     }
 
@@ -339,6 +373,7 @@ impl BrowseState {
                 .iter()
                 .map(|hit| format!("{} [{:.3}]", search_hit_location(hit), hit.rank))
                 .collect(),
+            BrowseMode::Tag => self.tag_filter.list_items(),
         }
     }
 
@@ -346,6 +381,7 @@ impl BrowseState {
         match self.mode {
             BrowseMode::Fuzzy => self.picker.selected_index(),
             BrowseMode::FullText => self.full_text.selected_index(),
+            BrowseMode::Tag => self.tag_filter.selected_index(),
         }
     }
 
@@ -359,6 +395,7 @@ impl BrowseState {
                 || "Snippet Preview".to_string(),
                 |hit| format!("Snippet: {}", search_hit_location(hit)),
             ),
+            BrowseMode::Tag => self.tag_filter.preview_title(),
         }
     }
 
@@ -366,6 +403,7 @@ impl BrowseState {
         match self.mode {
             BrowseMode::Fuzzy => self.picker.preview_lines(),
             BrowseMode::FullText => self.full_text.preview_lines(),
+            BrowseMode::Tag => self.tag_filter.preview_lines(),
         }
     }
 
@@ -373,6 +411,7 @@ impl BrowseState {
         match self.mode {
             BrowseMode::Fuzzy => self.picker.filtered_count(),
             BrowseMode::FullText => self.full_text.filtered_count(),
+            BrowseMode::Tag => self.tag_filter.filtered_count(),
         }
     }
 
@@ -388,11 +427,18 @@ impl BrowseState {
         self.status.clear();
     }
 
-    fn status_line(&self) -> &str {
-        if self.status.is_empty() {
-            "Ready."
-        } else {
-            &self.status
+    fn status_line(&self) -> String {
+        if !self.status.is_empty() {
+            return self.status.clone();
+        }
+
+        match self.mode {
+            BrowseMode::Tag => self
+                .tag_filter
+                .active_tag
+                .as_deref()
+                .map_or_else(|| "Ready.".to_string(), |tag| format!("Tag: #{tag}")),
+            BrowseMode::Fuzzy | BrowseMode::FullText => "Ready.".to_string(),
         }
     }
 }
@@ -524,6 +570,195 @@ impl FullTextState {
     }
 }
 
+#[derive(Debug, Clone)]
+struct TagFilterState {
+    query: String,
+    tags: Vec<NamedCount>,
+    active_tag: Option<String>,
+    picker: NotePickerState,
+}
+
+impl TagFilterState {
+    fn new(paths: VaultPaths, tags: Vec<NamedCount>) -> Self {
+        Self {
+            query: String::new(),
+            tags,
+            active_tag: None,
+            picker: NotePickerState::new(paths, Vec::new(), ""),
+        }
+    }
+
+    fn query(&self) -> &str {
+        &self.query
+    }
+
+    fn selected_path(&self) -> Option<&str> {
+        self.picker.selected_path()
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        self.picker.selected_index()
+    }
+
+    fn filtered_count(&self) -> usize {
+        self.picker.filtered_count()
+    }
+
+    fn preview_title(&self) -> String {
+        match (self.active_tag.as_deref(), self.picker.selected_path()) {
+            (Some(tag), Some(path)) => format!("Preview: {path} [#{tag}]"),
+            (Some(tag), None) => format!("Tag Preview: #{tag}"),
+            (None, _) => "Tag Preview".to_string(),
+        }
+    }
+
+    fn preview_lines(&self) -> Vec<Line<'static>> {
+        match self.active_tag.as_deref() {
+            Some(tag) if self.picker.filtered_count() == 0 => {
+                vec![Line::from(format!("No notes matched #{tag}."))]
+            }
+            Some(_) => self.picker.preview_lines(),
+            None if self.query.trim().is_empty() => vec![Line::from("Type to search tags.")],
+            None => vec![Line::from("No matching tags.")],
+        }
+    }
+
+    fn refresh_preview(&mut self) {
+        self.picker.refresh_preview();
+    }
+
+    fn list_items(&self) -> Vec<String> {
+        self.picker
+            .filtered_notes()
+            .iter()
+            .map(|(_, note)| {
+                let aliases = if note.aliases.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", note.aliases.join(", "))
+                };
+                format!("{}{}", note.path, aliases)
+            })
+            .collect()
+    }
+
+    fn handle_key(
+        &mut self,
+        paths: &VaultPaths,
+        all_notes: &[NoteIdentity],
+        code: KeyCode,
+    ) -> Result<(), String> {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.picker.move_selection(-1);
+                Ok(())
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.picker.move_selection(1);
+                Ok(())
+            }
+            KeyCode::Backspace => {
+                self.query.pop();
+                self.refresh_results(paths, all_notes)
+            }
+            KeyCode::Char(character) => {
+                self.query.push(character);
+                self.refresh_results(paths, all_notes)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn refresh_results(
+        &mut self,
+        paths: &VaultPaths,
+        all_notes: &[NoteIdentity],
+    ) -> Result<(), String> {
+        self.active_tag = best_matching_tag(&self.tags, &self.query).map(|tag| tag.name.clone());
+        let notes = self.active_tag.as_deref().map_or_else(
+            || Ok(Vec::new()),
+            |tag| tag_filtered_notes(paths, all_notes, tag),
+        )?;
+        self.picker.replace_notes_preserve_selection(notes);
+        self.picker.set_query("");
+        Ok(())
+    }
+}
+
+fn best_matching_tag<'a>(tags: &'a [NamedCount], query: &str) -> Option<&'a NamedCount> {
+    if query.trim().is_empty() {
+        return None;
+    }
+
+    let mut matches = tags
+        .iter()
+        .filter_map(|tag| fuzzy_text_score(&tag.name, query).map(|score| (score, tag)))
+        .collect::<Vec<_>>();
+    matches.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| right.count.cmp(&left.count))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    matches.into_iter().map(|(_, tag)| tag).next()
+}
+
+fn tag_filtered_notes(
+    paths: &VaultPaths,
+    all_notes: &[NoteIdentity],
+    tag: &str,
+) -> Result<Vec<NoteIdentity>, String> {
+    let tagged = list_tagged_note_identities(paths, tag).map_err(|error| error.to_string())?;
+    Ok(tagged
+        .into_iter()
+        .filter_map(|identity| {
+            all_notes
+                .iter()
+                .find(|note| note.path == identity.path)
+                .cloned()
+        })
+        .collect())
+}
+
+fn fuzzy_text_score(text: &str, query: &str) -> Option<i32> {
+    if query.trim().is_empty() {
+        return Some(0);
+    }
+
+    let haystack = text.to_lowercase();
+    let needle = query.trim().to_lowercase();
+
+    if haystack.contains(&needle) {
+        return Some(4_000 - i32::try_from(text.len()).unwrap_or(i32::MAX));
+    }
+
+    let mut score = 0_i32;
+    let mut last_index = 0_usize;
+    let mut streak = 0_i32;
+    for character in needle.chars() {
+        let offset = haystack[last_index..].find(character)?;
+        let absolute = last_index + offset;
+        if absolute == last_index {
+            streak += 1;
+            score += 25 + streak * 5;
+        } else {
+            streak = 0;
+            score += 10;
+        }
+        if absolute == 0
+            || matches!(
+                haystack.as_bytes().get(absolute.saturating_sub(1)).copied(),
+                Some(b'/' | b'-' | b'_' | b' ')
+            )
+        {
+            score += 20;
+        }
+        last_index = absolute + character.len_utf8();
+    }
+
+    Some(score)
+}
+
 fn search_hit_location(hit: &SearchHit) -> String {
     if hit.heading_path.is_empty() {
         hit.document_path.clone()
@@ -629,7 +864,8 @@ mod tests {
                 note("Projects/Alpha.md", &[]),
                 note("Projects/Beta.md", &[]),
             ],
-        );
+        )
+        .expect("state should build");
         state.handle_key(key(KeyCode::Char('a')));
         state.handle_key(key(KeyCode::Char('l')));
         state.handle_key(key(KeyCode::Char('p')));
@@ -648,7 +884,8 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
         write_note(temp_dir.path(), "Projects/Alpha.md", "Alpha");
-        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])]);
+        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
+            .expect("state should build");
 
         let action = state.handle_key(key(KeyCode::Char('e')));
 
@@ -661,7 +898,8 @@ mod tests {
         let paths = VaultPaths::new(temp_dir.path());
         write_note(temp_dir.path(), "Projects/Alpha.md", "release dashboard");
         scan_fixture(&paths);
-        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])]);
+        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
+            .expect("state should build");
 
         let action = state.handle_key(ctrl('f'));
 
@@ -687,7 +925,8 @@ mod tests {
                 note("Projects/Alpha.md", &[]),
                 note("Projects/Beta.md", &[]),
             ],
-        );
+        )
+        .expect("state should build");
 
         state.handle_key(ctrl('f'));
         for character in "dashboard".chars() {
@@ -715,7 +954,8 @@ mod tests {
         let paths = VaultPaths::new(temp_dir.path());
         write_note(temp_dir.path(), "Projects/Alpha.md", "release dashboard");
         scan_fixture(&paths);
-        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])]);
+        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
+            .expect("state should build");
 
         state.handle_key(ctrl('f'));
         let action = state.handle_key(key(KeyCode::Char('/')));
@@ -723,6 +963,49 @@ mod tests {
         assert_eq!(action, BrowseAction::Continue);
         assert_eq!(state.mode, BrowseMode::Fuzzy);
         assert_eq!(state.query_title(), "Browse (/ fuzzy search)");
+    }
+
+    #[test]
+    fn ctrl_t_switches_to_tag_mode_and_filters_notes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Home.md",
+            "---\ntags:\n  - dashboard\n---\n\n# Home\nThe dashboard note uses #index.",
+        );
+        write_note(
+            temp_dir.path(),
+            "Projects/Alpha.md",
+            "---\ntags:\n  - project\n---\n\n# Alpha",
+        );
+        write_note(
+            temp_dir.path(),
+            "People/Bob.md",
+            "# Bob\nBob uses the tag #people/team.",
+        );
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths,
+            vec![
+                note("Home.md", &[]),
+                note("Projects/Alpha.md", &[]),
+                note("People/Bob.md", &[]),
+            ],
+        )
+        .expect("state should build");
+
+        state.handle_key(ctrl('t'));
+        state.handle_key(key(KeyCode::Char('p')));
+        state.handle_key(key(KeyCode::Char('e')));
+        state.handle_key(key(KeyCode::Char('o')));
+
+        assert_eq!(state.mode, BrowseMode::Tag);
+        assert_eq!(state.query_title(), "Browse (Ctrl-T tag filter)");
+        assert_eq!(state.selected_path(), Some("People/Bob.md"));
+        assert_eq!(state.filtered_count(), 1);
+        assert_eq!(state.status_line(), "Tag: #people/team");
+        assert!(state.preview_title().contains("#people/team"));
     }
 
     #[test]

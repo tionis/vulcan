@@ -477,6 +477,51 @@ pub fn list_note_identities(paths: &VaultPaths) -> Result<Vec<NoteIdentity>, Gra
         .collect())
 }
 
+pub fn list_tags(paths: &VaultPaths) -> Result<Vec<NamedCount>, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    tag_counts(&connection, None)
+}
+
+pub fn list_tagged_note_identities(
+    paths: &VaultPaths,
+    tag: &str,
+) -> Result<Vec<NoteIdentity>, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+    let mut indexed = notes
+        .notes
+        .into_iter()
+        .map(|note| {
+            (
+                note.path.clone(),
+                NoteIdentity {
+                    path: note.path,
+                    filename: note.filename,
+                    aliases: note.aliases,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut statement = connection.prepare(
+        "
+        SELECT DISTINCT documents.path
+        FROM tags
+        JOIN documents ON documents.id = tags.document_id
+        WHERE documents.extension = 'md' AND tags.tag_text = ?1
+        ORDER BY documents.path
+        ",
+    )?;
+    let rows = statement.query_map([tag], |row| row.get::<_, String>(0))?;
+    let mut tagged = Vec::new();
+    for row in rows {
+        let path = row?;
+        if let Some(identity) = indexed.remove(&path) {
+            tagged.push(identity);
+        }
+    }
+    Ok(tagged)
+}
+
 pub fn query_links(
     paths: &VaultPaths,
     identifier: &str,
@@ -956,17 +1001,36 @@ fn count_documents_by_extension_group(
 }
 
 fn top_tag_counts(connection: &Connection) -> Result<Vec<NamedCount>, GraphQueryError> {
-    let mut statement = connection.prepare(
-        "
-        SELECT tags.tag_text, COUNT(DISTINCT tags.document_id) AS usage_count
-        FROM tags
-        JOIN documents ON documents.id = tags.document_id
-        WHERE documents.extension = 'md'
-        GROUP BY tags.tag_text
-        ORDER BY usage_count DESC, tags.tag_text ASC
-        LIMIT 10
-        ",
-    )?;
+    tag_counts(connection, Some(10))
+}
+
+fn tag_counts(
+    connection: &Connection,
+    limit: Option<usize>,
+) -> Result<Vec<NamedCount>, GraphQueryError> {
+    let sql = match limit {
+        Some(limit) => format!(
+            "
+            SELECT tags.tag_text, COUNT(DISTINCT tags.document_id) AS usage_count
+            FROM tags
+            JOIN documents ON documents.id = tags.document_id
+            WHERE documents.extension = 'md'
+            GROUP BY tags.tag_text
+            ORDER BY usage_count DESC, tags.tag_text ASC
+            LIMIT {limit}
+            "
+        ),
+        None => "
+            SELECT tags.tag_text, COUNT(DISTINCT tags.document_id) AS usage_count
+            FROM tags
+            JOIN documents ON documents.id = tags.document_id
+            WHERE documents.extension = 'md'
+            GROUP BY tags.tag_text
+            ORDER BY usage_count DESC, tags.tag_text ASC
+            "
+        .to_string(),
+    };
+    let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map([], |row| {
         Ok(NamedCount {
             name: row.get(0)?,
@@ -1194,6 +1258,75 @@ mod tests {
                 && identity.filename == "Home"
                 && identity.aliases == vec!["Start".to_string()]
         }));
+    }
+
+    #[test]
+    fn list_tags_returns_distinct_tag_counts() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let tags = list_tags(&paths).expect("tag listing should succeed");
+
+        assert_eq!(
+            tags,
+            vec![
+                NamedCount {
+                    name: "dashboard".to_string(),
+                    count: 1,
+                },
+                NamedCount {
+                    name: "index".to_string(),
+                    count: 1,
+                },
+                NamedCount {
+                    name: "people/team".to_string(),
+                    count: 1,
+                },
+                NamedCount {
+                    name: "project".to_string(),
+                    count: 1,
+                },
+                NamedCount {
+                    name: "work".to_string(),
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn list_tagged_note_identities_resolves_inline_and_frontmatter_tags() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let dashboard = list_tagged_note_identities(&paths, "dashboard")
+            .expect("dashboard tag listing should succeed");
+        let people_team = list_tagged_note_identities(&paths, "people/team")
+            .expect("people/team tag listing should succeed");
+
+        assert_eq!(
+            dashboard,
+            vec![NoteIdentity {
+                path: "Home.md".to_string(),
+                filename: "Home".to_string(),
+                aliases: vec!["Start".to_string()],
+            }]
+        );
+        assert_eq!(
+            people_team,
+            vec![NoteIdentity {
+                path: "People/Bob.md".to_string(),
+                filename: "Bob".to_string(),
+                aliases: vec!["Robert".to_string()],
+            }]
+        );
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {

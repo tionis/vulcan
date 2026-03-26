@@ -40,13 +40,13 @@ pub use doctor::{
     DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
 };
 pub use graph::{
-    list_note_identities, query_backlinks, query_graph_analytics, query_graph_components,
-    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
-    query_links, resolve_note_reference, BacklinkRecord, BacklinksReport, GraphAnalyticsReport,
-    GraphComponent, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate,
-    GraphMocReport, GraphNodeScore, GraphPathReport, GraphQueryError, LineContext, NamedCount,
-    NoteIdentity, NoteMatchKind, NoteReference, OutgoingLinkRecord, OutgoingLinksReport,
-    ResolutionStatus,
+    list_note_identities, list_tagged_note_identities, list_tags, query_backlinks,
+    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
+    query_graph_moc_candidates, query_graph_path, query_links, resolve_note_reference,
+    BacklinkRecord, BacklinksReport, GraphAnalyticsReport, GraphComponent, GraphComponentsReport,
+    GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphNodeScore,
+    GraphPathReport, GraphQueryError, LineContext, NamedCount, NoteIdentity, NoteMatchKind,
+    NoteReference, OutgoingLinkRecord, OutgoingLinksReport, ResolutionStatus,
 };
 pub use history::{
     create_checkpoint, list_checkpoints, query_change_report, query_graph_trends, ChangeAnchor,
