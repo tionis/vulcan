@@ -230,9 +230,19 @@ struct PreparedSearchQuery {
 #[derive(Debug, Clone)]
 enum SearchExpr {
     Term(SearchTerm),
+    Scoped {
+        scope: SearchScope,
+        expression: Box<SearchExpr>,
+    },
     And(Vec<SearchExpr>),
     Or(Vec<SearchExpr>),
     Not(Box<SearchExpr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchScope {
+    Line,
+    Block,
 }
 
 #[derive(Debug, Clone)]
@@ -494,6 +504,7 @@ fn keyword_search_hits(
     })?;
     let mut candidates = rows.collect::<Result<Vec<_>, _>>()?;
     apply_content_filters(&mut candidates, &prepared.content_terms);
+    apply_scope_filters(&mut candidates, prepared.expression.as_ref());
     apply_match_case_filters(&mut candidates, &prepared.match_case_terms);
     let mut hits = candidates
         .into_iter()
@@ -529,6 +540,72 @@ fn apply_content_filters(candidates: &mut Vec<SearchCandidate>, terms: &[SearchT
             .iter()
             .all(|term| content.contains(&term.text.to_lowercase()))
     });
+}
+
+fn apply_scope_filters(candidates: &mut Vec<SearchCandidate>, expression: Option<&SearchExpr>) {
+    let Some(expression) = expression.filter(|expression| expression_contains_scope(expression))
+    else {
+        return;
+    };
+
+    candidates.retain(|candidate| candidate_matches_scope_filters(expression, &candidate.content));
+}
+
+fn expression_contains_scope(expression: &SearchExpr) -> bool {
+    match expression {
+        SearchExpr::Scoped { .. } => true,
+        SearchExpr::Term(_) => false,
+        SearchExpr::And(children) | SearchExpr::Or(children) => {
+            children.iter().any(expression_contains_scope)
+        }
+        SearchExpr::Not(child) => expression_contains_scope(child),
+    }
+}
+
+fn candidate_matches_scope_filters(expression: &SearchExpr, content: &str) -> bool {
+    match expression {
+        SearchExpr::Term(_) => true,
+        SearchExpr::Scoped { scope, expression } => {
+            scoped_expression_matches(*scope, expression, content)
+        }
+        SearchExpr::And(children) => children
+            .iter()
+            .all(|child| candidate_matches_scope_filters(child, content)),
+        SearchExpr::Or(children) => children
+            .iter()
+            .any(|child| candidate_matches_scope_filters(child, content)),
+        SearchExpr::Not(child) => !candidate_matches_scope_filters(child, content),
+    }
+}
+
+fn scoped_expression_matches(scope: SearchScope, expression: &SearchExpr, content: &str) -> bool {
+    split_scope_segments(scope, content)
+        .into_iter()
+        .filter(|segment| !segment.trim().is_empty())
+        .any(|segment| text_expression_matches(expression, segment))
+}
+
+fn split_scope_segments<'a>(scope: SearchScope, content: &'a str) -> Vec<&'a str> {
+    match scope {
+        SearchScope::Line => content.lines().collect(),
+        SearchScope::Block => content.split("\n\n").collect(),
+    }
+}
+
+fn text_expression_matches(expression: &SearchExpr, text: &str) -> bool {
+    match expression {
+        SearchExpr::Term(term) => text.to_lowercase().contains(&term.text.to_lowercase()),
+        SearchExpr::Scoped { scope, expression } => {
+            scoped_expression_matches(*scope, expression, text)
+        }
+        SearchExpr::And(children) => children
+            .iter()
+            .all(|child| text_expression_matches(child, text)),
+        SearchExpr::Or(children) => children
+            .iter()
+            .any(|child| text_expression_matches(child, text)),
+        SearchExpr::Not(child) => !text_expression_matches(child, text),
+    }
 }
 
 fn apply_match_case_filters(candidates: &mut Vec<SearchCandidate>, terms: &[String]) {
@@ -1009,6 +1086,17 @@ fn parse_primary_expression(
 
     match token {
         LexedToken::Term(term) => {
+            if let Some((scope, inline_term)) = scoped_operator_from_term(term) {
+                *index += 1;
+                let expression = inline_term.map_or_else(
+                    || parse_primary_expression(tokens, index),
+                    |term| Ok(SearchExpr::Term(term)),
+                )?;
+                return Ok(SearchExpr::Scoped {
+                    scope,
+                    expression: Box::new(expression),
+                });
+            }
             *index += 1;
             Ok(SearchExpr::Term(term.clone()))
         }
@@ -1041,6 +1129,27 @@ fn collapse_expression(
     } else {
         make_group(expressions)
     }
+}
+
+fn scoped_operator_from_term(term: &SearchTerm) -> Option<(SearchScope, Option<SearchTerm>)> {
+    if term.quoted {
+        return None;
+    }
+
+    let (prefix, value) = term.text.split_once(':')?;
+    let scope = if prefix.eq_ignore_ascii_case("line") {
+        SearchScope::Line
+    } else if prefix.eq_ignore_ascii_case("block") {
+        SearchScope::Block
+    } else {
+        return None;
+    };
+
+    let inline_term = (!value.trim().is_empty()).then(|| SearchTerm {
+        text: value.trim().to_string(),
+        quoted: false,
+    });
+    Some((scope, inline_term))
 }
 
 fn is_or_token(token: &LexedToken) -> bool {
@@ -1102,6 +1211,14 @@ fn extract_inline_filters(
             }
             Some(SearchExpr::Term(term))
         }
+        SearchExpr::Scoped { scope, expression } => {
+            extract_inline_filters(*expression, state, negated).map(|expression| {
+                SearchExpr::Scoped {
+                    scope,
+                    expression: Box::new(expression),
+                }
+            })
+        }
         SearchExpr::And(children) => {
             collapse_rewritten_group(children, state, negated, SearchExpr::And)
         }
@@ -1138,6 +1255,10 @@ fn render_fts_expression(
 ) -> String {
     let (rendered, precedence) = match expression {
         SearchExpr::Term(term) => (render_fts_term(term, fuzzy_map), 4),
+        SearchExpr::Scoped { expression, .. } => (
+            render_fts_expression(expression, fuzzy_map, parent_precedence),
+            4,
+        ),
         SearchExpr::Not(child) => (
             format!("NOT {}", render_fts_expression(child, fuzzy_map, 3)),
             3,
@@ -1245,6 +1366,7 @@ fn collect_semantic_terms(expression: &SearchExpr, negated: bool, terms: &mut Ve
     match expression {
         SearchExpr::Term(term) if !negated => terms.push(term.text.clone()),
         SearchExpr::Term(_) => {}
+        SearchExpr::Scoped { expression, .. } => collect_semantic_terms(expression, negated, terms),
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             for child in children {
                 collect_semantic_terms(child, negated, terms);
@@ -1265,6 +1387,10 @@ fn append_expression_lines(expression: &SearchExpr, indent: usize, lines: &mut V
     match expression {
         SearchExpr::Term(term) => {
             lines.push(format!("{prefix}TERM {}", display_search_term(term)));
+        }
+        SearchExpr::Scoped { scope, expression } => {
+            lines.push(format!("{prefix}{}", display_search_scope(*scope)));
+            append_expression_lines(expression, indent + 1, lines);
         }
         SearchExpr::And(children) => {
             lines.push(format!("{prefix}AND"));
@@ -1290,6 +1416,13 @@ fn display_search_term(term: &SearchTerm) -> String {
         format!("\"{}\"", term.text)
     } else {
         term.text.clone()
+    }
+}
+
+fn display_search_scope(scope: SearchScope) -> &'static str {
+    match scope {
+        SearchScope::Line => "LINE",
+        SearchScope::Block => "BLOCK",
     }
 }
 
@@ -1345,6 +1478,9 @@ fn collect_fuzzy_expansions(
             }
         }
         SearchExpr::Term(_) => {}
+        SearchExpr::Scoped { expression, .. } => {
+            collect_fuzzy_expansions(expression, seen, expansions, vocabulary, negated);
+        }
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             for child in children {
                 collect_fuzzy_expansions(child, seen, expansions, vocabulary, negated);
@@ -1939,6 +2075,83 @@ mod tests {
             .parsed_query_explanation
             .iter()
             .any(|line| line == "FILTER match-case:Bob"));
+    }
+
+    #[test]
+    fn search_line_operator_requires_terms_on_same_line() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("SameLine.md"), "mix flour\noven ready")
+            .expect("note should write");
+        fs::write(vault_root.join("SplitLine.md"), "mix\nflour").expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "line:(mix flour)".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        assert_eq!(
+            report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["SameLine.md".to_string()]
+        );
+        assert!(report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "LINE"));
+    }
+
+    #[test]
+    fn search_block_operator_requires_terms_in_same_block() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(
+            vault_root.join("SameBlock.md"),
+            "mix flour\nstir well\n\nserve",
+        )
+        .expect("note should write");
+        fs::write(vault_root.join("SplitBlock.md"), "mix\n\nflour").expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "block:(mix flour)".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        assert_eq!(
+            report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["SameBlock.md".to_string()]
+        );
+        assert!(report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "BLOCK"));
     }
 
     #[test]
