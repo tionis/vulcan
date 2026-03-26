@@ -15,8 +15,8 @@ use std::time::Duration;
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
     list_note_identities, list_tagged_note_identities, list_tags, move_note, query_backlinks,
-    query_notes, scan_vault, search_vault, BacklinkRecord, NamedCount, NoteIdentity, NoteQuery,
-    ScanMode, SearchHit, SearchQuery, VaultPaths,
+    query_links, query_notes, scan_vault, search_vault, BacklinkRecord, NamedCount, NoteIdentity,
+    NoteQuery, OutgoingLinkRecord, ResolutionStatus, ScanMode, SearchHit, SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
@@ -258,6 +258,7 @@ struct BrowseState {
     tag_filter: TagFilterState,
     property_filter: PropertyFilterState,
     backlinks_view: Option<BacklinksViewState>,
+    links_view: Option<OutgoingLinksViewState>,
     move_prompt: Option<MovePrompt>,
     mode: BrowseMode,
     status: String,
@@ -278,6 +279,7 @@ impl BrowseState {
             tag_filter: TagFilterState::new(paths.clone(), tags),
             property_filter: PropertyFilterState::new(paths),
             backlinks_view: None,
+            links_view: None,
             move_prompt: None,
             mode: BrowseMode::Fuzzy,
             status: "Ready.".to_string(),
@@ -290,6 +292,9 @@ impl BrowseState {
         }
         if self.backlinks_view.is_some() {
             return self.handle_backlinks_key(key.code);
+        }
+        if self.links_view.is_some() {
+            return self.handle_links_key(key.code);
         }
 
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -326,19 +331,35 @@ impl BrowseState {
                 self.mode = BrowseMode::Fuzzy;
                 BrowseAction::Continue
             }
-            KeyCode::Char('b') if self.mode == BrowseMode::Fuzzy => {
+            KeyCode::Char('b')
+                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
+            {
                 self.clear_status();
                 if let Err(error) = self.open_backlinks_view() {
                     self.set_status(error);
                 }
                 BrowseAction::Continue
             }
-            KeyCode::Char('m') if self.mode == BrowseMode::Fuzzy => {
+            KeyCode::Char('l')
+                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
+            {
+                self.clear_status();
+                if let Err(error) = self.open_links_view() {
+                    self.set_status(error);
+                }
+                BrowseAction::Continue
+            }
+            KeyCode::Char('m')
+                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
+            {
                 self.clear_status();
                 self.open_move_prompt();
                 BrowseAction::Continue
             }
-            KeyCode::Enter | KeyCode::Char('e') if self.mode == BrowseMode::Fuzzy => {
+            KeyCode::Enter | KeyCode::Char('e')
+                if self.mode == BrowseMode::Fuzzy
+                    && (matches!(key.code, KeyCode::Enter) || self.picker.query().is_empty()) =>
+            {
                 if let Some(path) = self.selected_path().map(str::to_string) {
                     BrowseAction::Edit(path)
                 } else {
@@ -372,6 +393,37 @@ impl BrowseState {
                     BrowseAction::Edit(path)
                 } else {
                     self.set_status("No backlink source selected.");
+                    BrowseAction::Continue
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                view.move_selection(-1);
+                BrowseAction::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                view.move_selection(1);
+                BrowseAction::Continue
+            }
+            _ => BrowseAction::Continue,
+        }
+    }
+
+    fn handle_links_key(&mut self, code: KeyCode) -> BrowseAction {
+        let Some(view) = self.links_view.as_mut() else {
+            return BrowseAction::Continue;
+        };
+
+        match code {
+            KeyCode::Esc => {
+                self.links_view = None;
+                self.clear_status();
+                BrowseAction::Continue
+            }
+            KeyCode::Enter | KeyCode::Char('e') => {
+                if let Some(path) = view.selected_path().map(str::to_string) {
+                    BrowseAction::Edit(path)
+                } else {
+                    self.set_status("Selected link does not resolve to a note.");
                     BrowseAction::Continue
                 }
             }
@@ -467,6 +519,9 @@ impl BrowseState {
         if let Some(view) = self.backlinks_view.as_mut() {
             view.reload(&self.paths)?;
         }
+        if let Some(view) = self.links_view.as_mut() {
+            view.reload(&self.paths)?;
+        }
         Ok(())
     }
 
@@ -499,6 +554,9 @@ impl BrowseState {
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.selected_path();
         }
+        if let Some(view) = self.links_view.as_ref() {
+            return view.selected_path();
+        }
         match self.mode {
             BrowseMode::Fuzzy => self.picker.selected_path(),
             BrowseMode::FullText => self.full_text.selected_path(),
@@ -509,6 +567,9 @@ impl BrowseState {
 
     fn query(&self) -> &str {
         if let Some(view) = self.backlinks_view.as_ref() {
+            return view.note_path();
+        }
+        if let Some(view) = self.links_view.as_ref() {
             return view.note_path();
         }
         if let Some(prompt) = self.move_prompt.as_ref() {
@@ -526,6 +587,9 @@ impl BrowseState {
         if let Some(view) = self.backlinks_view.as_ref() {
             return format!("Backlinks ({})", view.note_path());
         }
+        if let Some(view) = self.links_view.as_ref() {
+            return format!("Outgoing Links ({})", view.note_path());
+        }
         self.move_prompt.as_ref().map_or_else(
             || self.mode.query_title().to_string(),
             |prompt| format!("Move Note ({})", prompt.source_path),
@@ -536,16 +600,22 @@ impl BrowseState {
         if self.backlinks_view.is_some() {
             return "Keys: Enter/e edit source note, Esc back, j/k move".to_string();
         }
+        if self.links_view.is_some() {
+            return "Keys: Enter/e edit target note, Esc back, j/k move".to_string();
+        }
         if self.move_prompt.is_some() {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
-            "Keys: Enter/e edit, m move, b backlinks, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
+            "Keys: Enter/e edit, m move, b backlinks, l links, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
         }
     }
 
     fn mode_help_line(&self) -> String {
         if self.backlinks_view.is_some() {
             return "view notes that link to the selected note; Esc returns to browse".to_string();
+        }
+        if self.links_view.is_some() {
+            return "view links from the selected note; Esc returns to browse".to_string();
         }
         self.move_prompt.as_ref().map_or_else(
             || self.mode.help_line().to_string(),
@@ -556,6 +626,8 @@ impl BrowseState {
     fn list_title(&self) -> &'static str {
         if self.backlinks_view.is_some() {
             "Backlinks"
+        } else if self.links_view.is_some() {
+            "Links"
         } else {
             "Notes"
         }
@@ -563,6 +635,9 @@ impl BrowseState {
 
     fn list_items(&self) -> Vec<String> {
         if let Some(view) = self.backlinks_view.as_ref() {
+            return view.list_items();
+        }
+        if let Some(view) = self.links_view.as_ref() {
             return view.list_items();
         }
         match self.mode {
@@ -594,6 +669,9 @@ impl BrowseState {
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.selected_index();
         }
+        if let Some(view) = self.links_view.as_ref() {
+            return view.selected_index();
+        }
         match self.mode {
             BrowseMode::Fuzzy => self.picker.selected_index(),
             BrowseMode::FullText => self.full_text.selected_index(),
@@ -604,6 +682,9 @@ impl BrowseState {
 
     fn preview_title(&self) -> String {
         if let Some(view) = self.backlinks_view.as_ref() {
+            return view.preview_title();
+        }
+        if let Some(view) = self.links_view.as_ref() {
             return view.preview_title();
         }
         match self.mode {
@@ -624,6 +705,9 @@ impl BrowseState {
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.preview_lines();
         }
+        if let Some(view) = self.links_view.as_ref() {
+            return view.preview_lines();
+        }
         match self.mode {
             BrowseMode::Fuzzy => self.picker.preview_lines(),
             BrowseMode::FullText => self.full_text.preview_lines(),
@@ -634,6 +718,9 @@ impl BrowseState {
 
     fn filtered_count(&self) -> usize {
         if let Some(view) = self.backlinks_view.as_ref() {
+            return view.filtered_count();
+        }
+        if let Some(view) = self.links_view.as_ref() {
             return view.filtered_count();
         }
         match self.mode {
@@ -673,6 +760,17 @@ impl BrowseState {
             return Ok(());
         };
         self.backlinks_view = Some(BacklinksViewState::load(&self.paths, &path)?);
+        self.links_view = None;
+        Ok(())
+    }
+
+    fn open_links_view(&mut self) -> Result<(), String> {
+        let Some(path) = self.selected_path().map(str::to_string) else {
+            self.set_status("No matching note selected.");
+            return Ok(());
+        };
+        self.links_view = Some(OutgoingLinksViewState::load(&self.paths, &path)?);
+        self.backlinks_view = None;
         Ok(())
     }
 
@@ -686,6 +784,9 @@ impl BrowseState {
         }
         if let Some(view) = self.backlinks_view.as_ref() {
             return format!("Backlinks for {}", view.note_path());
+        }
+        if let Some(view) = self.links_view.as_ref() {
+            return format!("Outgoing links for {}", view.note_path());
         }
 
         match self.mode {
@@ -819,6 +920,169 @@ impl BacklinksViewState {
     fn selected_backlink(&self) -> Option<&BacklinkRecord> {
         self.selected_index
             .and_then(|index| self.backlinks.get(index))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OutgoingLinksViewState {
+    note_path: String,
+    links: Vec<OutgoingLinkRecord>,
+    selected_index: Option<usize>,
+}
+
+impl OutgoingLinksViewState {
+    fn load(paths: &VaultPaths, note_path: &str) -> Result<Self, String> {
+        let report = query_links(paths, note_path).map_err(|error| error.to_string())?;
+        let selected_index = (!report.links.is_empty()).then_some(0);
+        Ok(Self {
+            note_path: report.note_path,
+            links: report.links,
+            selected_index,
+        })
+    }
+
+    fn reload(&mut self, paths: &VaultPaths) -> Result<(), String> {
+        let selected_key = self.selected_link().map(|link| {
+            (
+                link.resolved_target_path.clone(),
+                link.target_path_candidate.clone(),
+                link.raw_text.clone(),
+            )
+        });
+        let report = query_links(paths, &self.note_path).map_err(|error| error.to_string())?;
+        self.note_path = report.note_path;
+        self.links = report.links;
+        self.selected_index = selected_key.and_then(|key| {
+            self.links.iter().position(|link| {
+                (
+                    link.resolved_target_path.clone(),
+                    link.target_path_candidate.clone(),
+                    link.raw_text.clone(),
+                ) == key
+            })
+        });
+        self.clamp_selection();
+        Ok(())
+    }
+
+    fn note_path(&self) -> &str {
+        &self.note_path
+    }
+
+    fn filtered_count(&self) -> usize {
+        self.links.len()
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    fn selected_path(&self) -> Option<&str> {
+        self.selected_link()
+            .and_then(|link| link.resolved_target_path.as_deref())
+    }
+
+    fn preview_title(&self) -> String {
+        self.selected_link().map_or_else(
+            || "Link Preview".to_string(),
+            |link| format!("Link: {}", outgoing_link_target_label(link)),
+        )
+    }
+
+    fn preview_lines(&self) -> Vec<Line<'static>> {
+        let Some(link) = self.selected_link() else {
+            return vec![Line::from("No outgoing links.")];
+        };
+
+        let mut lines = vec![
+            Line::from(format!("Raw link: {}", link.raw_text)),
+            Line::from(format!("Target: {}", outgoing_link_target_label(link))),
+            Line::from(format!(
+                "Status: {}",
+                resolution_status_label(link.resolution_status.clone())
+            )),
+        ];
+        if let Some(context) = link.context.as_ref() {
+            lines.push(Line::from(format!(
+                "Line {}:{}",
+                context.line, context.column
+            )));
+            lines.push(Line::from(context.text.clone()));
+        }
+        lines
+    }
+
+    fn list_items(&self) -> Vec<String> {
+        self.links
+            .iter()
+            .map(|link| {
+                link.context.as_ref().map_or_else(
+                    || {
+                        format!(
+                            "{} [{} {}]",
+                            outgoing_link_target_label(link),
+                            link.link_kind,
+                            resolution_status_label(link.resolution_status.clone())
+                        )
+                    },
+                    |context| {
+                        format!(
+                            "{} [{} {} line {}]",
+                            outgoing_link_target_label(link),
+                            link.link_kind,
+                            resolution_status_label(link.resolution_status.clone()),
+                            context.line
+                        )
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.links.len();
+        if len == 0 {
+            self.selected_index = None;
+            return;
+        }
+
+        let current = self.selected_index.unwrap_or(0);
+        let step = delta.unsigned_abs();
+        let next = if delta.is_negative() {
+            current.saturating_sub(step)
+        } else {
+            current.saturating_add(step)
+        }
+        .min(len - 1);
+        self.selected_index = Some(next);
+    }
+
+    fn clamp_selection(&mut self) {
+        let len = self.links.len();
+        self.selected_index = if len == 0 {
+            None
+        } else {
+            Some(self.selected_index.unwrap_or(0).min(len - 1))
+        };
+    }
+
+    fn selected_link(&self) -> Option<&OutgoingLinkRecord> {
+        self.selected_index.and_then(|index| self.links.get(index))
+    }
+}
+
+fn outgoing_link_target_label(link: &OutgoingLinkRecord) -> String {
+    link.resolved_target_path
+        .clone()
+        .or_else(|| link.target_path_candidate.clone())
+        .unwrap_or_else(|| "(self)".to_string())
+}
+
+fn resolution_status_label(status: ResolutionStatus) -> &'static str {
+    match status {
+        ResolutionStatus::Resolved => "resolved",
+        ResolutionStatus::Unresolved => "unresolved",
+        ResolutionStatus::External => "external",
     }
 }
 
@@ -1563,6 +1827,68 @@ mod tests {
         .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
         state.handle_key(key(KeyCode::Char('b')));
+
+        let action = state.handle_key(key(KeyCode::Esc));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "Browse (/ fuzzy search)");
+        assert_eq!(state.selected_path(), Some("Projects/Alpha.md"));
+    }
+
+    #[test]
+    fn l_opens_outgoing_links_view_with_context() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Home.md", "# Home");
+        write_note(temp_dir.path(), "People/Bob.md", "# Bob");
+        write_note(
+            temp_dir.path(),
+            "Projects/Alpha.md",
+            "Links: [[Home]] and [[People/Bob|Bob]].",
+        );
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths,
+            vec![
+                note("Home.md", &[]),
+                note("People/Bob.md", &[]),
+                note("Projects/Alpha.md", &[]),
+            ],
+        )
+        .expect("state should build");
+        state.picker.select_path("Projects/Alpha.md");
+
+        let action = state.handle_key(key(KeyCode::Char('l')));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "Outgoing Links (Projects/Alpha.md)");
+        assert_eq!(state.list_title(), "Links");
+        assert_eq!(state.filtered_count(), 2);
+        assert_eq!(state.selected_path(), Some("Home.md"));
+        assert_eq!(
+            state.mode_help_line(),
+            "view links from the selected note; Esc returns to browse"
+        );
+        assert!(state.preview_lines().iter().any(|line| line
+            .spans
+            .iter()
+            .any(|span| span.content.contains("[[Home]]"))));
+    }
+
+    #[test]
+    fn links_view_esc_returns_to_browse() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Home.md", "# Home");
+        write_note(temp_dir.path(), "Projects/Alpha.md", "Links: [[Home]].");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths,
+            vec![note("Home.md", &[]), note("Projects/Alpha.md", &[])],
+        )
+        .expect("state should build");
+        state.picker.select_path("Projects/Alpha.md");
+        state.handle_key(key(KeyCode::Char('l')));
 
         let action = state.handle_key(key(KeyCode::Esc));
 
