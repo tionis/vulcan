@@ -5,6 +5,7 @@ pub mod config;
 pub mod doctor;
 pub mod expression;
 mod extraction;
+pub mod git;
 pub mod graph;
 pub mod history;
 pub mod init;
@@ -39,6 +40,7 @@ pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,
     DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
 };
+pub use git::{git_log, is_git_repo, GitError, GitLogEntry};
 pub use graph::{
     list_note_identities, list_tagged_note_identities, list_tags, query_backlinks,
     query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
