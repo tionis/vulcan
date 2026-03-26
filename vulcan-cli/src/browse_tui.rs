@@ -10,8 +10,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
+use std::fs;
 use std::io;
 use std::time::Duration;
+use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
     list_note_identities, list_tagged_note_identities, list_tags, move_note, query_backlinks,
@@ -89,6 +91,46 @@ fn run_event_loop(
                             state.refresh_preview();
                             state.set_status(error.to_string());
                         }
+                    }
+                }
+                BrowseAction::Create(path) => {
+                    let relative_path = match normalize_relative_input_path(
+                        &path,
+                        RelativePathOptions {
+                            expected_extension: Some("md"),
+                            append_extension_if_missing: true,
+                        },
+                    ) {
+                        Ok(path) => path,
+                        Err(error) => {
+                            state.set_status(error.to_string());
+                            continue;
+                        }
+                    };
+                    let paths = state.paths.clone();
+                    let create_result = with_terminal_suspended(terminal, || {
+                        let absolute = paths.vault_root().join(&relative_path);
+                        if let Some(parent) = absolute.parent() {
+                            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                        }
+                        if !absolute.exists() {
+                            fs::write(&absolute, "").map_err(|error| error.to_string())?;
+                        }
+                        open_in_editor(&absolute)?;
+                        scan_vault(&paths, ScanMode::Incremental)
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    });
+                    match create_result {
+                        Ok(()) => {
+                            state.clear_new_note_prompt();
+                            if let Err(error) = state.reload_after_new_note(&relative_path) {
+                                state.set_status(error);
+                            } else {
+                                state.set_status(format!("Created {relative_path}."));
+                            }
+                        }
+                        Err(error) => state.set_status(error.to_string()),
                     }
                 }
                 BrowseAction::Move {
@@ -191,6 +233,7 @@ enum BrowseAction {
     Continue,
     Quit,
     Edit(String),
+    Create(String),
     Move {
         source_path: String,
         destination: String,
@@ -249,6 +292,11 @@ impl MovePrompt {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct NewNotePrompt {
+    path: String,
+}
+
 #[derive(Debug, Clone)]
 struct BrowseState {
     paths: VaultPaths,
@@ -259,6 +307,7 @@ struct BrowseState {
     property_filter: PropertyFilterState,
     backlinks_view: Option<BacklinksViewState>,
     links_view: Option<OutgoingLinksViewState>,
+    new_note_prompt: Option<NewNotePrompt>,
     move_prompt: Option<MovePrompt>,
     mode: BrowseMode,
     status: String,
@@ -280,6 +329,7 @@ impl BrowseState {
             property_filter: PropertyFilterState::new(paths),
             backlinks_view: None,
             links_view: None,
+            new_note_prompt: None,
             move_prompt: None,
             mode: BrowseMode::Fuzzy,
             status: "Ready.".to_string(),
@@ -287,6 +337,9 @@ impl BrowseState {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> BrowseAction {
+        if self.new_note_prompt.is_some() {
+            return self.handle_new_note_prompt_key(key.code);
+        }
         if self.move_prompt.is_some() {
             return self.handle_move_prompt_key(key.code);
         }
@@ -356,6 +409,13 @@ impl BrowseState {
                 self.open_move_prompt();
                 BrowseAction::Continue
             }
+            KeyCode::Char('n')
+                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
+            {
+                self.clear_status();
+                self.new_note_prompt = Some(NewNotePrompt::default());
+                BrowseAction::Continue
+            }
             KeyCode::Enter | KeyCode::Char('e')
                 if self.mode == BrowseMode::Fuzzy
                     && (matches!(key.code, KeyCode::Enter) || self.picker.query().is_empty()) =>
@@ -374,6 +434,37 @@ impl BrowseState {
                 }
                 BrowseAction::Continue
             }
+        }
+    }
+
+    fn handle_new_note_prompt_key(&mut self, code: KeyCode) -> BrowseAction {
+        let Some(prompt) = self.new_note_prompt.as_mut() else {
+            return BrowseAction::Continue;
+        };
+
+        match code {
+            KeyCode::Esc => {
+                self.new_note_prompt = None;
+                self.clear_status();
+                BrowseAction::Continue
+            }
+            KeyCode::Enter => {
+                let path = prompt.path.trim().to_string();
+                if path.is_empty() {
+                    self.set_status("New note path cannot be empty.");
+                    return BrowseAction::Continue;
+                }
+                BrowseAction::Create(path)
+            }
+            KeyCode::Backspace => {
+                prompt.path.pop();
+                BrowseAction::Continue
+            }
+            KeyCode::Char(character) => {
+                prompt.path.push(character);
+                BrowseAction::Continue
+            }
+            _ => BrowseAction::Continue,
         }
     }
 
@@ -526,18 +617,22 @@ impl BrowseState {
     }
 
     fn reload_after_move(&mut self, destination: &str) -> Result<(), String> {
+        self.reload_after_new_note(destination)
+    }
+
+    fn reload_after_new_note(&mut self, path: &str) -> Result<(), String> {
         let notes = load_notes(&self.paths)?;
         self.all_notes = notes.clone();
         self.picker.replace_notes_preserve_selection(notes);
-        self.picker.select_path(destination);
+        self.picker.select_path(path);
         self.full_text.refresh_results(&self.paths)?;
-        self.full_text.select_path(destination);
+        self.full_text.select_path(path);
         self.tag_filter
             .refresh_results(&self.paths, &self.all_notes)?;
-        self.tag_filter.select_path(destination);
+        self.tag_filter.select_path(path);
         self.property_filter
             .refresh_results(&self.paths, &self.all_notes);
-        self.property_filter.select_path(destination);
+        self.property_filter.select_path(path);
         Ok(())
     }
 
@@ -572,6 +667,9 @@ impl BrowseState {
         if let Some(view) = self.links_view.as_ref() {
             return view.note_path();
         }
+        if let Some(prompt) = self.new_note_prompt.as_ref() {
+            return &prompt.path;
+        }
         if let Some(prompt) = self.move_prompt.as_ref() {
             return &prompt.destination;
         }
@@ -590,6 +688,9 @@ impl BrowseState {
         if let Some(view) = self.links_view.as_ref() {
             return format!("Outgoing Links ({})", view.note_path());
         }
+        if self.new_note_prompt.is_some() {
+            return "New Note".to_string();
+        }
         self.move_prompt.as_ref().map_or_else(
             || self.mode.query_title().to_string(),
             |prompt| format!("Move Note ({})", prompt.source_path),
@@ -603,10 +704,13 @@ impl BrowseState {
         if self.links_view.is_some() {
             return "Keys: Enter/e edit target note, Esc back, j/k move".to_string();
         }
+        if self.new_note_prompt.is_some() {
+            return "Keys: Enter create, Esc cancel, Backspace edit path".to_string();
+        }
         if self.move_prompt.is_some() {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
-            "Keys: Enter/e edit, m move, b backlinks, l links, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
+            "Keys: Enter/e edit, n new, m move, b backlinks, l links, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
         }
     }
 
@@ -616,6 +720,9 @@ impl BrowseState {
         }
         if self.links_view.is_some() {
             return "view links from the selected note; Esc returns to browse".to_string();
+        }
+        if self.new_note_prompt.is_some() {
+            return "type a relative note path like Inbox/Idea.md, then press Enter".to_string();
         }
         self.move_prompt.as_ref().map_or_else(
             || self.mode.help_line().to_string(),
@@ -747,6 +854,10 @@ impl BrowseState {
         self.move_prompt = None;
     }
 
+    fn clear_new_note_prompt(&mut self) {
+        self.new_note_prompt = None;
+    }
+
     fn open_move_prompt(&mut self) {
         match self.selected_path() {
             Some(path) => self.move_prompt = Some(MovePrompt::new(path)),
@@ -781,6 +892,9 @@ impl BrowseState {
 
         if let Some(prompt) = self.move_prompt.as_ref() {
             return format!("Moving {}", prompt.source_path);
+        }
+        if self.new_note_prompt.is_some() {
+            return "Creating new note".to_string();
         }
         if let Some(view) = self.backlinks_view.as_ref() {
             return format!("Backlinks for {}", view.note_path());
@@ -1895,6 +2009,66 @@ mod tests {
         assert_eq!(action, BrowseAction::Continue);
         assert_eq!(state.query_title(), "Browse (/ fuzzy search)");
         assert_eq!(state.selected_path(), Some("Projects/Alpha.md"));
+    }
+
+    #[test]
+    fn n_opens_new_note_prompt() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        let mut state =
+            BrowseState::new(paths, vec![note("Home.md", &[])]).expect("state should build");
+
+        let action = state.handle_key(key(KeyCode::Char('n')));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "New Note");
+        assert_eq!(state.query(), "");
+        assert_eq!(
+            state.mode_help_line(),
+            "type a relative note path like Inbox/Idea.md, then press Enter"
+        );
+    }
+
+    #[test]
+    fn new_note_action_creates_file_and_reloads_selection() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Home.md", "# Home");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths.clone(), vec![note("Home.md", &[])])
+            .expect("state should build");
+
+        state.handle_key(key(KeyCode::Char('n')));
+        for character in "Inbox/Idea".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+
+        let action = state.handle_key(key(KeyCode::Enter));
+        let BrowseAction::Create(path) = action else {
+            panic!("expected create action");
+        };
+        let relative_path = normalize_relative_input_path(
+            &path,
+            RelativePathOptions {
+                expected_extension: Some("md"),
+                append_extension_if_missing: true,
+            },
+        )
+        .expect("path should normalize");
+        let absolute = temp_dir.path().join(&relative_path);
+        if let Some(parent) = absolute.parent() {
+            fs::create_dir_all(parent).expect("new note dir should be created");
+        }
+        fs::write(&absolute, "").expect("new note should be created");
+        scan_fixture(&paths);
+        state.clear_new_note_prompt();
+        state
+            .reload_after_new_note(&relative_path)
+            .expect("browse state should reload after create");
+
+        assert_eq!(relative_path, "Inbox/Idea.md");
+        assert!(absolute.exists());
+        assert_eq!(state.selected_path(), Some("Inbox/Idea.md"));
     }
 
     #[test]
