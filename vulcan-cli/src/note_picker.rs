@@ -57,16 +57,45 @@ fn run_event_loop(
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
-                KeyCode::Enter => return Ok(state.selected_note().map(|note| note.path.clone())),
-                KeyCode::Up | KeyCode::Char('k') => state.move_selection(-1),
-                KeyCode::Down | KeyCode::Char('j') => state.move_selection(1),
-                KeyCode::Backspace => state.pop_query(),
-                KeyCode::Char(character) => state.push_query(character),
-                _ => {}
+            match handle_picker_key(state, key.code) {
+                PickerAction::Continue => {}
+                PickerAction::Cancel => return Ok(None),
+                PickerAction::Select => {
+                    return Ok(state.selected_note().map(|note| note.path.clone()));
+                }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerAction {
+    Continue,
+    Cancel,
+    Select,
+}
+
+fn handle_picker_key(state: &mut NotePickerState, code: KeyCode) -> PickerAction {
+    match code {
+        KeyCode::Esc => PickerAction::Cancel,
+        KeyCode::Enter => PickerAction::Select,
+        KeyCode::Up | KeyCode::Char('k') => {
+            state.move_selection(-1);
+            PickerAction::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            state.move_selection(1);
+            PickerAction::Continue
+        }
+        KeyCode::Backspace => {
+            state.pop_query();
+            PickerAction::Continue
+        }
+        KeyCode::Char(character) => {
+            state.push_query(character);
+            PickerAction::Continue
+        }
+        _ => PickerAction::Continue,
     }
 }
 
@@ -304,6 +333,7 @@ fn load_preview(paths: &VaultPaths, relative_path: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn note(path: &str, aliases: &[&str]) -> NoteIdentity {
         NoteIdentity {
@@ -316,6 +346,37 @@ mod tests {
                 .to_string(),
             aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn char_q_updates_query_instead_of_cancelling() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let state_paths = VaultPaths::new(temp_dir.path());
+        let mut state = NotePickerState::new(
+            state_paths,
+            vec![NoteIdentity {
+                path: "Alpha.md".to_string(),
+                filename: "Alpha".to_string(),
+                aliases: vec!["Start".to_string()],
+            }],
+            "",
+        );
+
+        let action = handle_picker_key(&mut state, KeyCode::Char('q'));
+
+        assert_eq!(action, PickerAction::Continue);
+        assert_eq!(state.query, "q");
+    }
+
+    #[test]
+    fn escape_cancels_picker() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let state_paths = VaultPaths::new(temp_dir.path());
+        let mut state = NotePickerState::new(state_paths, Vec::new(), "");
+
+        let action = handle_picker_key(&mut state, KeyCode::Esc);
+
+        assert_eq!(action, PickerAction::Cancel);
     }
 
     #[test]

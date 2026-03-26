@@ -728,7 +728,7 @@ vulcan edit [note]           # open specific note, or picker if omitted
 vulcan edit --new [path]     # create new note, open in editor
 ```
 
-- [ ] **Keybinding fix:** change note picker quit from `Esc | q` to `Esc`-only, so `q` can be typed in search queries
+- [x] **Keybinding fix:** change note picker quit from `Esc | q` to `Esc`-only, so `q` can be typed in search queries
 - [ ] `vulcan edit <note>`: resolve note by path/filename/alias, open in `$VISUAL`/`$EDITOR`/`vi`
 - [ ] If `<note>` is ambiguous or omitted: spawn the existing note picker TUI, Enter opens selected note in editor
 - [ ] `vulcan edit --new <path>`: create a new empty note (or from template if 9.4.3 is implemented), open in editor
