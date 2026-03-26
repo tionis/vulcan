@@ -2097,6 +2097,7 @@ impl FullTextState {
                 filters: Vec::new(),
                 provider: None,
                 mode: SearchMode::Keyword,
+                sort: None,
                 limit: Some(FULL_TEXT_LIMIT),
                 context_size: FULL_TEXT_CONTEXT_SIZE,
                 raw_query: false,

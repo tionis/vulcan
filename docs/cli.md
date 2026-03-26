@@ -140,7 +140,7 @@ Note resolution rules:
 - `vulcan graph stats`: note-graph and vault analytics summary.
 - `vulcan graph trends [--limit <N>]`: trends across saved scan checkpoints.
 - `vulcan notes ...`: property and file-metadata queries.
-- `vulcan search ...`: full-text search with optional typed property filters.
+- `vulcan search ...`: full-text search with optional typed property filters and explicit result sorting.
 - `vulcan query ...`: run the human DSL or JSON query payload.
 - `vulcan suggest mentions [note]`: plain-text mentions that could become links.
 - `vulcan suggest duplicates`: duplicate titles, alias collisions, and merge candidates.
@@ -255,6 +255,8 @@ vulcan search dashboard
 vulcan search 'dashboard "release notes" -draft'
 vulcan search dashboard --where 'reviewed = true'
 vulcan search 'tag:index path:People/ has:status owned'
+vulcan search dashboard --sort path-desc
+vulcan search dashboard --sort modified-newest
 ```
 
 Default query syntax:
@@ -291,6 +293,7 @@ Useful search flags:
 - `--path-prefix <PREFIX>`: require a path prefix
 - `--has-property <KEY>`: require the property to exist
 - `--mode <keyword|hybrid>`: select keyword-only or keyword+vector search
+- `--sort <relevance|path-asc|path-desc|modified-newest|modified-oldest|created-newest|created-oldest>`: override result ordering
 - `--context-size <N>`: snippet context size
 - `--raw-query`: pass SQLite FTS5 syntax through unchanged
 - `--fuzzy`: retry empty searches with typo-tolerant expansion
@@ -302,7 +305,7 @@ Raw FTS5 example:
 vulcan search --raw-query '"release" NEAR/5 "notes"'
 ```
 
-**Planned enhancements (Roadmap 9.6):** Inline property search with `[prop:val]` bracket syntax, inline regex with `/pattern/` delimiters, `--sort` for result ordering, and richer browse-TUI search controls. See `docs/ROADMAP.md` §9.6.
+**Planned enhancements (Roadmap 9.6):** Browse-TUI search controls will continue to grow with inline explanation panes and more live search toggles. See `docs/ROADMAP.md` §9.6.
 
 ## Query DSL and JSON payloads
 
