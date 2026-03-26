@@ -27,6 +27,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("backlinks"))
             .and(predicate::str::contains("graph"))
             .and(predicate::str::contains("notes"))
+            .and(predicate::str::contains("browse"))
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("suggest"))
             .and(predicate::str::contains("search"))
@@ -64,7 +65,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Indexing: init, scan, rebuild, repair, watch, serve",
             ))
             .and(predicate::str::contains(
-                "Graph and Query: links, backlinks, graph, search, notes, query, bases, suggest",
+                "Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest",
             ))
             .and(predicate::str::contains(
                 "Semantic: vectors, cluster, related",
@@ -2217,6 +2218,11 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .as_array()
         .expect("commands should be an array")
         .iter()
+        .any(|command| command["name"] == "browse"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
         .find(|command| command["name"] == "notes")
         .and_then(|command| command["after_help"].as_str())
         .expect("notes after_help should be present")
@@ -2231,6 +2237,18 @@ fn completions_command_emits_shell_script() {
         .assert()
         .success()
         .stdout(predicate::str::contains("vulcan").and(predicate::str::contains("complete")));
+}
+
+#[test]
+fn browse_requires_interactive_terminal() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["browse"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "browse requires an interactive terminal",
+        ));
 }
 
 #[test]

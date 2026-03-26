@@ -1,4 +1,5 @@
 mod bases_tui;
+mod browse_tui;
 mod cli;
 mod editor;
 mod note_picker;
@@ -1208,6 +1209,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             print_edit_report(cli.output, &report);
             Ok(())
+        }
+        Command::Browse => {
+            if cli.output != OutputFormat::Human || !stdout_is_tty || !io::stdin().is_terminal() {
+                return Err(CliError::operation(
+                    "browse requires an interactive terminal with `--output human`",
+                ));
+            }
+            browse_tui::run_browse_tui(&paths).map_err(CliError::operation)
         }
         Command::Completions { shell } => {
             let mut command = Cli::command();
@@ -5344,6 +5353,7 @@ mod tests {
         let cluster = Cli::try_parse_from(["vulcan", "cluster", "--clusters", "3", "--dry-run"])
             .expect("cli should parse");
         let related = Cli::try_parse_from(["vulcan", "related", "Home"]).expect("cli should parse");
+        let browse = Cli::try_parse_from(["vulcan", "browse"]).expect("cli should parse");
         let edit = Cli::try_parse_from(["vulcan", "edit", "Home"]).expect("cli should parse");
         let edit_new = Cli::try_parse_from(["vulcan", "edit", "--new", "Notes/Idea"])
             .expect("cli should parse");
@@ -5648,6 +5658,7 @@ mod tests {
                 export: ExportArgs::default(),
             }
         );
+        assert_eq!(browse.command, Command::Browse);
         assert_eq!(
             related_picker.command,
             Command::Related {
@@ -5918,6 +5929,10 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "rename-property"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "browse"));
         assert!(report.commands.iter().any(|command| command.name == "edit"));
         assert!(report
             .commands

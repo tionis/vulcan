@@ -5,7 +5,7 @@ use std::path::PathBuf;
 const ROOT_AFTER_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
-  Graph and Query: links, backlinks, graph, search, notes, query, bases, suggest
+  Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
   Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
@@ -779,6 +779,8 @@ pub enum Command {
         #[command(flatten)]
         export: ExportArgs,
     },
+    #[command(about = "Open a persistent note browser TUI")]
+    Browse,
     #[command(about = "Open a note in $VISUAL/$EDITOR and refresh the cache afterwards")]
     Edit {
         #[arg(

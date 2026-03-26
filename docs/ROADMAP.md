@@ -747,9 +747,9 @@ vulcan browse
 ```
 
 **Core loop:**
-- [ ] Start in the note picker view (extend existing `NotePickerState` from `note_picker.rs`)
-- [ ] Enter opens selected note in `$EDITOR`; on editor exit, return to picker with previous query and selection preserved
-- [ ] After each editor exit: incremental rescan of the edited file, refresh the note list
+- [x] Start in the note picker view (extend existing `NotePickerState` from `note_picker.rs`)
+- [x] Enter opens selected note in `$EDITOR`; on editor exit, return to picker with previous query and selection preserved
+- [x] After each editor exit: incremental rescan of the edited file, refresh the note list
 - [ ] If auto-commit is enabled (8.3): commit after each editor session
 
 **Search mode hotkeys** (toggled in the picker's input bar):
@@ -759,7 +759,7 @@ vulcan browse
 - [ ] `Ctrl-P`: property filter mode — type a property predicate (reuse the existing `where` filter syntax from `NoteQuery`), filter notes by property values
 
 **Action hotkeys on the selected note:**
-- [ ] `e` or `Enter`: edit in `$EDITOR` (as above)
+- [x] `e` or `Enter`: edit in `$EDITOR` (as above)
 - [ ] `m`: move/rename — inline prompt for destination path, runs the move-rewrite engine, refreshes note list
 - [ ] `b`: switch to a backlinks view for the selected note (list of linking notes with context, navigable)
 - [ ] `l`: switch to an outgoing links view for the selected note
