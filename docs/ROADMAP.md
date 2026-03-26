@@ -992,17 +992,17 @@ Allow regular expressions delimited by `/` in search queries.
 Add `--sort` to `vulcan search` and sort controls to `browse` Ctrl-F mode.
 
 - [x] `--sort <field>`: `relevance` (default, BM25), `path-asc`, `path-desc`, `modified-newest`, `modified-oldest`, `created-newest`, `created-oldest`
-- [ ] Browse TUI: cycle sort order with a hotkey (e.g., `Ctrl-S`) in full-text search mode
+- [x] Browse TUI: cycle sort order with a hotkey (e.g., `Ctrl-S`) in full-text search mode
 - [x] Sort by relevance remains default; other sorts disable BM25 ranking and use SQL ORDER BY
 
 #### 9.6.7 Browse TUI search integration
 
 Wire all new search capabilities into the browse TUI's Ctrl-F mode.
 
-- [ ] All inline operators (`file:`, `content:`, `section:`, `[prop:val]`, etc.) work in the TUI search input
-- [ ] Status bar shows the explained/parsed query (operator breakdown) when `--explain` equivalent is toggled
-- [ ] Add a `Ctrl-E` toggle in Ctrl-F mode to show/hide the query explanation pane
-- [ ] Add a case-sensitivity toggle (e.g., `Alt-C`) that wraps terms in `match-case:` automatically
+- [x] All inline operators (`file:`, `content:`, `section:`, `[prop:val]`, etc.) work in the TUI search input
+- [x] Status bar shows the explained/parsed query (operator breakdown) when `--explain` equivalent is toggled
+- [x] Add a `Ctrl-E` toggle in Ctrl-F mode to show/hide the query explanation pane
+- [x] Add a case-sensitivity toggle (e.g., `Alt-C`) that toggles global match-case in Ctrl-F mode
 
 #### 9.6.8 `SearchQuery` struct and HTTP API updates
 
@@ -1021,7 +1021,7 @@ Richer search-plan explanation for debugging complex queries across all surfaces
 
 - [x] `vulcan search --explain` CLI output: after the existing score breakdown, print a "Query plan" section showing the boolean tree, active operators, property filters, sort order, and regex patterns — one line per component.
 - [x] JSON output (`--output json` and HTTP API): the `SearchPlan.parsed_query_explanation` array provides the same information machine-readably.
-- [ ] Browse TUI `Ctrl-E` explain pane (from 9.6.7) renders `parsed_query_explanation` lines in a scrollable overlay.
+- [x] Browse TUI `Ctrl-E` explain pane (from 9.6.7) renders `parsed_query_explanation` lines in a scrollable pane.
 - [x] When no results are found: the explanation includes suggestions (e.g., "did you mean `content:` instead of `contents:`?", "no tasks found in matched files for `task-todo:`").
 
 #### 9.6.10 Cross-cutting integration notes

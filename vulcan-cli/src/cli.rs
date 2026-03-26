@@ -180,7 +180,7 @@ Browse modes:
   /            return to fuzzy mode
 
 Keys:
-  Enter/Ctrl-E edit the selected note
+  Enter        edit the selected note
   Ctrl-N       create a new note
   Ctrl-R       move or rename the selected note
   Ctrl-B       open backlinks for the selected note
@@ -193,6 +193,8 @@ Notes:
   browse honors [scan].browse_mode in config; --refresh overrides it per invocation.
   `background` opens immediately on current cache contents, then reloads when the scan completes.
   Printable characters always extend the active query or prompt; browse actions use Enter or Ctrl shortcuts.
+  Ctrl-E edits from fuzzy/tag/property modes; in Ctrl-F mode it toggles the explain pane.
+  In Ctrl-F mode, Ctrl-S cycles result sort order and Alt-C toggles global match-case.
   After edits, creates, and moves, Vulcan rescans affected files and refreshes the browser.
   In backlinks/outgoing-link views, `o` opens the selected .base file in the Bases TUI.
 

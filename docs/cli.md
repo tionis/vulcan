@@ -396,7 +396,7 @@ Modes:
 
 Primary keys:
 
-- `Enter` or `Ctrl-E`: edit the selected note
+- `Enter`: edit the selected note
 - `Ctrl-N`: create a new note
 - `Ctrl-R`: move or rename the selected note
 - `Ctrl-B`: backlinks view
@@ -405,10 +405,18 @@ Primary keys:
 - `Ctrl-G`: git history for the selected file
 - `Esc`: quit
 
+Ctrl-F full-text extras:
+
+- `Ctrl-S`: cycle search result ordering (`relevance`, `path-*`, `modified-*`, `created-*`)
+- `Alt-C`: toggle global case-sensitive matching
+- `Ctrl-E`: toggle the parsed-query explain pane
+- `PageUp` / `PageDown`: scroll the explain pane
+
 Additional browse notes:
 
 - By default, `browse` opens immediately on current cache contents and runs a background incremental refresh. Use `[scan].browse_mode` or `--refresh` to change that behavior.
 - Printable characters always extend the active query or prompt. Browse actions use `Enter` or `Ctrl-*` shortcuts.
+- In full-text mode, the status line mirrors the parsed query/explain output when the explain pane is open.
 - After edits, creates, and moves, Vulcan rescans the affected files and refreshes the list.
 - In backlinks and outgoing-link views, `o` opens the selected `.base` file in the Bases TUI.
 - `browse` accepts `--no-commit` to suppress auto-commit for that session.
