@@ -217,6 +217,9 @@ struct PreparedSearchQuery {
     path_prefix: Option<String>,
     has_property: Option<String>,
     filters: Vec<String>,
+    file_terms: Vec<String>,
+    content_terms: Vec<SearchTerm>,
+    match_case_terms: Vec<String>,
     raw_query: bool,
     fuzzy_requested: bool,
     fuzzy_fallback_used: bool,
@@ -251,7 +254,19 @@ struct InlineFilterState {
     tag: Option<String>,
     path_prefix: Option<String>,
     has_property: Option<String>,
+    file_terms: Vec<String>,
+    content_terms: Vec<SearchTerm>,
+    match_case_terms: Vec<String>,
     positive_terms: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SearchCandidate {
+    hit: SearchHit,
+    content: String,
+    document_title: String,
+    aliases: String,
+    headings: String,
 }
 
 pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchReport, SearchError> {
@@ -368,73 +383,96 @@ fn keyword_search_hits(
     let limit = limit_override
         .or(query.limit)
         .map_or(i64::MAX, |value| i64::try_from(value).unwrap_or(i64::MAX));
-    let path_filter = prepared
-        .path_prefix
-        .as_deref()
-        .map_or(SqlValue::Null, |prefix| {
-            SqlValue::Text(format!("{prefix}%"))
-        });
-    let tag = prepared.tag.clone().map_or(SqlValue::Null, SqlValue::Text);
-    let has_property = prepared
-        .has_property
-        .clone()
-        .map_or(SqlValue::Null, SqlValue::Text);
     let filter_sql = build_note_filter_clause(&prepared.filters)?;
+    let use_fts = !prepared.effective_query.trim().is_empty();
     let mut sql = filter_sql.cte;
-    sql.push_str(
-        "SELECT
-            documents.path,
-            chunks.id,
-            chunks.heading_path,
-            snippet(search_chunks_fts, 0, '[', ']', '…', ?6),
-            bm25(search_chunks_fts, 10.0, 5.0, 3.0, 2.0)
-        FROM search_chunks_fts
-        JOIN search_chunk_content ON search_chunks_fts.rowid = search_chunk_content.id
-        JOIN chunks ON chunks.id = search_chunk_content.chunk_id
-        JOIN documents ON documents.id = search_chunk_content.document_id
-        WHERE search_chunks_fts MATCH ?1
-          AND (?2 IS NULL OR documents.path LIKE ?2)
-          AND (
-                ?3 IS NULL
-                OR EXISTS (
-                    SELECT 1
-                    FROM tags
-                    WHERE tags.document_id = documents.id
-                      AND tags.tag_text = ?3
-                )
-          )
-          AND (
-                ?4 IS NULL
-                OR EXISTS (
-                    SELECT 1
-                    FROM property_values
-                    WHERE property_values.document_id = documents.id
-                      AND property_values.key = ?4
-                )
-          )",
-    );
-    sql.push_str(&filter_sql.clause);
-    sql.push_str(
-        " ORDER BY 5 ASC, documents.path ASC, chunks.sequence_index ASC
-        LIMIT ?5",
-    );
+    if use_fts {
+        sql.push_str(&format!(
+            "SELECT
+                documents.path,
+                chunks.id,
+                chunks.heading_path,
+                snippet(search_chunks_fts, 0, '[', ']', '…', {context_size}),
+                bm25(search_chunks_fts, 10.0, 5.0, 3.0, 2.0),
+                search_chunk_content.content,
+                search_chunk_content.document_title,
+                search_chunk_content.aliases,
+                search_chunk_content.headings
+            FROM search_chunks_fts
+            JOIN search_chunk_content ON search_chunks_fts.rowid = search_chunk_content.id
+            JOIN chunks ON chunks.id = search_chunk_content.chunk_id
+            JOIN documents ON documents.id = search_chunk_content.document_id
+            WHERE search_chunks_fts MATCH ?",
+            context_size = query.context_size
+        ));
+    } else {
+        sql.push_str(
+            "SELECT
+                documents.path,
+                chunks.id,
+                chunks.heading_path,
+                search_chunk_content.content,
+                0.0,
+                search_chunk_content.content,
+                search_chunk_content.document_title,
+                search_chunk_content.aliases,
+                search_chunk_content.headings
+            FROM search_chunk_content
+            JOIN chunks ON chunks.id = search_chunk_content.chunk_id
+            JOIN documents ON documents.id = search_chunk_content.document_id
+            WHERE 1 = 1",
+        );
+    }
 
-    let mut params = vec![
-        SqlValue::Text(prepared.effective_query.clone()),
-        path_filter,
-        tag,
-        has_property,
-        SqlValue::Integer(limit),
-        SqlValue::Integer(i64::try_from(query.context_size).unwrap_or(i64::MAX)),
-    ];
-    params.append(&mut filter_sql.params.clone());
+    let mut params = Vec::<SqlValue>::new();
+    if use_fts {
+        params.push(SqlValue::Text(prepared.effective_query.clone()));
+    }
+    if let Some(path_prefix) = prepared.path_prefix.as_deref() {
+        sql.push_str(" AND documents.path LIKE ?");
+        params.push(SqlValue::Text(format!("{path_prefix}%")));
+    }
+    if let Some(tag) = prepared.tag.as_deref() {
+        sql.push_str(
+            " AND EXISTS (
+                SELECT 1
+                FROM tags
+                WHERE tags.document_id = documents.id
+                  AND tags.tag_text = ?
+            )",
+        );
+        params.push(SqlValue::Text(tag.to_string()));
+    }
+    if let Some(has_property) = prepared.has_property.as_deref() {
+        sql.push_str(
+            " AND EXISTS (
+                SELECT 1
+                FROM property_values
+                WHERE property_values.document_id = documents.id
+                  AND property_values.key = ?
+            )",
+        );
+        params.push(SqlValue::Text(has_property.to_string()));
+    }
+    for term in &prepared.file_terms {
+        sql.push_str(" AND documents.filename LIKE ?");
+        params.push(SqlValue::Text(format!("%{term}%")));
+    }
+    sql.push_str(&filter_sql.clause);
+    if use_fts {
+        sql.push_str(" ORDER BY 5 ASC, documents.path ASC, chunks.sequence_index ASC");
+    } else {
+        sql.push_str(" ORDER BY documents.path ASC, chunks.sequence_index ASC");
+    }
+    params.extend(filter_sql.params.clone());
+    sql.push_str(" LIMIT ?");
+    params.push(SqlValue::Integer(limit));
 
     let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(
-        params_from_iter(params.iter()),
-        |row| -> Result<SearchHit, rusqlite::Error> {
-            let heading_path = row.get::<_, String>(2)?;
-            Ok(SearchHit {
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
+        let heading_path = row.get::<_, String>(2)?;
+        Ok(SearchCandidate {
+            hit: SearchHit {
                 document_path: row.get(0)?,
                 chunk_id: row.get(1)?,
                 heading_path: serde_json::from_str(&heading_path).map_err(|error| {
@@ -447,10 +485,20 @@ fn keyword_search_hits(
                 snippet: row.get(3)?,
                 rank: row.get(4)?,
                 explain: None,
-            })
-        },
-    )?;
-    let mut hits = rows.collect::<Result<Vec<_>, _>>()?;
+            },
+            content: row.get(5)?,
+            document_title: row.get(6)?,
+            aliases: row.get(7)?,
+            headings: row.get(8)?,
+        })
+    })?;
+    let mut candidates = rows.collect::<Result<Vec<_>, _>>()?;
+    apply_content_filters(&mut candidates, &prepared.content_terms);
+    apply_match_case_filters(&mut candidates, &prepared.match_case_terms);
+    let mut hits = candidates
+        .into_iter()
+        .map(|candidate| candidate.hit)
+        .collect::<Vec<_>>();
 
     if query.explain {
         for (index, hit) in hits.iter_mut().enumerate() {
@@ -458,7 +506,7 @@ fn keyword_search_hits(
                 strategy: "keyword".to_string(),
                 effective_query: prepared.effective_query.clone(),
                 score: hit.rank,
-                bm25: Some(hit.rank),
+                bm25: use_fts.then_some(hit.rank),
                 keyword_rank: Some(index + 1),
                 keyword_contribution: None,
                 vector_rank: None,
@@ -468,6 +516,33 @@ fn keyword_search_hits(
     }
 
     Ok(hits)
+}
+
+fn apply_content_filters(candidates: &mut Vec<SearchCandidate>, terms: &[SearchTerm]) {
+    if terms.is_empty() {
+        return;
+    }
+
+    candidates.retain(|candidate| {
+        let content = candidate.content.to_lowercase();
+        terms
+            .iter()
+            .all(|term| content.contains(&term.text.to_lowercase()))
+    });
+}
+
+fn apply_match_case_filters(candidates: &mut Vec<SearchCandidate>, terms: &[String]) {
+    if terms.is_empty() {
+        return;
+    }
+
+    candidates.retain(|candidate| {
+        let haystack = format!(
+            "{}\n{}\n{}\n{}",
+            candidate.content, candidate.document_title, candidate.aliases, candidate.headings
+        );
+        terms.iter().all(|term| haystack.contains(term))
+    });
 }
 
 fn hybrid_search_hits(
@@ -725,6 +800,9 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
             path_prefix: query.path_prefix.clone(),
             has_property: query.has_property.clone(),
             filters: query.filters.clone(),
+            file_terms: Vec::new(),
+            content_terms: Vec::new(),
+            match_case_terms: Vec::new(),
             raw_query: true,
             fuzzy_requested: query.fuzzy,
             fuzzy_fallback_used: false,
@@ -744,13 +822,23 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
         ));
     }
 
-    let expression = filtered_expression.ok_or_else(|| {
-        SearchError::InvalidQuery(
-            "search query must contain at least one term or quoted phrase".to_string(),
-        )
-    })?;
-    let effective_query = compose_fts_query(&expression, &HashMap::new())?;
-    let semantic_text = semantic_terms(&expression);
+    let expression = filtered_expression;
+    let base_query = expression
+        .as_ref()
+        .map(|expr| compose_fts_query(expr, &HashMap::new()))
+        .transpose()?;
+    let content_query = render_content_filters(&filter_state.content_terms);
+    let effective_query = combine_fts_clauses(base_query.as_deref(), content_query.as_deref());
+    let mut semantic_parts = expression
+        .as_ref()
+        .map_or_else(Vec::new, collect_semantic_terms_vec);
+    semantic_parts.extend(
+        filter_state
+            .content_terms
+            .iter()
+            .map(|term| term.text.clone()),
+    );
+    let semantic_text = semantic_parts.join(" ");
 
     Ok(PreparedSearchQuery {
         effective_query,
@@ -759,11 +847,14 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
         path_prefix: query.path_prefix.clone().or(filter_state.path_prefix),
         has_property: query.has_property.clone().or(filter_state.has_property),
         filters: query.filters.clone(),
+        file_terms: filter_state.file_terms,
+        content_terms: filter_state.content_terms,
+        match_case_terms: filter_state.match_case_terms,
         raw_query: false,
         fuzzy_requested: query.fuzzy,
         fuzzy_fallback_used: false,
         fuzzy_expansions: Vec::new(),
-        expression: Some(expression),
+        expression,
     })
 }
 
@@ -984,6 +1075,27 @@ fn extract_inline_filters(
                     state.has_property = Some(value.to_string());
                     return None;
                 }
+                if let Some(value) = inline_filter_value(&term.text, "file") {
+                    state.file_terms.push(value.to_string());
+                    state.positive_terms += 1;
+                    return None;
+                }
+                if let Some(value) = inline_filter_value(&term.text, "content") {
+                    state.content_terms.push(SearchTerm {
+                        text: value.to_string(),
+                        quoted: false,
+                    });
+                    state.positive_terms += 1;
+                    return None;
+                }
+                if let Some(value) = inline_filter_value(&term.text, "match-case") {
+                    state.match_case_terms.push(value.to_string());
+                    state.positive_terms += 1;
+                    return Some(SearchExpr::Term(SearchTerm {
+                        text: value.to_string(),
+                        quoted: false,
+                    }));
+                }
             }
             if !negated {
                 state.positive_terms += 1;
@@ -1069,6 +1181,39 @@ fn render_fts_term(term: &SearchTerm, fuzzy_map: &HashMap<String, Vec<String>>) 
     format!("({})", variants.join(" OR "))
 }
 
+fn render_content_filters(terms: &[SearchTerm]) -> Option<String> {
+    if terms.is_empty() {
+        return None;
+    }
+    Some(
+        terms
+            .iter()
+            .map(|term| format!("{{content}} : {}", quote_fts_term(&term.text)))
+            .collect::<Vec<_>>()
+            .join(" AND "),
+    )
+}
+
+fn combine_fts_clauses(base_query: Option<&str>, extra_query: Option<&str>) -> String {
+    let mut clauses = Vec::new();
+    if let Some(base_query) = base_query.filter(|value| !value.trim().is_empty()) {
+        clauses.push(base_query.to_string());
+    }
+    if let Some(extra_query) = extra_query.filter(|value| !value.trim().is_empty()) {
+        clauses.push(extra_query.to_string());
+    }
+
+    match clauses.len() {
+        0 => String::new(),
+        1 => clauses.remove(0),
+        _ => clauses
+            .into_iter()
+            .map(|clause| format!("({clause})"))
+            .collect::<Vec<_>>()
+            .join(" AND "),
+    }
+}
+
 fn render_fts_and_children(
     children: &[SearchExpr],
     fuzzy_map: &HashMap<String, Vec<String>>,
@@ -1090,10 +1235,10 @@ fn render_fts_and_children(
     rendered
 }
 
-fn semantic_terms(expression: &SearchExpr) -> String {
+fn collect_semantic_terms_vec(expression: &SearchExpr) -> Vec<String> {
     let mut terms = Vec::new();
     collect_semantic_terms(expression, false, &mut terms);
-    terms.join(" ")
+    terms
 }
 
 fn collect_semantic_terms(expression: &SearchExpr, negated: bool, terms: &mut Vec<String>) {
@@ -1330,10 +1475,12 @@ impl PreparedSearchQuery {
                 )
             })
             .collect::<HashMap<_, _>>();
-        if let Some(expression) = self.expression.as_ref() {
-            self.effective_query = compose_fts_query(expression, &fuzzy_map)
-                .expect("prepared query should remain valid after fuzzy expansion");
-        }
+        let base_query = self.expression.as_ref().map(|expression| {
+            compose_fts_query(expression, &fuzzy_map)
+                .expect("prepared query should remain valid after fuzzy expansion")
+        });
+        let content_query = render_content_filters(&self.content_terms);
+        self.effective_query = combine_fts_clauses(base_query.as_deref(), content_query.as_deref());
         self.fuzzy_fallback_used = true;
         self.fuzzy_expansions = expansions;
     }
@@ -1352,6 +1499,21 @@ impl PreparedSearchQuery {
         if let Some(has_property) = self.has_property.as_deref() {
             parsed_query_explanation.push(format!("FILTER has:{has_property}"));
         }
+        parsed_query_explanation.extend(
+            self.file_terms
+                .iter()
+                .map(|term| format!("FILTER file:{term}")),
+        );
+        parsed_query_explanation.extend(
+            self.content_terms
+                .iter()
+                .map(|term| format!("FILTER content:{}", display_search_term(term))),
+        );
+        parsed_query_explanation.extend(
+            self.match_case_terms
+                .iter()
+                .map(|term| format!("FILTER match-case:{term}")),
+        );
         parsed_query_explanation
             .extend(self.filters.iter().map(|filter| format!("WHERE {filter}")));
 
@@ -1659,6 +1821,124 @@ mod tests {
             report.plan.expect("plan should exist").effective_query,
             "\"alpha\" NOT (\"work\" AND \"meetup\")"
         );
+    }
+
+    #[test]
+    fn search_file_operator_matches_filename_without_fts_terms() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("Alpha.md"), "project").expect("note should write");
+        fs::write(vault_root.join("Beta.md"), "project").expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "file:Beta".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        assert_eq!(
+            report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Beta.md".to_string()]
+        );
+        assert!(report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER file:Beta"));
+    }
+
+    #[test]
+    fn search_content_operator_ignores_title_only_matches() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(
+            vault_root.join("AliasOnly.md"),
+            "---\naliases:\n  - ReleaseAlias\n---\n\n# Notes\nNothing else here.",
+        )
+        .expect("note should write");
+        fs::write(
+            vault_root.join("BodyOnly.md"),
+            "# Notes\nReleaseAlias checklist",
+        )
+        .expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "content:ReleaseAlias".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        assert_eq!(
+            report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["BodyOnly.md".to_string()]
+        );
+        assert!(report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER content:ReleaseAlias"));
+    }
+
+    #[test]
+    fn search_match_case_operator_filters_case_sensitive_hits() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("Upper.md"), "Bob builds dashboards.")
+            .expect("note should write");
+        fs::write(vault_root.join("Lower.md"), "bob builds dashboards.")
+            .expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "match-case:Bob".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        assert_eq!(
+            report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Upper.md".to_string()]
+        );
+        assert!(report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER match-case:Bob"));
     }
 
     #[test]

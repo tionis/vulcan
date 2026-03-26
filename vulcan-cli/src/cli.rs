@@ -65,6 +65,9 @@ Search query syntax:
     path:People/
     has:status
     property:status
+    file:meeting
+    content:release
+    match-case:Bob
 
 Notes:
   Use --where for typed property filters and list membership.
@@ -97,6 +100,7 @@ Values:
 Examples:
   vulcan search 'dashboard \"release notes\" -draft'
   vulcan search 'tag:index path:People/ owned'
+  vulcan search 'file:meeting content:release'
   vulcan search dashboard --where 'reviewed = true'";
 
 const REWRITE_COMMAND_AFTER_HELP: &str = "\
