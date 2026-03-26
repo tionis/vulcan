@@ -590,7 +590,7 @@ Reduce the O(N²) pairwise Levenshtein comparison in `suggest_duplicates`.
 **Implementation:**
 - [x] Pre-compute lowercased filenames once, outside the comparison loop (currently re-lowercased per pair)
 - [x] Filter candidate pairs by filename length: Levenshtein distance ≤ 1 requires `|len₁ - len₂| ≤ 1`, so skip pairs where lengths differ by more than the threshold
-- [ ] Group filenames by length into buckets; only compare within same-length and adjacent-length buckets
+- [x] Group filenames by length into buckets; only compare within same-length and adjacent-length buckets
 - [ ] Consider a BK-tree or sorted-prefix approach for further pruning if length filtering alone is insufficient
 - [x] The scoring thresholds (exact match = 1.0, alias collision = 0.95, similar title = 0.8) and distance threshold (> 1 = skip) remain unchanged
 - [x] Unit tests: existing `suggest_duplicates` tests must produce identical results

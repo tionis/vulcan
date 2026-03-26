@@ -571,32 +571,44 @@ fn merge_candidates(
         .iter()
         .map(|n| n.filename.to_ascii_lowercase())
         .collect();
+    let mut length_buckets = BTreeMap::<usize, Vec<usize>>::new();
+    for (index, filename) in lowercased.iter().enumerate() {
+        length_buckets
+            .entry(filename.len())
+            .or_default()
+            .push(index);
+    }
 
     for (left_index, left) in notes.iter().enumerate() {
         let left_lower = &lowercased[left_index];
-        for (right_index, right) in notes.iter().enumerate().skip(left_index + 1) {
-            let right_lower = &lowercased[right_index];
-            // Levenshtein distance ≤ 1 requires the lengths differ by at most 1
-            if left_lower.len().abs_diff(right_lower.len()) > 1 {
+        for bucket_length in [left_lower.len(), left_lower.len().saturating_add(1)] {
+            let Some(bucket) = length_buckets.get(&bucket_length) else {
                 continue;
+            };
+            for &right_index in bucket {
+                if right_index <= left_index {
+                    continue;
+                }
+                let right = &notes[right_index];
+                let right_lower = &lowercased[right_index];
+                let distance = levenshtein(left_lower, right_lower);
+                if distance > 1 || left.filename.eq_ignore_ascii_case(&right.filename) {
+                    continue;
+                }
+                let pair = ordered_pair(&left.path, &right.path);
+                candidates
+                    .entry(pair.clone())
+                    .and_modify(|candidate| {
+                        candidate.score = candidate.score.max(0.8);
+                        candidate.reasons.push("similar title".to_string());
+                    })
+                    .or_insert_with(|| MergeCandidate {
+                        left_path: pair.0.clone(),
+                        right_path: pair.1.clone(),
+                        score: 0.8,
+                        reasons: vec!["similar title".to_string()],
+                    });
             }
-            let distance = levenshtein(left_lower, right_lower);
-            if distance > 1 || left.filename.eq_ignore_ascii_case(&right.filename) {
-                continue;
-            }
-            let pair = ordered_pair(&left.path, &right.path);
-            candidates
-                .entry(pair.clone())
-                .and_modify(|candidate| {
-                    candidate.score = candidate.score.max(0.8);
-                    candidate.reasons.push("similar title".to_string());
-                })
-                .or_insert_with(|| MergeCandidate {
-                    left_path: pair.0.clone(),
-                    right_path: pair.1.clone(),
-                    score: 0.8,
-                    reasons: vec!["similar title".to_string()],
-                });
         }
     }
 
@@ -971,6 +983,35 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("same title"))));
+    }
+
+    #[test]
+    fn merge_candidates_compares_adjacent_filename_length_buckets() {
+        let notes = vec![
+            NoteIdentity {
+                path: "Docs/Guide.md".to_string(),
+                filename: "Guide".to_string(),
+                aliases: Vec::new(),
+            },
+            NoteIdentity {
+                path: "Docs/Guides.md".to_string(),
+                filename: "Guides".to_string(),
+                aliases: Vec::new(),
+            },
+            NoteIdentity {
+                path: "Docs/Guidebook.md".to_string(),
+                filename: "Guidebook".to_string(),
+                aliases: Vec::new(),
+            },
+        ];
+
+        let candidates = merge_candidates(&notes, &[], &[]);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].left_path, "Docs/Guide.md");
+        assert_eq!(candidates[0].right_path, "Docs/Guides.md");
+        assert_eq!(candidates[0].score, 0.8);
+        assert_eq!(candidates[0].reasons, vec!["similar title"]);
     }
 
     #[test]
