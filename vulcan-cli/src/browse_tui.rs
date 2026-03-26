@@ -14,8 +14,9 @@ use std::io;
 use std::time::Duration;
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
-    list_note_identities, list_tagged_note_identities, list_tags, scan_vault, search_vault,
-    NamedCount, NoteIdentity, ScanMode, SearchHit, SearchQuery, VaultPaths,
+    list_note_identities, list_tagged_note_identities, list_tags, query_notes, scan_vault,
+    search_vault, NamedCount, NoteIdentity, NoteQuery, ScanMode, SearchHit, SearchQuery,
+    VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
@@ -148,7 +149,9 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
     frame.render_widget(preview, body[1]);
 
     let footer = Paragraph::new(vec![
-        Line::from("Keys: Enter/e edit, Ctrl-F full-text, Ctrl-T tags, / fuzzy, Esc quit"),
+        Line::from(
+            "Keys: Enter/e edit, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit",
+        ),
         Line::from(format!("      {}", state.mode_help_line())),
         Line::from(format!(
             "Mode: {} | {} filtered / {} total",
@@ -180,6 +183,7 @@ enum BrowseMode {
     Fuzzy,
     FullText,
     Tag,
+    Property,
 }
 
 impl BrowseMode {
@@ -188,6 +192,7 @@ impl BrowseMode {
             Self::Fuzzy => "fuzzy",
             Self::FullText => "full-text",
             Self::Tag => "tag",
+            Self::Property => "property",
         }
     }
 
@@ -196,6 +201,7 @@ impl BrowseMode {
             Self::Fuzzy => "Browse (/ fuzzy search)",
             Self::FullText => "Browse (Ctrl-F full-text)",
             Self::Tag => "Browse (Ctrl-T tag filter)",
+            Self::Property => "Browse (Ctrl-P property filter)",
         }
     }
 
@@ -204,6 +210,7 @@ impl BrowseMode {
             Self::Fuzzy => "type to filter by path, filename, or alias",
             Self::FullText => "type to search indexed content; preview shows snippets",
             Self::Tag => "type a tag name; notes show the best matching indexed tag",
+            Self::Property => "type a where-style predicate like status = active",
         }
     }
 }
@@ -215,6 +222,7 @@ struct BrowseState {
     picker: NotePickerState,
     full_text: FullTextState,
     tag_filter: TagFilterState,
+    property_filter: PropertyFilterState,
     mode: BrowseMode,
     status: String,
 }
@@ -231,7 +239,8 @@ impl BrowseState {
             all_notes: notes.clone(),
             picker: NotePickerState::new(paths.clone(), notes.clone(), ""),
             full_text: FullTextState::default(),
-            tag_filter: TagFilterState::new(paths, tags),
+            tag_filter: TagFilterState::new(paths.clone(), tags),
+            property_filter: PropertyFilterState::new(paths),
             mode: BrowseMode::Fuzzy,
             status: "Ready.".to_string(),
         })
@@ -250,6 +259,13 @@ impl BrowseState {
                 KeyCode::Char('t') | KeyCode::Char('T') => {
                     self.clear_status();
                     if let Err(error) = self.switch_mode(BrowseMode::Tag) {
+                        self.set_status(error);
+                    }
+                    return BrowseAction::Continue;
+                }
+                KeyCode::Char('p') | KeyCode::Char('P') => {
+                    self.clear_status();
+                    if let Err(error) = self.switch_mode(BrowseMode::Property) {
                         self.set_status(error);
                     }
                     return BrowseAction::Continue;
@@ -295,6 +311,10 @@ impl BrowseState {
             BrowseMode::Tag => self
                 .tag_filter
                 .handle_key(&self.paths, &self.all_notes, code),
+            BrowseMode::Property => {
+                self.property_filter
+                    .handle_key(&self.paths, &self.all_notes, code)
+            }
         }
     }
 
@@ -305,6 +325,9 @@ impl BrowseState {
             BrowseMode::Tag => self
                 .tag_filter
                 .refresh_results(&self.paths, &self.all_notes)?,
+            BrowseMode::Property => self
+                .property_filter
+                .refresh_results(&self.paths, &self.all_notes),
             BrowseMode::Fuzzy => {}
         }
         Ok(())
@@ -317,6 +340,8 @@ impl BrowseState {
         self.full_text.refresh_results(&self.paths)?;
         self.tag_filter
             .refresh_results(&self.paths, &self.all_notes)?;
+        self.property_filter
+            .refresh_results(&self.paths, &self.all_notes);
         Ok(())
     }
 
@@ -325,6 +350,7 @@ impl BrowseState {
             BrowseMode::Fuzzy => self.picker.refresh_preview(),
             BrowseMode::FullText => {}
             BrowseMode::Tag => self.tag_filter.refresh_preview(),
+            BrowseMode::Property => self.property_filter.refresh_preview(),
         }
     }
 
@@ -333,6 +359,7 @@ impl BrowseState {
             BrowseMode::Fuzzy => self.picker.selected_path(),
             BrowseMode::FullText => self.full_text.selected_path(),
             BrowseMode::Tag => self.tag_filter.selected_path(),
+            BrowseMode::Property => self.property_filter.selected_path(),
         }
     }
 
@@ -341,6 +368,7 @@ impl BrowseState {
             BrowseMode::Fuzzy => self.picker.query(),
             BrowseMode::FullText => self.full_text.query(),
             BrowseMode::Tag => self.tag_filter.query(),
+            BrowseMode::Property => self.property_filter.query(),
         }
     }
 
@@ -374,6 +402,7 @@ impl BrowseState {
                 .map(|hit| format!("{} [{:.3}]", search_hit_location(hit), hit.rank))
                 .collect(),
             BrowseMode::Tag => self.tag_filter.list_items(),
+            BrowseMode::Property => self.property_filter.list_items(),
         }
     }
 
@@ -382,6 +411,7 @@ impl BrowseState {
             BrowseMode::Fuzzy => self.picker.selected_index(),
             BrowseMode::FullText => self.full_text.selected_index(),
             BrowseMode::Tag => self.tag_filter.selected_index(),
+            BrowseMode::Property => self.property_filter.selected_index(),
         }
     }
 
@@ -396,6 +426,7 @@ impl BrowseState {
                 |hit| format!("Snippet: {}", search_hit_location(hit)),
             ),
             BrowseMode::Tag => self.tag_filter.preview_title(),
+            BrowseMode::Property => self.property_filter.preview_title(),
         }
     }
 
@@ -404,6 +435,7 @@ impl BrowseState {
             BrowseMode::Fuzzy => self.picker.preview_lines(),
             BrowseMode::FullText => self.full_text.preview_lines(),
             BrowseMode::Tag => self.tag_filter.preview_lines(),
+            BrowseMode::Property => self.property_filter.preview_lines(),
         }
     }
 
@@ -412,6 +444,7 @@ impl BrowseState {
             BrowseMode::Fuzzy => self.picker.filtered_count(),
             BrowseMode::FullText => self.full_text.filtered_count(),
             BrowseMode::Tag => self.tag_filter.filtered_count(),
+            BrowseMode::Property => self.property_filter.filtered_count(),
         }
     }
 
@@ -438,6 +471,7 @@ impl BrowseState {
                 .active_tag
                 .as_deref()
                 .map_or_else(|| "Ready.".to_string(), |tag| format!("Tag: #{tag}")),
+            BrowseMode::Property => self.property_filter.status_line(),
             BrowseMode::Fuzzy | BrowseMode::FullText => "Ready.".to_string(),
         }
     }
@@ -685,6 +719,136 @@ impl TagFilterState {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PropertyFilterState {
+    query: String,
+    picker: NotePickerState,
+    last_error: Option<String>,
+}
+
+impl PropertyFilterState {
+    fn new(paths: VaultPaths) -> Self {
+        Self {
+            query: String::new(),
+            picker: NotePickerState::new(paths, Vec::new(), ""),
+            last_error: None,
+        }
+    }
+
+    fn query(&self) -> &str {
+        &self.query
+    }
+
+    fn selected_path(&self) -> Option<&str> {
+        self.picker.selected_path()
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        self.picker.selected_index()
+    }
+
+    fn filtered_count(&self) -> usize {
+        self.picker.filtered_count()
+    }
+
+    fn preview_title(&self) -> String {
+        self.picker.selected_path().map_or_else(
+            || "Property Preview".to_string(),
+            |path| format!("Preview: {path}"),
+        )
+    }
+
+    fn preview_lines(&self) -> Vec<Line<'static>> {
+        if let Some(error) = self.last_error.as_deref() {
+            return vec![Line::from(error.to_string())];
+        }
+        if self.query.trim().is_empty() {
+            return vec![Line::from(
+                "Type a property predicate like `status = active`.",
+            )];
+        }
+        if self.picker.filtered_count() == 0 {
+            return vec![Line::from("No notes matched the predicate.")];
+        }
+        self.picker.preview_lines()
+    }
+
+    fn refresh_preview(&mut self) {
+        self.picker.refresh_preview();
+    }
+
+    fn list_items(&self) -> Vec<String> {
+        self.picker
+            .filtered_notes()
+            .iter()
+            .map(|(_, note)| {
+                let aliases = if note.aliases.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", note.aliases.join(", "))
+                };
+                format!("{}{}", note.path, aliases)
+            })
+            .collect()
+    }
+
+    fn handle_key(
+        &mut self,
+        paths: &VaultPaths,
+        all_notes: &[NoteIdentity],
+        code: KeyCode,
+    ) -> Result<(), String> {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.picker.move_selection(-1);
+                Ok(())
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.picker.move_selection(1);
+                Ok(())
+            }
+            KeyCode::Backspace => {
+                self.query.pop();
+                self.refresh_results(paths, all_notes);
+                Ok(())
+            }
+            KeyCode::Char(character) => {
+                self.query.push(character);
+                self.refresh_results(paths, all_notes);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn refresh_results(&mut self, paths: &VaultPaths, all_notes: &[NoteIdentity]) {
+        self.last_error = None;
+        if self.query.trim().is_empty() {
+            self.picker.replace_notes_preserve_selection(Vec::new());
+            self.picker.set_query("");
+            return;
+        }
+
+        match property_filtered_notes(paths, all_notes, &self.query) {
+            Ok(notes) => {
+                self.picker.replace_notes_preserve_selection(notes);
+                self.picker.set_query("");
+            }
+            Err(error) => {
+                self.last_error = Some(error);
+                self.picker.replace_notes_preserve_selection(Vec::new());
+                self.picker.set_query("");
+            }
+        }
+    }
+
+    fn status_line(&self) -> String {
+        self.last_error
+            .clone()
+            .unwrap_or_else(|| "Ready.".to_string())
+    }
+}
+
 fn best_matching_tag<'a>(tags: &'a [NamedCount], query: &str) -> Option<&'a NamedCount> {
     if query.trim().is_empty() {
         return None;
@@ -715,6 +879,32 @@ fn tag_filtered_notes(
             all_notes
                 .iter()
                 .find(|note| note.path == identity.path)
+                .cloned()
+        })
+        .collect())
+}
+
+fn property_filtered_notes(
+    paths: &VaultPaths,
+    all_notes: &[NoteIdentity],
+    predicate: &str,
+) -> Result<Vec<NoteIdentity>, String> {
+    let report = query_notes(
+        paths,
+        &NoteQuery {
+            filters: vec![predicate.trim().to_string()],
+            sort_by: Some("file.path".to_string()),
+            sort_descending: false,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(report
+        .notes
+        .into_iter()
+        .filter_map(|record| {
+            all_notes
+                .iter()
+                .find(|note| note.path == record.document_path)
                 .cloned()
         })
         .collect())
@@ -1006,6 +1196,65 @@ mod tests {
         assert_eq!(state.filtered_count(), 1);
         assert_eq!(state.status_line(), "Tag: #people/team");
         assert!(state.preview_title().contains("#people/team"));
+    }
+
+    #[test]
+    fn ctrl_p_switches_to_property_mode_and_filters_notes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Projects/Alpha.md",
+            "---\nstatus: active\n---\n\n# Alpha",
+        );
+        write_note(
+            temp_dir.path(),
+            "Projects/Beta.md",
+            "---\nstatus: draft\n---\n\n# Beta",
+        );
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths,
+            vec![
+                note("Projects/Alpha.md", &[]),
+                note("Projects/Beta.md", &[]),
+            ],
+        )
+        .expect("state should build");
+
+        state.handle_key(ctrl('p'));
+        for character in "status = active".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+
+        assert_eq!(state.mode, BrowseMode::Property);
+        assert_eq!(state.query_title(), "Browse (Ctrl-P property filter)");
+        assert_eq!(state.selected_path(), Some("Projects/Alpha.md"));
+        assert_eq!(state.filtered_count(), 1);
+        assert_eq!(state.status_line(), "Ready.");
+    }
+
+    #[test]
+    fn property_filter_tracks_invalid_predicates() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Projects/Alpha.md",
+            "---\nstatus: active\n---\n\n# Alpha",
+        );
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
+            .expect("state should build");
+
+        state.handle_key(ctrl('p'));
+        for character in "status =".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+
+        assert_eq!(state.mode, BrowseMode::Property);
+        assert_eq!(state.filtered_count(), 0);
+        assert!(state.property_filter.last_error.is_some());
     }
 
     #[test]
