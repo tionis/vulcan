@@ -753,8 +753,8 @@ vulcan browse
 - [ ] If auto-commit is enabled (8.3): commit after each editor session
 
 **Search mode hotkeys** (toggled in the picker's input bar):
-- [ ] Default / `/`: fuzzy path/alias/filename filter (current behavior)
-- [ ] `Ctrl-F`: full-text search mode — query runs against FTS5, results replace the note list, preview pane shows matching snippets with highlighted terms instead of raw file content
+- [x] Default / `/`: fuzzy path/alias/filename filter (current behavior)
+- [x] `Ctrl-F`: full-text search mode — query runs against FTS5, results replace the note list, preview pane shows matching snippets with highlighted terms instead of raw file content
 - [ ] `Ctrl-T`: tag filter mode — type a tag name, fuzzy-match against all indexed tags, show notes matching the selected tag
 - [ ] `Ctrl-P`: property filter mode — type a property predicate (reuse the existing `where` filter syntax from `NoteQuery`), filter notes by property values
 
@@ -770,7 +770,7 @@ vulcan browse
 
 **UI details:**
 - [ ] Status bar at bottom: vault name, total note count, filtered count, last scan timestamp, current search mode indicator
-- [ ] Footer keybinding hints update to reflect current mode
+- [x] Footer keybinding hints update to reflect current mode
 - [ ] Resize-safe layout (reuse `ratatui` constraint-based layout)
 
 **Incremental shipping layers:**
