@@ -15,27 +15,32 @@ use ratatui::{Frame, Terminal};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, SystemTime};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
     doctor_vault, evaluate_base_file, git_log, is_git_repo, list_note_identities,
     list_tagged_note_identities, list_tags, move_note, query_backlinks, query_links, query_notes,
-    scan_vault, search_vault, BacklinkRecord, DoctorDiagnosticIssue, DoctorLinkIssue, GitLogEntry,
-    NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, ResolutionStatus, ScanMode, SearchHit,
-    SearchQuery, VaultPaths,
+    scan_vault, search_vault, AutoScanMode, BacklinkRecord, DoctorDiagnosticIssue, DoctorLinkIssue,
+    GitLogEntry, NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, ResolutionStatus,
+    ScanMode, ScanSummary, SearchHit, SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
 const FULL_TEXT_CONTEXT_SIZE: usize = 18;
 
-pub fn run_browse_tui(paths: &VaultPaths, no_commit: bool) -> Result<(), io::Error> {
-    if !paths.cache_db().exists() {
-        scan_vault(paths, ScanMode::Incremental).map_err(io::Error::other)?;
-    }
+pub fn run_browse_tui(
+    paths: &VaultPaths,
+    refresh_mode: AutoScanMode,
+    no_commit: bool,
+) -> Result<(), io::Error> {
+    let background_refresh = prepare_browse_refresh(paths, refresh_mode)?;
 
     let mut state = BrowseState::new(paths.clone(), load_notes(paths).map_err(io::Error::other)?)
         .map_err(io::Error::other)?;
+    state.background_refresh = background_refresh;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     if let Some(message) = auto_commit.warning() {
         state.set_status(format!("Warning: {message}."));
@@ -67,6 +72,7 @@ fn run_event_loop(
     auto_commit: &AutoCommitPolicy,
 ) -> Result<(), io::Error> {
     loop {
+        state.poll_background_refresh();
         terminal.draw(|frame| draw(frame, state))?;
 
         if !event::poll(Duration::from_millis(200))? {
@@ -217,6 +223,25 @@ fn run_event_loop(
     }
 
     Ok(())
+}
+
+fn prepare_browse_refresh(
+    paths: &VaultPaths,
+    refresh_mode: AutoScanMode,
+) -> Result<Option<BackgroundRefreshState>, io::Error> {
+    if !paths.cache_db().exists() {
+        scan_vault(paths, ScanMode::Incremental).map_err(io::Error::other)?;
+        return Ok(None);
+    }
+
+    match refresh_mode {
+        AutoScanMode::Off => Ok(None),
+        AutoScanMode::Blocking => {
+            scan_vault(paths, ScanMode::Incremental).map_err(io::Error::other)?;
+            Ok(None)
+        }
+        AutoScanMode::Background => Ok(Some(BackgroundRefreshState::spawn(paths.clone()))),
+    }
 }
 
 fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
@@ -394,7 +419,34 @@ struct NewNotePrompt {
     path: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+struct BackgroundRefreshState {
+    receiver: Receiver<Result<ScanSummary, String>>,
+}
+
+impl BackgroundRefreshState {
+    fn spawn(paths: VaultPaths) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result =
+                scan_vault(&paths, ScanMode::Incremental).map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        Self { receiver }
+    }
+
+    fn try_finish(&self) -> Option<Result<ScanSummary, String>> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(
+                "background refresh thread ended unexpectedly".to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct BrowseState {
     paths: VaultPaths,
     all_notes: Vec<NoteIdentity>,
@@ -408,6 +460,7 @@ struct BrowseState {
     doctor_view: Option<DoctorViewState>,
     new_note_prompt: Option<NewNotePrompt>,
     move_prompt: Option<MovePrompt>,
+    background_refresh: Option<BackgroundRefreshState>,
     last_scan_label: String,
     mode: BrowseMode,
     status: String,
@@ -434,6 +487,7 @@ impl BrowseState {
             doctor_view: None,
             new_note_prompt: None,
             move_prompt: None,
+            background_refresh: None,
             last_scan_label,
             mode: BrowseMode::Fuzzy,
             status: "Ready.".to_string(),
@@ -811,6 +865,39 @@ impl BrowseState {
         Ok(())
     }
 
+    fn poll_background_refresh(&mut self) {
+        let result = self
+            .background_refresh
+            .as_ref()
+            .and_then(BackgroundRefreshState::try_finish);
+        let Some(result) = result else {
+            return;
+        };
+        self.background_refresh = None;
+        self.apply_background_refresh_result(result);
+    }
+
+    fn apply_background_refresh_result(&mut self, result: Result<ScanSummary, String>) {
+        match result {
+            Ok(summary) => {
+                if let Err(error) = self.reload_after_edit() {
+                    self.set_status(error);
+                    return;
+                }
+
+                if summary.added == 0 && summary.updated == 0 && summary.deleted == 0 {
+                    self.set_status("Background refresh found no changes.");
+                } else {
+                    self.set_status(format!(
+                        "Background refresh updated cache: {} added, {} updated, {} deleted.",
+                        summary.added, summary.updated, summary.deleted
+                    ));
+                }
+            }
+            Err(error) => self.set_status(format!("Background refresh failed: {error}")),
+        }
+    }
+
     fn reload_after_move(&mut self, destination: &str) -> Result<(), String> {
         self.reload_after_new_note(destination)
     }
@@ -1105,12 +1192,17 @@ impl BrowseState {
 
     fn status_bar_line(&self) -> String {
         format!(
-            "Vault: {} | Mode: {} | Notes: {} filtered / {} total | Last scan: {}",
+            "Vault: {} | Mode: {} | Notes: {} filtered / {} total | Last scan: {}{}",
             self.vault_name(),
             self.active_mode_label(),
             self.filtered_count(),
             self.total_notes(),
-            self.last_scan_label
+            self.last_scan_label,
+            if self.background_refresh.is_some() {
+                " | Refresh: background"
+            } else {
+                ""
+            }
         )
     }
 
@@ -1214,6 +1306,9 @@ impl BrowseState {
         }
         if let Some(view) = self.links_view.as_ref() {
             return format!("Outgoing links for {}", view.note_path());
+        }
+        if self.background_refresh.is_some() {
+            return "Refreshing cache in background.".to_string();
         }
 
         match self.mode {
@@ -2937,6 +3032,49 @@ mod tests {
         assert!(line.contains("Mode: fuzzy"));
         assert!(line.contains("Notes: 1 filtered / 1 total"));
         assert!(line.contains("Last scan:"));
+    }
+
+    #[test]
+    fn status_bar_line_marks_background_refresh() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("browse-vault");
+        let paths = VaultPaths::new(&vault_root);
+        write_note(&vault_root, "Home.md", "# Home");
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Home.md", &[])]).expect("state should build");
+        let (_sender, receiver) = mpsc::channel();
+        state.background_refresh = Some(BackgroundRefreshState { receiver });
+        state.clear_status();
+
+        assert!(state.status_bar_line().contains("Refresh: background"));
+        assert_eq!(state.status_line(), "Refreshing cache in background.");
+    }
+
+    #[test]
+    fn background_refresh_result_reloads_notes_with_minimal_disruption() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Home.md", "# Home");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths.clone(), vec![note("Home.md", &[])])
+            .expect("state should build");
+        state.picker.select_path("Home.md");
+        state.handle_key(key(KeyCode::Char('h')));
+        state.handle_key(key(KeyCode::Char('o')));
+        state.handle_key(key(KeyCode::Char('m')));
+        state.handle_key(key(KeyCode::Char('e')));
+
+        write_note(temp_dir.path(), "Projects/Alpha.md", "# Alpha");
+        let summary = scan_vault(&paths, ScanMode::Incremental).expect("scan should succeed");
+        state.apply_background_refresh_result(Ok(summary));
+
+        assert_eq!(state.total_notes(), 2);
+        assert_eq!(state.selected_path(), Some("Home.md"));
+        assert_eq!(state.query(), "home");
+        assert!(state
+            .status_line()
+            .contains("Background refresh updated cache"));
     }
 
     #[test]

@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -2301,7 +2301,7 @@
       },
       {
         "about": "Open a persistent note browser TUI",
-        "after_help": "Browse modes:\n  default      fuzzy note picker with live preview\n  Ctrl-F       indexed full-text search with snippet preview\n  Ctrl-T       tag filter mode\n  Ctrl-P       property filter mode\n  /            return to fuzzy mode\n\nKeys:\n  Enter/e      edit the selected note\n  n            create a new note\n  m            move or rename the selected note\n  b            open backlinks for the selected note\n  l            open outgoing links for the selected note\n  d            show doctor diagnostics for the selected note\n  g            show git history for the selected file\n  Esc          quit the browser\n\nNotes:\n  Single-letter browse actions only fire when the fuzzy query is empty.\n  After edits, creates, and moves, Vulcan rescans affected files and refreshes the browser.\n  In backlinks/outgoing-link views, `o` opens the selected .base file in the Bases TUI.\n\nExamples:\n  vulcan browse\n  vulcan browse --no-commit",
+        "after_help": "Browse modes:\n  default      fuzzy note picker with live preview\n  Ctrl-F       indexed full-text search with snippet preview\n  Ctrl-T       tag filter mode\n  Ctrl-P       property filter mode\n  /            return to fuzzy mode\n\nKeys:\n  Enter/e      edit the selected note\n  n            create a new note\n  m            move or rename the selected note\n  b            open backlinks for the selected note\n  l            open outgoing links for the selected note\n  d            show doctor diagnostics for the selected note\n  g            show git history for the selected file\n  Esc          quit the browser\n\nNotes:\n  browse honors [scan].browse_mode in config; --refresh overrides it per invocation.\n  `background` opens immediately on current cache contents, then reloads when the scan completes.\n  Single-letter browse actions only fire when the fuzzy query is empty.\n  After edits, creates, and moves, Vulcan rescans affected files and refreshes the browser.\n  In backlinks/outgoing-link views, `o` opens the selected .base file in the Bases TUI.\n\nExamples:\n  vulcan browse\n  vulcan --refresh background browse\n  vulcan browse --no-commit",
         "name": "browse",
         "options": [
           {
@@ -3528,6 +3528,21 @@
         "short": null,
         "value_names": [
           "OUTPUT"
+        ]
+      },
+      {
+        "help": "Override automatic cache refresh mode for cache-backed commands",
+        "id": "refresh",
+        "long": "refresh",
+        "possible_values": [
+          "off",
+          "blocking",
+          "background"
+        ],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "REFRESH"
         ]
       },
       {

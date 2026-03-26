@@ -16,6 +16,7 @@ fn help_mentions_global_flags_and_core_commands() {
     command.arg("--help").assert().success().stdout(
         predicate::str::contains("--vault <VAULT>")
             .and(predicate::str::contains("--output <OUTPUT>"))
+            .and(predicate::str::contains("--refresh <REFRESH>"))
             .and(predicate::str::contains("--verbose"))
             .and(predicate::str::contains("init"))
             .and(predicate::str::contains("scan"))
@@ -87,7 +88,10 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains(
                 "Interactive help: vulcan edit --help and vulcan browse --help",
             ))
-            .and(predicate::str::contains("Machine-readable schema: vulcan describe")),
+            .and(predicate::str::contains("Machine-readable schema: vulcan describe"))
+            .and(predicate::str::contains(
+                "Override automatic cache refresh with --refresh <off|blocking|background>",
+            )),
     );
 }
 
@@ -149,8 +153,12 @@ fn browse_help_documents_modes_and_actions() {
             predicate::str::contains("Browse modes:")
                 .and(predicate::str::contains("Ctrl-F"))
                 .and(predicate::str::contains("Ctrl-T"))
+                .and(predicate::str::contains("background"))
                 .and(predicate::str::contains(
                     "Single-letter browse actions only fire",
+                ))
+                .and(predicate::str::contains(
+                    "vulcan --refresh background browse",
                 ))
                 .and(predicate::str::contains("vulcan browse --no-commit")),
         );
@@ -284,7 +292,7 @@ fn init_json_output_creates_default_config() {
     assert_eq!(
         fs::read_to_string(vault_root.join(".vulcan/.gitignore"))
             .expect("gitignore should be readable"),
-        "*\n!.gitignore\n!config.toml\n!reports/\nreports/*\n!reports/*.toml\n"
+        "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n"
     );
 }
 
@@ -321,6 +329,81 @@ fn scan_json_output_indexes_fixture_vault() {
             "People/Bob.md".to_string(),
             "Projects/Alpha.md".to_string(),
         ]
+    );
+}
+
+#[test]
+fn cache_backed_commands_refresh_before_running_by_default() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    fs::write(vault_root.join("Home.md"), "# Home\nNo links yet.\n")
+        .expect("home note should be written");
+    fs::write(vault_root.join("Projects.md"), "# Alpha\n").expect("alpha note should be written");
+    run_scan(&vault_root);
+    fs::write(
+        vault_root.join("Home.md"),
+        "# Home\nNow links to [[Projects]].\n",
+    )
+    .expect("updated home note should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "backlinks",
+            "Projects",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    assert!(rows
+        .iter()
+        .any(|row| row["source_path"] == Value::String("Home.md".to_string())));
+}
+
+#[test]
+fn refresh_off_keeps_stale_cache_for_one_shot_commands() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    fs::write(vault_root.join("Home.md"), "# Home\nNo links yet.\n")
+        .expect("home note should be written");
+    fs::write(vault_root.join("Projects.md"), "# Alpha\n").expect("alpha note should be written");
+    run_scan(&vault_root);
+    fs::write(
+        vault_root.join("Home.md"),
+        "# Home\nNow links to [[Projects]].\n",
+    )
+    .expect("updated home note should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--refresh",
+            "off",
+            "backlinks",
+            "Projects",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    assert!(
+        rows.is_empty(),
+        "stale cache should not include new backlink"
     );
 }
 
