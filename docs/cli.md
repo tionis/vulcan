@@ -260,9 +260,10 @@ vulcan search 'tag:index path:People/ has:status owned'
 Default query syntax:
 
 - Plain terms are combined with logical `AND`.
+- Parentheses group boolean expressions: `(dashboard or summary) release`.
 - Quoted phrases stay together: `"owned by"`.
 - Use `or` between positive terms: `dashboard or summary`.
-- Prefix a term or quoted phrase with `-` to exclude it.
+- Prefix a term, quoted phrase, or parenthesized group with `-` to exclude it.
 
 Supported inline filters inside the query text:
 
@@ -281,7 +282,7 @@ Useful search flags:
 - `--context-size <N>`: snippet context size
 - `--raw-query`: pass SQLite FTS5 syntax through unchanged
 - `--fuzzy`: retry empty searches with typo-tolerant expansion
-- `--explain`: include parsed plan and scoring details
+- `--explain`: include the parsed boolean tree, active filters, and scoring details
 
 Raw FTS5 example:
 
@@ -289,7 +290,7 @@ Raw FTS5 example:
 vulcan search --raw-query '"release" NEAR/5 "notes"'
 ```
 
-**Planned enhancements (Roadmap 9.6):** Obsidian-compatible search operators (`file:`, `content:`, `section:`, `line:`, `block:`, `match-case:`, `task:`, `task-todo:`, `task-done:`), parenthesized boolean grouping, inline property search with `[prop:val]` bracket syntax, inline regex with `/pattern/` delimiters, `--sort` for result ordering, and richer `--explain` output. See `docs/ROADMAP.md` §9.6.
+**Planned enhancements (Roadmap 9.6):** Obsidian-compatible search operators (`file:`, `content:`, `section:`, `line:`, `block:`, `match-case:`, `task:`, `task-todo:`, `task-done:`), inline property search with `[prop:val]` bracket syntax, inline regex with `/pattern/` delimiters, `--sort` for result ordering, and richer browse-TUI search controls. See `docs/ROADMAP.md` §9.6.
 
 ## Query DSL and JSON payloads
 

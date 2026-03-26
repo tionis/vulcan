@@ -137,6 +137,8 @@ pub struct SearchPlan {
     pub fuzzy_requested: bool,
     pub fuzzy_fallback_used: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parsed_query_explanation: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fuzzy_expansions: Vec<SearchFuzzyExpansion>,
 }
 
@@ -219,26 +221,37 @@ struct PreparedSearchQuery {
     fuzzy_requested: bool,
     fuzzy_fallback_used: bool,
     fuzzy_expansions: Vec<SearchFuzzyExpansion>,
-    atoms: Vec<QueryAtom>,
+    expression: Option<SearchExpr>,
 }
 
 #[derive(Debug, Clone)]
-enum QueryAtom {
-    Positive {
-        text: String,
-        fts_expr: String,
-        fuzzy_term: Option<String>,
-    },
-    Negative {
-        fts_expr: String,
-    },
-    Or,
+enum SearchExpr {
+    Term(SearchTerm),
+    And(Vec<SearchExpr>),
+    Or(Vec<SearchExpr>),
+    Not(Box<SearchExpr>),
 }
 
 #[derive(Debug, Clone)]
-struct LexedToken {
+struct SearchTerm {
     text: String,
     quoted: bool,
+}
+
+#[derive(Debug, Clone)]
+enum LexedToken {
+    Term(SearchTerm),
+    Negation,
+    OpenParen,
+    CloseParen,
+}
+
+#[derive(Debug, Default)]
+struct InlineFilterState {
+    tag: Option<String>,
+    path_prefix: Option<String>,
+    has_property: Option<String>,
+    positive_terms: usize,
 }
 
 pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchReport, SearchError> {
@@ -716,85 +729,41 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
             fuzzy_requested: query.fuzzy,
             fuzzy_fallback_used: false,
             fuzzy_expansions: Vec::new(),
-            atoms: Vec::new(),
+            expression: None,
         });
     }
 
     let tokens = lex_search_query(trimmed);
-    let mut atoms = Vec::new();
-    let mut parsed_tag = None;
-    let mut parsed_path_prefix = None;
-    let mut parsed_has_property = None;
-    let mut positive_terms = 0_usize;
+    let expression = parse_search_expression(&tokens)?;
+    let mut filter_state = InlineFilterState::default();
+    let filtered_expression = extract_inline_filters(expression, &mut filter_state, false);
 
-    for token in tokens {
-        if !token.quoted && token.text.eq_ignore_ascii_case("or") {
-            atoms.push(QueryAtom::Or);
-            continue;
-        }
-
-        let (negated, body) = token
-            .text
-            .strip_prefix('-')
-            .map_or((false, token.text.as_str()), |value| (true, value));
-        if !negated && !token.quoted {
-            if let Some(value) = inline_filter_value(body, "tag") {
-                parsed_tag = Some(value.to_string());
-                continue;
-            }
-            if let Some(value) = inline_filter_value(body, "path") {
-                parsed_path_prefix = Some(value.to_string());
-                continue;
-            }
-            if let Some(value) =
-                inline_filter_value(body, "has").or_else(|| inline_filter_value(body, "property"))
-            {
-                parsed_has_property = Some(value.to_string());
-                continue;
-            }
-        }
-
-        let expr = quote_fts_term(body);
-        if negated {
-            atoms.push(QueryAtom::Negative { fts_expr: expr });
-        } else {
-            positive_terms += 1;
-            atoms.push(QueryAtom::Positive {
-                text: body.to_string(),
-                fts_expr: expr,
-                fuzzy_term: (!token.quoted).then(|| normalize_term(body)).flatten(),
-            });
-        }
-    }
-
-    if positive_terms == 0 {
+    if filter_state.positive_terms == 0 {
         return Err(SearchError::InvalidQuery(
             "search query must contain at least one term or quoted phrase".to_string(),
         ));
     }
 
-    let effective_query = compose_fts_query(&atoms, &HashMap::new())?;
-    let semantic_text = atoms
-        .iter()
-        .filter_map(|atom| match atom {
-            QueryAtom::Positive { text, .. } => Some(text.clone()),
-            QueryAtom::Negative { .. } | QueryAtom::Or => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
+    let expression = filtered_expression.ok_or_else(|| {
+        SearchError::InvalidQuery(
+            "search query must contain at least one term or quoted phrase".to_string(),
+        )
+    })?;
+    let effective_query = compose_fts_query(&expression, &HashMap::new())?;
+    let semantic_text = semantic_terms(&expression);
 
     Ok(PreparedSearchQuery {
         effective_query,
         semantic_text,
-        tag: query.tag.clone().or(parsed_tag),
-        path_prefix: query.path_prefix.clone().or(parsed_path_prefix),
-        has_property: query.has_property.clone().or(parsed_has_property),
+        tag: query.tag.clone().or(filter_state.tag),
+        path_prefix: query.path_prefix.clone().or(filter_state.path_prefix),
+        has_property: query.has_property.clone().or(filter_state.has_property),
         filters: query.filters.clone(),
         raw_query: false,
         fuzzy_requested: query.fuzzy,
         fuzzy_fallback_used: false,
         fuzzy_expansions: Vec::new(),
-        atoms,
+        expression: Some(expression),
     })
 }
 
@@ -811,13 +780,26 @@ fn lex_search_query(text: &str) -> Vec<LexedToken> {
             break;
         }
 
-        let mut negated = false;
-        if characters[index] == '-' {
-            negated = true;
-            index += 1;
+        match characters[index] {
+            '(' => {
+                tokens.push(LexedToken::OpenParen);
+                index += 1;
+                continue;
+            }
+            ')' => {
+                tokens.push(LexedToken::CloseParen);
+                index += 1;
+                continue;
+            }
+            '-' if index + 1 < characters.len() && !characters[index + 1].is_whitespace() => {
+                tokens.push(LexedToken::Negation);
+                index += 1;
+                continue;
+            }
+            _ => {}
         }
 
-        if index < characters.len() && characters[index] == '"' {
+        if characters[index] == '"' {
             index += 1;
             let start = index;
             while index < characters.len() && characters[index] != '"' {
@@ -827,22 +809,22 @@ fn lex_search_query(text: &str) -> Vec<LexedToken> {
             if index < characters.len() && characters[index] == '"' {
                 index += 1;
             }
-            tokens.push(LexedToken {
-                text: if negated { format!("-{text}") } else { text },
-                quoted: true,
-            });
+            tokens.push(LexedToken::Term(SearchTerm { text, quoted: true }));
             continue;
         }
 
         let start = index;
-        while index < characters.len() && !characters[index].is_whitespace() {
+        while index < characters.len()
+            && !characters[index].is_whitespace()
+            && !matches!(characters[index], '(' | ')')
+        {
             index += 1;
         }
         let text = characters[start..index].iter().collect::<String>();
-        tokens.push(LexedToken {
-            text: if negated { format!("-{text}") } else { text },
+        tokens.push(LexedToken::Term(SearchTerm {
+            text,
             quoted: false,
-        });
+        }));
     }
 
     tokens
@@ -861,56 +843,316 @@ fn quote_fts_term(term: &str) -> String {
     format!("\"{}\"", term.replace('"', "\"\""))
 }
 
-fn compose_fts_query(
-    atoms: &[QueryAtom],
-    fuzzy_map: &HashMap<String, Vec<String>>,
-) -> Result<String, SearchError> {
-    let mut rendered = String::new();
-    let mut last_was_operator = true;
+fn parse_search_expression(tokens: &[LexedToken]) -> Result<SearchExpr, SearchError> {
+    let mut index = 0_usize;
+    let expression = parse_or_expression(tokens, &mut index)?;
+    if index != tokens.len() {
+        return Err(SearchError::InvalidQuery(
+            "unexpected token after end of search expression".to_string(),
+        ));
+    }
+    Ok(expression)
+}
 
-    for atom in atoms {
-        match atom {
-            QueryAtom::Or => {
-                if !rendered.is_empty() && !last_was_operator {
-                    rendered.push_str(" OR ");
-                    last_was_operator = true;
-                }
-            }
-            QueryAtom::Negative { fts_expr } => {
-                if !rendered.is_empty() {
-                    rendered.push(' ');
-                }
-                rendered.push_str("NOT ");
-                rendered.push_str(fts_expr);
-                last_was_operator = false;
-            }
-            QueryAtom::Positive {
-                fts_expr,
-                fuzzy_term,
-                ..
-            } => {
-                if !rendered.is_empty() && !last_was_operator {
-                    rendered.push(' ');
-                }
-                if let Some(expansions) = fuzzy_term
-                    .as_ref()
-                    .and_then(|term| fuzzy_map.get(term))
-                    .filter(|values| !values.is_empty())
-                {
-                    let mut variants = Vec::with_capacity(expansions.len() + 1);
-                    variants.push(fts_expr.clone());
-                    variants.extend(expansions.iter().map(|value| quote_fts_term(value)));
-                    rendered.push('(');
-                    rendered.push_str(&variants.join(" OR "));
-                    rendered.push(')');
-                } else {
-                    rendered.push_str(fts_expr);
-                }
-                last_was_operator = false;
-            }
-        }
+fn parse_or_expression(
+    tokens: &[LexedToken],
+    index: &mut usize,
+) -> Result<SearchExpr, SearchError> {
+    let mut branches = vec![parse_and_expression(tokens, index)?];
+
+    while *index < tokens.len() && is_or_token(&tokens[*index]) {
+        *index += 1;
+        branches.push(parse_and_expression(tokens, index)?);
     }
 
+    Ok(collapse_expression(branches, SearchExpr::Or))
+}
+
+fn parse_and_expression(
+    tokens: &[LexedToken],
+    index: &mut usize,
+) -> Result<SearchExpr, SearchError> {
+    let mut factors = Vec::new();
+
+    while *index < tokens.len() {
+        if matches!(tokens[*index], LexedToken::CloseParen) || is_or_token(&tokens[*index]) {
+            break;
+        }
+        factors.push(parse_unary_expression(tokens, index)?);
+    }
+
+    if factors.is_empty() {
+        return Err(SearchError::InvalidQuery(
+            "expected a search term or group".to_string(),
+        ));
+    }
+
+    Ok(collapse_expression(factors, SearchExpr::And))
+}
+
+fn parse_unary_expression(
+    tokens: &[LexedToken],
+    index: &mut usize,
+) -> Result<SearchExpr, SearchError> {
+    let mut negated = false;
+    while *index < tokens.len() && matches!(tokens[*index], LexedToken::Negation) {
+        negated = !negated;
+        *index += 1;
+    }
+
+    let expression = parse_primary_expression(tokens, index)?;
+    if negated {
+        Ok(SearchExpr::Not(Box::new(expression)))
+    } else {
+        Ok(expression)
+    }
+}
+
+fn parse_primary_expression(
+    tokens: &[LexedToken],
+    index: &mut usize,
+) -> Result<SearchExpr, SearchError> {
+    let token = tokens
+        .get(*index)
+        .ok_or_else(|| SearchError::InvalidQuery("expected a search term or group".to_string()))?;
+
+    match token {
+        LexedToken::Term(term) => {
+            *index += 1;
+            Ok(SearchExpr::Term(term.clone()))
+        }
+        LexedToken::OpenParen => {
+            *index += 1;
+            let expression = parse_or_expression(tokens, index)?;
+            if !matches!(tokens.get(*index), Some(LexedToken::CloseParen)) {
+                return Err(SearchError::InvalidQuery(
+                    "missing closing ')' in search query".to_string(),
+                ));
+            }
+            *index += 1;
+            Ok(expression)
+        }
+        LexedToken::CloseParen => Err(SearchError::InvalidQuery(
+            "unexpected ')' in search query".to_string(),
+        )),
+        LexedToken::Negation => Err(SearchError::InvalidQuery(
+            "dangling negation in search query".to_string(),
+        )),
+    }
+}
+
+fn collapse_expression(
+    mut expressions: Vec<SearchExpr>,
+    make_group: impl FnOnce(Vec<SearchExpr>) -> SearchExpr,
+) -> SearchExpr {
+    if expressions.len() == 1 {
+        expressions.remove(0)
+    } else {
+        make_group(expressions)
+    }
+}
+
+fn is_or_token(token: &LexedToken) -> bool {
+    matches!(
+        token,
+        LexedToken::Term(SearchTerm {
+            text,
+            quoted: false
+        }) if text.eq_ignore_ascii_case("or")
+    )
+}
+
+fn extract_inline_filters(
+    expression: SearchExpr,
+    state: &mut InlineFilterState,
+    negated: bool,
+) -> Option<SearchExpr> {
+    match expression {
+        SearchExpr::Term(term) => {
+            if !negated && !term.quoted {
+                if let Some(value) = inline_filter_value(&term.text, "tag") {
+                    state.tag = Some(value.to_string());
+                    return None;
+                }
+                if let Some(value) = inline_filter_value(&term.text, "path") {
+                    state.path_prefix = Some(value.to_string());
+                    return None;
+                }
+                if let Some(value) = inline_filter_value(&term.text, "has")
+                    .or_else(|| inline_filter_value(&term.text, "property"))
+                {
+                    state.has_property = Some(value.to_string());
+                    return None;
+                }
+            }
+            if !negated {
+                state.positive_terms += 1;
+            }
+            Some(SearchExpr::Term(term))
+        }
+        SearchExpr::And(children) => {
+            collapse_rewritten_group(children, state, negated, SearchExpr::And)
+        }
+        SearchExpr::Or(children) => {
+            collapse_rewritten_group(children, state, negated, SearchExpr::Or)
+        }
+        SearchExpr::Not(child) => extract_inline_filters(*child, state, !negated)
+            .map(|rewritten| SearchExpr::Not(Box::new(rewritten))),
+    }
+}
+
+fn collapse_rewritten_group(
+    children: Vec<SearchExpr>,
+    state: &mut InlineFilterState,
+    negated: bool,
+    make_group: impl FnOnce(Vec<SearchExpr>) -> SearchExpr,
+) -> Option<SearchExpr> {
+    let rewritten = children
+        .into_iter()
+        .filter_map(|child| extract_inline_filters(child, state, negated))
+        .collect::<Vec<_>>();
+
+    match rewritten.len() {
+        0 => None,
+        1 => rewritten.into_iter().next(),
+        _ => Some(make_group(rewritten)),
+    }
+}
+
+fn render_fts_expression(
+    expression: &SearchExpr,
+    fuzzy_map: &HashMap<String, Vec<String>>,
+    parent_precedence: u8,
+) -> String {
+    let (rendered, precedence) = match expression {
+        SearchExpr::Term(term) => (render_fts_term(term, fuzzy_map), 4),
+        SearchExpr::Not(child) => (
+            format!("NOT {}", render_fts_expression(child, fuzzy_map, 3)),
+            3,
+        ),
+        SearchExpr::And(children) => (render_fts_and_children(children, fuzzy_map), 2),
+        SearchExpr::Or(children) => (
+            children
+                .iter()
+                .map(|child| render_fts_expression(child, fuzzy_map, 1))
+                .collect::<Vec<_>>()
+                .join(" OR "),
+            1,
+        ),
+    };
+
+    if precedence < parent_precedence {
+        format!("({rendered})")
+    } else {
+        rendered
+    }
+}
+
+fn render_fts_term(term: &SearchTerm, fuzzy_map: &HashMap<String, Vec<String>>) -> String {
+    let base = quote_fts_term(&term.text);
+    if term.quoted {
+        return base;
+    }
+    let Some(normalized) = normalize_term(&term.text) else {
+        return base;
+    };
+    let Some(expansions) = fuzzy_map
+        .get(&normalized)
+        .filter(|values| !values.is_empty())
+    else {
+        return base;
+    };
+
+    let mut variants = Vec::with_capacity(expansions.len() + 1);
+    variants.push(base);
+    variants.extend(expansions.iter().map(|value| quote_fts_term(value)));
+    format!("({})", variants.join(" OR "))
+}
+
+fn render_fts_and_children(
+    children: &[SearchExpr],
+    fuzzy_map: &HashMap<String, Vec<String>>,
+) -> String {
+    let mut rendered = String::new();
+
+    for (index, child) in children.iter().enumerate() {
+        let piece = render_fts_expression(child, fuzzy_map, 2);
+        if index > 0 {
+            if matches!(child, SearchExpr::Not(_)) {
+                rendered.push(' ');
+            } else {
+                rendered.push_str(" AND ");
+            }
+        }
+        rendered.push_str(&piece);
+    }
+
+    rendered
+}
+
+fn semantic_terms(expression: &SearchExpr) -> String {
+    let mut terms = Vec::new();
+    collect_semantic_terms(expression, false, &mut terms);
+    terms.join(" ")
+}
+
+fn collect_semantic_terms(expression: &SearchExpr, negated: bool, terms: &mut Vec<String>) {
+    match expression {
+        SearchExpr::Term(term) if !negated => terms.push(term.text.clone()),
+        SearchExpr::Term(_) => {}
+        SearchExpr::And(children) | SearchExpr::Or(children) => {
+            for child in children {
+                collect_semantic_terms(child, negated, terms);
+            }
+        }
+        SearchExpr::Not(child) => collect_semantic_terms(child, !negated, terms),
+    }
+}
+
+fn explain_search_expression(expression: &SearchExpr) -> Vec<String> {
+    let mut lines = Vec::new();
+    append_expression_lines(expression, 0, &mut lines);
+    lines
+}
+
+fn append_expression_lines(expression: &SearchExpr, indent: usize, lines: &mut Vec<String>) {
+    let prefix = "  ".repeat(indent);
+    match expression {
+        SearchExpr::Term(term) => {
+            lines.push(format!("{prefix}TERM {}", display_search_term(term)));
+        }
+        SearchExpr::And(children) => {
+            lines.push(format!("{prefix}AND"));
+            for child in children {
+                append_expression_lines(child, indent + 1, lines);
+            }
+        }
+        SearchExpr::Or(children) => {
+            lines.push(format!("{prefix}OR"));
+            for child in children {
+                append_expression_lines(child, indent + 1, lines);
+            }
+        }
+        SearchExpr::Not(child) => {
+            lines.push(format!("{prefix}NOT"));
+            append_expression_lines(child, indent + 1, lines);
+        }
+    }
+}
+
+fn display_search_term(term: &SearchTerm) -> String {
+    if term.quoted {
+        format!("\"{}\"", term.text)
+    } else {
+        term.text.clone()
+    }
+}
+
+fn compose_fts_query(
+    expression: &SearchExpr,
+    fuzzy_map: &HashMap<String, Vec<String>>,
+) -> Result<String, SearchError> {
+    let rendered = render_fts_expression(expression, fuzzy_map, 0);
     if rendered.trim().is_empty() {
         return Err(SearchError::InvalidQuery(
             "search query must contain at least one term or quoted phrase".to_string(),
@@ -927,31 +1169,46 @@ fn fuzzy_expansions(
     let vocabulary = load_search_vocabulary(connection)?;
     let mut expansions = Vec::new();
     let mut seen = HashSet::new();
-
-    for atom in &prepared.atoms {
-        let QueryAtom::Positive {
-            text, fuzzy_term, ..
-        } = atom
-        else {
-            continue;
-        };
-        let Some(term) = fuzzy_term.as_deref() else {
-            continue;
-        };
-        if !seen.insert(term.to_string()) {
-            continue;
-        }
-
-        let candidates = fuzzy_candidates(&vocabulary, term);
-        if !candidates.is_empty() {
-            expansions.push(SearchFuzzyExpansion {
-                term: text.clone(),
-                candidates,
-            });
-        }
+    if let Some(expression) = prepared.expression.as_ref() {
+        collect_fuzzy_expansions(expression, &mut seen, &mut expansions, &vocabulary, false);
     }
 
     Ok(expansions)
+}
+
+fn collect_fuzzy_expansions(
+    expression: &SearchExpr,
+    seen: &mut HashSet<String>,
+    expansions: &mut Vec<SearchFuzzyExpansion>,
+    vocabulary: &BTreeSet<String>,
+    negated: bool,
+) {
+    match expression {
+        SearchExpr::Term(term) if !negated && !term.quoted => {
+            let Some(normalized) = normalize_term(&term.text) else {
+                return;
+            };
+            if !seen.insert(normalized.clone()) {
+                return;
+            }
+            let candidates = fuzzy_candidates(vocabulary, &normalized);
+            if !candidates.is_empty() {
+                expansions.push(SearchFuzzyExpansion {
+                    term: term.text.clone(),
+                    candidates,
+                });
+            }
+        }
+        SearchExpr::Term(_) => {}
+        SearchExpr::And(children) | SearchExpr::Or(children) => {
+            for child in children {
+                collect_fuzzy_expansions(child, seen, expansions, vocabulary, negated);
+            }
+        }
+        SearchExpr::Not(child) => {
+            collect_fuzzy_expansions(child, seen, expansions, vocabulary, !negated);
+        }
+    }
 }
 
 fn load_search_vocabulary(connection: &Connection) -> Result<BTreeSet<String>, SearchError> {
@@ -1073,13 +1330,31 @@ impl PreparedSearchQuery {
                 )
             })
             .collect::<HashMap<_, _>>();
-        self.effective_query = compose_fts_query(&self.atoms, &fuzzy_map)
-            .expect("prepared query should remain valid after fuzzy expansion");
+        if let Some(expression) = self.expression.as_ref() {
+            self.effective_query = compose_fts_query(expression, &fuzzy_map)
+                .expect("prepared query should remain valid after fuzzy expansion");
+        }
         self.fuzzy_fallback_used = true;
         self.fuzzy_expansions = expansions;
     }
 
     fn plan(&self) -> SearchPlan {
+        let mut parsed_query_explanation = self.expression.as_ref().map_or_else(
+            || vec![format!("RAW FTS5: {}", self.effective_query)],
+            explain_search_expression,
+        );
+        if let Some(tag) = self.tag.as_deref() {
+            parsed_query_explanation.push(format!("FILTER tag:{tag}"));
+        }
+        if let Some(path_prefix) = self.path_prefix.as_deref() {
+            parsed_query_explanation.push(format!("FILTER path:{path_prefix}"));
+        }
+        if let Some(has_property) = self.has_property.as_deref() {
+            parsed_query_explanation.push(format!("FILTER has:{has_property}"));
+        }
+        parsed_query_explanation
+            .extend(self.filters.iter().map(|filter| format!("WHERE {filter}")));
+
         SearchPlan {
             effective_query: self.effective_query.clone(),
             semantic_text: self.semantic_text.clone(),
@@ -1090,6 +1365,7 @@ impl PreparedSearchQuery {
             raw_query: self.raw_query,
             fuzzy_requested: self.fuzzy_requested,
             fuzzy_fallback_used: self.fuzzy_fallback_used,
+            parsed_query_explanation,
             fuzzy_expansions: self.fuzzy_expansions.clone(),
         }
     }
@@ -1290,12 +1566,99 @@ mod tests {
         assert_eq!(report.hits[0].document_path, "Projects/Alpha.md");
         let plan = report.plan.expect("plan should be populated");
         assert_eq!(plan.effective_query, "\"Owned by\" NOT \"Robert\"");
+        assert!(plan
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "AND"));
+        assert!(plan
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER tag:project"));
         assert!(!report.hits[0]
             .explain
             .as_ref()
             .expect("hit explain should be populated")
             .strategy
             .is_empty());
+    }
+
+    #[test]
+    fn search_parenthesized_grouping_preserves_or_scope() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("Alpha.md"), "alpha project").expect("note should write");
+        fs::write(vault_root.join("Beta.md"), "beta project").expect("note should write");
+        fs::write(vault_root.join("Gamma.md"), "alpha only").expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "(alpha or beta) project".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        let mut hit_paths = report
+            .hits
+            .iter()
+            .map(|hit| hit.document_path.clone())
+            .collect::<Vec<_>>();
+        hit_paths.sort();
+        assert_eq!(
+            hit_paths,
+            vec!["Alpha.md".to_string(), "Beta.md".to_string()]
+        );
+        assert_eq!(
+            report.plan.expect("plan should exist").effective_query,
+            "(\"alpha\" OR \"beta\") AND \"project\""
+        );
+    }
+
+    #[test]
+    fn search_grouped_negation_requires_all_terms_in_negated_group() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(vault_root.join("Both.md"), "alpha work meetup").expect("note should write");
+        fs::write(vault_root.join("Work.md"), "alpha work").expect("note should write");
+        fs::write(vault_root.join("Meetup.md"), "alpha meetup").expect("note should write");
+        fs::write(vault_root.join("Other.md"), "alpha unrelated").expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "alpha -(work meetup)".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        let mut hit_paths = report
+            .hits
+            .iter()
+            .map(|hit| hit.document_path.clone())
+            .collect::<Vec<_>>();
+        hit_paths.sort();
+        assert_eq!(
+            hit_paths,
+            vec![
+                "Meetup.md".to_string(),
+                "Other.md".to_string(),
+                "Work.md".to_string(),
+            ]
+        );
+        assert_eq!(
+            report.plan.expect("plan should exist").effective_query,
+            "\"alpha\" NOT (\"work\" AND \"meetup\")"
+        );
     }
 
     #[test]
