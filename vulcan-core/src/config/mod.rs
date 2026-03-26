@@ -7,6 +7,13 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # Settings in this file override compatible values from `.obsidian/app.json`.
+# Shared vault settings belong here. Device-local overrides can go in
+# `.vulcan/config.local.toml`, which is loaded after this file and ignored by
+# the default `.vulcan/.gitignore`.
+
+# [scan]
+# default_mode = "blocking"   # off | blocking | background
+# browse_mode = "background"  # off | blocking | background
 
 # [chunking]
 # strategy = "heading"
@@ -73,6 +80,20 @@ pub enum LinkStylePreference {
     #[default]
     Wikilink,
     Markdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutoScanMode {
+    Off,
+    Blocking,
+    Background,
+}
+
+impl Default for AutoScanMode {
+    fn default() -> Self {
+        Self::Blocking
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,7 +224,23 @@ impl Default for InboxConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanConfig {
+    pub default_mode: AutoScanMode,
+    pub browse_mode: AutoScanMode,
+}
+
+impl Default for ScanConfig {
+    fn default() -> Self {
+        Self {
+            default_mode: AutoScanMode::Blocking,
+            browse_mode: AutoScanMode::Background,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultConfig {
+    pub scan: ScanConfig,
     pub chunking: ChunkingConfig,
     pub link_resolution: LinkResolutionMode,
     pub link_style: LinkStylePreference,
@@ -219,6 +256,7 @@ pub struct VaultConfig {
 impl Default for VaultConfig {
     fn default() -> Self {
         Self {
+            scan: ScanConfig::default(),
             chunking: ChunkingConfig::default(),
             link_resolution: LinkResolutionMode::Shortest,
             link_style: LinkStylePreference::Wikilink,
@@ -247,12 +285,19 @@ pub struct ConfigLoadResult {
 
 #[derive(Debug, Deserialize, Default)]
 struct PartialVulcanConfig {
+    scan: Option<PartialScanConfig>,
     chunking: Option<PartialChunkingConfig>,
     links: Option<PartialLinksConfig>,
     embedding: Option<EmbeddingProviderConfig>,
     extraction: Option<AttachmentExtractionConfig>,
     git: Option<PartialGitConfig>,
     inbox: Option<PartialInboxConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialScanConfig {
+    default_mode: Option<AutoScanMode>,
+    browse_mode: Option<AutoScanMode>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -334,8 +379,18 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
 
     config.property_types = load_obsidian_property_types(paths, &mut diagnostics);
 
-    if let Some(vulcan_config) = load_vulcan_overrides(paths, &mut diagnostics) {
+    if let Some(vulcan_config) =
+        load_vulcan_overrides(paths.config_file(), "Vulcan config", &mut diagnostics)
+    {
         apply_vulcan_overrides(&mut config, vulcan_config);
+    }
+
+    if let Some(local_config) = load_vulcan_overrides(
+        paths.local_config_file(),
+        "local Vulcan config",
+        &mut diagnostics,
+    ) {
+        apply_vulcan_overrides(&mut config, local_config);
     }
 
     ConfigLoadResult {
@@ -388,29 +443,29 @@ fn load_obsidian_property_types(
 }
 
 fn load_vulcan_overrides(
-    paths: &VaultPaths,
+    path: &Path,
+    description: &str,
     diagnostics: &mut Vec<ConfigDiagnostic>,
 ) -> Option<PartialVulcanConfig> {
-    let path = paths.config_file().to_path_buf();
     if !path.exists() {
         return None;
     }
 
-    match fs::read_to_string(&path) {
+    match fs::read_to_string(path) {
         Ok(contents) => match toml::from_str::<PartialVulcanConfig>(&contents) {
             Ok(config) => Some(config),
             Err(error) => {
                 diagnostics.push(ConfigDiagnostic {
-                    path,
-                    message: format!("failed to parse Vulcan config: {error}"),
+                    path: path.to_path_buf(),
+                    message: format!("failed to parse {description}: {error}"),
                 });
                 None
             }
         },
         Err(error) => {
             diagnostics.push(ConfigDiagnostic {
-                path,
-                message: format!("failed to read Vulcan config: {error}"),
+                path: path.to_path_buf(),
+                message: format!("failed to read {description}: {error}"),
             });
             None
         }
@@ -469,6 +524,15 @@ fn apply_obsidian_defaults(config: &mut VaultConfig, obsidian: ObsidianAppConfig
 }
 
 fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConfig) {
+    if let Some(scan) = overrides.scan {
+        if let Some(default_mode) = scan.default_mode {
+            config.scan.default_mode = default_mode;
+        }
+        if let Some(browse_mode) = scan.browse_mode {
+            config.scan.browse_mode = browse_mode;
+        }
+    }
+
     if let Some(chunking) = overrides.chunking {
         if let Some(strategy) = chunking.strategy {
             config.chunking.strategy = strategy;
@@ -589,6 +653,8 @@ mod tests {
         assert_eq!(loaded.config.link_resolution, LinkResolutionMode::Relative);
         assert_eq!(loaded.config.attachment_folder, PathBuf::from("."));
         assert!(loaded.config.strict_line_breaks);
+        assert_eq!(loaded.config.scan.default_mode, AutoScanMode::Blocking);
+        assert_eq!(loaded.config.scan.browse_mode, AutoScanMode::Background);
         assert_eq!(
             loaded.config.property_types.get("status"),
             Some(&"text".to_string())
@@ -616,7 +682,11 @@ mod tests {
         .expect("app config should be written");
         fs::write(
             vault_root.join(".vulcan/config.toml"),
-            r###"[chunking]
+            r###"[scan]
+default_mode = "off"
+browse_mode = "blocking"
+
+[chunking]
 strategy = "fixed"
 target_size = 512
 overlap = 64
@@ -662,6 +732,8 @@ heading = "## Notes"
         let loaded = load_vault_config(&paths);
 
         assert!(loaded.diagnostics.is_empty());
+        assert_eq!(loaded.config.scan.default_mode, AutoScanMode::Off);
+        assert_eq!(loaded.config.scan.browse_mode, AutoScanMode::Blocking);
         assert_eq!(loaded.config.chunking.strategy, ChunkingStrategy::Fixed);
         assert_eq!(loaded.config.chunking.target_size, 512);
         assert_eq!(loaded.config.chunking.overlap, 64);
@@ -728,6 +800,81 @@ heading = "## Notes"
     }
 
     #[test]
+    fn local_config_overrides_shared_config() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r###"[scan]
+default_mode = "off"
+browse_mode = "off"
+
+[chunking]
+target_size = 512
+
+[git]
+auto_commit = false
+
+[inbox]
+path = "Inbox.md"
+"###,
+        )
+        .expect("shared config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.local.toml"),
+            r###"[scan]
+default_mode = "blocking"
+browse_mode = "background"
+
+[chunking]
+target_size = 2048
+
+[git]
+auto_commit = true
+
+[inbox]
+path = "Device/Inbox.md"
+"###,
+        )
+        .expect("local config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(loaded.config.scan.default_mode, AutoScanMode::Blocking);
+        assert_eq!(loaded.config.scan.browse_mode, AutoScanMode::Background);
+        assert_eq!(loaded.config.chunking.target_size, 2_048);
+        assert!(loaded.config.git.auto_commit);
+        assert_eq!(loaded.config.inbox.path, "Device/Inbox.md");
+    }
+
+    #[test]
+    fn malformed_local_config_emits_diagnostic_and_keeps_shared_config() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r###"[scan]
+default_mode = "off"
+"###,
+        )
+        .expect("shared config should be written");
+        fs::write(vault_root.join(".vulcan/config.local.toml"), "[scan")
+            .expect("broken local config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert_eq!(loaded.config.scan.default_mode, AutoScanMode::Off);
+        assert_eq!(loaded.config.scan.browse_mode, AutoScanMode::Background);
+        assert_eq!(loaded.diagnostics.len(), 1);
+        assert!(loaded.diagnostics[0]
+            .message
+            .contains("failed to parse local Vulcan config"));
+    }
+
+    #[test]
     fn create_default_config_is_idempotent() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
@@ -740,7 +887,7 @@ heading = "## Notes"
         );
         assert_eq!(
             fs::read_to_string(paths.gitignore_file()).expect("gitignore should exist"),
-            "*\n!.gitignore\n!config.toml\n!reports/\nreports/*\n!reports/*.toml\n"
+            "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n"
         );
     }
 }

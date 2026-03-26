@@ -33,9 +33,9 @@ pub use bases::{
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{
     create_default_config, default_config_template, load_vault_config, AttachmentExtractionConfig,
-    ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigLoadResult, EmbeddingProviderConfig,
-    GitConfig, GitScope, GitTrigger, InboxConfig, LinkResolutionMode, LinkStylePreference,
-    VaultConfig,
+    AutoScanMode, ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigLoadResult,
+    EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, InboxConfig, LinkResolutionMode,
+    LinkStylePreference, ScanConfig, VaultConfig,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,
@@ -72,8 +72,8 @@ pub use parser::{
     ParsedDocument, RawBlockRef, RawHeading, RawLink, RawTag,
 };
 pub use paths::{
-    VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, REPORTS_DIR_NAME,
-    VULCAN_DIR_NAME,
+    VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, LOCAL_CONFIG_FILE_NAME,
+    REPORTS_DIR_NAME, VULCAN_DIR_NAME,
 };
 pub use properties::{
     extract_indexed_properties, query_notes, IndexedProperties, IndexedPropertyListItem,
