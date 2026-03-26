@@ -23,12 +23,23 @@ Common discovery commands:
 ./target/release/vulcan --help
 ./target/release/vulcan notes --help
 ./target/release/vulcan search --help
+./target/release/vulcan browse --help
+./target/release/vulcan edit --help
 ./target/release/vulcan describe
+```
+
+Common day-to-day commands:
+
+```bash
+./target/release/vulcan --vault ~/wikis/mimir browse
+./target/release/vulcan --vault ~/wikis/mimir search 'dashboard "release notes"'
+./target/release/vulcan --vault ~/wikis/mimir edit Projects/Alpha
+./target/release/vulcan --vault ~/wikis/mimir inbox "Capture this idea"
 ```
 
 ## Documentation
 
-- `docs/cli.md` — User-facing CLI guide, query/filter syntax, search syntax, JSON/export behavior, and interactive features
+- `docs/cli.md` — Comprehensive CLI guide: command catalogue, query/filter syntax, search syntax, interactive flows, auto-commit, inbox/templates, JSON/export behavior
 - `docs/design_document.md` — Architecture and design decisions
 - `docs/ROADMAP.md` — Phased implementation status and remaining work
 - `docs/performance.md` — Benchmarking and performance notes
