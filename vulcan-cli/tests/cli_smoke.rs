@@ -1020,6 +1020,60 @@ fn search_inline_file_content_and_match_case_operators_work() {
 }
 
 #[test]
+fn search_line_and_block_operators_work() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    fs::write(vault_root.join("SameLine.md"), "mix flour\noven ready").expect("note should write");
+    fs::write(vault_root.join("SplitLine.md"), "mix\nflour").expect("note should write");
+    fs::write(
+        vault_root.join("SameBlock.md"),
+        "mix flour\nstir well\n\nserve",
+    )
+    .expect("note should write");
+    fs::write(vault_root.join("SplitBlock.md"), "mix\n\nflour").expect("note should write");
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "search",
+            "line:(mix flour)",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"SameLine.md\"")
+                .and(predicate::str::contains("SplitLine.md").not()),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "search",
+            "block:(mix flour)",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"SameBlock.md\"")
+                .and(predicate::str::contains("SplitBlock.md").not()),
+        );
+}
+
+#[test]
 fn notes_json_output_filters_and_sorts_property_queries() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -264,6 +264,7 @@ Default query syntax:
 - Quoted phrases stay together: `"owned by"`.
 - Use `or` between positive terms: `dashboard or summary`.
 - Prefix a term, quoted phrase, or parenthesized group with `-` to exclude it.
+- Scoped operators can require terms to co-occur in one line or block: `line:(mix flour)`, `block:(release notes)`.
 
 Supported inline filters inside the query text:
 
@@ -293,7 +294,7 @@ Raw FTS5 example:
 vulcan search --raw-query '"release" NEAR/5 "notes"'
 ```
 
-**Planned enhancements (Roadmap 9.6):** Obsidian-compatible search operators (`file:`, `content:`, `section:`, `line:`, `block:`, `match-case:`, `task:`, `task-todo:`, `task-done:`), inline property search with `[prop:val]` bracket syntax, inline regex with `/pattern/` delimiters, `--sort` for result ordering, and richer browse-TUI search controls. See `docs/ROADMAP.md` §9.6.
+**Planned enhancements (Roadmap 9.6):** Additional Obsidian-compatible operators (`section:`, `task:`, `task-todo:`, `task-done:`), inline property search with `[prop:val]` bracket syntax, inline regex with `/pattern/` delimiters, `--sort` for result ordering, and richer browse-TUI search controls. See `docs/ROADMAP.md` §9.6.
 
 ## Query DSL and JSON payloads
 
