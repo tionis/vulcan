@@ -25,13 +25,14 @@ use std::fs;
 use std::io;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace,
     bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
     drop_vector_model, evaluate_base_file, execute_query_report, export_static_search_index,
-    index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
+    git_status, index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
     link_mentions, list_checkpoints, list_saved_reports, list_vector_models, load_saved_report,
     merge_tags, move_note, query_backlinks, query_change_report, query_graph_analytics,
     query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
@@ -487,6 +488,17 @@ struct EditReport {
     rescanned: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct DiffReport {
+    path: String,
+    anchor: String,
+    source: String,
+    status: String,
+    changed: bool,
+    changed_kinds: Vec<String>,
+    diff: Option<String>,
+}
+
 #[allow(clippy::large_enum_variant)]
 enum SavedExecution {
     Search(SearchReport),
@@ -709,6 +721,148 @@ fn run_edit_command(
         created,
         rescanned: true,
     })
+}
+
+fn run_diff_command(
+    paths: &VaultPaths,
+    note: Option<&str>,
+    since: Option<&str>,
+    interactive_note_selection: bool,
+) -> Result<DiffReport, CliError> {
+    let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
+    let resolved = resolve_note_reference(paths, &note).map_err(CliError::operation)?;
+
+    if let Some(checkpoint) = since {
+        return diff_report_from_change_anchor(
+            paths,
+            &resolved.path,
+            ChangeAnchor::Checkpoint(checkpoint.to_string()),
+            format!("checkpoint:{checkpoint}"),
+        );
+    }
+
+    if vulcan_core::is_git_repo(paths.vault_root()) {
+        return diff_report_from_git(paths, &resolved.path);
+    }
+
+    diff_report_from_change_anchor(
+        paths,
+        &resolved.path,
+        ChangeAnchor::LastScan,
+        "last_scan".to_string(),
+    )
+}
+
+fn diff_report_from_git(paths: &VaultPaths, path: &str) -> Result<DiffReport, CliError> {
+    let status = git_status(paths.vault_root()).map_err(CliError::operation)?;
+    let untracked = status.untracked.iter().any(|candidate| candidate == path);
+    let diff = render_git_diff(paths.vault_root(), path, untracked)?;
+    let changed = !diff.trim().is_empty();
+
+    Ok(DiffReport {
+        path: path.to_string(),
+        anchor: "HEAD".to_string(),
+        source: "git_head".to_string(),
+        status: if untracked {
+            "new".to_string()
+        } else if changed {
+            "changed".to_string()
+        } else {
+            "unchanged".to_string()
+        },
+        changed,
+        changed_kinds: changed
+            .then(|| vec!["note".to_string()])
+            .unwrap_or_default(),
+        diff: changed.then_some(diff),
+    })
+}
+
+fn diff_report_from_change_anchor(
+    paths: &VaultPaths,
+    path: &str,
+    anchor: ChangeAnchor,
+    anchor_label: String,
+) -> Result<DiffReport, CliError> {
+    let report = query_change_report(paths, &anchor).map_err(CliError::operation)?;
+    let mut changed_kinds = Vec::new();
+    let note_status = report
+        .notes
+        .iter()
+        .find(|item| item.path == path)
+        .map(|item| item.status);
+
+    if note_status.is_some() {
+        changed_kinds.push("note".to_string());
+    }
+    if report.links.iter().any(|item| item.path == path) {
+        changed_kinds.push("links".to_string());
+    }
+    if report.properties.iter().any(|item| item.path == path) {
+        changed_kinds.push("properties".to_string());
+    }
+    if report.embeddings.iter().any(|item| item.path == path) {
+        changed_kinds.push("embeddings".to_string());
+    }
+
+    let status = match note_status {
+        Some(ChangeKindStatus::Added) => "new",
+        Some(ChangeKindStatus::Updated) => "changed",
+        Some(ChangeKindStatus::Deleted) => "deleted",
+        None if changed_kinds.is_empty() => "unchanged",
+        None => "changed",
+    }
+    .to_string();
+
+    Ok(DiffReport {
+        path: path.to_string(),
+        anchor: anchor_label,
+        source: "cache".to_string(),
+        changed: status != "unchanged",
+        status,
+        changed_kinds,
+        diff: None,
+    })
+}
+
+type ChangeKindStatus = vulcan_core::ChangeStatus;
+
+fn render_git_diff(vault_root: &Path, path: &str, untracked: bool) -> Result<String, CliError> {
+    let output = if untracked {
+        let empty_path = std::env::temp_dir().join(format!(
+            "vulcan-empty-diff-{}-{}",
+            std::process::id(),
+            path.replace('/', "_")
+        ));
+        fs::write(&empty_path, "").map_err(CliError::operation)?;
+        let output = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(vault_root)
+            .args(["diff", "--no-index", "--no-color"])
+            .arg(&empty_path)
+            .arg(vault_root.join(path))
+            .output()
+            .map_err(CliError::operation)?;
+        let _ = fs::remove_file(&empty_path);
+        output
+    } else {
+        ProcessCommand::new("git")
+            .arg("-C")
+            .arg(vault_root)
+            .args(["diff", "--no-color", "HEAD", "--", path])
+            .output()
+            .map_err(CliError::operation)?
+    };
+
+    if untracked {
+        if !matches!(output.status.code(), Some(0 | 1)) {
+            return Err(CliError::operation(String::from_utf8_lossy(&output.stderr)));
+        }
+    } else if !output.status.success() {
+        return Err(CliError::operation(String::from_utf8_lossy(&output.stderr)));
+    }
+
+    String::from_utf8(output.stdout).map_err(CliError::operation)
 }
 
 fn saved_export_format(format: ExportFormat) -> SavedExportFormat {
@@ -2043,6 +2197,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 use_stdout_color,
                 export.as_ref(),
             )
+        }
+        Command::Diff {
+            ref note,
+            ref since,
+        } => {
+            let report = run_diff_command(
+                &paths,
+                note.as_deref(),
+                since.as_deref(),
+                interactive_note_selection,
+            )?;
+            print_diff_report(cli.output, &report)
         }
         Command::LinkMentions {
             ref note,
@@ -3984,6 +4150,35 @@ fn print_change_report(
     }
 }
 
+fn print_diff_report(output: OutputFormat, report: &DiffReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if let Some(diff) = report.diff.as_deref() {
+                if diff.trim().is_empty() {
+                    println!("No changes in {} since {}.", report.path, report.anchor);
+                } else {
+                    println!("Diff for {} against {}:", report.path, report.anchor);
+                    print!("{diff}");
+                    if !diff.ends_with('\n') {
+                        println!();
+                    }
+                }
+            } else if report.changed {
+                println!(
+                    "{} changed since {} ({})",
+                    report.path,
+                    report.anchor,
+                    report.changed_kinds.join(", ")
+                );
+            } else {
+                println!("No changes in {} since {}.", report.path, report.anchor);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_static_search_index_report(
     output: OutputFormat,
     report: &vulcan_core::StaticSearchIndexReport,
@@ -5451,6 +5646,32 @@ mod tests {
     }
 
     #[test]
+    fn diff_command_uses_git_head_for_modified_note() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        fs::write(temp_dir.path().join("Home.md"), "# Home\n").expect("note should be written");
+        let paths = VaultPaths::new(temp_dir.path());
+        vulcan_core::scan_vault(&paths, ScanMode::Incremental).expect("scan should succeed");
+        init_git_repo(temp_dir.path());
+        run_git(temp_dir.path(), &["add", "Home.md"]);
+        run_git(temp_dir.path(), &["commit", "-m", "Initial"]);
+
+        fs::write(temp_dir.path().join("Home.md"), "# Home\nUpdated\n")
+            .expect("note should be updated");
+
+        let report =
+            run_diff_command(&paths, Some("Home"), None, false).expect("diff should succeed");
+
+        assert_eq!(report.path, "Home.md");
+        assert_eq!(report.source, "git_head");
+        assert_eq!(report.status, "changed");
+        assert!(report.changed);
+        assert!(report
+            .diff
+            .as_deref()
+            .is_some_and(|diff| diff.contains("+Updated")));
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn parses_links_and_backlinks_commands() {
         let rebuild =
@@ -5530,6 +5751,7 @@ mod tests {
             .expect("cli should parse");
         let suggest_duplicates =
             Cli::try_parse_from(["vulcan", "suggest", "duplicates"]).expect("cli should parse");
+        let diff = Cli::try_parse_from(["vulcan", "diff", "Home"]).expect("cli should parse");
         let link_mentions = Cli::try_parse_from(["vulcan", "link-mentions", "Home", "--dry-run"])
             .expect("cli should parse");
         let rewrite = Cli::try_parse_from([
@@ -5793,6 +6015,13 @@ mod tests {
                 command: SuggestCommand::Duplicates {
                     export: ExportArgs::default(),
                 },
+            }
+        );
+        assert_eq!(
+            diff.command,
+            Command::Diff {
+                note: Some("Home".to_string()),
+                since: None,
             }
         );
         assert_eq!(
