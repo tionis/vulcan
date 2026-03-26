@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
-use vulcan_core::search::SearchMode;
+use vulcan_core::search::{SearchMode, SearchSort};
 use vulcan_core::{
     doctor_vault, evaluate_base_file, git_log, is_git_repo, list_note_identities,
     list_tagged_note_identities, list_tags, move_note, query_backlinks, query_links, query_notes,
@@ -315,15 +315,50 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
     list_state.select(state.selected_index());
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
-    let preview = Paragraph::new(state.preview_lines())
-        .block(
-            Block::default()
-                .title(state.preview_title())
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(preview, body[1]);
+    let show_full_text_explain = state.mode == BrowseMode::FullText
+        && state.full_text.show_explain()
+        && state.git_view.is_none()
+        && state.doctor_view.is_none()
+        && state.backlinks_view.is_none()
+        && state.links_view.is_none()
+        && state.new_note_prompt.is_none()
+        && state.move_prompt.is_none();
+
+    if show_full_text_explain {
+        let preview_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .split(body[1]);
+        let preview = Paragraph::new(state.preview_lines())
+            .block(
+                Block::default()
+                    .title(state.preview_title())
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(preview, preview_layout[0]);
+
+        let explain = Paragraph::new(state.full_text.explain_preview_lines())
+            .block(
+                Block::default()
+                    .title("Explain (Ctrl-E, PageUp/PageDown)")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(explain, preview_layout[1]);
+    } else {
+        let preview = Paragraph::new(state.preview_lines())
+            .block(
+                Block::default()
+                    .title(state.preview_title())
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(preview, body[1]);
+    }
 
     let footer_lines = if footer_height >= 5 {
         vec![
@@ -392,7 +427,9 @@ impl BrowseMode {
     fn help_line(self) -> &'static str {
         match self {
             Self::Fuzzy => "type to filter by path, filename, or alias",
-            Self::FullText => "type to search indexed content; preview shows snippets",
+            Self::FullText => {
+                "type to search indexed content; inline operators, Ctrl-S sort, Alt-C case, Ctrl-E explain"
+            }
             Self::Tag => "type a tag name; notes show the best matching indexed tag",
             Self::Property => "type a where-style predicate like status = active",
         }
@@ -518,6 +555,12 @@ impl BrowseState {
             match key.code {
                 KeyCode::Char('e') | KeyCode::Char('E') => {
                     self.clear_status();
+                    if self.mode == BrowseMode::FullText {
+                        if let Err(error) = self.handle_mode_key(key) {
+                            self.set_status(error);
+                        }
+                        return BrowseAction::Continue;
+                    }
                     return self.edit_selected_path();
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -593,7 +636,7 @@ impl BrowseState {
             KeyCode::Enter => self.edit_selected_path(),
             _ => {
                 self.clear_status();
-                if let Err(error) = self.handle_mode_key(key.code) {
+                if let Err(error) = self.handle_mode_key(key) {
                     self.set_status(error);
                 }
                 BrowseAction::Continue
@@ -788,21 +831,21 @@ impl BrowseState {
         }
     }
 
-    fn handle_mode_key(&mut self, code: KeyCode) -> Result<(), String> {
+    fn handle_mode_key(&mut self, key: KeyEvent) -> Result<(), String> {
         match self.mode {
             BrowseMode::Fuzzy => {
-                match handle_picker_key(&mut self.picker, code) {
+                match handle_picker_key(&mut self.picker, key.code) {
                     PickerAction::Continue | PickerAction::Cancel | PickerAction::Select => {}
                 }
                 Ok(())
             }
-            BrowseMode::FullText => self.full_text.handle_key(&self.paths, code),
+            BrowseMode::FullText => self.full_text.handle_key(&self.paths, key),
             BrowseMode::Tag => self
                 .tag_filter
-                .handle_key(&self.paths, &self.all_notes, code),
+                .handle_key(&self.paths, &self.all_notes, key.code),
             BrowseMode::Property => {
                 self.property_filter
-                    .handle_key(&self.paths, &self.all_notes, code)
+                    .handle_key(&self.paths, &self.all_notes, key.code)
             }
         }
     }
@@ -1010,7 +1053,7 @@ impl BrowseState {
         } else {
             match self.mode {
                 BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Esc quit".to_string(),
-                BrowseMode::FullText => "Keys: type to search, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
+                BrowseMode::FullText => "Keys: type to search, Backspace edit query, Up/Down move, Enter edit, Ctrl-E explain, Ctrl-S sort, Alt-C case, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
                 BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
                 BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
             }
@@ -1085,7 +1128,16 @@ impl BrowseState {
                 .full_text
                 .hits
                 .iter()
-                .map(|hit| format!("{} [{:.3}]", search_hit_location(hit), hit.rank))
+                .map(|hit| {
+                    let suffix = if self.full_text.sort() == SearchSort::Relevance {
+                        format!(" [{:.3}]", hit.rank)
+                    } else if let Some(line) = hit.matched_line {
+                        format!(" [line {line}]")
+                    } else {
+                        String::new()
+                    };
+                    format!("{}{}", search_hit_location(hit), suffix)
+                })
                 .collect(),
             BrowseMode::Tag => self.tag_filter.list_items(),
             BrowseMode::Property => self.property_filter.list_items(),
@@ -1187,6 +1239,29 @@ impl BrowseState {
     }
 
     fn status_bar_line(&self) -> String {
+        let full_text_meta = (self.mode == BrowseMode::FullText
+            && self.git_view.is_none()
+            && self.doctor_view.is_none()
+            && self.backlinks_view.is_none()
+            && self.links_view.is_none()
+            && self.new_note_prompt.is_none()
+            && self.move_prompt.is_none())
+        .then(|| {
+            format!(
+                " | Search: {} | Case: {} | Explain: {}",
+                search_sort_label(self.full_text.sort()),
+                if self.full_text.match_case() {
+                    "sensitive"
+                } else {
+                    "insensitive"
+                },
+                if self.full_text.show_explain() {
+                    "on"
+                } else {
+                    "off"
+                }
+            )
+        });
         format!(
             "Vault: {} | Mode: {} | Notes: {} filtered / {} total | Last scan: {}{}",
             self.vault_name(),
@@ -1198,8 +1273,8 @@ impl BrowseState {
                 " | Refresh: background"
             } else {
                 ""
-            }
-        )
+            },
+        ) + full_text_meta.as_deref().unwrap_or("")
     }
 
     fn set_status(&mut self, status: impl Into<String>) {
@@ -1308,6 +1383,10 @@ impl BrowseState {
         }
 
         match self.mode {
+            BrowseMode::FullText if self.full_text.show_explain() => self
+                .full_text
+                .explain_summary()
+                .unwrap_or_else(|| "Ready.".to_string()),
             BrowseMode::Tag => self
                 .tag_filter
                 .active_tag
@@ -1986,6 +2065,11 @@ struct FullTextState {
     query: String,
     hits: Vec<SearchHit>,
     selected_index: Option<usize>,
+    sort: SearchSort,
+    match_case: bool,
+    show_explain: bool,
+    explain_scroll: usize,
+    plan_lines: Vec<String>,
 }
 
 impl FullTextState {
@@ -2019,14 +2103,47 @@ impl FullTextState {
         }
     }
 
-    fn handle_key(&mut self, paths: &VaultPaths, code: KeyCode) -> Result<(), String> {
-        match code {
+    fn handle_key(&mut self, paths: &VaultPaths, key: KeyEvent) -> Result<(), String> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    self.sort = next_search_sort(self.sort);
+                    self.refresh_results(paths)?;
+                }
+                KeyCode::Char('e') | KeyCode::Char('E') => {
+                    self.show_explain = !self.show_explain;
+                    self.explain_scroll = 0;
+                    self.refresh_results(paths)?;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        if key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+        {
+            self.match_case = !self.match_case;
+            self.explain_scroll = 0;
+            self.refresh_results(paths)?;
+            return Ok(());
+        }
+
+        match key.code {
             KeyCode::Up => {
                 self.move_selection(-1);
                 Ok(())
             }
             KeyCode::Down => {
                 self.move_selection(1);
+                Ok(())
+            }
+            KeyCode::PageUp => {
+                self.scroll_explain(-1);
+                Ok(())
+            }
+            KeyCode::PageDown => {
+                self.scroll_explain(1);
                 Ok(())
             }
             KeyCode::Backspace => {
@@ -2072,19 +2189,22 @@ impl FullTextState {
         let selected_key = self
             .selected_hit()
             .map(|hit| (hit.chunk_id.clone(), hit.document_path.clone()));
-        self.hits = self.query_results(paths)?;
+        let (hits, plan_lines) = self.query_results(paths)?;
+        self.hits = hits;
+        self.plan_lines = plan_lines;
         self.selected_index = selected_key.and_then(|(chunk_id, document_path)| {
             self.hits
                 .iter()
                 .position(|hit| hit.chunk_id == chunk_id && hit.document_path == document_path)
         });
         self.clamp_selection();
+        self.clamp_explain_scroll();
         Ok(())
     }
 
-    fn query_results(&self, paths: &VaultPaths) -> Result<Vec<SearchHit>, String> {
+    fn query_results(&self, paths: &VaultPaths) -> Result<(Vec<SearchHit>, Vec<String>), String> {
         if self.query.trim().is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         search_vault(
@@ -2097,16 +2217,23 @@ impl FullTextState {
                 filters: Vec::new(),
                 provider: None,
                 mode: SearchMode::Keyword,
-                sort: None,
-                match_case: None,
+                sort: Some(self.sort),
+                match_case: self.match_case.then_some(true),
                 limit: Some(FULL_TEXT_LIMIT),
                 context_size: FULL_TEXT_CONTEXT_SIZE,
                 raw_query: false,
                 fuzzy: false,
-                explain: false,
+                explain: self.show_explain,
             },
         )
-        .map(|report| report.hits)
+        .map(|report| {
+            (
+                report.hits,
+                report
+                    .plan
+                    .map_or_else(Vec::new, |plan| plan.parsed_query_explanation),
+            )
+        })
         .map_err(|error| error.to_string())
     }
 
@@ -2117,6 +2244,69 @@ impl FullTextState {
         } else {
             Some(self.selected_index.unwrap_or(0).min(len - 1))
         };
+    }
+
+    fn scroll_explain(&mut self, delta: isize) {
+        let step = delta.unsigned_abs();
+        self.explain_scroll = if delta.is_negative() {
+            self.explain_scroll.saturating_sub(step)
+        } else {
+            self.explain_scroll.saturating_add(step)
+        };
+        self.clamp_explain_scroll();
+    }
+
+    fn clamp_explain_scroll(&mut self) {
+        let max_scroll = self.plan_lines.len().saturating_sub(1);
+        self.explain_scroll = self.explain_scroll.min(max_scroll);
+    }
+
+    fn show_explain(&self) -> bool {
+        self.show_explain
+    }
+
+    fn explain_preview_lines(&self) -> Vec<Line<'static>> {
+        if !self.show_explain {
+            return Vec::new();
+        }
+        if self.query.trim().is_empty() {
+            return vec![Line::from("Type a full-text query, then toggle explain.")];
+        }
+        if self.plan_lines.is_empty() {
+            return vec![Line::from("No parsed query plan available.")];
+        }
+
+        self.plan_lines
+            .iter()
+            .skip(self.explain_scroll)
+            .map(|line| Line::from(line.clone()))
+            .collect()
+    }
+
+    fn explain_summary(&self) -> Option<String> {
+        self.show_explain.then(|| {
+            if self.plan_lines.is_empty() {
+                "Explain: no parsed query plan available".to_string()
+            } else {
+                format!(
+                    "Explain: {}",
+                    self.plan_lines
+                        .iter()
+                        .take(3)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                )
+            }
+        })
+    }
+
+    fn sort(&self) -> SearchSort {
+        self.sort
+    }
+
+    fn match_case(&self) -> bool {
+        self.match_case
     }
 }
 
@@ -2473,6 +2663,30 @@ fn fuzzy_text_score(text: &str, query: &str) -> Option<i32> {
     Some(score)
 }
 
+fn next_search_sort(sort: SearchSort) -> SearchSort {
+    match sort {
+        SearchSort::Relevance => SearchSort::PathAsc,
+        SearchSort::PathAsc => SearchSort::PathDesc,
+        SearchSort::PathDesc => SearchSort::ModifiedNewest,
+        SearchSort::ModifiedNewest => SearchSort::ModifiedOldest,
+        SearchSort::ModifiedOldest => SearchSort::CreatedNewest,
+        SearchSort::CreatedNewest => SearchSort::CreatedOldest,
+        SearchSort::CreatedOldest => SearchSort::Relevance,
+    }
+}
+
+fn search_sort_label(sort: SearchSort) -> &'static str {
+    match sort {
+        SearchSort::Relevance => "relevance",
+        SearchSort::PathAsc => "path-asc",
+        SearchSort::PathDesc => "path-desc",
+        SearchSort::ModifiedNewest => "modified-newest",
+        SearchSort::ModifiedOldest => "modified-oldest",
+        SearchSort::CreatedNewest => "created-newest",
+        SearchSort::CreatedOldest => "created-oldest",
+    }
+}
+
 fn search_hit_location(hit: &SearchHit) -> String {
     if hit.heading_path.is_empty() {
         hit.document_path.clone()
@@ -2558,6 +2772,10 @@ mod tests {
         KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL)
     }
 
+    fn alt(code: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(code), KeyModifiers::ALT)
+    }
+
     fn write_note(root: &Path, relative_path: &str, contents: &str) {
         let absolute = root.join(relative_path);
         if let Some(parent) = absolute.parent() {
@@ -2584,6 +2802,17 @@ mod tests {
         run_git(vault_root, &["init"]);
         run_git(vault_root, &["config", "user.name", "Vulcan Test"]);
         run_git(vault_root, &["config", "user.email", "vulcan@example.com"]);
+    }
+
+    fn set_document_mtime(paths: &VaultPaths, path: &str, mtime: i64) {
+        let database = vulcan_core::CacheDatabase::open(paths).expect("database should open");
+        database
+            .connection()
+            .execute(
+                "UPDATE documents SET file_mtime = ? WHERE path = ?",
+                (mtime, path),
+            )
+            .expect("document mtime should update");
     }
 
     #[test]
@@ -3202,6 +3431,123 @@ mod tests {
 
         assert_eq!(state.mode, BrowseMode::FullText);
         assert_eq!(state.query(), "jk");
+    }
+
+    #[test]
+    fn full_text_query_supports_inline_operator_syntax() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Done.md",
+            "---\nstatus: done\n---\n\nrelease dashboard",
+        );
+        write_note(
+            temp_dir.path(),
+            "Backlog.md",
+            "---\nstatus: backlog\n---\n\nrelease dashboard",
+        );
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Done.md", &[]), note("Backlog.md", &[])])
+                .expect("state should build");
+
+        state.handle_key(ctrl('f'));
+        for character in "[status:done]".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+
+        assert_eq!(state.mode, BrowseMode::FullText);
+        assert_eq!(state.filtered_count(), 1);
+        assert_eq!(state.selected_path(), Some("Done.md"));
+    }
+
+    #[test]
+    fn full_text_ctrl_s_cycles_sort_and_reorders_hits() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Alpha.md", "dashboard");
+        write_note(temp_dir.path(), "Beta.md", "dashboard");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths.clone(),
+            vec![note("Alpha.md", &[]), note("Beta.md", &[])],
+        )
+        .expect("state should build");
+
+        set_document_mtime(&paths, "Alpha.md", 100);
+        set_document_mtime(&paths, "Beta.md", 300);
+
+        state.handle_key(ctrl('f'));
+        for character in "dashboard".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(state.full_text.sort(), SearchSort::Relevance);
+
+        state.handle_key(ctrl('s'));
+        assert_eq!(state.full_text.sort(), SearchSort::PathAsc);
+
+        state.handle_key(ctrl('s'));
+        assert_eq!(state.full_text.sort(), SearchSort::PathDesc);
+        assert!(state.list_items()[0].contains("Beta.md"));
+
+        state.handle_key(ctrl('s'));
+        assert_eq!(state.full_text.sort(), SearchSort::ModifiedNewest);
+        assert!(state.list_items()[0].contains("Beta.md"));
+    }
+
+    #[test]
+    fn full_text_alt_c_toggles_case_sensitive_results() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Upper.md", "Bob builds dashboards.");
+        write_note(temp_dir.path(), "Lower.md", "bob builds dashboards.");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths, vec![note("Upper.md", &[]), note("Lower.md", &[])])
+            .expect("state should build");
+
+        state.handle_key(ctrl('f'));
+        for character in "Bob".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(state.filtered_count(), 2);
+
+        state.handle_key(alt('c'));
+
+        assert!(state.full_text.match_case());
+        assert_eq!(state.filtered_count(), 1);
+        assert_eq!(state.selected_path(), Some("Upper.md"));
+    }
+
+    #[test]
+    fn full_text_ctrl_e_toggles_explain_and_updates_status() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Release.md",
+            "---\nstatus: done\n---\n\nrelease dashboard",
+        );
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Release.md", &[])]).expect("state should build");
+
+        state.handle_key(ctrl('f'));
+        for character in "dashboard [status:done] task-todo:ship".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+        let action = state.handle_key(ctrl('e'));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert!(state.full_text.show_explain());
+        let before_scroll = state.full_text.explain_preview_lines();
+        assert!(!before_scroll.is_empty());
+        assert!(state.status_line().contains("Explain:"));
+        assert!(state.key_help_line().contains("Ctrl-E explain"));
+
+        state.handle_key(key(KeyCode::PageDown));
+        let after_scroll = state.full_text.explain_preview_lines();
+        assert_ne!(before_scroll, after_scroll);
     }
 
     #[test]

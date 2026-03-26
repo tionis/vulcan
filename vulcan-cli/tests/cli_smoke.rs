@@ -169,6 +169,8 @@ fn browse_help_documents_modes_and_actions() {
                 .and(predicate::str::contains(
                     "Printable characters always extend the active query or prompt",
                 ))
+                .and(predicate::str::contains("Ctrl-S"))
+                .and(predicate::str::contains("Alt-C"))
                 .and(predicate::str::contains(
                     "vulcan --refresh background browse",
                 ))
