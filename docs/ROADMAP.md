@@ -756,7 +756,7 @@ vulcan browse
 - [x] Default / `/`: fuzzy path/alias/filename filter (current behavior)
 - [x] `Ctrl-F`: full-text search mode — query runs against FTS5, results replace the note list, preview pane shows matching snippets with highlighted terms instead of raw file content
 - [x] `Ctrl-T`: tag filter mode — type a tag name, fuzzy-match against all indexed tags, show notes matching the selected tag
-- [ ] `Ctrl-P`: property filter mode — type a property predicate (reuse the existing `where` filter syntax from `NoteQuery`), filter notes by property values
+- [x] `Ctrl-P`: property filter mode — type a property predicate (reuse the existing `where` filter syntax from `NoteQuery`), filter notes by property values
 
 **Action hotkeys on the selected note:**
 - [x] `e` or `Enter`: edit in `$EDITOR` (as above)
