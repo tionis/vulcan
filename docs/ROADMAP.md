@@ -1048,16 +1048,16 @@ Extend the existing `template` command (9.4.3) with Obsidian-compatible template
 
 #### 9.7.1 Obsidian-compatible template variables
 
-- [ ] Support Moment.js-style format strings on `{{date}}` and `{{time}}`: `{{date:YYYY-MM-DD}}`, `{{time:HH:mm:ss}}`, `{{date:dddd, MMMM Do YYYY}}`
-- [ ] `{{date}}` and `{{time}}` are interchangeable when a format string is provided (matching Obsidian behavior): `{{time:YYYY-MM-DD}}` produces a date
-- [ ] Implement a subset of Moment.js format tokens: `YYYY`, `YY`, `MM`, `M`, `DD`, `D`, `dd`, `ddd`, `dddd`, `HH`, `H`, `hh`, `h`, `mm`, `m`, `ss`, `s`, `A`, `a`, `Do` (ordinal day), `MMMM`, `MMM`. Use `chrono::format` to map tokens — no Moment.js dependency.
-- [ ] Configurable default date/time formats in `.vulcan/config.toml`:
+- [x] Support Moment.js-style format strings on `{{date}}` and `{{time}}`: `{{date:YYYY-MM-DD}}`, `{{time:HH:mm:ss}}`, `{{date:dddd, MMMM Do YYYY}}`
+- [x] `{{date}}` and `{{time}}` are interchangeable when a format string is provided (matching Obsidian behavior): `{{time:YYYY-MM-DD}}` produces a date
+- [x] Implement a subset of Moment.js format tokens: `YYYY`, `YY`, `MM`, `M`, `DD`, `D`, `dd`, `ddd`, `dddd`, `HH`, `H`, `hh`, `h`, `mm`, `m`, `ss`, `s`, `A`, `a`, `Do` (ordinal day), `MMMM`, `MMM`.
+- [x] Configurable default date/time formats in `.vulcan/config.toml`:
   ```toml
   [templates]
   date_format = "YYYY-MM-DD"       # default for {{date}} without format string
   time_format = "HH:mm"            # default for {{time}} without format string
   ```
-- [ ] Existing variables (`{{title}}`, `{{datetime}}`, `{{uuid}}`) remain unchanged
+- [x] Existing variables (`{{title}}`, `{{datetime}}`, `{{uuid}}`) remain unchanged
 
 #### 9.7.2 Template property merging
 

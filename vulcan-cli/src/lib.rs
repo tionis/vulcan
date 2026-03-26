@@ -54,7 +54,7 @@ use vulcan_core::{
     RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
     SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
     SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, VaultPaths, VectorDuplicatePair,
+    SearchReport, SearchSort, StoredModelInfo, TemplatesConfig, VaultPaths, VectorDuplicatePair,
     VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
     VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
     VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
@@ -536,6 +536,18 @@ struct TemplateVariables {
     time: String,
     datetime: String,
     uuid: String,
+    timestamp: TemplateTimestamp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TemplateTimestamp {
+    days_since_epoch: i64,
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1013,7 +1025,7 @@ fn run_inbox_command(
     .map_err(CliError::operation)?;
 
     let raw_text = inbox_input_text(text, file)?;
-    let variables = template_variables_for_path(&relative_path);
+    let variables = template_variables_for_path(&relative_path, TemplateTimestamp::current());
     let rendered_entry = render_inbox_entry(&inbox_config.format, &raw_text, &variables);
     let entry = if inbox_config.timestamp {
         format!("{} {}", variables.datetime, rendered_entry)
@@ -1061,8 +1073,10 @@ fn run_template_command(
     let template_name = name.ok_or_else(|| {
         CliError::operation("`template` requires a template name unless --list is used")
     })?;
+    let config = load_vault_config(paths).config;
+    let now = TemplateTimestamp::current();
     let template_file = resolve_template_file(paths, &templates, template_name)?;
-    let output_path = template_output_path(&template_file, output_path)?;
+    let output_path = template_output_path(&template_file, output_path, &now)?;
     let absolute_output = paths.vault_root().join(&output_path);
     if absolute_output.exists() {
         return Err(CliError::operation(format!(
@@ -1073,7 +1087,8 @@ fn run_template_command(
     let rendered = render_template_contents(
         &fs::read_to_string(paths.vulcan_dir().join("templates").join(&template_file))
             .map_err(CliError::operation)?,
-        &template_variables_for_path(&output_path),
+        &template_variables_for_path(&output_path, now),
+        &config.templates,
     );
     if let Some(parent) = absolute_output.parent() {
         fs::create_dir_all(parent).map_err(CliError::operation)?;
@@ -1148,11 +1163,12 @@ fn resolve_template_file(
 fn template_output_path(
     template_file: &str,
     output_path: Option<&str>,
+    now: &TemplateTimestamp,
 ) -> Result<String, CliError> {
     let path = if let Some(path) = output_path {
         path.to_string()
     } else {
-        let date = current_timestamp_strings().date;
+        let date = now.default_date_string();
         format!("{date}-{}", template_file)
     };
 
@@ -1194,30 +1210,85 @@ fn render_inbox_entry(format: &str, text: &str, variables: &TemplateVariables) -
         .replace("{datetime}", &variables.datetime)
 }
 
-fn render_template_contents(template: &str, variables: &TemplateVariables) -> String {
-    template
-        .replace("{{title}}", &variables.title)
-        .replace("{{date}}", &variables.date)
-        .replace("{{time}}", &variables.time)
-        .replace("{{datetime}}", &variables.datetime)
-        .replace("{{uuid}}", &variables.uuid)
+fn render_template_contents(
+    template: &str,
+    variables: &TemplateVariables,
+    config: &TemplatesConfig,
+) -> String {
+    let mut rendered = String::with_capacity(template.len());
+    let mut remaining = template;
+
+    while let Some(start) = remaining.find("{{") {
+        rendered.push_str(&remaining[..start]);
+        let rest = &remaining[start + 2..];
+        let Some(end) = rest.find("}}") else {
+            rendered.push_str(&remaining[start..]);
+            return rendered;
+        };
+
+        let expression = rest[..end].trim();
+        let replacement =
+            render_template_variable(expression, variables, config).unwrap_or_else(|| {
+                let mut original = String::with_capacity(expression.len() + 4);
+                original.push_str("{{");
+                original.push_str(expression);
+                original.push_str("}}");
+                original
+            });
+        rendered.push_str(&replacement);
+        remaining = &rest[end + 2..];
+    }
+
+    rendered.push_str(remaining);
+    rendered
 }
 
-fn template_variables_for_path(path: &str) -> TemplateVariables {
+fn render_template_variable(
+    expression: &str,
+    variables: &TemplateVariables,
+    config: &TemplatesConfig,
+) -> Option<String> {
+    if let Some(format) = expression.strip_prefix("date:") {
+        return Some(variables.timestamp.format_obsidian(format.trim()));
+    }
+    if let Some(format) = expression.strip_prefix("time:") {
+        return Some(variables.timestamp.format_obsidian(format.trim()));
+    }
+
+    match expression {
+        "title" => Some(variables.title.clone()),
+        "date" => Some(
+            variables
+                .timestamp
+                .format_obsidian(config.date_format.trim()),
+        ),
+        "time" => Some(
+            variables
+                .timestamp
+                .format_obsidian(config.time_format.trim()),
+        ),
+        "datetime" => Some(variables.datetime.clone()),
+        "uuid" => Some(variables.uuid.clone()),
+        _ => None,
+    }
+}
+
+fn template_variables_for_path(path: &str, timestamp: TemplateTimestamp) -> TemplateVariables {
     let path = Path::new(path);
     let title = path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("Untitled")
         .to_string();
-    let timestamp = current_timestamp_strings();
+    let strings = timestamp.default_strings();
 
     TemplateVariables {
         title,
-        date: timestamp.date,
-        time: timestamp.time,
-        datetime: timestamp.datetime,
+        date: strings.date,
+        time: strings.time,
+        datetime: strings.datetime,
         uuid: generated_uuid_string(),
+        timestamp,
     }
 }
 
@@ -1227,27 +1298,185 @@ struct TimestampStrings {
     datetime: String,
 }
 
-fn current_timestamp_strings() -> TimestampStrings {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    let days = seconds.div_euclid(86_400);
-    let seconds_of_day = seconds.rem_euclid(86_400);
-    let hour = seconds_of_day / 3_600;
-    let minute = (seconds_of_day % 3_600) / 60;
-    let second = seconds_of_day % 60;
-    let (year, month, day) = civil_from_days(days);
+impl TemplateTimestamp {
+    fn current() -> Self {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let days_since_epoch = seconds.div_euclid(86_400);
+        let seconds_of_day = seconds.rem_euclid(86_400);
+        let hour = seconds_of_day / 3_600;
+        let minute = (seconds_of_day % 3_600) / 60;
+        let second = seconds_of_day % 60;
+        let (year, month, day) = civil_from_days(days_since_epoch);
 
-    let date = format!("{year:04}-{month:02}-{day:02}");
-    let time = format!("{hour:02}:{minute:02}:{second:02}Z");
-    let datetime = format!("{date}T{time}");
-
-    TimestampStrings {
-        date,
-        time,
-        datetime,
+        Self {
+            days_since_epoch,
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        }
     }
+
+    fn default_strings(self) -> TimestampStrings {
+        let date = self.default_date_string();
+        let time = format!("{:02}:{:02}:{:02}Z", self.hour, self.minute, self.second);
+        let datetime = format!("{date}T{time}");
+
+        TimestampStrings {
+            date,
+            time,
+            datetime,
+        }
+    }
+
+    fn default_date_string(self) -> String {
+        format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+
+    fn weekday_index(self) -> usize {
+        usize::try_from((self.days_since_epoch + 4).rem_euclid(7)).unwrap_or(0)
+    }
+
+    fn format_obsidian(self, format: &str) -> String {
+        let format = if format.is_empty() {
+            "YYYY-MM-DD"
+        } else {
+            format
+        };
+        let mut rendered = String::with_capacity(format.len());
+        let mut remaining = format;
+
+        while !remaining.is_empty() {
+            if let Some(token) = self.next_obsidian_token(remaining) {
+                rendered.push_str(&self.token_value(token));
+                remaining = &remaining[token.len()..];
+            } else if let Some(character) = remaining.chars().next() {
+                rendered.push(character);
+                remaining = &remaining[character.len_utf8()..];
+            } else {
+                break;
+            }
+        }
+
+        rendered
+    }
+
+    fn next_obsidian_token<'a>(self, input: &'a str) -> Option<&'static str> {
+        const TOKENS: [&str; 19] = [
+            "YYYY", "dddd", "MMMM", "MMM", "ddd", "Do", "YY", "MM", "DD", "dd", "HH", "hh", "mm",
+            "ss", "M", "D", "H", "h", "A",
+        ];
+
+        for token in TOKENS {
+            if input.starts_with(token) {
+                return Some(token);
+            }
+        }
+        if input.starts_with('m') {
+            return Some("m");
+        }
+        if input.starts_with('s') {
+            return Some("s");
+        }
+        if input.starts_with('a') {
+            return Some("a");
+        }
+        None
+    }
+
+    fn token_value(self, token: &str) -> String {
+        const MONTH_NAMES: [&str; 12] = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ];
+        const MONTH_ABBREVIATIONS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        const WEEKDAY_NAMES: [&str; 7] = [
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+        ];
+        const WEEKDAY_ABBREVIATIONS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const WEEKDAY_SHORT: [&str; 7] = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+        let month_index = usize::try_from(self.month.saturating_sub(1)).unwrap_or(0);
+        let weekday_index = self.weekday_index();
+        let hour_12 = match self.hour % 12 {
+            0 => 12,
+            hour => hour,
+        };
+
+        match token {
+            "YYYY" => format!("{:04}", self.year),
+            "YY" => format!("{:02}", self.year.rem_euclid(100)),
+            "MMMM" => MONTH_NAMES[month_index].to_string(),
+            "MMM" => MONTH_ABBREVIATIONS[month_index].to_string(),
+            "MM" => format!("{:02}", self.month),
+            "M" => self.month.to_string(),
+            "DD" => format!("{:02}", self.day),
+            "Do" => ordinal_day(self.day),
+            "D" => self.day.to_string(),
+            "dddd" => WEEKDAY_NAMES[weekday_index].to_string(),
+            "ddd" => WEEKDAY_ABBREVIATIONS[weekday_index].to_string(),
+            "dd" => WEEKDAY_SHORT[weekday_index].to_string(),
+            "HH" => format!("{:02}", self.hour),
+            "H" => self.hour.to_string(),
+            "hh" => format!("{:02}", hour_12),
+            "h" => hour_12.to_string(),
+            "mm" => format!("{:02}", self.minute),
+            "m" => self.minute.to_string(),
+            "ss" => format!("{:02}", self.second),
+            "s" => self.second.to_string(),
+            "A" => {
+                if self.hour < 12 {
+                    "AM".to_string()
+                } else {
+                    "PM".to_string()
+                }
+            }
+            "a" => {
+                if self.hour < 12 {
+                    "am".to_string()
+                } else {
+                    "pm".to_string()
+                }
+            }
+            _ => token.to_string(),
+        }
+    }
+}
+
+fn ordinal_day(day: i64) -> String {
+    let suffix = match day.rem_euclid(100) {
+        11..=13 => "th",
+        _ => match day.rem_euclid(10) {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
+    };
+    format!("{day}{suffix}")
 }
 
 fn generated_uuid_string() -> String {
@@ -6456,6 +6685,47 @@ mod tests {
     }
 
     #[test]
+    fn render_template_contents_supports_obsidian_format_strings() {
+        let timestamp = test_template_timestamp(2026, 3, 26, 17, 4, 5);
+        let variables = template_variables_for_path("Journal/Today.md", timestamp);
+        let config = TemplatesConfig {
+            date_format: "dddd, MMMM Do YYYY".to_string(),
+            time_format: "hh:mm A".to_string(),
+        };
+
+        let rendered = render_template_contents(
+            "Date {{date}}\nTime {{time}}\nAlt {{time:YYYY-MM-DD}}\nWeekday {{date:dd}} {{date:ddd}} {{date:dddd}}\nStamp {{datetime}}\n",
+            &variables,
+            &config,
+        );
+
+        assert!(rendered.contains("Date Thursday, March 26th 2026"));
+        assert!(rendered.contains("Time 05:04 PM"));
+        assert!(rendered.contains("Alt 2026-03-26"));
+        assert!(rendered.contains("Weekday Th Thu Thursday"));
+        assert!(rendered.contains(&format!("Stamp {}", variables.datetime)));
+    }
+
+    #[test]
+    fn render_template_contents_preserves_datetime_and_uuid_variables() {
+        let timestamp = test_template_timestamp(2026, 3, 26, 17, 4, 5);
+        let mut variables = template_variables_for_path("Journal/Today.md", timestamp);
+        variables.uuid = "00000000-0000-0000-0000-000000000000".to_string();
+        let config = TemplatesConfig::default();
+
+        let rendered = render_template_contents(
+            "{{datetime}}\n{{uuid}}\n{{date}}\n{{time}}\n",
+            &variables,
+            &config,
+        );
+
+        assert!(rendered.contains("2026-03-26T17:04:05Z"));
+        assert!(rendered.contains("00000000-0000-0000-0000-000000000000"));
+        assert!(rendered.contains("2026-03-26"));
+        assert!(rendered.contains("17:04"));
+    }
+
+    #[test]
     fn template_command_creates_note_and_renders_variables() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
@@ -6485,6 +6755,40 @@ mod tests {
         assert!(contents.contains("# Today"));
         assert!(contents.contains("Created "));
         assert!(contents.contains("ID "));
+    }
+
+    fn test_template_timestamp(
+        year: i64,
+        month: i64,
+        day: i64,
+        hour: i64,
+        minute: i64,
+        second: i64,
+    ) -> TemplateTimestamp {
+        TemplateTimestamp {
+            days_since_epoch: days_from_civil(year, month, day),
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        }
+    }
+
+    fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+        let adjusted_year = year - if month <= 2 { 1 } else { 0 };
+        let era = if adjusted_year >= 0 {
+            adjusted_year
+        } else {
+            adjusted_year - 399
+        } / 400;
+        let year_of_era = adjusted_year - era * 400;
+        let month_index = month + if month > 2 { -3 } else { 9 };
+        let day_of_year = (153 * month_index + 2) / 5 + day - 1;
+        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+
+        era * 146_097 + day_of_era - 719_468
     }
 
     #[test]

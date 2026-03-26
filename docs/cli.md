@@ -529,16 +529,33 @@ Behavior:
 - `NAME` can be the full template filename or the filename stem.
 - If `--path` is omitted, Vulcan creates `<date>-<template-name>.md` in the vault root.
 - In an interactive terminal, the rendered note is opened in the editor before the rescan.
+- Default `{{date}}` and `{{time}}` formats come from `[templates]` in `.vulcan/config.toml`.
 
 Supported template variables:
 
 - `{{title}}`
 - `{{date}}`
+- `{{date:YYYY-MM-DD}}`
+- `{{date:dddd, MMMM Do YYYY}}`
 - `{{time}}`
+- `{{time:HH:mm}}`
 - `{{datetime}}`
 - `{{uuid}}`
 
-**Planned enhancements (Roadmap 9.7):** Obsidian-compatible Moment.js format strings (`{{date:YYYY-MM-DD}}`, `{{time:HH:mm}}`), template property merging into target notes, `vulcan template insert` for inserting templates into existing notes, and Obsidian template folder discovery. See `docs/ROADMAP.md` §9.7.
+Supported Moment-style tokens for `{{date:...}}` and `{{time:...}}`:
+
+- `YYYY`, `YY`
+- `MM`, `M`
+- `DD`, `D`, `Do`
+- `dd`, `ddd`, `dddd`
+- `HH`, `H`
+- `hh`, `h`
+- `mm`, `m`
+- `ss`, `s`
+- `A`, `a`
+- `MMMM`, `MMM`
+
+Remaining planned enhancements in Roadmap 9.7 are template insertion into existing notes, frontmatter property merging during insertion, and Obsidian template-folder discovery.
 
 ## Saved reports, exports, and automation
 
