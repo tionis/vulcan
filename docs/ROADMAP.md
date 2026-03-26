@@ -1035,6 +1035,58 @@ These are not separate tasks but constraints that apply across all 9.6 subsectio
 - **Query DSL (`vulcan query`) and bases:** These use property filters only (via `NoteQuery` / `build_note_filter_clause()`), not FTS. The bracket syntax `[prop:val]` is search-only. No changes needed to the query DSL, but the shared filter engine in `properties.rs` must remain compatible as bracket expressions are lowered into it.
 - **Saved reports:** `SearchQuery` is serialised into saved report definitions. New fields (`sort`, `match_case`) must have `#[serde(default)]` attributes so that existing saved reports deserialise without error.
 
+### 9.7 Enhanced templates — Obsidian-compatible template variables and insertion
+
+Extend the existing `template` command (9.4.3) with Obsidian-compatible template variable syntax and template-into-note insertion, so users can share templates between Obsidian and vulcan.
+
+**Reference:** `references/templates.md` (Obsidian template documentation).
+
+**Design decisions:**
+- **Backward-compatible extension.** The existing `{{date}}`, `{{time}}`, `{{title}}` variables continue to work. Obsidian-style format strings (`{{date:YYYY-MM-DD}}`, `{{time:HH:mm}}`) are added as an extension.
+- **Obsidian's template folder convention is supported but optional.** If `.obsidian/` config specifies a template folder, vulcan recognizes it alongside `.vulcan/templates/`. The `.vulcan/templates/` location takes precedence on conflict.
+- **Template insertion into existing notes** is a new capability. Obsidian lets you insert a template into the active note at cursor position; vulcan's CLI equivalent appends or prepends template content to a specified note.
+
+#### 9.7.1 Obsidian-compatible template variables
+
+- [ ] Support Moment.js-style format strings on `{{date}}` and `{{time}}`: `{{date:YYYY-MM-DD}}`, `{{time:HH:mm:ss}}`, `{{date:dddd, MMMM Do YYYY}}`
+- [ ] `{{date}}` and `{{time}}` are interchangeable when a format string is provided (matching Obsidian behavior): `{{time:YYYY-MM-DD}}` produces a date
+- [ ] Implement a subset of Moment.js format tokens: `YYYY`, `YY`, `MM`, `M`, `DD`, `D`, `dd`, `ddd`, `dddd`, `HH`, `H`, `hh`, `h`, `mm`, `m`, `ss`, `s`, `A`, `a`, `Do` (ordinal day), `MMMM`, `MMM`. Use `chrono::format` to map tokens — no Moment.js dependency.
+- [ ] Configurable default date/time formats in `.vulcan/config.toml`:
+  ```toml
+  [templates]
+  date_format = "YYYY-MM-DD"       # default for {{date}} without format string
+  time_format = "HH:mm"            # default for {{time}} without format string
+  ```
+- [ ] Existing variables (`{{title}}`, `{{datetime}}`, `{{uuid}}`) remain unchanged
+
+#### 9.7.2 Template property merging
+
+- [ ] When a template contains YAML frontmatter properties, merge them into the target note's frontmatter on insertion
+- [ ] Merge strategy: template properties are added; existing note properties are not overwritten; list properties (e.g., `tags`) are union-merged
+- [ ] Template variables within frontmatter values are expanded: `date: "{{date}}"` becomes `date: "2026-03-26"`
+
+#### 9.7.3 Template insertion into existing notes
+
+```
+vulcan template insert <template> [note]      # insert template content into note
+vulcan template insert <template> --prepend    # prepend after frontmatter
+vulcan template insert <template> --append     # append to end (default)
+```
+
+- [ ] `vulcan template insert <template> [note]`: insert template content into an existing note (append by default)
+- [ ] `--prepend`: insert after frontmatter but before body content
+- [ ] `--append`: insert at end of file (default)
+- [ ] If `[note]` is omitted: spawn the note picker to select target
+- [ ] Template variables are expanded during insertion
+- [ ] Property merging (9.7.2) is applied to the target note's frontmatter
+- [ ] Incremental rescan and auto-commit after insertion
+
+#### 9.7.4 Obsidian template folder discovery
+
+- [ ] If `.obsidian/` config specifies a template folder location, vulcan discovers and uses it as an additional template source
+- [ ] Template list (`vulcan template --list`) shows templates from both `.vulcan/templates/` and the Obsidian template folder, with source indicated
+- [ ] On conflict (same template name in both locations): `.vulcan/templates/` takes precedence, with a warning
+
 ---
 
 ## Phase 10: Multi-Vault Daemon
@@ -1710,6 +1762,139 @@ Planned but not in initial scope. Deferred until the local user/group system is 
 
 ---
 
+## Phase 18: Canvas Support
+
+**Goal:** First-class support for Obsidian's JSON Canvas format (`.canvas` files). Index canvas content for search, surface canvas data in the graph, provide CLI commands for inspection and manipulation, and eventually render an interactive canvas editor in the WebUI.
+
+**Depends on:** Phase 7 (core indexing and parsing infrastructure). WebUI canvas editor (18.5) depends on Phase 14 (WebUI write). Canvas ACLs follow from Phase 17.
+
+**Reference:** `references/obsidian-skills/skills/json-canvas/SKILL.md` (JSON Canvas spec and examples), [jsoncanvas.org/spec/1.0](https://jsoncanvas.org/spec/1.0/).
+
+**Design decisions:**
+- **Canvas files are a distinct document type, not notes.** They are JSON, not Markdown. The indexer detects `.canvas` files during scan, parses them, and stores structured data (nodes, edges) in dedicated cache tables rather than forcing them through the Markdown/FTS pipeline.
+- **Text nodes and file node references are searchable.** Text node content is chunked and indexed in FTS5 so `vulcan search` finds content inside canvases. File nodes generate link references to the vault graph (a canvas linking to a note is a graph edge).
+- **Canvas graph integration.** Canvas files participate in the vault graph: a canvas is a node, each file-node reference is an edge to the referenced document, and group membership is captured as metadata. This means backlinks, graph analytics, and doctor all account for canvas relationships.
+- **Incremental approach.** Core parsing and indexing first, CLI inspection second, WebUI read-only rendering third, interactive editor last.
+
+### 18.1 Canvas parsing and data model
+
+New module `vulcan-core/src/canvas.rs`:
+
+- [ ] `Canvas` struct: `nodes: Vec<CanvasNode>`, `edges: Vec<CanvasEdge>`
+- [ ] `CanvasNode` enum variants: `Text { id, x, y, width, height, text, color }`, `File { id, x, y, width, height, file, subpath, color }`, `Link { id, x, y, width, height, url, color }`, `Group { id, x, y, width, height, label, background, background_style, color }`
+- [ ] `CanvasEdge` struct: `id, from_node, from_side, from_end, to_node, to_side, to_end, color, label`
+- [ ] `parse_canvas(content: &str) -> Result<Canvas>`: deserialize JSON, validate node types, validate edge references (all `from_node`/`to_node` resolve to existing node IDs)
+- [ ] `CanvasColor` type: preset `"1"`–`"6"` or hex string
+- [ ] Validation: unique IDs across nodes and edges, valid side/end enum values, required fields per node type
+- [ ] Unit tests: parse all examples from `references/obsidian-skills/skills/json-canvas/references/EXAMPLES.md`
+
+### 18.2 Indexing and cache schema
+
+Extend the cache schema and scanner to handle `.canvas` files:
+
+- [ ] New cache tables:
+  ```sql
+  CREATE TABLE canvas_nodes (
+    id TEXT NOT NULL,
+    canvas_document_id TEXT NOT NULL REFERENCES documents(id),
+    node_type TEXT NOT NULL,  -- 'text', 'file', 'link', 'group'
+    x INTEGER, y INTEGER, width INTEGER, height INTEGER,
+    content TEXT,             -- text content (text nodes), file path (file nodes), URL (link nodes), label (group nodes)
+    color TEXT,
+    PRIMARY KEY (canvas_document_id, id)
+  );
+
+  CREATE TABLE canvas_edges (
+    id TEXT NOT NULL,
+    canvas_document_id TEXT NOT NULL REFERENCES documents(id),
+    from_node TEXT NOT NULL,
+    to_node TEXT NOT NULL,
+    from_side TEXT, to_side TEXT,
+    from_end TEXT, to_end TEXT,
+    label TEXT, color TEXT,
+    PRIMARY KEY (canvas_document_id, id)
+  );
+  ```
+- [ ] Scanner: detect `.canvas` extension, parse with `parse_canvas()`, populate `canvas_nodes` and `canvas_edges` tables
+- [ ] Text node content indexed in FTS5: each text node becomes a search chunk with `chunk_strategy = "canvas_text"`, heading_path set to `["<canvas filename>", "<group label if any>"]`
+- [ ] File node references registered as links in the existing `links` table (link type: `canvas_file_ref`), so they appear in backlinks and graph queries
+- [ ] Link nodes (external URLs) stored but not indexed as vault links
+- [ ] Incremental rescan: canvas files are rescanned on change like any other document
+- [ ] Schema migration: bump `SCHEMA_VERSION`, add migration for new tables
+
+### 18.3 Graph integration
+
+Canvas files participate in the vault knowledge graph:
+
+- [ ] Canvas documents appear as nodes in graph queries (`query_graph_analytics`, `query_hub_notes`, etc.)
+- [ ] File-node references create edges from the canvas to the referenced note (edge type: `canvas_ref`)
+- [ ] `query_backlinks()` for a note returns canvas references alongside wikilink backlinks, with context showing the canvas name and any edge labels
+- [ ] `doctor` validates canvas references: file nodes pointing to non-existent vault files are reported as broken links
+- [ ] Canvas-internal edges (between canvas nodes) are stored but not mixed into the vault-level graph — they are a canvas-level concern
+
+### 18.4 CLI commands
+
+```
+vulcan canvas [path]                  # show canvas summary (node/edge counts, referenced files)
+vulcan canvas list                    # list all canvas files in the vault
+vulcan canvas nodes <path>            # list all nodes with type, position, and content preview
+vulcan canvas edges <path>            # list all edges with from/to labels
+vulcan canvas validate <path>         # validate canvas structure, report errors
+vulcan canvas refs <path>             # list all file references and their resolution status
+```
+
+- [ ] `vulcan canvas <path>`: summary view — node count by type, edge count, referenced files (resolved/broken), group structure
+- [ ] `vulcan canvas list`: list all `.canvas` files with node/edge counts
+- [ ] `vulcan canvas nodes <path>`: table of nodes with id, type, position, content preview (truncated text or file path)
+- [ ] `vulcan canvas edges <path>`: table of edges with from→to labels and connection details
+- [ ] `vulcan canvas validate <path>`: structural validation — ID uniqueness, edge reference integrity, required fields, overlapping nodes warning
+- [ ] `vulcan canvas refs <path>`: file references with resolution status (found/missing), useful for vault maintenance
+- [ ] `--output json` support on all subcommands
+- [ ] Browse TUI: `.canvas` files appear in the note list; pressing Enter on a canvas shows a text summary (node list, edge list) rather than opening in `$EDITOR` (JSON editing is awkward). `o` opens in `$EDITOR` for raw editing.
+
+### 18.5 WebUI canvas rendering (read-only)
+
+Render canvas files as interactive diagrams in the web vault browser (Phase 13+).
+
+- [ ] Canvas detail view: render nodes as positioned boxes on a pannable/zoomable 2D surface
+- [ ] Text nodes render Markdown content (reuse existing Markdown renderer)
+- [ ] File nodes show a preview of the referenced note (title + excerpt) with a clickable link
+- [ ] Link nodes show URL with favicon and a clickable external link
+- [ ] Group nodes render as labeled containers with their children inside
+- [ ] Edges render as SVG lines/arrows between node connection points, with labels
+- [ ] Color presets mapped to the application's theme palette
+- [ ] API endpoint: `GET /{id}/canvas/{path}` returns parsed canvas data as JSON (nodes + edges + resolved file references)
+- [ ] Canvas list in the vault browser sidebar alongside notes
+
+### 18.6 WebUI canvas editor (interactive)
+
+A visual canvas editor in the web interface, completing the Obsidian canvas experience in the browser.
+
+**Depends on:** Phase 14 (WebUI write infrastructure), 18.5 (read-only rendering).
+
+- [ ] Drag-and-drop node creation: text, file reference (with vault note picker), link, group
+- [ ] Node repositioning via drag
+- [ ] Node resizing via drag handles
+- [ ] Edge creation by dragging between node connection points
+- [ ] Text node editing: inline Markdown editor (reuse the note editor component from Phase 14)
+- [ ] Group management: drag nodes into/out of groups, resize groups
+- [ ] Canvas save: serialize to JSON Canvas format, write via `PATCH /{id}/canvas/{path}`, rescan, auto-commit
+- [ ] Undo/redo stack for canvas operations
+- [ ] Keyboard shortcuts: delete selected node/edge, copy/paste nodes, zoom controls
+- [ ] Automerge integration (if Phase 16 is complete): collaborative canvas editing via the same CRDT sync layer used for notes
+- [ ] ACL enforcement: canvas files respect the same folder/tag ACLs as notes (Phase 17)
+
+### 18.7 Cross-cutting integration
+
+- [ ] **Search:** `vulcan search` finds text inside canvas text nodes. The `file:` search operator (9.6.2) matches `.canvas` files. A `type:canvas` or `type:note` operator could filter by document type.
+- [ ] **Doctor:** Canvas file references are validated alongside wikilinks. Broken canvas references reported in `vulcan doctor` output.
+- [ ] **Move/rename:** When a note referenced by a canvas file node is moved/renamed, the canvas `file` field is updated by the rewrite engine (same mechanism as wikilink rewriting).
+- [ ] **HTTP API:** All canvas data accessible via the daemon API. `GET /{id}/canvas/` lists canvases, `GET /{id}/canvas/{path}` returns parsed data. Search results include canvas hits with `document_type: "canvas"`.
+- [ ] **Permission filtering (Phase 17):** Canvas files subject to the same ACL rules as notes. File nodes referencing restricted notes render as `[restricted]` for unauthorized users.
+- [ ] **Export:** Canvas data included in vault export/backup operations.
+
+---
+
 ## Dependency graph
 
 ```
@@ -1728,13 +1913,17 @@ Phase 1 (Core indexing)
                                                                 ↓                         ↓
                                                         Phase 12 (Sync)           Phase 13 (WebUI browse)
                                                                                     ↓
-                                                                            Phase 14 (WebUI write + Automerge)
-                                                                                    ↓
+                                  Phase 18 (Canvas) ───→ 18.5 (Canvas WebUI read) ← Phase 13
+                                    ↑                           ↓
+                                  Phase 7              Phase 14 (WebUI write + Automerge)
+                                                                ↓
+                                                 18.6 (Canvas WebUI editor) ← Phase 14
+                                                                ↓
                                                         Phase 15 (Extensibility) ← Phase 10
-                                                                                    ↓
-                                                                            Phase 16 (Wiki + live collab)
-                                                                                    ↓
-                                                                            16.6 (Local-first / WASM) [future]
+                                                                ↓
+                                                        Phase 16 (Wiki + live collab)
+                                                                ↓
+                                                        16.6 (Local-first / WASM) [future]
 ```
 
 Phase 8 (Performance) is independent and can proceed in parallel with Phases 9 and 10 after Phase 7.
@@ -1745,6 +1934,7 @@ Phase 13 requires 10 and 17.1–17.3. Phase 14 requires 13 and 10's write endpoi
 Phase 15 requires 10. Phase 16 requires 13, 14, and 17.4–17.5 (document secrets, share links). Phase 16 also uses the Automerge foundation from Phase 14.
 Phase 17.6 (OIDC/SSO) is a future direction — deferred until the local auth system is stable.
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
+Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas ACLs follow from Phase 17.
 
 ---
 
