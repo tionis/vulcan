@@ -479,6 +479,8 @@ If an `.obsidian` directory is present, the following files are read to provide 
 - **`.obsidian/types.json`** — Property type assignments (text, number, date, checkbox, etc.). Used to seed the property catalog. Without this file, the tool infers types from observed values but may produce weaker type diagnostics.
 - **`.obsidian/templates.json`** — Templates core-plugin settings. Vulcan may read `dateFormat` and `timeFormat` as defaults for Obsidian-compatible template rendering when `.vulcan` does not override them, and may discover the configured `folder` as an additional template source alongside `.vulcan/templates/`.
 
+Template insertion into an existing note is a vault mutation, not a cache rewrite. The inserted template is first rendered against the target note context, then any template frontmatter is merged into the target note frontmatter by adding missing keys, preserving existing scalar values, and union-merging list properties such as `tags`.
+
 **Low priority but useful:**
 
 - **`.obsidian/bookmarks.json`** — Bookmarked notes, searches, and graphs. Useful for diagnostics and reporting.

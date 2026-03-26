@@ -252,6 +252,9 @@ fn inbox_and_template_help_document_config_and_variables() {
                 ))
                 .and(predicate::str::contains("vulcan template --list"))
                 .and(predicate::str::contains(
+                    "vulcan template insert daily --prepend",
+                ))
+                .and(predicate::str::contains(
                     "Vulcan creates <date>-<template-name>.md",
                 )),
         );

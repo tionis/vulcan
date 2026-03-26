@@ -267,11 +267,15 @@ Configuration:
 Notes:
   If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.
   In an interactive terminal, the new note is opened in $VISUAL/$EDITOR after rendering.
+  `template insert` appends by default; use --prepend to insert after frontmatter instead.
+  If the insert target note is omitted in an interactive terminal, Vulcan opens the note picker.
 
 Examples:
   vulcan template --list
   vulcan template daily --path Daily/2026-03-26
-  vulcan template meeting";
+  vulcan template meeting
+  vulcan template insert daily Projects/Alpha
+  vulcan template insert daily --prepend";
 
 const OPEN_COMMAND_AFTER_HELP: &str = "\
 Behavior:
@@ -780,6 +784,29 @@ pub enum AutomationCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum TemplateSubcommand {
+    #[command(about = "Insert a rendered template into an existing note")]
+    Insert {
+        #[arg(help = "Template name or filename stem")]
+        template: String,
+        #[arg(
+            help = "Note path, filename, or alias to update; omit in a TTY session to pick interactively"
+        )]
+        note: Option<String>,
+        #[arg(long, conflicts_with = "append", help = "Insert after frontmatter")]
+        prepend: bool,
+        #[arg(
+            long,
+            conflicts_with = "prepend",
+            help = "Append to the end of the note"
+        )]
+        append: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Command {
     #[command(about = "Initialize .vulcan/ state for a vault")]
@@ -989,10 +1016,12 @@ pub enum Command {
         no_commit: bool,
     },
     #[command(
-        about = "Create a note from a template under .vulcan/templates",
+        about = "Create notes from templates or insert templates into existing notes",
         after_help = TEMPLATE_COMMAND_AFTER_HELP
     )]
     Template {
+        #[command(subcommand)]
+        command: Option<TemplateSubcommand>,
         #[arg(help = "Template name or filename stem")]
         name: Option<String>,
         #[arg(long, help = "List available templates")]
