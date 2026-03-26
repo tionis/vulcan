@@ -911,7 +911,7 @@ fn search_json_output_supports_explain_fuzzy_and_where_filters() {
             "--output",
             "json",
             "--fields",
-            "document_path,effective_query,explain",
+            "document_path,effective_query,parsed_query_explanation,explain",
             "search",
             "releese",
             "--where",
@@ -929,7 +929,40 @@ fn search_json_output_supports_explain_fuzzy_and_where_filters() {
         .as_str()
         .expect("effective query should be a string")
         .contains("release"));
+    assert!(rows[0]["parsed_query_explanation"]
+        .as_array()
+        .expect("parsed query explanation should be an array")
+        .iter()
+        .any(|line| line == "TERM releese"));
     assert_eq!(rows[0]["explain"]["strategy"], "keyword");
+}
+
+#[test]
+fn search_explain_human_output_includes_grouped_query_plan() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "search",
+            "(dashboard or bob) -(\"owned by\" draft)",
+            "--explain",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Query plan:")
+                .and(predicate::str::contains("AND"))
+                .and(predicate::str::contains("OR"))
+                .and(predicate::str::contains("NOT")),
+        );
 }
 
 #[test]

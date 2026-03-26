@@ -5257,6 +5257,10 @@ fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
                 "has_property": report.has_property,
                 "filters": report.filters,
                 "effective_query": report.plan.as_ref().map(|plan| plan.effective_query.clone()),
+                "parsed_query_explanation": report
+                    .plan
+                    .as_ref()
+                    .map(|plan| plan.parsed_query_explanation.clone()),
                 "document_path": hit.document_path,
                 "chunk_id": hit.chunk_id,
                 "heading_path": hit.heading_path,
@@ -5778,6 +5782,12 @@ fn print_search_plan(plan: &vulcan_core::SearchPlan, palette: AnsiPalette) {
             palette.cyan("Filters"),
             plan.property_filters.join(" | ")
         );
+    }
+    if !plan.parsed_query_explanation.is_empty() {
+        println!("{}:", palette.cyan("Query plan"));
+        for line in &plan.parsed_query_explanation {
+            println!("  {line}");
+        }
     }
     if plan.fuzzy_fallback_used {
         for expansion in &plan.fuzzy_expansions {

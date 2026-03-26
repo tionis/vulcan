@@ -933,9 +933,9 @@ Bring vulcan's search closer to Obsidian's hybrid search engine so users can tra
 
 #### 9.6.1 Boolean expression improvements
 
-- [ ] **Parenthesized grouping:** Parse `(A OR B) C` as grouped boolean expressions. The lexer emits `OpenParen`/`CloseParen` tokens; `compose_fts_query()` maps them to FTS5 parentheses.
-- [ ] **Nested negation with parens:** `-(work meetup)` excludes files matching both terms (AND-negation). Maps to FTS5 `NOT ("work" "meetup")`.
-- [ ] Update `--explain` output to render the parsed boolean tree in plain text, similar to Obsidian's "Explain search term" toggle. The existing `SearchPlan` struct gains a `parsed_query_explanation: Vec<String>` field with one line per operator/group. This flows through CLI rendering (`render_search_hit_explain()`), JSON output, and the HTTP API response unchanged (already serialised via `SearchReport`).
+- [x] **Parenthesized grouping:** Parse `(A OR B) C` as grouped boolean expressions. The lexer emits `OpenParen`/`CloseParen` tokens; `compose_fts_query()` maps them to FTS5 parentheses.
+- [x] **Nested negation with parens:** `-(work meetup)` excludes files matching both terms (AND-negation). Maps to FTS5 `NOT ("work" "meetup")`.
+- [x] Update `--explain` output to render the parsed boolean tree in plain text, similar to Obsidian's "Explain search term" toggle. The existing `SearchPlan` struct gains a `parsed_query_explanation: Vec<String>` field with one line per operator/group. This flows through CLI rendering (`render_search_hit_explain()`), JSON output, and the HTTP API response unchanged (already serialised via `SearchReport`).
 
 #### 9.6.2 New search operators
 
@@ -1010,7 +1010,7 @@ The `SearchQuery` struct in `vulcan-core/src/search.rs` is the single input cont
 
 - [ ] Add `sort: Option<SearchSort>` field to `SearchQuery`. Enum values: `Relevance` (default), `PathAsc`, `PathDesc`, `ModifiedNewest`, `ModifiedOldest`, `CreatedNewest`, `CreatedOldest`. Used by keyword/hybrid search to choose between BM25 ranking and SQL ORDER BY.
 - [ ] Add `match_case: Option<bool>` field to `SearchQuery`. When `Some(true)`, all terms are treated as case-sensitive (applies to the global toggle; individual `match-case:` / `ignore-case:` inline operators override per-term). Default `None` means case-insensitive.
-- [ ] Extend `SearchPlan` with `parsed_query_explanation: Vec<String>` — human-readable breakdown of the parsed query (boolean structure, operators, property filters). Populated when `explain = true`.
+- [x] Extend `SearchPlan` with `parsed_query_explanation: Vec<String>` — human-readable breakdown of the parsed query (boolean structure, operators, property filters). Populated when `explain = true`.
 - [ ] Extend `SearchHit` with `matched_line: Option<usize>` — the 1-based line number of the best match within the chunk, when available (useful for `line:` and `match-case:` post-filters that already inspect individual lines).
 - [ ] HTTP `/search` endpoint (`serve.rs`): add query parameters `sort`, `match_case` mapping to the new `SearchQuery` fields. All new fields serialise into the JSON response via the existing `SearchReport` derive.
 - [ ] Phase 10 daemon: when the axum-based `/search` route replaces the hand-rolled endpoint, carry forward all query parameters. The `SearchQuery` struct is `Deserialize`, so the axum handler can deserialise directly from query params with `axum::extract::Query<SearchQuery>` (or a thin wrapper).

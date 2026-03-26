@@ -55,9 +55,11 @@ Examples:
 const SEARCH_COMMAND_AFTER_HELP: &str = "\
 Search query syntax:
   plain terms are ANDed: dashboard status
+  group terms with parentheses: (dashboard or summary) release
   quoted phrases stay together: \"owned by\"
   use `or` between positive terms: dashboard or summary
   prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"
+  negate grouped terms too: dashboard -(draft archived)
   inline filters on unquoted positive terms:
     tag:index
     path:People/
@@ -66,6 +68,7 @@ Search query syntax:
 
 Notes:
   Use --where for typed property filters and list membership.
+  --explain prints the parsed boolean tree plus active filters.
   Use --raw-query to pass SQLite FTS5 syntax through unchanged.
 
 \
