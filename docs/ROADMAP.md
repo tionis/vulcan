@@ -769,7 +769,7 @@ vulcan browse
 - [ ] `o`: if the selected file is a `.base` file, open it in the bases TUI (`bases tui`)
 
 **UI details:**
-- [ ] Status bar at bottom: vault name, total note count, filtered count, last scan timestamp, current search mode indicator
+- [x] Status bar at bottom: vault name, total note count, filtered count, last scan timestamp, current search mode indicator
 - [x] Footer keybinding hints update to reflect current mode
 - [ ] Resize-safe layout (reuse `ratatui` constraint-based layout)
 
