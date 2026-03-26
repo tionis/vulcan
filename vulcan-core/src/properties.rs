@@ -355,19 +355,28 @@ pub(crate) struct NoteFilterSql {
 pub(crate) fn build_note_filter_clause(filters: &[String]) -> Result<NoteFilterSql, PropertyError> {
     let parsed = filters
         .iter()
-        .map(|filter| parse_filter_expression(filter))
+        .map(|filter| parse_filter_expression(filter).map(FilterExpression::Condition))
         .collect::<Result<Vec<_>, _>>()?;
 
+    build_note_filter_clause_from_expressions(&parsed)
+}
+
+pub(crate) fn build_note_filter_clause_from_expressions(
+    filters: &[FilterExpression],
+) -> Result<NoteFilterSql, PropertyError> {
     // Separate has_tag filters (grouped by property key) from all other filters.
     // Multiple has_tag filters on the same key are combined via INTERSECT on
     // property_list_items — much faster than correlated EXISTS for large result sets.
     let mut has_tag_by_key: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
-    let mut other_filters: Vec<&ParsedFilter> = Vec::new();
+    let mut other_filters: Vec<&FilterExpression> = Vec::new();
 
-    for filter in &parsed {
-        if let (FilterField::Property(key), FilterOperator::HasTag, FilterValue::Text(value)) =
-            (&filter.field, filter.operator, &filter.value)
+    for filter in filters {
+        if let FilterExpression::Condition(ParsedFilter {
+            field: FilterField::Property(key),
+            operator: FilterOperator::HasTag,
+            value: FilterValue::Text(value),
+        }) = filter
         {
             has_tag_by_key
                 .entry(key.clone())
@@ -425,7 +434,7 @@ pub(crate) fn build_note_filter_clause(filters: &[String]) -> Result<NoteFilterS
     // Regular WHERE fragments for non-has_tag filters
     for filter in &other_filters {
         clause.push_str(" AND ");
-        clause.push_str(&filter_sql_clause(filter, &mut params)?);
+        clause.push_str(&filter_expression_sql_clause(filter, &mut params)?);
     }
 
     Ok(NoteFilterSql {
@@ -865,7 +874,7 @@ fn is_internal_link_value(value: &str, config: &VaultConfig) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum FilterField {
+pub(crate) enum FilterField {
     Property(String),
     FilePath,
     FileName,
@@ -874,20 +883,21 @@ enum FilterField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FilterOperator {
+pub(crate) enum FilterOperator {
     Eq,
     Ne,
     Gt,
     Gte,
     Lt,
     Lte,
+    Exists,
     StartsWith,
     Contains,
     HasTag,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum FilterValue {
+pub(crate) enum FilterValue {
     Null,
     Bool(bool),
     Number(f64),
@@ -896,10 +906,20 @@ enum FilterValue {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct ParsedFilter {
-    field: FilterField,
-    operator: FilterOperator,
-    value: FilterValue,
+pub(crate) struct ParsedFilter {
+    pub field: FilterField,
+    pub operator: FilterOperator,
+    pub value: FilterValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum FilterExpression {
+    Condition(ParsedFilter),
+    Any(Vec<ParsedFilter>),
+}
+
+pub(crate) fn parse_note_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> {
+    parse_filter_expression(filter)
 }
 
 fn parse_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> {
@@ -974,6 +994,13 @@ fn filter_sql_clause(
     params: &mut Vec<SqlValue>,
 ) -> Result<String, PropertyError> {
     match (&filter.field, filter.operator, &filter.value) {
+        (FilterField::Property(key), FilterOperator::Exists, _) => {
+            params.push(SqlValue::Text(key.clone()));
+            Ok(
+                "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ?)"
+                    .to_string(),
+            )
+        }
         (FilterField::Property(key), FilterOperator::Contains, FilterValue::Text(value)) => {
             params.push(SqlValue::Text(key.clone()));
             params.push(SqlValue::Text(value.clone()));
@@ -1014,7 +1041,7 @@ fn filter_sql_clause(
         (FilterField::Property(key), operator, value) => {
             property_scalar_clause(key, operator, value, params)
         }
-        (field, FilterOperator::Contains | FilterOperator::HasTag, _) => {
+        (field, FilterOperator::Contains | FilterOperator::HasTag | FilterOperator::Exists, _) => {
             Err(PropertyError::InvalidFilter(match field {
                 FilterField::Property(key) => key.clone(),
                 FilterField::FilePath => "file.path".to_string(),
@@ -1024,6 +1051,22 @@ fn filter_sql_clause(
             }))
         }
         (field, operator, value) => Ok(file_field_clause(field, operator, value, params)?),
+    }
+}
+
+fn filter_expression_sql_clause(
+    filter: &FilterExpression,
+    params: &mut Vec<SqlValue>,
+) -> Result<String, PropertyError> {
+    match filter {
+        FilterExpression::Condition(condition) => filter_sql_clause(condition, params),
+        FilterExpression::Any(filters) => {
+            let mut clauses = Vec::new();
+            for condition in filters {
+                clauses.push(filter_sql_clause(condition, params)?);
+            }
+            Ok(format!("({})", clauses.join(" OR ")))
+        }
     }
 }
 
@@ -1137,6 +1180,9 @@ fn sql_comparator(operator: FilterOperator) -> Result<&'static str, PropertyErro
         FilterOperator::Gte => Ok(">="),
         FilterOperator::Lt => Ok("<"),
         FilterOperator::Lte => Ok("<="),
+        FilterOperator::Exists => Err(PropertyError::InvalidFilter(
+            "exists is an internal-only filter operator".to_string(),
+        )),
         FilterOperator::StartsWith => Err(PropertyError::InvalidFilter(
             "starts_with only supports text fields".to_string(),
         )),
