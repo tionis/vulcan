@@ -1,3 +1,4 @@
+use crate::editor::{open_in_editor, with_terminal_suspended};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -13,7 +14,6 @@ use ratatui::{Frame, Terminal};
 use serde_json::Value;
 use std::fs;
 use std::io;
-use std::process::Command as ProcessCommand;
 use std::time::Duration;
 use vulcan_core::{
     evaluate_base_file, scan_vault, set_note_property, BasesEvalReport, BasesEvaluatedView,
@@ -406,43 +406,6 @@ fn centered_rect(area: Rect, width_percent: u16, height: u16) -> Rect {
         ])
         .split(vertical[1]);
     horizontal[1]
-}
-
-fn with_terminal_suspended<F>(
-    terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
-    operation: F,
-) -> Result<(), io::Error>
-where
-    F: FnOnce() -> Result<(), String>,
-{
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    let operation_result = operation();
-
-    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-    enable_raw_mode()?;
-    terminal.hide_cursor()?;
-    terminal.clear()?;
-
-    operation_result.map_err(io::Error::other)
-}
-
-fn open_in_editor(path: &std::path::Path) -> Result<(), String> {
-    let editor = std::env::var("VISUAL")
-        .ok()
-        .or_else(|| std::env::var("EDITOR").ok())
-        .unwrap_or_else(|| "vi".to_string());
-    let status = ProcessCommand::new(&editor)
-        .arg(path)
-        .status()
-        .map_err(|error| format!("failed to launch editor `{editor}`: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("editor `{editor}` exited with status {status}"))
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

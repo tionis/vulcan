@@ -33,6 +33,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("vectors"))
             .and(predicate::str::contains("cluster"))
             .and(predicate::str::contains("related"))
+            .and(predicate::str::contains("edit"))
             .and(predicate::str::contains("move"))
             .and(predicate::str::contains("link-mentions"))
             .and(predicate::str::contains("rewrite"))
@@ -72,7 +73,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Reports and Automation: saved, checkpoint, changes, batch, export, automation",
             ))
             .and(predicate::str::contains(
-                "Mutations: update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
+                "Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
             ))
             .and(predicate::str::contains(
                 "Maintenance: move, doctor, cache, link-mentions, rewrite, describe, completions",
@@ -2211,6 +2212,11 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .as_array()
         .expect("commands should be an array")
         .iter()
+        .any(|command| command["name"] == "edit"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
         .find(|command| command["name"] == "notes")
         .and_then(|command| command["after_help"].as_str())
         .expect("notes after_help should be present")
@@ -2764,6 +2770,63 @@ fn command_json_outputs_match_composite_snapshot() {
 }
 
 #[test]
+fn edit_new_creates_note_and_updates_cache() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    run_scan(&vault_root);
+    let editor = write_test_editor(temp_dir.path(), "Created by test");
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let edit_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("EDITOR", editor)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "edit",
+            "--new",
+            "Notes/Idea.md",
+        ])
+        .assert()
+        .success();
+    let edit_json = parse_stdout_json(&edit_assert);
+
+    assert_eq!(edit_json["path"], "Notes/Idea.md");
+    assert_eq!(edit_json["created"], true);
+    assert_eq!(edit_json["rescanned"], true);
+    assert_eq!(
+        fs::read_to_string(vault_root.join("Notes/Idea.md"))
+            .expect("new note should be readable")
+            .replace("\r\n", "\n"),
+        "Created by test\n"
+    );
+
+    let notes_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "notes",
+        ])
+        .assert()
+        .success();
+    let note_rows = parse_stdout_json_lines(&notes_assert);
+    assert!(note_rows
+        .iter()
+        .any(|row| row["document_path"] == "Notes/Idea.md"));
+}
+
+#[test]
 fn saved_report_and_export_outputs_match_snapshot() {
     assert_json_snapshot(
         "saved_reports_and_exports.json",
@@ -2839,6 +2902,34 @@ fn run_incremental_scan(vault_root: &Path) {
         ])
         .assert()
         .success();
+}
+
+fn write_test_editor(base: &Path, body: &str) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = base.join("editor.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf '%s\\n' '{}' > \"$1\"\n", body),
+        )
+        .expect("editor script should be written");
+        let mut permissions = fs::metadata(&script)
+            .expect("editor script metadata should load")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).expect("editor script should be executable");
+        format!("sh {}", script.display())
+    }
+
+    #[cfg(windows)]
+    {
+        let script = base.join("editor.cmd");
+        fs::write(&script, format!("@echo off\r\necho {body}> %1\r\n"))
+            .expect("editor script should be written");
+        format!("cmd /C {}", script.display())
+    }
 }
 
 fn replace_field_recursively(value: &mut Value, field: &str, replacement: &Value) {

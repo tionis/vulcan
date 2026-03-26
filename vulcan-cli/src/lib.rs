@@ -1,5 +1,6 @@
 mod bases_tui;
 mod cli;
+mod editor;
 mod note_picker;
 mod serve;
 
@@ -9,6 +10,7 @@ pub use cli::{
     SearchMode, SuggestCommand, VectorQueueCommand, VectorsCommand,
 };
 
+use crate::editor::open_in_editor;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use serde::Serialize;
@@ -21,6 +23,7 @@ use std::io;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace,
     bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
@@ -474,6 +477,13 @@ struct AutomationRunReport {
     issues_detected: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct EditReport {
+    path: String,
+    created: bool,
+    rescanned: bool,
+}
+
 #[allow(clippy::large_enum_variant)]
 enum SavedExecution {
     Search(SearchReport),
@@ -589,6 +599,90 @@ fn resolve_note_argument(
             "missing {prompt}; provide a note identifier or run interactively"
         ))),
     }
+}
+
+fn run_incremental_scan(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<ScanSummary, CliError> {
+    let mut progress =
+        (output == OutputFormat::Human).then(|| ScanProgressReporter::new(use_stderr_color));
+    scan_vault_with_progress(paths, ScanMode::Incremental, |event| {
+        if let Some(progress) = progress.as_mut() {
+            progress.record(&event);
+        }
+    })
+    .map_err(CliError::operation)
+}
+
+fn resolve_edit_path(
+    paths: &VaultPaths,
+    cli: &Cli,
+    stdout_is_tty: bool,
+    use_stderr_color: bool,
+    note: Option<&str>,
+    new: bool,
+) -> Result<(String, bool), CliError> {
+    if new {
+        let note = note.ok_or_else(|| {
+            CliError::operation("`edit --new` requires a relative note path such as Notes/Idea.md")
+        })?;
+        let path = normalize_relative_input_path(
+            note,
+            RelativePathOptions {
+                expected_extension: Some("md"),
+                append_extension_if_missing: true,
+            },
+        )
+        .map_err(CliError::operation)?;
+        return Ok((path, true));
+    }
+
+    if !paths.cache_db().exists() {
+        run_incremental_scan(paths, cli.output, use_stderr_color)?;
+    }
+
+    let interactive = interactive_note_selection_allowed(cli, stdout_is_tty);
+    let note = resolve_note_argument(paths, note, interactive, "note")?;
+    let resolved = resolve_note_reference(paths, &note).map_err(CliError::operation)?;
+    Ok((resolved.path, false))
+}
+
+fn run_edit_command(
+    paths: &VaultPaths,
+    cli: &Cli,
+    stdout_is_tty: bool,
+    use_stderr_color: bool,
+    note: Option<&str>,
+    new: bool,
+) -> Result<EditReport, CliError> {
+    let (relative_path, creating_new_note) =
+        resolve_edit_path(paths, cli, stdout_is_tty, use_stderr_color, note, new)?;
+    let absolute_path = paths.vault_root().join(&relative_path);
+    let mut created = false;
+    if creating_new_note {
+        if let Some(parent) = absolute_path.parent() {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
+        }
+        if !absolute_path.exists() {
+            fs::write(&absolute_path, "").map_err(CliError::operation)?;
+            created = true;
+        }
+    } else if !absolute_path.is_file() {
+        return Err(CliError::operation(format!(
+            "note does not exist on disk: {relative_path}"
+        )));
+    }
+
+    open_in_editor(&absolute_path).map_err(CliError::operation)?;
+    run_incremental_scan(paths, cli.output, use_stderr_color)?;
+
+    Ok(EditReport {
+        path: relative_path,
+        created,
+        rescanned: true,
+    })
 }
 
 fn saved_export_format(format: ExportFormat) -> SavedExportFormat {
@@ -1103,6 +1197,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_graph_trends_report(cli.output, &report, &list_controls, export.as_ref())
             }
         },
+        Command::Edit { ref note, new } => {
+            let report = run_edit_command(
+                &paths,
+                cli,
+                stdout_is_tty,
+                use_stderr_color,
+                note.as_deref(),
+                new,
+            )?;
+            print_edit_report(cli.output, &report);
+            Ok(())
+        }
         Command::Completions { shell } => {
             let mut command = Cli::command();
             generate(shell, &mut command, "vulcan", &mut io::stdout());
@@ -3177,6 +3283,21 @@ fn print_scan_summary(output: OutputFormat, summary: &ScanSummary, use_color: bo
     }
 }
 
+fn print_edit_report(output: OutputFormat, report: &EditReport) {
+    match output {
+        OutputFormat::Human => {
+            if report.created {
+                println!("Created and edited {}", report.path);
+            } else {
+                println!("Edited {}", report.path);
+            }
+        }
+        OutputFormat::Json => {
+            print_json(report).expect("edit report JSON serialization should succeed");
+        }
+    }
+}
+
 fn print_move_summary(output: OutputFormat, summary: &MoveSummary) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
@@ -5223,6 +5344,9 @@ mod tests {
         let cluster = Cli::try_parse_from(["vulcan", "cluster", "--clusters", "3", "--dry-run"])
             .expect("cli should parse");
         let related = Cli::try_parse_from(["vulcan", "related", "Home"]).expect("cli should parse");
+        let edit = Cli::try_parse_from(["vulcan", "edit", "Home"]).expect("cli should parse");
+        let edit_new = Cli::try_parse_from(["vulcan", "edit", "--new", "Notes/Idea"])
+            .expect("cli should parse");
         let move_command = Cli::try_parse_from([
             "vulcan",
             "move",
@@ -5532,6 +5656,20 @@ mod tests {
             }
         );
         assert_eq!(
+            edit.command,
+            Command::Edit {
+                note: Some("Home".to_string()),
+                new: false,
+            }
+        );
+        assert_eq!(
+            edit_new.command,
+            Command::Edit {
+                note: Some("Notes/Idea".to_string()),
+                new: true,
+            }
+        );
+        assert_eq!(
             move_command.command,
             Command::Move {
                 source: "Projects/Alpha.md".to_string(),
@@ -5780,6 +5918,7 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "rename-property"));
+        assert!(report.commands.iter().any(|command| command.name == "edit"));
         assert!(report
             .commands
             .iter()
