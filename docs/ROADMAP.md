@@ -761,7 +761,7 @@ vulcan browse
 **Action hotkeys on the selected note:**
 - [x] `e` or `Enter`: edit in `$EDITOR` (as above)
 - [x] `m`: move/rename — inline prompt for destination path, runs the move-rewrite engine, refreshes note list
-- [ ] `b`: switch to a backlinks view for the selected note (list of linking notes with context, navigable)
+- [x] `b`: switch to a backlinks view for the selected note (list of linking notes with context, navigable)
 - [ ] `l`: switch to an outgoing links view for the selected note
 - [ ] `d`: run doctor on this specific note, show diagnostics in a temporary pane
 - [ ] `n`: create new note — prompt for path, open in editor, return to picker
