@@ -155,7 +155,7 @@ fn browse_help_documents_modes_and_actions() {
                 .and(predicate::str::contains("Ctrl-T"))
                 .and(predicate::str::contains("background"))
                 .and(predicate::str::contains(
-                    "Single-letter browse actions only fire",
+                    "Lowercase letters always type into the fuzzy query",
                 ))
                 .and(predicate::str::contains(
                     "vulcan --refresh background browse",
