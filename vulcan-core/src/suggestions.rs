@@ -900,6 +900,7 @@ mod tests {
     use super::*;
     use crate::{scan_vault, ScanMode};
     use std::path::Path;
+    use std::time::Instant;
     use tempfile::TempDir;
 
     #[test]
@@ -973,6 +974,56 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "benchmark-style regression test; run manually with --ignored --nocapture"]
+    fn suggest_mentions_benchmark_with_large_candidate_set() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault directory should be created");
+        let candidate_count = 1_200_usize;
+        let matched_indexes = [7_usize, 456, 1_199];
+
+        for index in 0..candidate_count {
+            let title = format!("Topic{index:04}");
+            write_note(
+                &vault_root,
+                &format!("{title}.md"),
+                &format!("# {title}\n\nSynthetic benchmark note.\n"),
+            );
+        }
+
+        let home_contents = format!(
+            "# Home\n\n{} should all resolve as suggestions.\n",
+            matched_indexes
+                .iter()
+                .map(|index| format!("Topic{index:04}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        write_note(&vault_root, "Home.md", &home_contents);
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let started = Instant::now();
+        let report = suggest_mentions(&paths, Some("Home")).expect("suggestions should succeed");
+        let elapsed = started.elapsed();
+
+        assert_eq!(report.suggestions.len(), matched_indexes.len());
+        for index in matched_indexes {
+            let matched_text = format!("Topic{index:04}");
+            assert!(report.suggestions.iter().any(|suggestion| {
+                suggestion.matched_text == matched_text
+                    && suggestion.target_path.as_deref() == Some(&format!("{matched_text}.md"))
+            }));
+        }
+
+        eprintln!(
+            "suggest_mentions benchmark: {} candidates in {:?}",
+            candidate_count, elapsed
+        );
+    }
+
+    #[test]
     fn bulk_replace_filters_selected_notes_and_reindexes() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -1001,6 +1052,14 @@ mod tests {
             .join("../tests/fixtures/vaults")
             .join(name);
         copy_dir_recursive(&source, destination);
+    }
+
+    fn write_note(vault_root: &Path, relative_path: &str, contents: &str) {
+        let path = vault_root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent directory should be created");
+        }
+        fs::write(path, contents).expect("note should be written");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {
