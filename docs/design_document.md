@@ -108,8 +108,22 @@ Recommended logical entities:
 - `bases`: parsed `.base` files and derived query plans or diagnostics.
 - `diagnostics`: unresolved links, parse errors, type mismatches, unsupported syntax.
 - `vectors`: chunk embeddings keyed by chunk identity and model identity.
+- `canvas_nodes` and `canvas_edges`: structured data from `.canvas` files (JSON Canvas format). Canvas files are a distinct document type — they are JSON, not Markdown. Text node content is chunked and indexed in FTS5; file node references create link edges in the vault graph. See §5.1 and Roadmap Phase 18.
 
 Every entity should carry enough provenance to support incremental repair: source document id, content hash, parser version, and extraction version where relevant.
+
+### 5.1 Canvas file support (Roadmap Phase 18)
+
+Obsidian's JSON Canvas format (`.canvas`) stores visual spatial layouts of text, file references, external links, and groups connected by edges. Vulcan treats canvas files as a distinct document type with dedicated cache tables (`canvas_nodes`, `canvas_edges`), rather than forcing them through the Markdown parsing pipeline.
+
+Key design points:
+
+- **Text nodes are searchable.** Each text node becomes a search chunk with `chunk_strategy = "canvas_text"`, heading path set to the canvas filename and optional group label. This means `vulcan search` finds content inside canvases.
+- **File nodes create graph edges.** A canvas file node referencing a vault note is stored as a link (type `canvas_file_ref`) in the existing `links` table. This integrates canvases into backlinks, graph analytics, and doctor validation.
+- **Canvas-internal edges are canvas-scoped.** Edges between canvas nodes are stored in `canvas_edges` but do not participate in the vault-level knowledge graph. They are a layout concern, not a semantic link.
+- **Move/rename rewriting applies.** When a note referenced by a canvas file node is moved, the rewrite engine updates the canvas JSON `file` field, matching the existing wikilink rewrite mechanism.
+
+See `references/obsidian-skills/skills/json-canvas/SKILL.md` for the JSON Canvas spec and `docs/ROADMAP.md` Phase 18 for the full implementation plan.
 
 ## 6. Incremental indexing and correctness
 
@@ -299,6 +313,19 @@ Recommended indexed units:
 
 The FTS query surface should remain simple and predictable. Do not attempt to encode every Obsidian search operator in version 1. Focus on reliable term lookup, phrase search, snippets, and ranking that can be composed with relational filters.
 
+### Post-v1 search evolution (Roadmap 9.6)
+
+After the core FTS infrastructure is stable, the search engine evolves toward Obsidian-compatible operators and richer query syntax. The key design constraints for this evolution:
+
+- **Single query engine, multiple surfaces.** All search parsing and execution lives in `vulcan-core/src/search.rs`. The CLI (`vulcan search`), browse TUI (Ctrl-F), and HTTP API (`/search`) all call `search_vault()` with a `SearchQuery` — improvements land everywhere at once.
+- **Inline operators extend the existing token stream.** New operators (`file:`, `content:`, `section:`, `line:`, `block:`, `match-case:`, `task:`, `task-todo:`, `task-done:`) are extracted during query preparation alongside the existing `tag:`, `path:`, and `has:` filters. Most translate to SQL filters or FTS5 column specifiers; scope operators (`section:`, `line:`, `block:`) require post-FTS filtering against chunk structure.
+- **Post-FTS filter pipeline.** Operators that cannot be expressed in FTS5 (case-sensitive match, line/block/section co-occurrence, task filtering, regex) run as a post-filter stage after FTS hits are collected but before ranking and truncation. This keeps the FTS index simple while supporting rich query semantics.
+- **Bracket property syntax `[prop:val]` shares the filter engine.** Inline property expressions are lowered to the same `FilterExpression` structs used by `--where`, ensuring identical semantics.
+- **Inline regex (`/pattern/`)** bypasses FTS and runs as a content scan, optionally narrowed by co-occurring keyword terms for performance.
+- **Parenthesized boolean grouping** extends the lexer and `compose_fts_query()` to emit FTS5-native parentheses.
+
+See `docs/ROADMAP.md` §9.6 for the full operator table, implementation plan, and cross-cutting integration notes (HTTP API, indexer, explain diagnostics).
+
 ## 11. Native vector search and clustering
 
 Vector search should be implemented as a second derived index. Do not embed vectors directly into the graph tables.
@@ -454,6 +481,7 @@ If an `.obsidian` directory is present, the following files are read to provide 
 
 - **`.obsidian/bookmarks.json`** — Bookmarked notes, searches, and graphs. Useful for diagnostics and reporting.
 - **`.obsidian/graph.json`** — Graph view display settings. Not needed for correctness.
+- **Obsidian core plugin settings (template folder)** — Obsidian stores the configured template folder location in its core plugin settings. Vulcan can discover this to use Obsidian's template folder as an additional template source alongside `.vulcan/templates/`. See Roadmap §9.7.4.
 
 **Explicitly ignored:**
 
@@ -585,6 +613,25 @@ Phases are listed in recommended order. Dependency edges are noted explicitly so
 
 ### Parallelism summary
 After Phase 1 is complete, Phases 2, 3, and 4 can proceed in parallel. Phase 5 requires Phase 3. Phase 6 follows all others.
+
+### Phases 7–18
+
+Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
+
+- **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
+- **Phase 8:** Performance optimizations
+- **Phase 9:** CLI refinements (edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates)
+- **Phase 10:** Multi-vault daemon with REST API
+- **Phase 11:** Git auto-versioning at the daemon level
+- **Phase 12:** Sync integration
+- **Phase 13:** WebUI — admin panel and vault browser
+- **Phase 14:** WebUI — note editor with Automerge CRDT sessions
+- **Phase 15:** Extensibility and integrations (webhooks, Telegram, custom endpoints)
+- **Phase 16:** Wiki mode with live collaborative editing
+- **Phase 17:** User management, group-based ACLs, document-level secrets, share links
+- **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor)
+
+The design decisions in this document (three-layer architecture, cache as derived index, vault as source of truth, provider abstraction, parser pipeline) are load-bearing for all later phases. See the roadmap for dependency edges and implementation details.
 
 ## 19. Test strategy
 

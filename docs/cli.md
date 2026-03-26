@@ -289,6 +289,8 @@ Raw FTS5 example:
 vulcan search --raw-query '"release" NEAR/5 "notes"'
 ```
 
+**Planned enhancements (Roadmap 9.6):** Obsidian-compatible search operators (`file:`, `content:`, `section:`, `line:`, `block:`, `match-case:`, `task:`, `task-todo:`, `task-done:`), parenthesized boolean grouping, inline property search with `[prop:val]` bracket syntax, inline regex with `/pattern/` delimiters, `--sort` for result ordering, and richer `--explain` output. See `docs/ROADMAP.md` §9.6.
+
 ## Query DSL and JSON payloads
 
 `vulcan query` exposes the shared query layer directly.
@@ -504,6 +506,8 @@ Supported template variables:
 - `{{datetime}}`
 - `{{uuid}}`
 
+**Planned enhancements (Roadmap 9.7):** Obsidian-compatible Moment.js format strings (`{{date:YYYY-MM-DD}}`, `{{time:HH:mm}}`), template property merging into target notes, `vulcan template insert` for inserting templates into existing notes, and Obsidian template folder discovery. See `docs/ROADMAP.md` §9.7.
+
 ## Saved reports, exports, and automation
 
 Saved report definitions live under `.vulcan/reports`.
@@ -560,6 +564,21 @@ Supported shells:
 - `fish`
 - `powershell`
 - `zsh`
+
+## Planned commands
+
+### `canvas` (Roadmap Phase 18)
+
+Canvas support will add CLI commands for inspecting and validating Obsidian JSON Canvas files (`.canvas`):
+
+- `vulcan canvas [path]`: summary view (node/edge counts, referenced files)
+- `vulcan canvas list`: list all canvas files in the vault
+- `vulcan canvas nodes <path>`: list all nodes with type, position, and content preview
+- `vulcan canvas edges <path>`: list all edges with from/to labels
+- `vulcan canvas validate <path>`: structural validation
+- `vulcan canvas refs <path>`: file references with resolution status
+
+Canvas text nodes will be indexed in FTS5 and searchable via `vulcan search`. File node references will participate in the vault graph (backlinks, doctor). See `docs/ROADMAP.md` Phase 18.
 
 ## Related docs
 

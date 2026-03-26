@@ -65,6 +65,8 @@ The main hot paths to watch are:
 - FTS backfill or repair work after schema changes
 - Embedding request batching and vector row writes during `vectors index`
 - Large vector maintenance passes after provider/model changes
+- Canvas JSON parsing and text node FTS indexing (Phase 18) — canvas files can be large; text node extraction and chunk creation should be profiled alongside Markdown parsing
+- Post-FTS filter pipeline (Roadmap 9.6) — scope operators (`section:`, `line:`, `block:`), case-sensitive matching, and regex filtering run after FTS hits are collected; for broad queries with many hits, this post-filter pass may become the bottleneck
 
 ## Concurrency verification
 
