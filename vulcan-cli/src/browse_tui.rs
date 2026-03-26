@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 use ratatui::{Frame, Terminal};
 use std::fs;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
@@ -209,14 +209,9 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
     frame.render_widget(preview, body[1]);
 
     let footer = Paragraph::new(vec![
+        Line::from(state.status_bar_line()),
         Line::from(state.key_help_line()),
         Line::from(format!("      {}", state.mode_help_line())),
-        Line::from(format!(
-            "Mode: {} | {} filtered / {} total",
-            state.mode.label(),
-            state.filtered_count(),
-            state.total_notes()
-        )),
         Line::from(format!("Status: {}", state.status_line())),
     ])
     .block(
@@ -311,6 +306,7 @@ struct BrowseState {
     doctor_view: Option<DoctorViewState>,
     new_note_prompt: Option<NewNotePrompt>,
     move_prompt: Option<MovePrompt>,
+    last_scan_label: String,
     mode: BrowseMode,
     status: String,
 }
@@ -322,6 +318,7 @@ impl BrowseState {
         } else {
             Vec::new()
         };
+        let last_scan_label = last_scan_label(&paths);
         Ok(Self {
             paths: paths.clone(),
             all_notes: notes.clone(),
@@ -334,6 +331,7 @@ impl BrowseState {
             doctor_view: None,
             new_note_prompt: None,
             move_prompt: None,
+            last_scan_label,
             mode: BrowseMode::Fuzzy,
             status: "Ready.".to_string(),
         })
@@ -654,6 +652,7 @@ impl BrowseState {
         if let Some(view) = self.links_view.as_mut() {
             view.reload(&self.paths)?;
         }
+        self.refresh_last_scan_label();
         Ok(())
     }
 
@@ -674,6 +673,7 @@ impl BrowseState {
         self.property_filter
             .refresh_results(&self.paths, &self.all_notes);
         self.property_filter.select_path(path);
+        self.refresh_last_scan_label();
         Ok(())
     }
 
@@ -916,12 +916,27 @@ impl BrowseState {
         self.picker.total_notes()
     }
 
+    fn status_bar_line(&self) -> String {
+        format!(
+            "Vault: {} | Mode: {} | Notes: {} filtered / {} total | Last scan: {}",
+            self.vault_name(),
+            self.active_mode_label(),
+            self.filtered_count(),
+            self.total_notes(),
+            self.last_scan_label
+        )
+    }
+
     fn set_status(&mut self, status: impl Into<String>) {
         self.status = status.into();
     }
 
     fn clear_status(&mut self) {
         self.status.clear();
+    }
+
+    fn refresh_last_scan_label(&mut self) {
+        self.last_scan_label = last_scan_label(&self.paths);
     }
 
     fn clear_move_prompt(&mut self) {
@@ -1001,6 +1016,33 @@ impl BrowseState {
                 .map_or_else(|| "Ready.".to_string(), |tag| format!("Tag: #{tag}")),
             BrowseMode::Property => self.property_filter.status_line(),
             BrowseMode::Fuzzy | BrowseMode::FullText => "Ready.".to_string(),
+        }
+    }
+
+    fn vault_name(&self) -> String {
+        self.paths
+            .vault_root()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map_or_else(
+                || self.paths.vault_root().display().to_string(),
+                ToOwned::to_owned,
+            )
+    }
+
+    fn active_mode_label(&self) -> &'static str {
+        if self.doctor_view.is_some() {
+            "doctor"
+        } else if self.backlinks_view.is_some() {
+            "backlinks"
+        } else if self.links_view.is_some() {
+            "links"
+        } else if self.new_note_prompt.is_some() {
+            "new-note"
+        } else if self.move_prompt.is_some() {
+            "move"
+        } else {
+            self.mode.label()
         }
     }
 }
@@ -1496,6 +1538,30 @@ fn resolution_status_label(status: ResolutionStatus) -> &'static str {
         ResolutionStatus::Resolved => "resolved",
         ResolutionStatus::Unresolved => "unresolved",
         ResolutionStatus::External => "external",
+    }
+}
+
+fn last_scan_label(paths: &VaultPaths) -> String {
+    fs::metadata(paths.cache_db())
+        .and_then(|metadata| metadata.modified())
+        .map_or_else(|_| "not scanned".to_string(), relative_time_label)
+}
+
+fn relative_time_label(timestamp: SystemTime) -> String {
+    let elapsed = SystemTime::now()
+        .duration_since(timestamp)
+        .unwrap_or(Duration::ZERO);
+    let seconds = elapsed.as_secs();
+    if seconds < 5 {
+        "just now".to_string()
+    } else if seconds < 60 {
+        format!("{seconds}s ago")
+    } else if seconds < 3_600 {
+        format!("{}m ago", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h ago", seconds / 3_600)
+    } else {
+        format!("{}d ago", seconds / 86_400)
     }
 }
 
@@ -2429,6 +2495,24 @@ mod tests {
         assert_eq!(relative_path, "Inbox/Idea.md");
         assert!(absolute.exists());
         assert_eq!(state.selected_path(), Some("Inbox/Idea.md"));
+    }
+
+    #[test]
+    fn status_bar_line_shows_vault_mode_counts_and_last_scan() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("browse-vault");
+        let paths = VaultPaths::new(&vault_root);
+        write_note(&vault_root, "Home.md", "# Home");
+        scan_fixture(&paths);
+        let state =
+            BrowseState::new(paths, vec![note("Home.md", &[])]).expect("state should build");
+
+        let line = state.status_bar_line();
+
+        assert!(line.contains("Vault: browse-vault"));
+        assert!(line.contains("Mode: fuzzy"));
+        assert!(line.contains("Notes: 1 filtered / 1 total"));
+        assert!(line.contains("Last scan:"));
     }
 
     #[test]
