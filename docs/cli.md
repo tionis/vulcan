@@ -370,19 +370,19 @@ Modes:
 
 Primary keys:
 
-- `Enter` or `e`: edit the selected note
-- `n`: create a new note
-- `m`: move or rename the selected note
-- `b`: backlinks view
-- `l`: outgoing-links view
-- `d`: note-scoped doctor view
-- `g`: git history for the selected file
+- `Enter` or `E`: edit the selected note
+- `N`: create a new note
+- `M`: move or rename the selected note
+- `B`: backlinks view
+- `L`: outgoing-links view
+- `D`: note-scoped doctor view
+- `G`: git history for the selected file
 - `Esc`: quit
 
 Additional browse notes:
 
 - By default, `browse` opens immediately on current cache contents and runs a background incremental refresh. Use `[scan].browse_mode` or `--refresh` to change that behavior.
-- Single-letter actions only fire when the fuzzy query is empty.
+- Lowercase letters always extend the fuzzy query. Use uppercase action keys in fuzzy mode.
 - After edits, creates, and moves, Vulcan rescans the affected files and refreshes the list.
 - In backlinks and outgoing-link views, `o` opens the selected `.base` file in the Bases TUI.
 - `browse` accepts `--no-commit` to suppress auto-commit for that session.

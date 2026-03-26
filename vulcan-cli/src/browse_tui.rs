@@ -548,60 +548,45 @@ impl BrowseState {
                 self.mode = BrowseMode::Fuzzy;
                 BrowseAction::Continue
             }
-            KeyCode::Char('b')
-                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
-            {
+            KeyCode::Char('B') if self.mode == BrowseMode::Fuzzy => {
                 self.clear_status();
                 if let Err(error) = self.open_backlinks_view() {
                     self.set_status(error);
                 }
                 BrowseAction::Continue
             }
-            KeyCode::Char('l')
-                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
-            {
+            KeyCode::Char('L') if self.mode == BrowseMode::Fuzzy => {
                 self.clear_status();
                 if let Err(error) = self.open_links_view() {
                     self.set_status(error);
                 }
                 BrowseAction::Continue
             }
-            KeyCode::Char('m')
-                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
-            {
+            KeyCode::Char('M') if self.mode == BrowseMode::Fuzzy => {
                 self.clear_status();
                 self.open_move_prompt();
                 BrowseAction::Continue
             }
-            KeyCode::Char('d')
-                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
-            {
+            KeyCode::Char('D') if self.mode == BrowseMode::Fuzzy => {
                 self.clear_status();
                 if let Err(error) = self.open_doctor_view() {
                     self.set_status(error);
                 }
                 BrowseAction::Continue
             }
-            KeyCode::Char('g')
-                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
-            {
+            KeyCode::Char('G') if self.mode == BrowseMode::Fuzzy => {
                 self.clear_status();
                 if let Err(error) = self.open_git_view() {
                     self.set_status(error);
                 }
                 BrowseAction::Continue
             }
-            KeyCode::Char('n')
-                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
-            {
+            KeyCode::Char('N') if self.mode == BrowseMode::Fuzzy => {
                 self.clear_status();
                 self.new_note_prompt = Some(NewNotePrompt::default());
                 BrowseAction::Continue
             }
-            KeyCode::Enter | KeyCode::Char('e')
-                if self.mode == BrowseMode::Fuzzy
-                    && (matches!(key.code, KeyCode::Enter) || self.picker.query().is_empty()) =>
-            {
+            KeyCode::Enter | KeyCode::Char('E') if self.mode == BrowseMode::Fuzzy => {
                 if let Some(path) = self.selected_path().map(str::to_string) {
                     BrowseAction::Edit(path)
                 } else {
@@ -1017,7 +1002,7 @@ impl BrowseState {
         if self.move_prompt.is_some() {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
-            "Keys: Enter/e edit, n new, m move, b backlinks, l links, d doctor, g git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
+            "Keys: Enter/E edit, N new, M move, B backlinks, L links, D doctor, G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
         }
     }
 
@@ -2560,6 +2545,13 @@ mod tests {
         KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL)
     }
 
+    fn shift(code: char) -> KeyEvent {
+        KeyEvent::new(
+            KeyCode::Char(code.to_ascii_uppercase()),
+            KeyModifiers::SHIFT,
+        )
+    }
+
     fn write_note(root: &Path, relative_path: &str, contents: &str) {
         let absolute = root.join(relative_path);
         if let Some(parent) = absolute.parent() {
@@ -2615,27 +2607,58 @@ mod tests {
     }
 
     #[test]
-    fn e_requests_edit_for_selected_note() {
+    fn uppercase_e_requests_edit_for_selected_note() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
         write_note(temp_dir.path(), "Projects/Alpha.md", "Alpha");
         let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
             .expect("state should build");
 
-        let action = state.handle_key(key(KeyCode::Char('e')));
+        let action = state.handle_key(shift('e'));
 
         assert_eq!(action, BrowseAction::Edit("Projects/Alpha.md".to_string()));
     }
 
     #[test]
-    fn m_opens_move_prompt_for_selected_note() {
+    fn lowercase_action_keys_extend_the_fuzzy_query() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        let mut state = BrowseState::new(
+            paths,
+            vec![
+                note("Beta.md", &[]),
+                note("Meeting.md", &[]),
+                note("Notes.md", &[]),
+            ],
+        )
+        .expect("state should build");
+
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('b'))),
+            BrowseAction::Continue
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('m'))),
+            BrowseAction::Continue
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('n'))),
+            BrowseAction::Continue
+        );
+
+        assert_eq!(state.query(), "bmn");
+        assert_eq!(state.query_title(), "Browse (/ fuzzy search)");
+    }
+
+    #[test]
+    fn uppercase_m_opens_move_prompt_for_selected_note() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
         write_note(temp_dir.path(), "Projects/Alpha.md", "Alpha");
         let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
             .expect("state should build");
 
-        let action = state.handle_key(key(KeyCode::Char('m')));
+        let action = state.handle_key(shift('m'));
 
         assert_eq!(action, BrowseAction::Continue);
         assert_eq!(state.query_title(), "Move Note (Projects/Alpha.md)");
@@ -2660,7 +2683,7 @@ mod tests {
         .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
 
-        state.handle_key(key(KeyCode::Char('m')));
+        state.handle_key(shift('m'));
         for _ in 0.."Projects/Alpha.md".len() {
             state.handle_key(key(KeyCode::Backspace));
         }
@@ -2714,7 +2737,7 @@ mod tests {
         .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
 
-        let action = state.handle_key(key(KeyCode::Char('b')));
+        let action = state.handle_key(shift('b'));
 
         assert_eq!(action, BrowseAction::Continue);
         assert_eq!(state.query_title(), "Backlinks (Projects/Alpha.md)");
@@ -2744,7 +2767,7 @@ mod tests {
         )
         .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
-        state.handle_key(key(KeyCode::Char('b')));
+        state.handle_key(shift('b'));
 
         let action = state.handle_key(key(KeyCode::Esc));
 
@@ -2776,7 +2799,7 @@ mod tests {
         .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
 
-        let action = state.handle_key(key(KeyCode::Char('l')));
+        let action = state.handle_key(shift('l'));
 
         assert_eq!(action, BrowseAction::Continue);
         assert_eq!(state.query_title(), "Outgoing Links (Projects/Alpha.md)");
@@ -2806,7 +2829,7 @@ mod tests {
         )
         .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
-        state.handle_key(key(KeyCode::Char('l')));
+        state.handle_key(shift('l'));
 
         let action = state.handle_key(key(KeyCode::Esc));
 
@@ -2833,7 +2856,7 @@ mod tests {
         let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
             .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
-        state.handle_key(key(KeyCode::Char('l')));
+        state.handle_key(shift('l'));
 
         let action = state.handle_key(key(KeyCode::Char('o')));
 
@@ -2860,7 +2883,7 @@ mod tests {
             .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
 
-        let action = state.handle_key(key(KeyCode::Char('g')));
+        let action = state.handle_key(shift('g'));
 
         assert_eq!(action, BrowseAction::Continue);
         assert_eq!(state.query_title(), "Git Log (Projects/Alpha.md)");
@@ -2886,7 +2909,7 @@ mod tests {
         let mut state = BrowseState::new(paths, vec![note("Projects/Alpha.md", &[])])
             .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
-        state.handle_key(key(KeyCode::Char('g')));
+        state.handle_key(shift('g'));
 
         let action = state.handle_key(key(KeyCode::Esc));
 
@@ -2913,7 +2936,7 @@ mod tests {
         .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
 
-        let action = state.handle_key(key(KeyCode::Char('d')));
+        let action = state.handle_key(shift('d'));
 
         assert_eq!(action, BrowseAction::Continue);
         assert_eq!(state.query_title(), "Doctor (Projects/Alpha.md)");
@@ -2947,7 +2970,7 @@ mod tests {
         )
         .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
-        state.handle_key(key(KeyCode::Char('d')));
+        state.handle_key(shift('d'));
 
         let action = state.handle_key(key(KeyCode::Esc));
 
@@ -2963,7 +2986,7 @@ mod tests {
         let mut state =
             BrowseState::new(paths, vec![note("Home.md", &[])]).expect("state should build");
 
-        let action = state.handle_key(key(KeyCode::Char('n')));
+        let action = state.handle_key(shift('n'));
 
         assert_eq!(action, BrowseAction::Continue);
         assert_eq!(state.query_title(), "New Note");
@@ -2983,7 +3006,7 @@ mod tests {
         let mut state = BrowseState::new(paths.clone(), vec![note("Home.md", &[])])
             .expect("state should build");
 
-        state.handle_key(key(KeyCode::Char('n')));
+        state.handle_key(shift('n'));
         for character in "Inbox/Idea".chars() {
             state.handle_key(key(KeyCode::Char(character)));
         }
