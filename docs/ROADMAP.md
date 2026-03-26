@@ -729,14 +729,14 @@ vulcan edit --new [path]     # create new note, open in editor
 ```
 
 - [x] **Keybinding fix:** change note picker quit from `Esc | q` to `Esc`-only, so `q` can be typed in search queries
-- [ ] `vulcan edit <note>`: resolve note by path/filename/alias, open in `$VISUAL`/`$EDITOR`/`vi`
-- [ ] If `<note>` is ambiguous or omitted: spawn the existing note picker TUI, Enter opens selected note in editor
-- [ ] `vulcan edit --new <path>`: create a new empty note (or from template if 9.4.3 is implemented), open in editor
-- [ ] After editor exits: run an incremental rescan of the edited file to update the cache
+- [x] `vulcan edit <note>`: resolve note by path/filename/alias, open in `$VISUAL`/`$EDITOR`/`vi`
+- [x] If `<note>` is ambiguous or omitted: spawn the existing note picker TUI, Enter opens selected note in editor
+- [x] `vulcan edit --new <path>`: create a new empty note (or from template if 9.4.3 is implemented), open in editor
+- [x] After editor exits: run an incremental rescan of the edited file to update the cache
 - [ ] If auto-commit is enabled (8.3): commit the change after rescan
-- [ ] Reuse `open_in_editor()` and `with_terminal_suspended()` from `bases_tui.rs` — extract these into a shared `editor.rs` utility module in `vulcan-cli/src/`
-- [ ] Non-interactive fallback: if not a TTY, print an error rather than spawning a picker
-- [ ] Integration test: create a temp vault, run `edit --new`, verify file exists and cache is updated
+- [x] Reuse `open_in_editor()` and `with_terminal_suspended()` from `bases_tui.rs` — extract these into a shared `editor.rs` utility module in `vulcan-cli/src/`
+- [x] Non-interactive fallback: if not a TTY, print an error rather than spawning a picker
+- [x] Integration test: create a temp vault, run `edit --new`, verify file exists and cache is updated
 
 ### 9.2 `browse` command — persistent note browser TUI
 

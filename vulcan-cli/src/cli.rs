@@ -8,7 +8,7 @@ Command Groups:
   Graph and Query: links, backlinks, graph, search, notes, query, bases, suggest
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
-  Mutations: update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
+  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
   Maintenance: move, doctor, cache, link-mentions, rewrite, describe, completions
 
 Docs:
@@ -778,6 +778,15 @@ pub enum Command {
         note: Option<String>,
         #[command(flatten)]
         export: ExportArgs,
+    },
+    #[command(about = "Open a note in $VISUAL/$EDITOR and refresh the cache afterwards")]
+    Edit {
+        #[arg(
+            help = "Note path, filename, or alias to edit; with --new, the new note path to create"
+        )]
+        note: Option<String>,
+        #[arg(long, help = "Create a new note instead of resolving an existing one")]
+        new: bool,
     },
     #[command(about = "Run vector indexing and similarity commands")]
     Vectors {
