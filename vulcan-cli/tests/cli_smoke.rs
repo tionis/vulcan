@@ -132,6 +132,8 @@ fn search_help_documents_query_and_filter_syntax() {
                     "plain terms are ANDed: dashboard status",
                 ))
                 .and(predicate::str::contains("tag:index"))
+                .and(predicate::str::contains("task:docs"))
+                .and(predicate::str::contains("task-todo:followup"))
                 .and(predicate::str::contains(
                     "Use --raw-query to pass SQLite FTS5 syntax through unchanged.",
                 ))
@@ -1070,6 +1072,82 @@ fn search_line_and_block_operators_work() {
         .stdout(
             predicate::str::contains("\"document_path\":\"SameBlock.md\"")
                 .and(predicate::str::contains("SplitBlock.md").not()),
+        );
+}
+
+#[test]
+fn search_task_operators_work() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    fs::write(
+        vault_root.join("Tasks.md"),
+        "- [ ] write docs\n- [x] ship release\nplain write docs note",
+    )
+    .expect("note should write");
+    fs::write(vault_root.join("Body.md"), "write docs outside of tasks")
+        .expect("note should write");
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,parsed_query_explanation",
+            "search",
+            "task:write",
+            "--explain",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"Tasks.md\"")
+                .and(predicate::str::contains("Body.md").not())
+                .and(predicate::str::contains("FILTER task:write")),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "search",
+            "task-todo:write",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"Tasks.md\"")
+                .and(predicate::str::contains("Body.md").not()),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "search",
+            "task-done:ship",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"Tasks.md\"")
+                .and(predicate::str::contains("Body.md").not()),
         );
 }
 

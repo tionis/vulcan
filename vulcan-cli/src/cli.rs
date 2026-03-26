@@ -69,6 +69,9 @@ Search query syntax:
     file:meeting
     content:release
     match-case:Bob
+    task:docs
+    task-todo:followup
+    task-done:ship
 
 Notes:
   Use --where for typed property filters and list membership.
@@ -102,6 +105,7 @@ Examples:
   vulcan search 'dashboard \"release notes\" -draft'
   vulcan search 'tag:index path:People/ owned'
   vulcan search 'file:meeting content:release'
+  vulcan search 'task-todo:followup task-done:ship'
   vulcan search 'line:(mix flour) block:(oven timer)'
   vulcan search dashboard --where 'reviewed = true'";
 

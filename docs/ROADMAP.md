@@ -963,10 +963,10 @@ Extend `prepare_search_query()` to recognise additional Obsidian-style inline op
 
 Search within task list items, leveraging the existing task/checkbox detection in the indexer.
 
-- [ ] `task:` — match term within any task line (`- [ ] ...` or `- [x] ...`)
-- [ ] `task-todo:` — match within uncompleted tasks only (`- [ ] ...`)
-- [ ] `task-done:` — match within completed tasks only (`- [x] ...`)
-- [ ] Implementation: post-FTS filter on hit snippets, or a dedicated `tasks` content column in FTS if performance requires it
+- [x] `task:` — match term within any task line (`- [ ] ...` or `- [x] ...`)
+- [x] `task-todo:` — match within uncompleted tasks only (`- [ ] ...`)
+- [x] `task-done:` — match within completed tasks only (`- [x] ...`)
+- [x] Implementation: post-FTS filter on hit snippets, or a dedicated `tasks` content column in FTS if performance requires it
 
 #### 9.6.4 Inline property search with bracket syntax
 
