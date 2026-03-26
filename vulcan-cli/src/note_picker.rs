@@ -219,6 +219,11 @@ impl NotePickerState {
         &self.query
     }
 
+    pub(crate) fn set_query(&mut self, query: &str) {
+        self.query = query.to_string();
+        self.clamp_selection();
+    }
+
     pub(crate) fn total_notes(&self) -> usize {
         self.notes.len()
     }
@@ -237,7 +242,7 @@ impl NotePickerState {
             .and_then(|index| filtered.get(index).map(|(_, note)| *note))
     }
 
-    fn move_selection(&mut self, delta: isize) {
+    pub(crate) fn move_selection(&mut self, delta: isize) {
         let len = self.filtered_notes().len();
         if len == 0 {
             self.selected_index = None;
