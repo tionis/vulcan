@@ -220,6 +220,9 @@ struct PreparedSearchQuery {
     file_terms: Vec<String>,
     content_terms: Vec<SearchTerm>,
     match_case_terms: Vec<String>,
+    task_terms: Vec<String>,
+    task_todo_terms: Vec<String>,
+    task_done_terms: Vec<String>,
     raw_query: bool,
     fuzzy_requested: bool,
     fuzzy_fallback_used: bool,
@@ -267,6 +270,9 @@ struct InlineFilterState {
     file_terms: Vec<String>,
     content_terms: Vec<SearchTerm>,
     match_case_terms: Vec<String>,
+    task_terms: Vec<String>,
+    task_todo_terms: Vec<String>,
+    task_done_terms: Vec<String>,
     positive_terms: usize,
 }
 
@@ -505,6 +511,12 @@ fn keyword_search_hits(
     let mut candidates = rows.collect::<Result<Vec<_>, _>>()?;
     apply_content_filters(&mut candidates, &prepared.content_terms);
     apply_scope_filters(&mut candidates, prepared.expression.as_ref());
+    apply_task_filters(
+        &mut candidates,
+        &prepared.task_terms,
+        &prepared.task_todo_terms,
+        &prepared.task_done_terms,
+    );
     apply_match_case_filters(&mut candidates, &prepared.match_case_terms);
     let mut hits = candidates
         .into_iter()
@@ -620,6 +632,84 @@ fn apply_match_case_filters(candidates: &mut Vec<SearchCandidate>, terms: &[Stri
         );
         terms.iter().all(|term| haystack.contains(term))
     });
+}
+
+fn apply_task_filters(
+    candidates: &mut Vec<SearchCandidate>,
+    task_terms: &[String],
+    task_todo_terms: &[String],
+    task_done_terms: &[String],
+) {
+    if task_terms.is_empty() && task_todo_terms.is_empty() && task_done_terms.is_empty() {
+        return;
+    }
+
+    candidates.retain(|candidate| {
+        let task_lines = candidate
+            .content
+            .lines()
+            .filter_map(parse_task_line)
+            .collect::<Vec<_>>();
+
+        matches_task_terms(&task_lines, task_terms, TaskMatch::Any)
+            && matches_task_terms(&task_lines, task_todo_terms, TaskMatch::Todo)
+            && matches_task_terms(&task_lines, task_done_terms, TaskMatch::Done)
+    });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskMatch {
+    Any,
+    Todo,
+    Done,
+}
+
+fn matches_task_terms(task_lines: &[TaskLine<'_>], terms: &[String], mode: TaskMatch) -> bool {
+    if terms.is_empty() {
+        return true;
+    }
+
+    terms.iter().all(|term| {
+        task_lines
+            .iter()
+            .filter(|line| match mode {
+                TaskMatch::Any => true,
+                TaskMatch::Todo => !line.done,
+                TaskMatch::Done => line.done,
+            })
+            .any(|line| line.text.to_lowercase().contains(&term.to_lowercase()))
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TaskLine<'a> {
+    done: bool,
+    text: &'a str,
+}
+
+fn parse_task_line(line: &str) -> Option<TaskLine<'_>> {
+    let trimmed = line.trim_start();
+    let task_prefix = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+        .unwrap_or(trimmed);
+    if let Some(rest) = task_prefix.strip_prefix("[ ]") {
+        return Some(TaskLine {
+            done: false,
+            text: rest.trim_start(),
+        });
+    }
+    if let Some(rest) = task_prefix
+        .strip_prefix("[x]")
+        .or_else(|| task_prefix.strip_prefix("[X]"))
+    {
+        return Some(TaskLine {
+            done: true,
+            text: rest.trim_start(),
+        });
+    }
+    None
 }
 
 fn hybrid_search_hits(
@@ -880,6 +970,9 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
             file_terms: Vec::new(),
             content_terms: Vec::new(),
             match_case_terms: Vec::new(),
+            task_terms: Vec::new(),
+            task_todo_terms: Vec::new(),
+            task_done_terms: Vec::new(),
             raw_query: true,
             fuzzy_requested: query.fuzzy,
             fuzzy_fallback_used: false,
@@ -927,6 +1020,9 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
         file_terms: filter_state.file_terms,
         content_terms: filter_state.content_terms,
         match_case_terms: filter_state.match_case_terms,
+        task_terms: filter_state.task_terms,
+        task_todo_terms: filter_state.task_todo_terms,
+        task_done_terms: filter_state.task_done_terms,
         raw_query: false,
         fuzzy_requested: query.fuzzy,
         fuzzy_fallback_used: false,
@@ -1199,6 +1295,30 @@ fn extract_inline_filters(
                 }
                 if let Some(value) = inline_filter_value(&term.text, "match-case") {
                     state.match_case_terms.push(value.to_string());
+                    state.positive_terms += 1;
+                    return Some(SearchExpr::Term(SearchTerm {
+                        text: value.to_string(),
+                        quoted: false,
+                    }));
+                }
+                if let Some(value) = inline_filter_value(&term.text, "task") {
+                    state.task_terms.push(value.to_string());
+                    state.positive_terms += 1;
+                    return Some(SearchExpr::Term(SearchTerm {
+                        text: value.to_string(),
+                        quoted: false,
+                    }));
+                }
+                if let Some(value) = inline_filter_value(&term.text, "task-todo") {
+                    state.task_todo_terms.push(value.to_string());
+                    state.positive_terms += 1;
+                    return Some(SearchExpr::Term(SearchTerm {
+                        text: value.to_string(),
+                        quoted: false,
+                    }));
+                }
+                if let Some(value) = inline_filter_value(&term.text, "task-done") {
+                    state.task_done_terms.push(value.to_string());
                     state.positive_terms += 1;
                     return Some(SearchExpr::Term(SearchTerm {
                         text: value.to_string(),
@@ -1649,6 +1769,21 @@ impl PreparedSearchQuery {
             self.match_case_terms
                 .iter()
                 .map(|term| format!("FILTER match-case:{term}")),
+        );
+        parsed_query_explanation.extend(
+            self.task_terms
+                .iter()
+                .map(|term| format!("FILTER task:{term}")),
+        );
+        parsed_query_explanation.extend(
+            self.task_todo_terms
+                .iter()
+                .map(|term| format!("FILTER task-todo:{term}")),
+        );
+        parsed_query_explanation.extend(
+            self.task_done_terms
+                .iter()
+                .map(|term| format!("FILTER task-done:{term}")),
         );
         parsed_query_explanation
             .extend(self.filters.iter().map(|filter| format!("WHERE {filter}")));
@@ -2152,6 +2287,95 @@ mod tests {
             .parsed_query_explanation
             .iter()
             .any(|line| line == "BLOCK"));
+    }
+
+    #[test]
+    fn search_task_operators_filter_by_task_state() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(
+            vault_root.join("Tasks.md"),
+            "- [ ] write docs\n- [x] ship release\nplain write docs note",
+        )
+        .expect("note should write");
+        fs::write(vault_root.join("Body.md"), "write docs outside of tasks")
+            .expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let any_report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "task:write".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("task search should succeed");
+        assert_eq!(
+            any_report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Tasks.md".to_string()]
+        );
+        assert!(any_report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER task:write"));
+
+        let todo_report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "task-todo:write".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("task-todo search should succeed");
+        assert_eq!(
+            todo_report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Tasks.md".to_string()]
+        );
+        assert!(todo_report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER task-todo:write"));
+
+        let done_report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "task-done:ship".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("task-done search should succeed");
+        assert_eq!(
+            done_report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Tasks.md".to_string()]
+        );
+        assert!(done_report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "FILTER task-done:ship"));
     }
 
     #[test]
