@@ -246,6 +246,7 @@ enum SearchExpr {
 enum SearchScope {
     Line,
     Block,
+    Section,
 }
 
 #[derive(Debug, Clone)]
@@ -396,11 +397,19 @@ fn keyword_search_hits(
     prepared: &PreparedSearchQuery,
     limit_override: Option<usize>,
 ) -> Result<Vec<SearchHit>, SearchError> {
+    let has_section_scope = prepared
+        .expression
+        .as_ref()
+        .is_some_and(expression_contains_section_scope);
+    let candidate_query = section_candidate_query(prepared)
+        .filter(|_| has_section_scope)
+        .unwrap_or_else(|| prepared.effective_query.clone());
     let limit = limit_override
         .or(query.limit)
         .map_or(i64::MAX, |value| i64::try_from(value).unwrap_or(i64::MAX));
+    let candidate_limit = if has_section_scope { i64::MAX } else { limit };
     let filter_sql = build_note_filter_clause(&prepared.filters)?;
-    let use_fts = !prepared.effective_query.trim().is_empty();
+    let use_fts = !candidate_query.trim().is_empty();
     let mut sql = filter_sql.cte;
     if use_fts {
         sql.push_str(&format!(
@@ -442,7 +451,7 @@ fn keyword_search_hits(
 
     let mut params = Vec::<SqlValue>::new();
     if use_fts {
-        params.push(SqlValue::Text(prepared.effective_query.clone()));
+        params.push(SqlValue::Text(candidate_query));
     }
     if let Some(path_prefix) = prepared.path_prefix.as_deref() {
         sql.push_str(" AND documents.path LIKE ?");
@@ -482,7 +491,7 @@ fn keyword_search_hits(
     }
     params.extend(filter_sql.params.clone());
     sql.push_str(" LIMIT ?");
-    params.push(SqlValue::Integer(limit));
+    params.push(SqlValue::Integer(candidate_limit));
 
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(params_from_iter(params.iter()), |row| {
@@ -510,7 +519,7 @@ fn keyword_search_hits(
     })?;
     let mut candidates = rows.collect::<Result<Vec<_>, _>>()?;
     apply_content_filters(&mut candidates, &prepared.content_terms);
-    apply_scope_filters(&mut candidates, prepared.expression.as_ref());
+    apply_scope_filters(connection, &mut candidates, prepared.expression.as_ref())?;
     apply_task_filters(
         &mut candidates,
         &prepared.task_terms,
@@ -538,6 +547,10 @@ fn keyword_search_hits(
         }
     }
 
+    if has_section_scope {
+        hits.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    }
+
     Ok(hits)
 }
 
@@ -554,13 +567,32 @@ fn apply_content_filters(candidates: &mut Vec<SearchCandidate>, terms: &[SearchT
     });
 }
 
-fn apply_scope_filters(candidates: &mut Vec<SearchCandidate>, expression: Option<&SearchExpr>) {
+fn apply_scope_filters(
+    connection: &Connection,
+    candidates: &mut Vec<SearchCandidate>,
+    expression: Option<&SearchExpr>,
+) -> Result<(), SearchError> {
     let Some(expression) = expression.filter(|expression| expression_contains_scope(expression))
     else {
-        return;
+        return Ok(());
     };
 
-    candidates.retain(|candidate| candidate_matches_scope_filters(expression, &candidate.content));
+    let section_contexts = if expression_contains_section_scope(expression) {
+        load_document_section_contexts(connection, candidates)?
+    } else {
+        HashMap::new()
+    };
+
+    candidates.retain(|candidate| {
+        candidate_matches_scope_filters(
+            expression,
+            &candidate.content,
+            section_contexts
+                .get(candidate.hit.document_path.as_str())
+                .map(Vec::as_slice),
+        )
+    });
+    Ok(())
 }
 
 fn expression_contains_scope(expression: &SearchExpr) -> bool {
@@ -574,19 +606,46 @@ fn expression_contains_scope(expression: &SearchExpr) -> bool {
     }
 }
 
-fn candidate_matches_scope_filters(expression: &SearchExpr, content: &str) -> bool {
+fn expression_contains_section_scope(expression: &SearchExpr) -> bool {
+    match expression {
+        SearchExpr::Scoped {
+            scope: SearchScope::Section,
+            ..
+        } => true,
+        SearchExpr::Scoped { expression, .. } => expression_contains_section_scope(expression),
+        SearchExpr::Term(_) => false,
+        SearchExpr::And(children) | SearchExpr::Or(children) => {
+            children.iter().any(expression_contains_section_scope)
+        }
+        SearchExpr::Not(child) => expression_contains_section_scope(child),
+    }
+}
+
+fn candidate_matches_scope_filters(
+    expression: &SearchExpr,
+    content: &str,
+    sections: Option<&[String]>,
+) -> bool {
     match expression {
         SearchExpr::Term(_) => true,
         SearchExpr::Scoped { scope, expression } => {
-            scoped_expression_matches(*scope, expression, content)
+            if *scope == SearchScope::Section {
+                sections.is_some_and(|sections| {
+                    sections
+                        .iter()
+                        .any(|section| text_expression_matches(expression, section))
+                })
+            } else {
+                scoped_expression_matches(*scope, expression, content)
+            }
         }
         SearchExpr::And(children) => children
             .iter()
-            .all(|child| candidate_matches_scope_filters(child, content)),
+            .all(|child| candidate_matches_scope_filters(child, content, sections)),
         SearchExpr::Or(children) => children
             .iter()
-            .any(|child| candidate_matches_scope_filters(child, content)),
-        SearchExpr::Not(child) => !candidate_matches_scope_filters(child, content),
+            .any(|child| candidate_matches_scope_filters(child, content, sections)),
+        SearchExpr::Not(child) => !candidate_matches_scope_filters(child, content, sections),
     }
 }
 
@@ -601,7 +660,84 @@ fn split_scope_segments<'a>(scope: SearchScope, content: &'a str) -> Vec<&'a str
     match scope {
         SearchScope::Line => content.lines().collect(),
         SearchScope::Block => content.split("\n\n").collect(),
+        SearchScope::Section => vec![content],
     }
+}
+
+fn load_document_section_contexts(
+    connection: &Connection,
+    candidates: &[SearchCandidate],
+) -> Result<HashMap<String, Vec<String>>, SearchError> {
+    let document_paths = candidates
+        .iter()
+        .map(|candidate| candidate.hit.document_path.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if document_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", document_paths.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "
+        SELECT
+            documents.path,
+            chunks.heading_path,
+            search_chunk_content.content
+        FROM search_chunk_content
+        JOIN chunks ON chunks.id = search_chunk_content.chunk_id
+        JOIN documents ON documents.id = search_chunk_content.document_id
+        WHERE documents.path IN ({placeholders})
+        ORDER BY documents.path ASC, chunks.sequence_index ASC
+        "
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(document_paths.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    let mut grouped = HashMap::<String, Vec<(String, String)>>::new();
+    for row in rows {
+        let (path, heading_path, content) = row?;
+        grouped
+            .entry(path)
+            .or_default()
+            .push((heading_path, content));
+    }
+
+    Ok(grouped
+        .into_iter()
+        .map(|(path, rows)| {
+            let mut sections = Vec::<(String, String)>::new();
+            for (heading_path, content) in rows {
+                if let Some((_, existing)) = sections
+                    .iter_mut()
+                    .find(|(existing_heading_path, _)| existing_heading_path == &heading_path)
+                {
+                    if !existing.is_empty() {
+                        existing.push_str("\n\n");
+                    }
+                    existing.push_str(&content);
+                } else {
+                    sections.push((heading_path, content));
+                }
+            }
+            (
+                path,
+                sections
+                    .into_iter()
+                    .map(|(_, content)| content)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect())
 }
 
 fn text_expression_matches(expression: &SearchExpr, text: &str) -> bool {
@@ -1237,6 +1373,8 @@ fn scoped_operator_from_term(term: &SearchTerm) -> Option<(SearchScope, Option<S
         SearchScope::Line
     } else if prefix.eq_ignore_ascii_case("block") {
         SearchScope::Block
+    } else if prefix.eq_ignore_ascii_case("section") {
+        SearchScope::Section
     } else {
         return None;
     };
@@ -1401,6 +1539,98 @@ fn render_fts_expression(
     }
 }
 
+fn section_candidate_query(prepared: &PreparedSearchQuery) -> Option<String> {
+    let expression = prepared.expression.as_ref()?;
+    let fuzzy_map = fuzzy_expansion_map(&prepared.fuzzy_expansions);
+    let base_query = render_candidate_fts_expression(expression, &fuzzy_map, 0);
+    let content_query = render_content_filters(&prepared.content_terms);
+    Some(combine_fts_clauses(
+        (!base_query.trim().is_empty()).then_some(base_query.as_str()),
+        content_query.as_deref(),
+    ))
+}
+
+fn render_candidate_fts_expression(
+    expression: &SearchExpr,
+    fuzzy_map: &HashMap<String, Vec<String>>,
+    parent_precedence: u8,
+) -> String {
+    let (rendered, precedence) = match expression {
+        SearchExpr::Term(term) => (render_fts_term(term, fuzzy_map), 4),
+        SearchExpr::Scoped { scope, expression } => {
+            if *scope == SearchScope::Section {
+                (render_section_scope_terms(expression, fuzzy_map), 4)
+            } else {
+                (
+                    render_candidate_fts_expression(expression, fuzzy_map, parent_precedence),
+                    4,
+                )
+            }
+        }
+        SearchExpr::Not(child) => (
+            format!(
+                "NOT {}",
+                render_candidate_fts_expression(child, fuzzy_map, 3)
+            ),
+            3,
+        ),
+        SearchExpr::And(children) => (
+            children
+                .iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    let piece = render_candidate_fts_expression(child, fuzzy_map, 2);
+                    if index > 0 && !matches!(child, SearchExpr::Not(_)) {
+                        format!("AND {piece}")
+                    } else {
+                        piece
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+            2,
+        ),
+        SearchExpr::Or(children) => (
+            children
+                .iter()
+                .map(|child| render_candidate_fts_expression(child, fuzzy_map, 1))
+                .collect::<Vec<_>>()
+                .join(" OR "),
+            1,
+        ),
+    };
+
+    if rendered.trim().is_empty() {
+        return rendered;
+    }
+
+    if precedence < parent_precedence {
+        format!("({rendered})")
+    } else {
+        rendered
+    }
+}
+
+fn render_section_scope_terms(
+    expression: &SearchExpr,
+    fuzzy_map: &HashMap<String, Vec<String>>,
+) -> String {
+    let mut terms = Vec::new();
+    collect_positive_search_terms(expression, false, &mut terms);
+    match terms.len() {
+        0 => String::new(),
+        1 => render_fts_term(&terms[0], fuzzy_map),
+        _ => format!(
+            "({})",
+            terms
+                .iter()
+                .map(|term| render_fts_term(term, fuzzy_map))
+                .collect::<Vec<_>>()
+                .join(" OR ")
+        ),
+    }
+}
+
 fn render_fts_term(term: &SearchTerm, fuzzy_map: &HashMap<String, Vec<String>>) -> String {
     let base = quote_fts_term(&term.text);
     if term.quoted {
@@ -1496,6 +1726,26 @@ fn collect_semantic_terms(expression: &SearchExpr, negated: bool, terms: &mut Ve
     }
 }
 
+fn collect_positive_search_terms(
+    expression: &SearchExpr,
+    negated: bool,
+    terms: &mut Vec<SearchTerm>,
+) {
+    match expression {
+        SearchExpr::Term(term) if !negated => terms.push(term.clone()),
+        SearchExpr::Term(_) => {}
+        SearchExpr::Scoped { expression, .. } => {
+            collect_positive_search_terms(expression, negated, terms);
+        }
+        SearchExpr::And(children) | SearchExpr::Or(children) => {
+            for child in children {
+                collect_positive_search_terms(child, negated, terms);
+            }
+        }
+        SearchExpr::Not(child) => collect_positive_search_terms(child, !negated, terms),
+    }
+}
+
 fn explain_search_expression(expression: &SearchExpr) -> Vec<String> {
     let mut lines = Vec::new();
     append_expression_lines(expression, 0, &mut lines);
@@ -1543,7 +1793,20 @@ fn display_search_scope(scope: SearchScope) -> &'static str {
     match scope {
         SearchScope::Line => "LINE",
         SearchScope::Block => "BLOCK",
+        SearchScope::Section => "SECTION",
     }
+}
+
+fn fuzzy_expansion_map(expansions: &[SearchFuzzyExpansion]) -> HashMap<String, Vec<String>> {
+    expansions
+        .iter()
+        .map(|expansion| {
+            (
+                normalize_term(&expansion.term).unwrap_or_else(|| expansion.term.to_lowercase()),
+                expansion.candidates.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>()
 }
 
 fn compose_fts_query(
@@ -2287,6 +2550,50 @@ mod tests {
             .parsed_query_explanation
             .iter()
             .any(|line| line == "BLOCK"));
+    }
+
+    #[test]
+    fn search_section_operator_matches_across_chunks_in_same_heading() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(
+            vault_root.join("SameSection.md"),
+            "# Plan\n\ndog checklist\n\ncat summary",
+        )
+        .expect("note should write");
+        fs::write(
+            vault_root.join("SplitSection.md"),
+            "# Dogs\n\ndog checklist\n\n# Cats\n\ncat summary",
+        )
+        .expect("note should write");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "section:(dog cat)".to_string(),
+                explain: true,
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        let mut hit_paths = report
+            .hits
+            .iter()
+            .map(|hit| hit.document_path.clone())
+            .collect::<Vec<_>>();
+        hit_paths.sort();
+        hit_paths.dedup();
+        assert_eq!(hit_paths, vec!["SameSection.md".to_string()]);
+        assert!(report
+            .plan
+            .expect("plan should exist")
+            .parsed_query_explanation
+            .iter()
+            .any(|line| line == "SECTION"));
     }
 
     #[test]

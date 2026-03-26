@@ -60,7 +60,8 @@ Search query syntax:
   use `or` between positive terms: dashboard or summary
   prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"
   negate grouped terms too: dashboard -(draft archived)
-  scope terms to one line or block: line:(mix flour), block:(release notes)
+  scope terms to one line, block, or heading section:
+    line:(mix flour), block:(release notes), section:(dog cat)
   inline filters on unquoted positive terms:
     tag:index
     path:People/
@@ -105,6 +106,7 @@ Examples:
   vulcan search 'dashboard \"release notes\" -draft'
   vulcan search 'tag:index path:People/ owned'
   vulcan search 'file:meeting content:release'
+  vulcan search 'section:(dog cat)'
   vulcan search 'task-todo:followup task-done:ship'
   vulcan search 'line:(mix flour) block:(oven timer)'
   vulcan search dashboard --where 'reviewed = true'";
