@@ -239,6 +239,9 @@ fn inbox_and_template_help_document_config_and_variables() {
         .stdout(
             predicate::str::contains("Template source:")
                 .and(predicate::str::contains(
+                    "If .obsidian/templates.json configures a template folder",
+                ))
+                .and(predicate::str::contains(
                     "{{title}} {{date}} {{time}} {{datetime}} {{uuid}}",
                 ))
                 .and(predicate::str::contains(

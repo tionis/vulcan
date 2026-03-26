@@ -513,14 +513,39 @@ struct InboxReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct TemplateListReport {
-    templates: Vec<String>,
+    templates: Vec<TemplateSummary>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct TemplateCreateReport {
     template: String,
+    template_source: String,
     path: String,
     opened_editor: bool,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TemplateSummary {
+    name: String,
+    source: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TemplateCandidate {
+    name: String,
+    source: &'static str,
+    display_path: String,
+    absolute_path: PathBuf,
+    warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TemplateDiscovery {
+    templates: Vec<TemplateCandidate>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1063,20 +1088,29 @@ fn run_template_command(
     no_commit: bool,
     stdout_is_tty: bool,
 ) -> Result<TemplateCommandResult, CliError> {
-    let templates = list_templates(paths)?;
+    let config = load_vault_config(paths).config;
+    let templates = discover_templates(paths, config.templates.obsidian_folder.as_deref())?;
     if list {
         return Ok(TemplateCommandResult::List(TemplateListReport {
-            templates,
+            templates: templates
+                .templates
+                .iter()
+                .map(|template| TemplateSummary {
+                    name: template.name.clone(),
+                    source: template.source.to_string(),
+                    path: template.display_path.clone(),
+                })
+                .collect(),
+            warnings: templates.warnings,
         }));
     }
 
     let template_name = name.ok_or_else(|| {
         CliError::operation("`template` requires a template name unless --list is used")
     })?;
-    let config = load_vault_config(paths).config;
     let now = TemplateTimestamp::current();
-    let template_file = resolve_template_file(paths, &templates, template_name)?;
-    let output_path = template_output_path(&template_file, output_path, &now)?;
+    let template = resolve_template_file(paths, &templates.templates, template_name)?;
+    let output_path = template_output_path(&template.name, output_path, &now)?;
     let absolute_output = paths.vault_root().join(&output_path);
     if absolute_output.exists() {
         return Err(CliError::operation(format!(
@@ -1085,8 +1119,7 @@ fn run_template_command(
     }
 
     let rendered = render_template_contents(
-        &fs::read_to_string(paths.vulcan_dir().join("templates").join(&template_file))
-            .map_err(CliError::operation)?,
+        &fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?,
         &template_variables_for_path(&output_path, now),
         &config.templates,
     );
@@ -1109,9 +1142,11 @@ fn run_template_command(
         .map_err(CliError::operation)?;
 
     Ok(TemplateCommandResult::Create(TemplateCreateReport {
-        template: template_file.to_string(),
+        template: template.name,
+        template_source: template.source.to_string(),
         path: output_path,
         opened_editor,
+        warnings: template.warning.into_iter().collect(),
     }))
 }
 
@@ -1120,8 +1155,83 @@ enum TemplateCommandResult {
     Create(TemplateCreateReport),
 }
 
-fn list_templates(paths: &VaultPaths) -> Result<Vec<String>, CliError> {
-    let template_dir = paths.vulcan_dir().join("templates");
+fn discover_templates(
+    paths: &VaultPaths,
+    obsidian_folder: Option<&Path>,
+) -> Result<TemplateDiscovery, CliError> {
+    let mut warnings = Vec::new();
+    let mut templates = list_templates_in_directory(
+        paths.vulcan_dir().join("templates"),
+        ".vulcan/templates",
+        "vulcan",
+    )?;
+    let mut obsidian_templates = obsidian_folder
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .map(|folder| {
+            list_templates_in_directory(
+                paths.vault_root().join(folder),
+                &folder.to_string_lossy(),
+                "obsidian",
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    for obsidian_template in obsidian_templates.drain(..) {
+        if let Some(existing) = templates
+            .iter_mut()
+            .find(|template| template.name == obsidian_template.name)
+        {
+            let warning = format!(
+                "template {} exists in both {} and {}; using {}",
+                existing.name,
+                obsidian_template.display_path,
+                existing.display_path,
+                existing.display_path
+            );
+            existing.warning = Some(warning.clone());
+            warnings.push(warning);
+        } else {
+            templates.push(obsidian_template);
+        }
+    }
+
+    templates.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(TemplateDiscovery {
+        templates,
+        warnings,
+    })
+}
+
+fn resolve_template_file(
+    paths: &VaultPaths,
+    templates: &[TemplateCandidate],
+    name: &str,
+) -> Result<TemplateCandidate, CliError> {
+    if let Some(template) = templates
+        .iter()
+        .find(|template| template.name == name || template.name.trim_end_matches(".md") == name)
+    {
+        return Ok(template.clone());
+    }
+
+    let mut searched = vec![paths.vulcan_dir().join("templates").display().to_string()];
+    let obsidian_folder = load_vault_config(paths).config.templates.obsidian_folder;
+    if let Some(folder) = obsidian_folder.filter(|folder| !folder.as_os_str().is_empty()) {
+        searched.push(paths.vault_root().join(folder).display().to_string());
+    }
+
+    Err(CliError::operation(format!(
+        "template not found in {}: {name}",
+        searched.join(", ")
+    )))
+}
+
+fn list_templates_in_directory(
+    template_dir: PathBuf,
+    display_root: &str,
+    source: &'static str,
+) -> Result<Vec<TemplateCandidate>, CliError> {
     if !template_dir.exists() {
         return Ok(Vec::new());
     }
@@ -1132,32 +1242,22 @@ fn list_templates(paths: &VaultPaths) -> Result<Vec<String>, CliError> {
             let entry = entry.ok()?;
             let path = entry.path();
             (path.extension().and_then(|ext| ext.to_str()) == Some("md")).then(|| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .map(ToOwned::to_owned)
+                let name = path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(ToOwned::to_owned)?;
+                Some(TemplateCandidate {
+                    display_path: format!("{display_root}/{name}"),
+                    name,
+                    source,
+                    absolute_path: path,
+                    warning: None,
+                })
             })?
         })
         .collect::<Vec<_>>();
-    templates.sort();
+    templates.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(templates)
-}
-
-fn resolve_template_file(
-    paths: &VaultPaths,
-    templates: &[String],
-    name: &str,
-) -> Result<String, CliError> {
-    if let Some(template) = templates
-        .iter()
-        .find(|template| template == &name || template.trim_end_matches(".md") == name)
-    {
-        return Ok(template.clone());
-    }
-
-    Err(CliError::operation(format!(
-        "template not found in {}: {name}",
-        paths.vulcan_dir().join("templates").display()
-    )))
 }
 
 fn template_output_path(
@@ -5111,8 +5211,11 @@ fn print_template_list_report(
                 println!("No templates found.");
             } else {
                 for template in &report.templates {
-                    println!("{template}");
+                    println!("{} [{}: {}]", template.name, template.source, template.path);
                 }
+            }
+            for warning in &report.warnings {
+                eprintln!("Warning: {warning}");
             }
             Ok(())
         }
@@ -5126,7 +5229,13 @@ fn print_template_create_report(
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
-            println!("Created {} from {}", report.path, report.template);
+            println!(
+                "Created {} from {} ({})",
+                report.path, report.template, report.template_source
+            );
+            for warning in &report.warnings {
+                eprintln!("Warning: {warning}");
+            }
             Ok(())
         }
         OutputFormat::Json => print_json(report),
@@ -6691,6 +6800,7 @@ mod tests {
         let config = TemplatesConfig {
             date_format: "dddd, MMMM Do YYYY".to_string(),
             time_format: "hh:mm A".to_string(),
+            obsidian_folder: None,
         };
 
         let rendered = render_template_contents(
@@ -6723,6 +6833,106 @@ mod tests {
         assert!(rendered.contains("00000000-0000-0000-0000-000000000000"));
         assert!(rendered.contains("2026-03-26"));
         assert!(rendered.contains("17:04"));
+    }
+
+    #[test]
+    fn template_command_lists_obsidian_templates_with_sources_and_conflicts() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        fs::create_dir_all(paths.vulcan_dir().join("templates")).expect("template dir");
+        fs::create_dir_all(temp_dir.path().join(".obsidian")).expect("obsidian dir");
+        fs::create_dir_all(temp_dir.path().join("Shared Templates")).expect("shared templates dir");
+        fs::write(
+            temp_dir.path().join(".obsidian/templates.json"),
+            r#"{"folder":"Shared Templates"}"#,
+        )
+        .expect("templates config should be written");
+        fs::write(
+            paths.vulcan_dir().join("templates").join("daily.md"),
+            "# Vulcan\n",
+        )
+        .expect("vulcan template should be written");
+        fs::write(
+            temp_dir.path().join("Shared Templates").join("daily.md"),
+            "# Obsidian\n",
+        )
+        .expect("obsidian daily template should be written");
+        fs::write(
+            temp_dir.path().join("Shared Templates").join("meeting.md"),
+            "# Meeting\n",
+        )
+        .expect("obsidian meeting template should be written");
+
+        let result = run_template_command(&paths, None, true, None, false, false)
+            .expect("template list should succeed");
+        let TemplateCommandResult::List(report) = result else {
+            panic!("template command should list templates");
+        };
+
+        assert_eq!(
+            report.templates,
+            vec![
+                TemplateSummary {
+                    name: "daily.md".to_string(),
+                    source: "vulcan".to_string(),
+                    path: ".vulcan/templates/daily.md".to_string(),
+                },
+                TemplateSummary {
+                    name: "meeting.md".to_string(),
+                    source: "obsidian".to_string(),
+                    path: "Shared Templates/meeting.md".to_string(),
+                },
+            ]
+        );
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("daily.md"));
+        assert!(report.warnings[0].contains(".vulcan/templates/daily.md"));
+    }
+
+    #[test]
+    fn template_command_prefers_vulcan_template_over_obsidian_conflict() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        fs::create_dir_all(paths.vulcan_dir().join("templates")).expect("template dir");
+        fs::create_dir_all(temp_dir.path().join(".obsidian")).expect("obsidian dir");
+        fs::create_dir_all(temp_dir.path().join("Shared Templates")).expect("shared templates dir");
+        fs::write(
+            temp_dir.path().join(".obsidian/templates.json"),
+            r#"{"folder":"Shared Templates"}"#,
+        )
+        .expect("templates config should be written");
+        fs::write(
+            paths.vulcan_dir().join("templates").join("daily.md"),
+            "# Vulcan {{title}}\n",
+        )
+        .expect("vulcan template should be written");
+        fs::write(
+            temp_dir.path().join("Shared Templates").join("daily.md"),
+            "# Obsidian {{title}}\n",
+        )
+        .expect("obsidian template should be written");
+
+        let result = run_template_command(
+            &paths,
+            Some("daily"),
+            false,
+            Some("Journal/Today"),
+            false,
+            false,
+        )
+        .expect("template command should succeed");
+
+        let TemplateCommandResult::Create(report) = result else {
+            panic!("template command should create a note");
+        };
+        assert_eq!(report.template, "daily.md");
+        assert_eq!(report.template_source, "vulcan");
+        assert_eq!(report.warnings.len(), 1);
+
+        let contents = fs::read_to_string(temp_dir.path().join("Journal/Today.md"))
+            .expect("created note should be readable");
+        assert!(contents.contains("# Vulcan Today"));
+        assert!(!contents.contains("# Obsidian Today"));
     }
 
     #[test]

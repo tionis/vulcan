@@ -477,13 +477,12 @@ If an `.obsidian` directory is present, the following files are read to provide 
   - `strictLineBreaks`: affects Markdown rendering semantics, relevant if the tool ever produces rendered output.
 
 - **`.obsidian/types.json`** — Property type assignments (text, number, date, checkbox, etc.). Used to seed the property catalog. Without this file, the tool infers types from observed values but may produce weaker type diagnostics.
-- **`.obsidian/templates.json`** — Templates core-plugin settings. Vulcan may read `dateFormat` and `timeFormat` as defaults for Obsidian-compatible template rendering when `.vulcan` does not override them.
+- **`.obsidian/templates.json`** — Templates core-plugin settings. Vulcan may read `dateFormat` and `timeFormat` as defaults for Obsidian-compatible template rendering when `.vulcan` does not override them, and may discover the configured `folder` as an additional template source alongside `.vulcan/templates/`.
 
 **Low priority but useful:**
 
 - **`.obsidian/bookmarks.json`** — Bookmarked notes, searches, and graphs. Useful for diagnostics and reporting.
 - **`.obsidian/graph.json`** — Graph view display settings. Not needed for correctness.
-- **Obsidian core plugin settings (template folder)** — Obsidian stores the configured template folder location in its core plugin settings. Vulcan can discover this to use Obsidian's template folder as an additional template source alongside `.vulcan/templates/`. See Roadmap §9.7.4.
 
 **Explicitly ignored:**
 
