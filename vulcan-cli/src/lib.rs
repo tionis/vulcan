@@ -23,7 +23,7 @@ use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::io;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
@@ -499,6 +499,33 @@ struct DiffReport {
     diff: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct InboxReport {
+    path: String,
+    appended: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TemplateListReport {
+    templates: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TemplateCreateReport {
+    template: String,
+    path: String,
+    opened_editor: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TemplateVariables {
+    title: String,
+    date: String,
+    time: String,
+    datetime: String,
+    uuid: String,
+}
+
 #[allow(clippy::large_enum_variant)]
 enum SavedExecution {
     Search(SearchReport),
@@ -863,6 +890,360 @@ fn render_git_diff(vault_root: &Path, path: &str, untracked: bool) -> Result<Str
     }
 
     String::from_utf8(output.stdout).map_err(CliError::operation)
+}
+
+fn run_inbox_command(
+    paths: &VaultPaths,
+    text: Option<&str>,
+    file: Option<&PathBuf>,
+    no_commit: bool,
+) -> Result<InboxReport, CliError> {
+    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+    warn_auto_commit_if_needed(&auto_commit);
+    let inbox_config = vulcan_core::load_vault_config(paths).config.inbox;
+    let relative_path = normalize_relative_input_path(
+        &inbox_config.path,
+        RelativePathOptions {
+            expected_extension: Some("md"),
+            append_extension_if_missing: true,
+        },
+    )
+    .map_err(CliError::operation)?;
+
+    let raw_text = inbox_input_text(text, file)?;
+    let variables = template_variables_for_path(&relative_path);
+    let rendered_entry = render_inbox_entry(&inbox_config.format, &raw_text, &variables);
+    let entry = if inbox_config.timestamp {
+        format!("{} {}", variables.datetime, rendered_entry)
+    } else {
+        rendered_entry
+    };
+
+    let absolute_path = paths.vault_root().join(&relative_path);
+    if let Some(parent) = absolute_path.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    let existing = fs::read_to_string(&absolute_path).unwrap_or_default();
+    let updated = if let Some(heading) = inbox_config.heading.as_deref() {
+        append_under_heading(&existing, heading, &entry)
+    } else {
+        append_at_end(&existing, &entry)
+    };
+    fs::write(&absolute_path, updated).map_err(CliError::operation)?;
+    run_incremental_scan(paths, OutputFormat::Human, false)?;
+    auto_commit
+        .commit(paths, "inbox", std::slice::from_ref(&relative_path))
+        .map_err(CliError::operation)?;
+
+    Ok(InboxReport {
+        path: relative_path,
+        appended: true,
+    })
+}
+
+fn run_template_command(
+    paths: &VaultPaths,
+    name: Option<&str>,
+    list: bool,
+    output_path: Option<&str>,
+    no_commit: bool,
+    stdout_is_tty: bool,
+) -> Result<TemplateCommandResult, CliError> {
+    let templates = list_templates(paths)?;
+    if list {
+        return Ok(TemplateCommandResult::List(TemplateListReport {
+            templates,
+        }));
+    }
+
+    let template_name = name.ok_or_else(|| {
+        CliError::operation("`template` requires a template name unless --list is used")
+    })?;
+    let template_file = resolve_template_file(paths, &templates, template_name)?;
+    let output_path = template_output_path(&template_file, output_path)?;
+    let absolute_output = paths.vault_root().join(&output_path);
+    if absolute_output.exists() {
+        return Err(CliError::operation(format!(
+            "destination note already exists: {output_path}"
+        )));
+    }
+
+    let rendered = render_template_contents(
+        &fs::read_to_string(paths.vulcan_dir().join("templates").join(&template_file))
+            .map_err(CliError::operation)?,
+        &template_variables_for_path(&output_path),
+    );
+    if let Some(parent) = absolute_output.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    fs::write(&absolute_output, rendered).map_err(CliError::operation)?;
+
+    let mut opened_editor = false;
+    if stdout_is_tty && io::stdin().is_terminal() {
+        open_in_editor(&absolute_output).map_err(CliError::operation)?;
+        opened_editor = true;
+    }
+
+    run_incremental_scan(paths, OutputFormat::Human, false)?;
+    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+    warn_auto_commit_if_needed(&auto_commit);
+    auto_commit
+        .commit(paths, "template", std::slice::from_ref(&output_path))
+        .map_err(CliError::operation)?;
+
+    Ok(TemplateCommandResult::Create(TemplateCreateReport {
+        template: template_file.to_string(),
+        path: output_path,
+        opened_editor,
+    }))
+}
+
+enum TemplateCommandResult {
+    List(TemplateListReport),
+    Create(TemplateCreateReport),
+}
+
+fn list_templates(paths: &VaultPaths) -> Result<Vec<String>, CliError> {
+    let template_dir = paths.vulcan_dir().join("templates");
+    if !template_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut templates = fs::read_dir(&template_dir)
+        .map_err(CliError::operation)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            (path.extension().and_then(|ext| ext.to_str()) == Some("md")).then(|| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(ToOwned::to_owned)
+            })?
+        })
+        .collect::<Vec<_>>();
+    templates.sort();
+    Ok(templates)
+}
+
+fn resolve_template_file(
+    paths: &VaultPaths,
+    templates: &[String],
+    name: &str,
+) -> Result<String, CliError> {
+    if let Some(template) = templates
+        .iter()
+        .find(|template| template == &name || template.trim_end_matches(".md") == name)
+    {
+        return Ok(template.clone());
+    }
+
+    Err(CliError::operation(format!(
+        "template not found in {}: {name}",
+        paths.vulcan_dir().join("templates").display()
+    )))
+}
+
+fn template_output_path(
+    template_file: &str,
+    output_path: Option<&str>,
+) -> Result<String, CliError> {
+    let path = if let Some(path) = output_path {
+        path.to_string()
+    } else {
+        let date = current_timestamp_strings().date;
+        format!("{date}-{}", template_file)
+    };
+
+    normalize_relative_input_path(
+        &path,
+        RelativePathOptions {
+            expected_extension: Some("md"),
+            append_extension_if_missing: true,
+        },
+    )
+    .map_err(CliError::operation)
+}
+
+fn inbox_input_text(text: Option<&str>, file: Option<&PathBuf>) -> Result<String, CliError> {
+    if let Some(file) = file {
+        return fs::read_to_string(file).map_err(CliError::operation);
+    }
+
+    match text {
+        Some("-") => {
+            let mut buffer = String::new();
+            io::stdin()
+                .read_to_string(&mut buffer)
+                .map_err(CliError::operation)?;
+            Ok(buffer)
+        }
+        Some(text) => Ok(text.to_string()),
+        None => Err(CliError::operation(
+            "`inbox` requires text, `-`, or --file <path>",
+        )),
+    }
+}
+
+fn render_inbox_entry(format: &str, text: &str, variables: &TemplateVariables) -> String {
+    format
+        .replace("{text}", text.trim_end())
+        .replace("{date}", &variables.date)
+        .replace("{time}", &variables.time)
+        .replace("{datetime}", &variables.datetime)
+}
+
+fn render_template_contents(template: &str, variables: &TemplateVariables) -> String {
+    template
+        .replace("{{title}}", &variables.title)
+        .replace("{{date}}", &variables.date)
+        .replace("{{time}}", &variables.time)
+        .replace("{{datetime}}", &variables.datetime)
+        .replace("{{uuid}}", &variables.uuid)
+}
+
+fn template_variables_for_path(path: &str) -> TemplateVariables {
+    let path = Path::new(path);
+    let title = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    let timestamp = current_timestamp_strings();
+
+    TemplateVariables {
+        title,
+        date: timestamp.date,
+        time: timestamp.time,
+        datetime: timestamp.datetime,
+        uuid: generated_uuid_string(),
+    }
+}
+
+struct TimestampStrings {
+    date: String,
+    time: String,
+    datetime: String,
+}
+
+fn current_timestamp_strings() -> TimestampStrings {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let days = seconds.div_euclid(86_400);
+    let seconds_of_day = seconds.rem_euclid(86_400);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    let (year, month, day) = civil_from_days(days);
+
+    let date = format!("{year:04}-{month:02}-{day:02}");
+    let time = format!("{hour:02}:{minute:02}:{second:02}Z");
+    let datetime = format!("{date}T{time}");
+
+    TimestampStrings {
+        date,
+        time,
+        datetime,
+    }
+}
+
+fn generated_uuid_string() -> String {
+    let value = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        ^ u128::from(std::process::id());
+    let hex = format!("{value:032x}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (year, month, day)
+}
+
+fn append_at_end(contents: &str, entry: &str) -> String {
+    let mut rendered = contents.trim_end_matches('\n').to_string();
+    if !rendered.is_empty() {
+        rendered.push_str("\n\n");
+    }
+    rendered.push_str(entry.trim_end());
+    rendered.push('\n');
+    rendered
+}
+
+fn append_under_heading(contents: &str, heading: &str, entry: &str) -> String {
+    let heading = heading.trim();
+    if heading.is_empty() {
+        return append_at_end(contents, entry);
+    }
+
+    let heading_level = markdown_heading_level(heading);
+    let mut offset = 0usize;
+    let mut insert_at = None;
+    for line in contents.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if insert_at.is_none() && trimmed == heading {
+            insert_at = Some(offset + line.len());
+        } else if insert_at.is_some()
+            && markdown_heading_level(trimmed).is_some_and(|level| Some(level) <= heading_level)
+        {
+            insert_at = Some(offset);
+            break;
+        }
+        offset += line.len();
+    }
+
+    if let Some(insert_at) = insert_at {
+        let mut rendered = String::new();
+        rendered.push_str(&contents[..insert_at]);
+        if !rendered.ends_with('\n') {
+            rendered.push('\n');
+        }
+        if !rendered.ends_with("\n\n") {
+            rendered.push('\n');
+        }
+        rendered.push_str(entry.trim_end());
+        rendered.push('\n');
+        if insert_at < contents.len() && !contents[insert_at..].starts_with('\n') {
+            rendered.push('\n');
+        }
+        rendered.push_str(&contents[insert_at..]);
+        rendered
+    } else {
+        let mut rendered = contents.trim_end_matches('\n').to_string();
+        if !rendered.is_empty() {
+            rendered.push_str("\n\n");
+        }
+        rendered.push_str(heading);
+        rendered.push_str("\n\n");
+        rendered.push_str(entry.trim_end());
+        rendered.push('\n');
+        rendered
+    }
+}
+
+fn markdown_heading_level(line: &str) -> Option<usize> {
+    let hashes = line.chars().take_while(|ch| *ch == '#').count();
+    (hashes > 0 && hashes <= 6 && line.chars().nth(hashes).is_some_and(char::is_whitespace))
+        .then_some(hashes)
 }
 
 fn saved_export_format(format: ExportFormat) -> SavedExportFormat {
@@ -2210,6 +2591,32 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             print_diff_report(cli.output, &report)
         }
+        Command::Inbox {
+            ref text,
+            ref file,
+            no_commit,
+        } => {
+            let report = run_inbox_command(&paths, text.as_deref(), file.as_ref(), no_commit)?;
+            print_inbox_report(cli.output, &report)
+        }
+        Command::Template {
+            ref name,
+            list,
+            ref path,
+            no_commit,
+        } => match run_template_command(
+            &paths,
+            name.as_deref(),
+            list,
+            path.as_deref(),
+            no_commit,
+            stdout_is_tty,
+        )? {
+            TemplateCommandResult::List(report) => print_template_list_report(cli.output, &report),
+            TemplateCommandResult::Create(report) => {
+                print_template_create_report(cli.output, &report)
+            }
+        },
         Command::LinkMentions {
             ref note,
             dry_run,
@@ -4179,6 +4586,48 @@ fn print_diff_report(output: OutputFormat, report: &DiffReport) -> Result<(), Cl
     }
 }
 
+fn print_inbox_report(output: OutputFormat, report: &InboxReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Appended to {}", report.path);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_template_list_report(
+    output: OutputFormat,
+    report: &TemplateListReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.templates.is_empty() {
+                println!("No templates found.");
+            } else {
+                for template in &report.templates {
+                    println!("{template}");
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_template_create_report(
+    output: OutputFormat,
+    report: &TemplateCreateReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Created {} from {}", report.path, report.template);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_static_search_index_report(
     output: OutputFormat,
     report: &vulcan_core::StaticSearchIndexReport,
@@ -5672,6 +6121,49 @@ mod tests {
     }
 
     #[test]
+    fn append_under_heading_inserts_before_next_peer_heading() {
+        let rendered = append_under_heading(
+            "# Notes\n\n## Inbox\n\n- earlier\n\n## Later\n\ncontent\n",
+            "## Inbox",
+            "- new item",
+        );
+
+        assert!(rendered.contains("## Inbox\n\n- earlier\n\n- new item\n\n## Later"));
+    }
+
+    #[test]
+    fn template_command_creates_note_and_renders_variables() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        fs::create_dir_all(paths.vulcan_dir().join("templates")).expect("template dir");
+        fs::write(
+            paths.vulcan_dir().join("templates").join("daily.md"),
+            "# {{title}}\n\nCreated {{date}} {{time}}\nID {{uuid}}\n",
+        )
+        .expect("template should be written");
+
+        let result = run_template_command(
+            &paths,
+            Some("daily"),
+            false,
+            Some("Journal/Today"),
+            false,
+            false,
+        )
+        .expect("template command should succeed");
+
+        let TemplateCommandResult::Create(report) = result else {
+            panic!("template command should create a note");
+        };
+        assert_eq!(report.path, "Journal/Today.md");
+        let contents = fs::read_to_string(temp_dir.path().join("Journal/Today.md"))
+            .expect("created note should be readable");
+        assert!(contents.contains("# Today"));
+        assert!(contents.contains("Created "));
+        assert!(contents.contains("ID "));
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn parses_links_and_backlinks_commands() {
         let rebuild =
@@ -5752,6 +6244,9 @@ mod tests {
         let suggest_duplicates =
             Cli::try_parse_from(["vulcan", "suggest", "duplicates"]).expect("cli should parse");
         let diff = Cli::try_parse_from(["vulcan", "diff", "Home"]).expect("cli should parse");
+        let inbox = Cli::try_parse_from(["vulcan", "inbox", "idea"]).expect("cli should parse");
+        let template = Cli::try_parse_from(["vulcan", "template", "daily", "--path", "Notes/Day"])
+            .expect("cli should parse");
         let link_mentions = Cli::try_parse_from(["vulcan", "link-mentions", "Home", "--dry-run"])
             .expect("cli should parse");
         let rewrite = Cli::try_parse_from([
@@ -6022,6 +6517,23 @@ mod tests {
             Command::Diff {
                 note: Some("Home".to_string()),
                 since: None,
+            }
+        );
+        assert_eq!(
+            inbox.command,
+            Command::Inbox {
+                text: Some("idea".to_string()),
+                file: None,
+                no_commit: false,
+            }
+        );
+        assert_eq!(
+            template.command,
+            Command::Template {
+                name: Some("daily".to_string()),
+                list: false,
+                path: Some("Notes/Day".to_string()),
+                no_commit: false,
             }
         );
         assert_eq!(
