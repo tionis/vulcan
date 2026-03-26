@@ -4,11 +4,12 @@ use std::path::{Component, Path, PathBuf};
 pub const VULCAN_DIR_NAME: &str = ".vulcan";
 pub const CACHE_DB_NAME: &str = "cache.db";
 pub const CONFIG_FILE_NAME: &str = "config.toml";
+pub const LOCAL_CONFIG_FILE_NAME: &str = "config.local.toml";
 pub const GITIGNORE_FILE_NAME: &str = ".gitignore";
 pub const REPORTS_DIR_NAME: &str = "reports";
 pub const DEFAULT_ATTACHMENT_FOLDER: &str = ".";
 const DEFAULT_VULCAN_GITIGNORE: &str =
-    "*\n!.gitignore\n!config.toml\n!reports/\nreports/*\n!reports/*.toml\n";
+    "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelativePathOptions {
@@ -54,6 +55,7 @@ pub struct VaultPaths {
     vulcan_dir: PathBuf,
     cache_db: PathBuf,
     config_file: PathBuf,
+    local_config_file: PathBuf,
     reports_dir: PathBuf,
 }
 
@@ -66,6 +68,7 @@ impl VaultPaths {
         Self {
             cache_db: vulcan_dir.join(CACHE_DB_NAME),
             config_file: vulcan_dir.join(CONFIG_FILE_NAME),
+            local_config_file: vulcan_dir.join(LOCAL_CONFIG_FILE_NAME),
             reports_dir: vulcan_dir.join(REPORTS_DIR_NAME),
             vulcan_dir,
             vault_root,
@@ -90,6 +93,11 @@ impl VaultPaths {
     #[must_use]
     pub fn config_file(&self) -> &Path {
         &self.config_file
+    }
+
+    #[must_use]
+    pub fn local_config_file(&self) -> &Path {
+        &self.local_config_file
     }
 
     #[must_use]
@@ -194,6 +202,10 @@ mod tests {
         assert_eq!(
             paths.config_file(),
             Path::new("/tmp/example-vault/.vulcan/config.toml")
+        );
+        assert_eq!(
+            paths.local_config_file(),
+            Path::new("/tmp/example-vault/.vulcan/config.local.toml")
         );
         assert_eq!(
             paths.reports_dir(),
