@@ -16,9 +16,10 @@ use std::time::Duration;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
-    list_note_identities, list_tagged_note_identities, list_tags, move_note, query_backlinks,
-    query_links, query_notes, scan_vault, search_vault, BacklinkRecord, NamedCount, NoteIdentity,
-    NoteQuery, OutgoingLinkRecord, ResolutionStatus, ScanMode, SearchHit, SearchQuery, VaultPaths,
+    doctor_vault, list_note_identities, list_tagged_note_identities, list_tags, move_note,
+    query_backlinks, query_links, query_notes, scan_vault, search_vault, BacklinkRecord,
+    DoctorDiagnosticIssue, DoctorLinkIssue, NamedCount, NoteIdentity, NoteQuery,
+    OutgoingLinkRecord, ResolutionStatus, ScanMode, SearchHit, SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
@@ -307,6 +308,7 @@ struct BrowseState {
     property_filter: PropertyFilterState,
     backlinks_view: Option<BacklinksViewState>,
     links_view: Option<OutgoingLinksViewState>,
+    doctor_view: Option<DoctorViewState>,
     new_note_prompt: Option<NewNotePrompt>,
     move_prompt: Option<MovePrompt>,
     mode: BrowseMode,
@@ -329,6 +331,7 @@ impl BrowseState {
             property_filter: PropertyFilterState::new(paths),
             backlinks_view: None,
             links_view: None,
+            doctor_view: None,
             new_note_prompt: None,
             move_prompt: None,
             mode: BrowseMode::Fuzzy,
@@ -342,6 +345,9 @@ impl BrowseState {
         }
         if self.move_prompt.is_some() {
             return self.handle_move_prompt_key(key.code);
+        }
+        if self.doctor_view.is_some() {
+            return self.handle_doctor_key(key.code);
         }
         if self.backlinks_view.is_some() {
             return self.handle_backlinks_key(key.code);
@@ -409,6 +415,15 @@ impl BrowseState {
                 self.open_move_prompt();
                 BrowseAction::Continue
             }
+            KeyCode::Char('d')
+                if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
+            {
+                self.clear_status();
+                if let Err(error) = self.open_doctor_view() {
+                    self.set_status(error);
+                }
+                BrowseAction::Continue
+            }
             KeyCode::Char('n')
                 if self.mode == BrowseMode::Fuzzy && self.picker.query().is_empty() =>
             {
@@ -434,6 +449,29 @@ impl BrowseState {
                 }
                 BrowseAction::Continue
             }
+        }
+    }
+
+    fn handle_doctor_key(&mut self, code: KeyCode) -> BrowseAction {
+        let Some(view) = self.doctor_view.as_mut() else {
+            return BrowseAction::Continue;
+        };
+
+        match code {
+            KeyCode::Esc => {
+                self.doctor_view = None;
+                self.clear_status();
+                BrowseAction::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                view.move_selection(-1);
+                BrowseAction::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                view.move_selection(1);
+                BrowseAction::Continue
+            }
+            _ => BrowseAction::Continue,
         }
     }
 
@@ -607,6 +645,9 @@ impl BrowseState {
             .refresh_results(&self.paths, &self.all_notes)?;
         self.property_filter
             .refresh_results(&self.paths, &self.all_notes);
+        if let Some(view) = self.doctor_view.as_mut() {
+            view.reload(&self.paths)?;
+        }
         if let Some(view) = self.backlinks_view.as_mut() {
             view.reload(&self.paths)?;
         }
@@ -646,6 +687,9 @@ impl BrowseState {
     }
 
     fn selected_path(&self) -> Option<&str> {
+        if let Some(view) = self.doctor_view.as_ref() {
+            return Some(view.note_path());
+        }
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.selected_path();
         }
@@ -661,6 +705,9 @@ impl BrowseState {
     }
 
     fn query(&self) -> &str {
+        if let Some(view) = self.doctor_view.as_ref() {
+            return view.note_path();
+        }
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.note_path();
         }
@@ -682,6 +729,9 @@ impl BrowseState {
     }
 
     fn query_title(&self) -> String {
+        if let Some(view) = self.doctor_view.as_ref() {
+            return format!("Doctor ({})", view.note_path());
+        }
         if let Some(view) = self.backlinks_view.as_ref() {
             return format!("Backlinks ({})", view.note_path());
         }
@@ -698,6 +748,9 @@ impl BrowseState {
     }
 
     fn key_help_line(&self) -> String {
+        if self.doctor_view.is_some() {
+            return "Keys: Esc back, j/k move".to_string();
+        }
         if self.backlinks_view.is_some() {
             return "Keys: Enter/e edit source note, Esc back, j/k move".to_string();
         }
@@ -710,11 +763,15 @@ impl BrowseState {
         if self.move_prompt.is_some() {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
-            "Keys: Enter/e edit, n new, m move, b backlinks, l links, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
+            "Keys: Enter/e edit, n new, m move, b backlinks, l links, d doctor, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, / fuzzy, Esc quit".to_string()
         }
     }
 
     fn mode_help_line(&self) -> String {
+        if self.doctor_view.is_some() {
+            return "view doctor diagnostics for the selected note; Esc returns to browse"
+                .to_string();
+        }
         if self.backlinks_view.is_some() {
             return "view notes that link to the selected note; Esc returns to browse".to_string();
         }
@@ -731,7 +788,9 @@ impl BrowseState {
     }
 
     fn list_title(&self) -> &'static str {
-        if self.backlinks_view.is_some() {
+        if self.doctor_view.is_some() {
+            "Diagnostics"
+        } else if self.backlinks_view.is_some() {
             "Backlinks"
         } else if self.links_view.is_some() {
             "Links"
@@ -741,6 +800,9 @@ impl BrowseState {
     }
 
     fn list_items(&self) -> Vec<String> {
+        if let Some(view) = self.doctor_view.as_ref() {
+            return view.list_items();
+        }
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.list_items();
         }
@@ -773,6 +835,9 @@ impl BrowseState {
     }
 
     fn selected_index(&self) -> Option<usize> {
+        if let Some(view) = self.doctor_view.as_ref() {
+            return view.selected_index();
+        }
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.selected_index();
         }
@@ -788,6 +853,9 @@ impl BrowseState {
     }
 
     fn preview_title(&self) -> String {
+        if let Some(view) = self.doctor_view.as_ref() {
+            return view.preview_title();
+        }
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.preview_title();
         }
@@ -809,6 +877,9 @@ impl BrowseState {
     }
 
     fn preview_lines(&self) -> Vec<Line<'static>> {
+        if let Some(view) = self.doctor_view.as_ref() {
+            return view.preview_lines();
+        }
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.preview_lines();
         }
@@ -824,6 +895,9 @@ impl BrowseState {
     }
 
     fn filtered_count(&self) -> usize {
+        if let Some(view) = self.doctor_view.as_ref() {
+            return view.filtered_count();
+        }
         if let Some(view) = self.backlinks_view.as_ref() {
             return view.filtered_count();
         }
@@ -872,6 +946,7 @@ impl BrowseState {
         };
         self.backlinks_view = Some(BacklinksViewState::load(&self.paths, &path)?);
         self.links_view = None;
+        self.doctor_view = None;
         Ok(())
     }
 
@@ -882,6 +957,18 @@ impl BrowseState {
         };
         self.links_view = Some(OutgoingLinksViewState::load(&self.paths, &path)?);
         self.backlinks_view = None;
+        self.doctor_view = None;
+        Ok(())
+    }
+
+    fn open_doctor_view(&mut self) -> Result<(), String> {
+        let Some(path) = self.selected_path().map(str::to_string) else {
+            self.set_status("No matching note selected.");
+            return Ok(());
+        };
+        self.doctor_view = Some(DoctorViewState::load(&self.paths, &path)?);
+        self.backlinks_view = None;
+        self.links_view = None;
         Ok(())
     }
 
@@ -895,6 +982,9 @@ impl BrowseState {
         }
         if self.new_note_prompt.is_some() {
             return "Creating new note".to_string();
+        }
+        if let Some(view) = self.doctor_view.as_ref() {
+            return format!("Doctor for {}", view.note_path());
         }
         if let Some(view) = self.backlinks_view.as_ref() {
             return format!("Backlinks for {}", view.note_path());
@@ -912,6 +1002,215 @@ impl BrowseState {
             BrowseMode::Property => self.property_filter.status_line(),
             BrowseMode::Fuzzy | BrowseMode::FullText => "Ready.".to_string(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DoctorViewState {
+    note_path: String,
+    issues: Vec<DoctorIssueRow>,
+    selected_index: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct DoctorIssueRow {
+    kind: String,
+    message: String,
+    detail_lines: Vec<String>,
+}
+
+impl DoctorViewState {
+    fn load(paths: &VaultPaths, note_path: &str) -> Result<Self, String> {
+        let report = doctor_vault(paths).map_err(|error| error.to_string())?;
+        let issues = doctor_issues_for_note(note_path, &report);
+        let selected_index = (!issues.is_empty()).then_some(0);
+        Ok(Self {
+            note_path: note_path.to_string(),
+            issues,
+            selected_index,
+        })
+    }
+
+    fn reload(&mut self, paths: &VaultPaths) -> Result<(), String> {
+        let selected_key = self
+            .selected_issue()
+            .map(|issue| (issue.kind.clone(), issue.message.clone()));
+        let report = doctor_vault(paths).map_err(|error| error.to_string())?;
+        self.issues = doctor_issues_for_note(&self.note_path, &report);
+        self.selected_index = selected_key.and_then(|key| {
+            self.issues
+                .iter()
+                .position(|issue| (issue.kind.clone(), issue.message.clone()) == key)
+        });
+        self.clamp_selection();
+        Ok(())
+    }
+
+    fn note_path(&self) -> &str {
+        &self.note_path
+    }
+
+    fn filtered_count(&self) -> usize {
+        self.issues.len()
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    fn preview_title(&self) -> String {
+        self.selected_issue().map_or_else(
+            || format!("Doctor: {}", self.note_path),
+            |issue| format!("{}: {}", issue.kind, self.note_path),
+        )
+    }
+
+    fn preview_lines(&self) -> Vec<Line<'static>> {
+        let Some(issue) = self.selected_issue() else {
+            return vec![Line::from("No doctor issues for this note.")];
+        };
+
+        let mut lines = vec![
+            Line::from(format!("Kind: {}", issue.kind)),
+            Line::from(format!("Message: {}", issue.message)),
+        ];
+        lines.extend(issue.detail_lines.iter().cloned().map(Line::from));
+        lines
+    }
+
+    fn list_items(&self) -> Vec<String> {
+        self.issues
+            .iter()
+            .map(|issue| format!("{}: {}", issue.kind, issue.message))
+            .collect()
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.issues.len();
+        if len == 0 {
+            self.selected_index = None;
+            return;
+        }
+
+        let current = self.selected_index.unwrap_or(0);
+        let step = delta.unsigned_abs();
+        let next = if delta.is_negative() {
+            current.saturating_sub(step)
+        } else {
+            current.saturating_add(step)
+        }
+        .min(len - 1);
+        self.selected_index = Some(next);
+    }
+
+    fn clamp_selection(&mut self) {
+        let len = self.issues.len();
+        self.selected_index = if len == 0 {
+            None
+        } else {
+            Some(self.selected_index.unwrap_or(0).min(len - 1))
+        };
+    }
+
+    fn selected_issue(&self) -> Option<&DoctorIssueRow> {
+        self.selected_index.and_then(|index| self.issues.get(index))
+    }
+}
+
+fn doctor_issues_for_note(
+    note_path: &str,
+    report: &vulcan_core::DoctorReport,
+) -> Vec<DoctorIssueRow> {
+    let mut issues = Vec::new();
+
+    issues.extend(
+        report
+            .unresolved_links
+            .iter()
+            .filter(|issue| issue.document_path.as_deref() == Some(note_path))
+            .map(|issue| doctor_link_issue_row("Unresolved link", issue)),
+    );
+    issues.extend(
+        report
+            .ambiguous_links
+            .iter()
+            .filter(|issue| issue.document_path.as_deref() == Some(note_path))
+            .map(|issue| doctor_link_issue_row("Ambiguous link", issue)),
+    );
+    issues.extend(
+        report
+            .broken_embeds
+            .iter()
+            .filter(|issue| issue.document_path.as_deref() == Some(note_path))
+            .map(|issue| doctor_link_issue_row("Broken embed", issue)),
+    );
+    issues.extend(
+        report
+            .parse_failures
+            .iter()
+            .filter(|issue| issue.document_path.as_deref() == Some(note_path))
+            .map(|issue| doctor_diagnostic_issue_row("Parse failure", issue)),
+    );
+    if report.stale_index_rows.iter().any(|path| path == note_path) {
+        issues.push(DoctorIssueRow {
+            kind: "Stale index row".to_string(),
+            message: format!("Indexed row exists for missing file {note_path}"),
+            detail_lines: vec!["Run scan or doctor fix to reconcile the cache.".to_string()],
+        });
+    }
+    if report
+        .missing_index_rows
+        .iter()
+        .any(|path| path == note_path)
+    {
+        issues.push(DoctorIssueRow {
+            kind: "Missing index row".to_string(),
+            message: format!("File exists on disk but is missing from the cache: {note_path}"),
+            detail_lines: vec!["Run scan or doctor fix to refresh the cache.".to_string()],
+        });
+    }
+    if report.orphan_notes.iter().any(|path| path == note_path) {
+        issues.push(DoctorIssueRow {
+            kind: "Orphan note".to_string(),
+            message: format!("{note_path} has no inbound or outbound note links"),
+            detail_lines: Vec::new(),
+        });
+    }
+    issues.extend(
+        report
+            .html_links
+            .iter()
+            .filter(|issue| issue.document_path.as_deref() == Some(note_path))
+            .map(|issue| doctor_diagnostic_issue_row("HTML link", issue)),
+    );
+
+    issues
+}
+
+fn doctor_link_issue_row(kind: &str, issue: &DoctorLinkIssue) -> DoctorIssueRow {
+    let mut detail_lines = Vec::new();
+    if let Some(target) = issue.target.as_deref() {
+        detail_lines.push(format!("Target: {target}"));
+    }
+    if !issue.matches.is_empty() {
+        detail_lines.push(format!("Matches: {}", issue.matches.join(", ")));
+    }
+    DoctorIssueRow {
+        kind: kind.to_string(),
+        message: issue.message.clone(),
+        detail_lines,
+    }
+}
+
+fn doctor_diagnostic_issue_row(kind: &str, issue: &DoctorDiagnosticIssue) -> DoctorIssueRow {
+    let mut detail_lines = Vec::new();
+    if let Some(range) = issue.byte_range.as_ref() {
+        detail_lines.push(format!("Byte range: {}..{}", range.start, range.end));
+    }
+    DoctorIssueRow {
+        kind: kind.to_string(),
+        message: issue.message.clone(),
+        detail_lines,
     }
 }
 
@@ -2003,6 +2302,67 @@ mod tests {
         .expect("state should build");
         state.picker.select_path("Projects/Alpha.md");
         state.handle_key(key(KeyCode::Char('l')));
+
+        let action = state.handle_key(key(KeyCode::Esc));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "Browse (/ fuzzy search)");
+        assert_eq!(state.selected_path(), Some("Projects/Alpha.md"));
+    }
+
+    #[test]
+    fn d_opens_doctor_view_for_selected_note() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Home.md", "# Home");
+        write_note(
+            temp_dir.path(),
+            "Projects/Alpha.md",
+            "Links: [[Home]] and [[Missing]].",
+        );
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths,
+            vec![note("Home.md", &[]), note("Projects/Alpha.md", &[])],
+        )
+        .expect("state should build");
+        state.picker.select_path("Projects/Alpha.md");
+
+        let action = state.handle_key(key(KeyCode::Char('d')));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "Doctor (Projects/Alpha.md)");
+        assert_eq!(state.list_title(), "Diagnostics");
+        assert_eq!(state.filtered_count(), 1);
+        assert_eq!(
+            state.mode_help_line(),
+            "view doctor diagnostics for the selected note; Esc returns to browse"
+        );
+        assert!(state.list_items()[0].contains("Unresolved link"));
+        assert!(state.preview_lines().iter().any(|line| line
+            .spans
+            .iter()
+            .any(|span| span.content.contains("Missing"))));
+    }
+
+    #[test]
+    fn doctor_view_esc_returns_to_browse() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Home.md", "# Home");
+        write_note(
+            temp_dir.path(),
+            "Projects/Alpha.md",
+            "Links: [[Home]] and [[Missing]].",
+        );
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths,
+            vec![note("Home.md", &[]), note("Projects/Alpha.md", &[])],
+        )
+        .expect("state should build");
+        state.picker.select_path("Projects/Alpha.md");
+        state.handle_key(key(KeyCode::Char('d')));
 
         let action = state.handle_key(key(KeyCode::Esc));
 
