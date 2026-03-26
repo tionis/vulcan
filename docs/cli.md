@@ -49,6 +49,7 @@ These global flags are available on all commands:
 
 - `--vault <PATH>`: vault root directory
 - `--output <human|json>`: output format
+- `--refresh <off|blocking|background>`: override automatic cache refresh for cache-backed commands
 - `--fields <a,b,c>`: select columns on list-style output
 - `--provider <NAME>`: override the embedding provider for vector commands
 - `--limit <N>`: cap returned rows
@@ -62,6 +63,45 @@ Output rules:
 - Single-report commands emit one JSON object.
 - Many query commands also support `--export <csv|jsonl> --export-path <FILE>`.
 - In non-interactive mode, Vulcan does not open fuzzy pickers or TTY prompts.
+
+## Configuration layering and automatic refresh
+
+Vulcan uses two vault-local config files:
+
+- `.vulcan/config.toml`: shared vault config that is intended to be synced with the vault
+- `.vulcan/config.local.toml`: optional device-local override loaded after `config.toml`
+
+Precedence is:
+
+1. `.vulcan/config.local.toml`
+2. `.vulcan/config.toml`
+3. `.obsidian/app.json`
+4. Built-in defaults
+
+`vulcan init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`.
+
+Automatic cache refresh is configured under `[scan]`:
+
+```toml
+[scan]
+default_mode = "blocking"
+browse_mode = "background"
+```
+
+Meaning:
+
+- `default_mode` controls one-shot cache-backed commands such as `backlinks`, `links`, `notes`, `search`, `graph`, `diff`, `query`, and note-refactoring commands that depend on current cache state.
+- `browse_mode` controls `vulcan browse`.
+- `off` uses the current cache as-is.
+- `blocking` runs an incremental scan before the command continues.
+- `background` is intended for long-lived interactive surfaces; one-shot commands treat it the same as `blocking`.
+
+Use `--refresh` to override the configured behavior for one invocation:
+
+```bash
+vulcan --refresh off backlinks Projects/Alpha
+vulcan --refresh background browse
+```
 
 Note resolution rules:
 
@@ -341,6 +381,7 @@ Primary keys:
 
 Additional browse notes:
 
+- By default, `browse` opens immediately on current cache contents and runs a background incremental refresh. Use `[scan].browse_mode` or `--refresh` to change that behavior.
 - Single-letter actions only fire when the fuzzy query is empty.
 - After edits, creates, and moves, Vulcan rescans the affected files and refreshes the list.
 - In backlinks and outgoing-link views, `o` opens the selected `.base` file in the Bases TUI.
@@ -382,7 +423,7 @@ Common mutating commands:
 - `template`
 - `bases view-*`
 
-Auto-commit is opt-in and configured per vault in `.vulcan/config.toml`:
+Auto-commit is opt-in and configured in vault config, typically `.vulcan/config.toml` and optionally overridden in `.vulcan/config.local.toml`:
 
 ```toml
 [git]
@@ -414,7 +455,7 @@ echo "idea" | vulcan inbox -
 vulcan inbox --file draft.txt
 ```
 
-Inbox configuration lives under `[inbox]` in `.vulcan/config.toml`:
+Inbox configuration lives under `[inbox]` in vault config (`.vulcan/config.toml` with optional local overrides in `.vulcan/config.local.toml`):
 
 ```toml
 [inbox]

@@ -32,14 +32,17 @@ Common day-to-day commands:
 
 ```bash
 ./target/release/vulcan --vault ~/wikis/mimir browse
+./target/release/vulcan --vault ~/wikis/mimir --refresh background browse
 ./target/release/vulcan --vault ~/wikis/mimir search 'dashboard "release notes"'
 ./target/release/vulcan --vault ~/wikis/mimir edit Projects/Alpha
 ./target/release/vulcan --vault ~/wikis/mimir inbox "Capture this idea"
 ```
 
+Configuration is split into shared `.vulcan/config.toml` and optional device-local `.vulcan/config.local.toml`. The local file overrides any shared setting and is ignored by the default `.vulcan/.gitignore`.
+
 ## Documentation
 
-- `docs/cli.md` — Comprehensive CLI guide: command catalogue, query/filter syntax, search syntax, interactive flows, auto-commit, inbox/templates, JSON/export behavior
+- `docs/cli.md` — Comprehensive CLI guide: command catalogue, query/filter syntax, search syntax, interactive flows, auto-refresh/config layering, auto-commit, inbox/templates, JSON/export behavior
 - `docs/design_document.md` — Architecture and design decisions
 - `docs/ROADMAP.md` — Phased implementation status and remaining work
 - `docs/performance.md` — Benchmarking and performance notes
