@@ -157,6 +157,84 @@ struct FrontmatterBlock {
     full_end: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BkTreeNode {
+    term: String,
+    children: HashMap<usize, BkTreeNode>,
+}
+
+impl BkTreeNode {
+    fn new(term: String) -> Self {
+        Self {
+            term,
+            children: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, term: String) {
+        let distance = levenshtein(&self.term, &term);
+        if distance == 0 {
+            return;
+        }
+        if let Some(child) = self.children.get_mut(&distance) {
+            child.insert(term);
+            return;
+        }
+        self.children.insert(distance, Self::new(term));
+    }
+
+    fn search_within<'a>(
+        &'a self,
+        term: &str,
+        max_distance: usize,
+        matches: &mut Vec<(&'a str, usize)>,
+    ) {
+        let distance = levenshtein(&self.term, term);
+        if distance <= max_distance {
+            matches.push((self.term.as_str(), distance));
+        }
+
+        let min_distance = distance.saturating_sub(max_distance);
+        let max_child_distance = distance.saturating_add(max_distance);
+        for (child_distance, child) in &self.children {
+            if (*child_distance >= min_distance) && (*child_distance <= max_child_distance) {
+                child.search_within(term, max_distance, matches);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BkTree {
+    root: Option<BkTreeNode>,
+}
+
+impl BkTree {
+    fn from_terms<'a>(terms: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut tree = Self::default();
+        for term in terms {
+            tree.insert(term.to_string());
+        }
+        tree
+    }
+
+    fn insert(&mut self, term: String) {
+        if let Some(root) = &mut self.root {
+            root.insert(term);
+            return;
+        }
+        self.root = Some(BkTreeNode::new(term));
+    }
+
+    fn search_within(&self, term: &str, max_distance: usize) -> Vec<(&str, usize)> {
+        let mut matches = Vec::new();
+        if let Some(root) = &self.root {
+            root.search_within(term, max_distance, &mut matches);
+        }
+        matches
+    }
+}
+
 pub fn suggest_mentions(
     paths: &VaultPaths,
     note_identifier: Option<&str>,
@@ -571,43 +649,68 @@ fn merge_candidates(
         .iter()
         .map(|n| n.filename.to_ascii_lowercase())
         .collect();
-    let mut length_buckets = BTreeMap::<usize, Vec<usize>>::new();
+    let mut name_to_indices = BTreeMap::<String, Vec<usize>>::new();
     for (index, filename) in lowercased.iter().enumerate() {
-        length_buckets
-            .entry(filename.len())
+        name_to_indices
+            .entry(filename.clone())
             .or_default()
             .push(index);
     }
+    let mut length_buckets = BTreeMap::<usize, Vec<String>>::new();
+    for name in name_to_indices.keys() {
+        length_buckets
+            .entry(name.len())
+            .or_default()
+            .push(name.clone());
+    }
+    let bucket_trees = length_buckets
+        .iter()
+        .map(|(length, names)| {
+            (
+                *length,
+                BkTree::from_terms(names.iter().map(std::string::String::as_str)),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
 
-    for (left_index, left) in notes.iter().enumerate() {
-        let left_lower = &lowercased[left_index];
-        for bucket_length in [left_lower.len(), left_lower.len().saturating_add(1)] {
-            let Some(bucket) = length_buckets.get(&bucket_length) else {
+    for (left_name, left_indices) in &name_to_indices {
+        for bucket_length in [
+            left_name.len().saturating_sub(1),
+            left_name.len(),
+            left_name.len().saturating_add(1),
+        ] {
+            let Some(tree) = bucket_trees.get(&bucket_length) else {
                 continue;
             };
-            for &right_index in bucket {
-                if right_index <= left_index {
+            for (right_name, distance) in tree.search_within(left_name, 1) {
+                if (distance > 1) || (right_name <= left_name.as_str()) {
                     continue;
                 }
-                let right = &notes[right_index];
-                let right_lower = &lowercased[right_index];
-                let distance = levenshtein(left_lower, right_lower);
-                if distance > 1 || left.filename.eq_ignore_ascii_case(&right.filename) {
+                let Some(right_indices) = name_to_indices.get(right_name) else {
                     continue;
+                };
+                for &left_index in left_indices {
+                    let left = &notes[left_index];
+                    for &right_index in right_indices {
+                        let right = &notes[right_index];
+                        if left.filename.eq_ignore_ascii_case(&right.filename) {
+                            continue;
+                        }
+                        let pair = ordered_pair(&left.path, &right.path);
+                        candidates
+                            .entry(pair.clone())
+                            .and_modify(|candidate| {
+                                candidate.score = candidate.score.max(0.8);
+                                candidate.reasons.push("similar title".to_string());
+                            })
+                            .or_insert_with(|| MergeCandidate {
+                                left_path: pair.0.clone(),
+                                right_path: pair.1.clone(),
+                                score: 0.8,
+                                reasons: vec!["similar title".to_string()],
+                            });
+                    }
                 }
-                let pair = ordered_pair(&left.path, &right.path);
-                candidates
-                    .entry(pair.clone())
-                    .and_modify(|candidate| {
-                        candidate.score = candidate.score.max(0.8);
-                        candidate.reasons.push("similar title".to_string());
-                    })
-                    .or_insert_with(|| MergeCandidate {
-                        left_path: pair.0.clone(),
-                        right_path: pair.1.clone(),
-                        score: 0.8,
-                        reasons: vec!["similar title".to_string()],
-                    });
             }
         }
     }
@@ -1012,6 +1115,52 @@ mod tests {
         assert_eq!(candidates[0].right_path, "Docs/Guides.md");
         assert_eq!(candidates[0].score, 0.8);
         assert_eq!(candidates[0].reasons, vec!["similar title"]);
+    }
+
+    #[test]
+    fn merge_candidates_bk_tree_finds_single_edit_prefix_changes() {
+        let notes = vec![
+            NoteIdentity {
+                path: "Docs/Guide.md".to_string(),
+                filename: "Guide".to_string(),
+                aliases: Vec::new(),
+            },
+            NoteIdentity {
+                path: "Docs/Quide.md".to_string(),
+                filename: "Quide".to_string(),
+                aliases: Vec::new(),
+            },
+            NoteIdentity {
+                path: "Docs/AGuide.md".to_string(),
+                filename: "AGuide".to_string(),
+                aliases: Vec::new(),
+            },
+            NoteIdentity {
+                path: "Docs/Guidebook.md".to_string(),
+                filename: "Guidebook".to_string(),
+                aliases: Vec::new(),
+            },
+        ];
+
+        let candidates = merge_candidates(&notes, &[], &[]);
+        let pairs = candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.left_path.as_str(),
+                    candidate.right_path.as_str(),
+                    candidate.score,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            pairs,
+            vec![
+                ("Docs/AGuide.md", "Docs/Guide.md", 0.8),
+                ("Docs/Guide.md", "Docs/Quide.md", 0.8),
+            ]
+        );
     }
 
     #[test]
