@@ -918,6 +918,123 @@ Keep the cache fresh automatically for day-to-day CLI use, and split shared vers
 - [x] `browse` opens on current cache contents and, when configured for `background`, performs an incremental scan in the background and refreshes the TUI in place on completion
 - [x] Update runtime help, roadmap, design doc, and CLI guide for the new refresh/config semantics
 
+### 9.6 Advanced search engine — Obsidian-compatible operators and query syntax
+
+Bring vulcan's search closer to Obsidian's hybrid search engine so users can transfer query habits between tools, and so `browse` Ctrl-F becomes a powerful vault-wide search.
+
+**Reference:** `references/search.md` (Obsidian search documentation).
+
+**Design decisions:**
+- **Obsidian compatibility is a goal, not a constraint.** We adopt Obsidian's operator names and semantics where they make sense for a CLI tool, but don't need 1:1 parity. Operators that rely on Obsidian-specific concepts (canvas search, embedded query blocks) are out of scope.
+- **Inline operators are parsed in `prepare_search_query()`.** This extends the existing inline filter extraction (`tag:`, `path:`, `has:`) with new operators. No changes to the FTS5 schema are needed for most operators — they translate to SQL filters alongside the FTS MATCH.
+- **Scope operators (`line:`, `block:`, `section:`) require chunk-level awareness.** The current FTS5 index is chunked but chunks don't map 1:1 to lines/blocks/sections. These operators need post-match filtering or secondary queries against the chunk/heading structure.
+- **All surfaces share a single query engine.** The query parsing and execution changes live in `vulcan-core/src/search.rs`. The CLI (`vulcan search`), browse TUI (Ctrl-F), and HTTP API (`/search`) all call `search_vault()` with a `SearchQuery` — so improvements land everywhere at once. Surface-specific work (TUI hotkeys, API query params, CLI flags) is called out in dedicated subsections.
+- **Bracket property syntax `[prop:val]` uses the same filter engine as `--where`.** Parsed bracket expressions are lowered to the same `FilterExpression` structs that `build_note_filter_clause()` already handles. This keeps property filtering semantics identical whether the user writes `--where "status = done"` or `[status:done]` inline.
+
+#### 9.6.1 Boolean expression improvements
+
+- [ ] **Parenthesized grouping:** Parse `(A OR B) C` as grouped boolean expressions. The lexer emits `OpenParen`/`CloseParen` tokens; `compose_fts_query()` maps them to FTS5 parentheses.
+- [ ] **Nested negation with parens:** `-(work meetup)` excludes files matching both terms (AND-negation). Maps to FTS5 `NOT ("work" "meetup")`.
+- [ ] Update `--explain` output to render the parsed boolean tree in plain text, similar to Obsidian's "Explain search term" toggle. The existing `SearchPlan` struct gains a `parsed_query_explanation: Vec<String>` field with one line per operator/group. This flows through CLI rendering (`render_search_hit_explain()`), JSON output, and the HTTP API response unchanged (already serialised via `SearchReport`).
+
+#### 9.6.2 New search operators
+
+Extend `prepare_search_query()` to recognise additional Obsidian-style inline operators. Each operator is extracted from the token stream before FTS composition and translated into SQL filters or modified FTS expressions.
+
+| Operator | Semantics | Implementation |
+|---|---|---|
+| `file:` | Match against filename (not full path). `file:.md`, `file:2024-01` | SQL: `WHERE note_filename LIKE '%' \|\| ? \|\| '%'` |
+| `content:` | Restrict FTS match to chunk body, excluding title/aliases/headings columns | FTS5 column filter: `{content} : "term"` |
+| `match-case:` | Case-sensitive match for the given term | Post-FTS filter: re-check hit content with exact-case comparison |
+| `ignore-case:` | Explicitly case-insensitive (default behavior, but useful to override a global match-case toggle) | No-op under current defaults; flag for future use |
+| `section:` | All terms must appear within the same section (text between two headings) | Group chunks by heading path; require all terms present within the same heading group |
+| `line:` | All terms must co-occur on a single line | Post-FTS filter: for each hit chunk, check that at least one line contains all specified terms |
+| `block:` | All terms must co-occur in the same block (paragraph) | Post-FTS filter: split chunk on blank lines, require all terms in one block |
+
+- [ ] Implement `file:` operator (SQL filename filter)
+- [ ] Implement `content:` operator (FTS5 column filter syntax)
+- [ ] Implement `match-case:` operator (post-FTS case-sensitive filter)
+- [ ] Implement `section:` operator (heading-group co-occurrence). Requires joining FTS hits back to `chunks.heading_path` to group chunks that share a heading ancestor; then checking that all sub-query terms appear within the same group. May need a `heading_id` or `section_id` column in `search_chunk_content` if grouping by JSON heading_path is too slow.
+- [ ] Implement `line:` operator (single-line co-occurrence filter). Post-FTS: for each hit chunk, split `content` on newlines and check that at least one line contains all sub-query terms.
+- [ ] Implement `block:` operator (paragraph co-occurrence filter). Post-FTS: split chunk content on blank-line boundaries (`\n\n`), require all terms in one block. The existing `paragraph` chunk strategy already splits on these boundaries — when chunks use that strategy, block co-occurrence is chunk co-occurrence and no post-filtering is needed.
+- [ ] All operators support nested sub-queries: `section:(dog cat)`, `line:(mix flour)`
+
+#### 9.6.3 Task search operators
+
+Search within task list items, leveraging the existing task/checkbox detection in the indexer.
+
+- [ ] `task:` — match term within any task line (`- [ ] ...` or `- [x] ...`)
+- [ ] `task-todo:` — match within uncompleted tasks only (`- [ ] ...`)
+- [ ] `task-done:` — match within completed tasks only (`- [x] ...`)
+- [ ] Implementation: post-FTS filter on hit snippets, or a dedicated `tasks` content column in FTS if performance requires it
+
+#### 9.6.4 Inline property search with bracket syntax
+
+Allow Obsidian-style `[property]` and `[property:value]` syntax inline in search queries, complementing the existing `--where` flag.
+
+- [ ] `[aliases]` → files where property `aliases` exists (equivalent to `has:aliases`)
+- [ ] `[status:done]` → files where `status = done` (equivalent to `--where "status = done"`)
+- [ ] `[status:Draft OR Published]` → property value is one of the listed values
+- [ ] `[aliases:null]` → property exists but has no value
+- [ ] Parse bracket expressions in `lex_search_query()` as a new token type; extract into property filters during `prepare_search_query()`
+
+#### 9.6.5 Inline regex support
+
+Allow regular expressions delimited by `/` in search queries.
+
+- [ ] `/\d{4}-\d{2}-\d{2}/` matches content via regex instead of FTS keyword
+- [ ] Combinable with operators: `path:/\d{4}-\d{2}-\d{2}/` matches file paths by regex
+- [ ] Implementation: regex terms bypass FTS and run as post-scan filters (SQLite REGEXP or Rust-side filtering on content). For large vaults, FTS results can be narrowed first if mixed with keyword terms.
+- [ ] Use Rust `regex` crate (already a dependency) for JS-compatible regex flavour
+
+#### 9.6.6 Search result sorting
+
+Add `--sort` to `vulcan search` and sort controls to `browse` Ctrl-F mode.
+
+- [ ] `--sort <field>`: `relevance` (default, BM25), `path-asc`, `path-desc`, `modified-newest`, `modified-oldest`, `created-newest`, `created-oldest`
+- [ ] Browse TUI: cycle sort order with a hotkey (e.g., `Ctrl-S`) in full-text search mode
+- [ ] Sort by relevance remains default; other sorts disable BM25 ranking and use SQL ORDER BY
+
+#### 9.6.7 Browse TUI search integration
+
+Wire all new search capabilities into the browse TUI's Ctrl-F mode.
+
+- [ ] All inline operators (`file:`, `content:`, `section:`, `[prop:val]`, etc.) work in the TUI search input
+- [ ] Status bar shows the explained/parsed query (operator breakdown) when `--explain` equivalent is toggled
+- [ ] Add a `Ctrl-E` toggle in Ctrl-F mode to show/hide the query explanation pane
+- [ ] Add a case-sensitivity toggle (e.g., `Alt-C`) that wraps terms in `match-case:` automatically
+
+#### 9.6.8 `SearchQuery` struct and HTTP API updates
+
+The `SearchQuery` struct in `vulcan-core/src/search.rs` is the single input contract shared by the CLI, browse TUI, and HTTP `/search` endpoint. New capabilities must be reflected here so all surfaces stay in sync.
+
+- [ ] Add `sort: Option<SearchSort>` field to `SearchQuery`. Enum values: `Relevance` (default), `PathAsc`, `PathDesc`, `ModifiedNewest`, `ModifiedOldest`, `CreatedNewest`, `CreatedOldest`. Used by keyword/hybrid search to choose between BM25 ranking and SQL ORDER BY.
+- [ ] Add `match_case: Option<bool>` field to `SearchQuery`. When `Some(true)`, all terms are treated as case-sensitive (applies to the global toggle; individual `match-case:` / `ignore-case:` inline operators override per-term). Default `None` means case-insensitive.
+- [ ] Extend `SearchPlan` with `parsed_query_explanation: Vec<String>` — human-readable breakdown of the parsed query (boolean structure, operators, property filters). Populated when `explain = true`.
+- [ ] Extend `SearchHit` with `matched_line: Option<usize>` — the 1-based line number of the best match within the chunk, when available (useful for `line:` and `match-case:` post-filters that already inspect individual lines).
+- [ ] HTTP `/search` endpoint (`serve.rs`): add query parameters `sort`, `match_case` mapping to the new `SearchQuery` fields. All new fields serialise into the JSON response via the existing `SearchReport` derive.
+- [ ] Phase 10 daemon: when the axum-based `/search` route replaces the hand-rolled endpoint, carry forward all query parameters. The `SearchQuery` struct is `Deserialize`, so the axum handler can deserialise directly from query params with `axum::extract::Query<SearchQuery>` (or a thin wrapper).
+
+#### 9.6.9 Explain and diagnostics
+
+Richer search-plan explanation for debugging complex queries across all surfaces.
+
+- [ ] `vulcan search --explain` CLI output: after the existing score breakdown, print a "Query plan" section showing the boolean tree, active operators, property filters, sort order, and regex patterns — one line per component.
+- [ ] JSON output (`--output json` and HTTP API): the `SearchPlan.parsed_query_explanation` array provides the same information machine-readably.
+- [ ] Browse TUI `Ctrl-E` explain pane (from 9.6.7) renders `parsed_query_explanation` lines in a scrollable overlay.
+- [ ] When no results are found: the explanation includes suggestions (e.g., "did you mean `content:` instead of `contents:`?", "no tasks found in matched files for `task-todo:`").
+
+#### 9.6.10 Cross-cutting integration notes
+
+These are not separate tasks but constraints that apply across all 9.6 subsections:
+
+- **Property filter unification:** Inline bracket syntax `[prop:val]` (9.6.4) and `--where "prop = val"` (existing) both lower to the same `build_note_filter_clause()` SQL generation in `properties.rs`. The bracket parser must produce identical `FilterExpression` values. Add test cases that verify equivalent results for both syntaxes.
+- **Chunker/indexer implications:** The `section:` operator (9.6.2) may need a `section_id` or `heading_id` column added to `search_chunk_content` to enable efficient grouping. If added, this is a cache schema migration (bump `SCHEMA_VERSION`, add migration in `schema.rs`). The `block:` operator benefits from the existing `paragraph` chunk strategy but must also work when chunks use the `heading` or `fixed` strategies.
+- **Post-FTS filter pipeline:** Operators like `match-case:`, `line:`, `block:`, `section:`, `task:`, and regex all require post-FTS filtering. Introduce a `PostFilter` trait or enum in `search.rs` that `search_vault()` applies after FTS hits are collected but before ranking/truncation. This avoids scattering filter logic across multiple call sites. The filter runs on the content of each hit chunk (already available in `SearchHit.snippet` or re-fetched from `chunks.content`).
+- **`--raw-query` bypass:** When `raw_query = true`, inline operators are not parsed (existing behavior). This remains unchanged — raw mode is an escape hatch for direct FTS5 syntax.
+- **Query DSL (`vulcan query`) and bases:** These use property filters only (via `NoteQuery` / `build_note_filter_clause()`), not FTS. The bracket syntax `[prop:val]` is search-only. No changes needed to the query DSL, but the shared filter engine in `properties.rs` must remain compatible as bracket expressions are lowered into it.
+- **Saved reports:** `SearchQuery` is serialised into saved report definitions. New fields (`sort`, `match_case`) must have `#[serde(default)]` attributes so that existing saved reports deserialise without error.
+
 ---
 
 ## Phase 10: Multi-Vault Daemon
