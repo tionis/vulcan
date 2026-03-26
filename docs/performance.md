@@ -45,7 +45,7 @@ RUN_MUTATING=1 ./scripts/benchmark_vectors.sh ~/path/to/vault
 For model migration benchmarks on a large vault:
 
 1. Run `vectors index` once on the current model so the queue is empty.
-2. Change `[embedding].model`, dimensions, or provider settings in `.vulcan/config.toml`.
+2. Change `[embedding].model`, dimensions, or provider settings in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
 3. Re-run `./scripts/benchmark_vectors.sh ~/path/to/vault` and compare `vectors queue status`, `vectors repair --dry-run`, and `vectors rebuild --dry-run`.
 4. If you want end-to-end migration timings, rerun with `RUN_MUTATING=1`.
 

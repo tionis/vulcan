@@ -14,7 +14,7 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 - **Primary language:** Rust (edition 2021, MSRV 1.77) — Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration.
 - **Workspace layout:** Cargo workspace with `vulcan-core` (parser, indexer, data model), `vulcan-embed` (embedding provider trait and implementations), and `vulcan-cli` (CLI binary and command handlers). Start with this structure from the beginning to keep module boundaries clean.
 - **Internal identifiers:** ULIDs — sortable by creation time, compact, no hyphens. Use the `ulid` crate.
-- **Local data directory:** `.vulcan/` in the vault root, containing `cache.db` (SQLite cache) and `config.toml` (vault-scoped configuration for chunking, embedding provider, etc.). All commands are vault-scoped; there is no global configuration.
+- **Local data directory:** `.vulcan/` in the vault root, containing `cache.db` (SQLite cache), `config.toml` (shared vault configuration), and optional `config.local.toml` (device-local overrides). All commands are vault-scoped; there is no cross-vault global configuration.
 - **Core storage:** SQLite — Excellent embedded relational store for cache tables, FTS, metadata, and query planning.
 - **Full-text search:** SQLite FTS5 — Good hybrid-search partner; external-content mode avoids duplicating large text bodies.
 - **Vector search:** `sqlite-vec` behind an abstraction — Keeps the solution embedded and local while preserving the option to swap backends later.
@@ -77,6 +77,8 @@ FTS and vector search sit on top of the cache as additional derived indexes, not
 6. Periodically reconcile against a cheap recrawl to repair missed or reordered events.
 
 This model keeps correctness and recovery simple: if the cache becomes stale or a parser changes, rebuild it.
+
+Cache-backed CLI commands may also trigger an incremental scan before reading from the cache. One-shot commands should block until the scan finishes; long-lived TUIs such as `browse` may open immediately on the current cache and refresh in place when a background scan completes. This freshness policy should be configurable per vault and overridable per invocation.
 
 ### Concurrency and write serialization
 
@@ -404,19 +406,35 @@ Do not start with TypeScript unless sharing code with an Obsidian plugin ecosyst
 
 ## 14. Vault configuration scope
 
-Vulcan must work on any directory of Markdown files, whether or not it is an Obsidian vault. The `.obsidian` directory and its configuration files are entirely optional. When present, they improve link resolution fidelity and property typing; when absent, the tool operates with sensible defaults and vault-local configuration in `.vulcan/config.toml`.
+Vulcan must work on any directory of Markdown files, whether or not it is an Obsidian vault. The `.obsidian` directory and its configuration files are entirely optional. When present, they improve link resolution fidelity and property typing; when absent, the tool operates with sensible defaults and vault-local configuration in `.vulcan/config.toml`, with optional device-local overrides in `.vulcan/config.local.toml`.
 
-### `.vulcan/config.toml` (always authoritative)
+### `.vulcan/config.toml` (shared vault config)
 
-This is Vulcan's own configuration file, stored in the `.vulcan/` directory alongside the cache database. It controls all vault-scoped settings:
+This is Vulcan's primary configuration file, stored in the `.vulcan/` directory alongside the cache database. It is intended to travel with the vault and controls shared vault-scoped settings:
 
 - Chunking strategy, target size, overlap
 - Embedding provider (base URL, API key reference, model name)
 - Link resolution defaults (shortest-path, relative, or absolute) when no `.obsidian/app.json` is present
 - Whether to prefer wikilink or Markdown-link syntax for generated links
 - Attachment folder path override
+- Automatic cache refresh policy for cache-backed commands (`[scan]`)
 
-When both `.vulcan/config.toml` and `.obsidian/app.json` exist, `.vulcan/config.toml` takes precedence for any settings it explicitly defines. This allows users to override Obsidian defaults without modifying the Obsidian configuration.
+### `.vulcan/config.local.toml` (optional device-local override)
+
+This file is loaded after `.vulcan/config.toml` and may override any Vulcan setting for one device or machine. It is intended for device-local concerns such as endpoint URLs, API key environment variable names, auto-refresh preferences, or editor-adjacent workflow tuning that should not be synced back into the shared vault config.
+
+The default `.vulcan/.gitignore` should ignore `config.local.toml` while still tracking `config.toml`.
+
+### Configuration precedence
+
+When multiple configuration sources exist, precedence is:
+
+1. `.vulcan/config.local.toml`
+2. `.vulcan/config.toml`
+3. `.obsidian/app.json`
+4. Built-in defaults
+
+This allows users to keep a synced shared config while still overriding any setting locally without modifying the shared file or the Obsidian configuration.
 
 ### `.obsidian` configuration files (optional, read-only)
 
@@ -446,13 +464,14 @@ If an `.obsidian` directory is present, the following files are read to provide 
 
 ### Default behavior without `.obsidian`
 
-When no `.obsidian` directory exists and `.vulcan/config.toml` has no explicit overrides:
+When no `.obsidian` directory exists and neither `.vulcan/config.toml` nor `.vulcan/config.local.toml` has explicit overrides:
 
 - Link resolution: shortest-path matching (Obsidian's default)
 - Link style: wikilinks
 - Attachment folder: vault root
 - Property types: inferred from observed values
 - Strict line breaks: disabled
+- Automatic cache refresh: blocking before one-shot cache-backed commands, background on `browse`
 
 ## 15. Operational and schema recommendations
 

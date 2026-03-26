@@ -905,6 +905,19 @@ vulcan open [note]
 - [x] Note resolution follows the same path/filename/alias/picker logic as other commands
 - [x] Useful for quickly jumping from CLI analysis to visual Obsidian editing
 
+### 9.5 Refresh ergonomics and config layering
+
+Keep the cache fresh automatically for day-to-day CLI use, and split shared versus device-local config cleanly.
+
+- [x] Add `[scan]` section to `VaultConfig` with `ScanConfig { default_mode, browse_mode }`
+- [x] Add optional `.vulcan/config.local.toml` loaded after `.vulcan/config.toml`
+- [x] Precedence becomes: `.vulcan/config.local.toml` > `.vulcan/config.toml` > `.obsidian/app.json` > built-in defaults
+- [x] Default `.vulcan/.gitignore` ignores `config.local.toml` while tracking `config.toml`
+- [x] Add global CLI override `--refresh <off|blocking|background>`
+- [x] Automatically run incremental scans before one-shot cache-backed commands by default
+- [x] `browse` opens on current cache contents and, when configured for `background`, performs an incremental scan in the background and refreshes the TUI in place on completion
+- [x] Update runtime help, roadmap, design doc, and CLI guide for the new refresh/config semantics
+
 ---
 
 ## Phase 10: Multi-Vault Daemon
