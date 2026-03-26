@@ -79,11 +79,11 @@ pub(crate) fn handle_picker_key(state: &mut NotePickerState, code: KeyCode) -> P
     match code {
         KeyCode::Esc => PickerAction::Cancel,
         KeyCode::Enter => PickerAction::Select,
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyCode::Up => {
             state.move_selection(-1);
             PickerAction::Continue
         }
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down => {
             state.move_selection(1);
             PickerAction::Continue
         }
@@ -161,7 +161,7 @@ fn draw(frame: &mut Frame<'_>, state: &NotePickerState) {
     frame.render_widget(preview, body[1]);
 
     let footer = Paragraph::new(vec![
-        Line::from("Keys: Enter select, Esc cancel, j/k move"),
+        Line::from("Keys: Enter select, Esc cancel, Up/Down move"),
         Line::from("      type to filter by path, filename, or alias"),
         Line::from(format!("Matches: {}", state.filtered_notes().len())),
     ])
@@ -415,6 +415,28 @@ mod tests {
 
         assert_eq!(action, PickerAction::Continue);
         assert_eq!(state.query, "q");
+    }
+
+    #[test]
+    fn char_j_and_k_update_query_instead_of_moving() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let state_paths = VaultPaths::new(temp_dir.path());
+        let mut state = NotePickerState::new(
+            state_paths,
+            vec![
+                note("Alpha.md", &[]),
+                note("Jekyll.md", &[]),
+                note("Kappa.md", &[]),
+            ],
+            "",
+        );
+
+        let first = handle_picker_key(&mut state, KeyCode::Char('j'));
+        let second = handle_picker_key(&mut state, KeyCode::Char('k'));
+
+        assert_eq!(first, PickerAction::Continue);
+        assert_eq!(second, PickerAction::Continue);
+        assert_eq!(state.query, "jk");
     }
 
     #[test]

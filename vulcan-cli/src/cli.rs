@@ -155,19 +155,19 @@ Browse modes:
   /            return to fuzzy mode
 
 Keys:
-  Enter/E      edit the selected note
-  N            create a new note
-  M            move or rename the selected note
-  B            open backlinks for the selected note
-  L            open outgoing links for the selected note
-  D            show doctor diagnostics for the selected note
-  G            show git history for the selected file
+  Enter/Ctrl-E edit the selected note
+  Ctrl-N       create a new note
+  Ctrl-R       move or rename the selected note
+  Ctrl-B       open backlinks for the selected note
+  Ctrl-O       open outgoing links for the selected note
+  Ctrl-D       show doctor diagnostics for the selected note
+  Ctrl-G       show git history for the selected file
   Esc          quit the browser
 
 Notes:
   browse honors [scan].browse_mode in config; --refresh overrides it per invocation.
   `background` opens immediately on current cache contents, then reloads when the scan completes.
-  Lowercase letters always type into the fuzzy query; use uppercase action keys in fuzzy mode.
+  Printable characters always extend the active query or prompt; browse actions use Enter or Ctrl shortcuts.
   After edits, creates, and moves, Vulcan rescans affected files and refreshes the browser.
   In backlinks/outgoing-link views, `o` opens the selected .base file in the Bases TUI.
 
