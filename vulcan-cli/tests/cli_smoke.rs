@@ -966,6 +966,60 @@ fn search_explain_human_output_includes_grouped_query_plan() {
 }
 
 #[test]
+fn search_inline_file_content_and_match_case_operators_work() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    fs::write(
+        vault_root.join("Meeting.md"),
+        "# Notes\nReleaseAlias checklist",
+    )
+    .expect("meeting note should write");
+    fs::write(
+        vault_root.join("Reference.md"),
+        "---\naliases:\n  - ReleaseAlias\n---\n\n# Reference\nnothing else",
+    )
+    .expect("reference note should write");
+    fs::write(vault_root.join("People.md"), "Bob\nbob").expect("people note should write");
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "search",
+            "content:ReleaseAlias",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"document_path\":\"Meeting.md\"")
+                .and(predicate::str::contains("Reference.md").not()),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "search",
+            "match-case:Bob",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"document_path\":\"People.md\""));
+}
+
+#[test]
 fn notes_json_output_filters_and_sorts_property_queries() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -271,6 +271,9 @@ Supported inline filters inside the query text:
 - `path:<prefix>`
 - `has:<property>`
 - `property:<property>`
+- `file:<filename-fragment>`: match the filename only, not the full path
+- `content:<term>`: restrict the term to note body content, excluding title, aliases, and headings
+- `match-case:<term>`: require an exact-case match after the normal FTS candidate search
 
 Useful search flags:
 
