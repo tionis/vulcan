@@ -575,7 +575,7 @@ Replace the per-candidate string search in `suggest_mentions` / `link-mentions` 
 - [x] Map each match back to its `MentionCandidate` via the pattern index returned by Aho-Corasick
 - [x] Preserve existing filtering: `ranges_intersect(blocked, ...)`, `ranges_intersect(&occupied, ...)`, `is_word_boundary()` checks remain unchanged — they operate on match positions regardless of how matches were found
 - [x] The `link_mentions` command uses the same `suggest_mentions` path, so it benefits automatically
-- [ ] Unit tests: existing `suggest_mentions` tests must produce identical results; add a benchmark test with 1000+ candidates
+- [x] Unit tests: existing `suggest_mentions` tests must produce identical results; add a benchmark test with 1000+ candidates
 
 **Expected improvement:** O(C × N) → O(N) per file (Aho-Corasick is linear in input length regardless of pattern count). For 13k candidates this is potentially 1000x faster per file.
 
