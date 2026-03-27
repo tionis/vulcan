@@ -2251,10 +2251,13 @@ mod tests {
     use crate::config::{
         load_vault_config, AttachmentExtractionConfig, LinkResolutionMode, LinkStylePreference,
     };
+    use crate::expression::eval::{evaluate, EvalContext};
+    use crate::expression::parse::Parser;
     use crate::file_metadata::FileMetadataResolver;
     use crate::properties::load_note_index;
     use crate::{search_vault, SearchQuery};
     use serde_json::{json, Value};
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     #[test]
@@ -2759,6 +2762,65 @@ mod tests {
         )
         .expect("search should succeed");
         assert!(search.hits.is_empty());
+    }
+
+    #[test]
+    fn dataview_fixture_expression_evaluation_covers_core_semantics() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let note_index = load_note_index(&paths).expect("note index should load");
+        let dashboard = note_index
+            .get("Dashboard")
+            .expect("dashboard note should be indexed");
+        let formulas = BTreeMap::new();
+        let eval = |input: &str| {
+            let expr = Parser::new(input)
+                .expect("expression should parse")
+                .parse()
+                .expect("expression should build AST");
+            let ctx = EvalContext::new(dashboard, &formulas).with_note_lookup(&note_index);
+            evaluate(&expr, &ctx).expect("expression should evaluate")
+        };
+
+        assert_eq!(eval("typeof(month)"), Value::String("date".to_string()));
+        assert_eq!(
+            eval(r#"dateformat(month + dur(1d), "yyyy-MM-dd")"#),
+            Value::String("2026-04-02".to_string())
+        );
+        assert_eq!(
+            eval("typeof(duration)"),
+            Value::String("duration".to_string())
+        );
+        assert_eq!(eval("duration + dur(1h)"), json!(100_800_000_i64));
+        assert_eq!(
+            eval(r#"choice(reviewed, "yes", "no")"#),
+            json!(["yes", "no"])
+        );
+        assert_eq!(
+            eval(r#"regexreplace(file.tasks.text, "(\w+) (.+)", "$2: $1")"#),
+            json!([
+                "docs [due:: 2026-04-01]: Write",
+                "release [owner:: [[People/Bob]]]: Ship"
+            ])
+        );
+        assert_eq!(
+            eval(r#"any(regextest("release", file.tasks.text))"#),
+            json!(true)
+        );
+        assert_eq!(eval("file.tasks.owner"), json!([null, "[[People/Bob]]"]));
+        assert_eq!(
+            eval(r#"default(file.day, "none")"#),
+            Value::String("none".to_string())
+        );
+        assert_eq!(
+            eval(r#"[[Alpha]].file.tasks[0].due"#),
+            Value::String("2026-04-02".to_string())
+        );
+        assert_eq!(eval(r#"[[Bob]].role"#), Value::String("editor".to_string()));
     }
 
     #[test]
