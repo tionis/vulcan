@@ -1,3 +1,4 @@
+use regex::Regex;
 use serde_json::Value;
 
 use crate::expression::ast::{BinOp, Expr};
@@ -35,6 +36,19 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "all" => func_truthy_aggregate(args, ctx, TruthyAggregate::All),
         "any" => func_truthy_aggregate(args, ctx, TruthyAggregate::Any),
         "none" => func_truthy_aggregate(args, ctx, TruthyAggregate::None),
+        "lower" => func_string_map(args, ctx, |text| text.to_lowercase()),
+        "upper" => func_string_map(args, ctx, |text| text.to_uppercase()),
+        "startswith" => func_string_predicate(args, ctx, |text, prefix| text.starts_with(prefix)),
+        "endswith" => func_string_predicate(args, ctx, |text, suffix| text.ends_with(suffix)),
+        "substring" => func_substring(args, ctx),
+        "split" => func_split(args, ctx),
+        "replace" => func_replace(args, ctx),
+        "regextest" => func_regextest(args, ctx),
+        "regexmatch" => func_regexmatch(args, ctx),
+        "regexreplace" => func_regexreplace(args, ctx),
+        "truncate" => func_truncate(args, ctx),
+        "padleft" => func_pad(args, ctx, true),
+        "padright" => func_pad(args, ctx, false),
         "map" | "filter" | "sort" | "reverse" | "unique" | "flat" | "slice" => {
             func_array_alias(name, args, ctx)
         }
@@ -273,6 +287,180 @@ fn func_contains_word(args: &[Expr], ctx: &EvalContext) -> Result<Value, String>
         ),
         _ => contains_word_value(&haystack, &needle),
     })
+}
+
+fn func_string_map(
+    args: &[Expr],
+    ctx: &EvalContext,
+    transform: fn(&str) -> String,
+) -> Result<Value, String> {
+    Ok(map_string_value(eval_arg(args, 0, ctx)?, transform))
+}
+
+fn func_string_predicate(
+    args: &[Expr],
+    ctx: &EvalContext,
+    predicate: fn(&str, &str) -> bool,
+) -> Result<Value, String> {
+    let haystack = eval_arg(args, 0, ctx)?;
+    let needle = eval_arg(args, 1, ctx)?;
+    Ok(match (&haystack, &needle) {
+        (Value::String(haystack), Value::String(needle)) => {
+            Value::Bool(predicate(haystack, needle))
+        }
+        (Value::Null, _) | (_, Value::Null) => Value::Null,
+        _ => Value::Null,
+    })
+}
+
+fn func_substring(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let Value::String(text) = value else {
+        return Ok(if value.is_null() {
+            Value::Null
+        } else {
+            Value::Null
+        });
+    };
+
+    let start = eval_nonnegative_index(args, 1, ctx)?;
+    let end = if args.len() > 2 {
+        Some(eval_nonnegative_index(args, 2, ctx)?)
+    } else {
+        None
+    };
+
+    Ok(Value::String(substring_value(&text, start, end)))
+}
+
+fn func_split(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let delimiter = eval_arg(args, 1, ctx)?;
+    let (Value::String(text), Value::String(pattern)) = (&value, &delimiter) else {
+        return Ok(if value.is_null() || delimiter.is_null() {
+            Value::Null
+        } else {
+            Value::Null
+        });
+    };
+
+    let limit = if args.len() > 2 {
+        Some(eval_nonnegative_index(args, 2, ctx)?)
+    } else {
+        None
+    };
+
+    Ok(Value::Array(regex_split(text, pattern, limit)?))
+}
+
+fn func_replace(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let pattern = eval_arg(args, 1, ctx)?;
+    let replacement = eval_arg(args, 2, ctx)?;
+    let (Value::String(text), Value::String(pattern), Value::String(replacement)) =
+        (&value, &pattern, &replacement)
+    else {
+        return Ok(
+            if value.is_null() || pattern.is_null() || replacement.is_null() {
+                Value::Null
+            } else {
+                Value::Null
+            },
+        );
+    };
+
+    Ok(Value::String(text.replace(pattern, replacement)))
+}
+
+fn func_regextest(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let pattern = eval_arg(args, 0, ctx)?;
+    let value = eval_arg(args, 1, ctx)?;
+    Ok(Value::Bool(match (&pattern, &value) {
+        (Value::String(pattern), Value::String(text)) => {
+            compile_regex(pattern, "regextest")?.is_match(text)
+        }
+        _ => false,
+    }))
+}
+
+fn func_regexmatch(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let pattern = eval_arg(args, 0, ctx)?;
+    let value = eval_arg(args, 1, ctx)?;
+    Ok(Value::Bool(match (&pattern, &value) {
+        (Value::String(pattern), Value::String(text)) => {
+            compile_regex(&anchored_pattern(pattern), "regexmatch")?.is_match(text)
+        }
+        _ => false,
+    }))
+}
+
+fn func_regexreplace(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let pattern = eval_arg(args, 1, ctx)?;
+    let replacement = eval_arg(args, 2, ctx)?;
+    let (Value::String(text), Value::String(pattern), Value::String(replacement)) =
+        (&value, &pattern, &replacement)
+    else {
+        return Ok(
+            if value.is_null() || pattern.is_null() || replacement.is_null() {
+                Value::Null
+            } else {
+                Value::Null
+            },
+        );
+    };
+
+    let regex = compile_regex(pattern, "regexreplace")?;
+    Ok(Value::String(
+        regex.replace_all(text, replacement).into_owned(),
+    ))
+}
+
+fn func_truncate(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let Value::String(text) = value else {
+        return Ok(if value.is_null() {
+            Value::Null
+        } else {
+            Value::Null
+        });
+    };
+
+    let length = eval_nonnegative_index(args, 1, ctx)?;
+    let suffix = match eval_arg(args, 2, ctx)? {
+        Value::String(suffix) => suffix,
+        Value::Null if args.len() < 3 => "...".to_string(),
+        Value::Null => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    Ok(Value::String(truncate_value(&text, length, &suffix)))
+}
+
+fn func_pad(args: &[Expr], ctx: &EvalContext, left: bool) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let Value::String(text) = value else {
+        return Ok(if value.is_null() {
+            Value::Null
+        } else {
+            Value::Null
+        });
+    };
+
+    let target_length = eval_nonnegative_index(args, 1, ctx)?;
+    let padding = match eval_arg(args, 2, ctx)? {
+        Value::String(padding) if !padding.is_empty() => padding,
+        Value::Null if args.len() < 3 => " ".to_string(),
+        Value::Null => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    Ok(Value::String(pad_string(
+        &text,
+        target_length,
+        &padding,
+        left,
+    )))
 }
 
 fn func_nonnull(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -611,6 +799,134 @@ where
 
 fn values_match(left: &Value, right: &Value) -> bool {
     compare_values(left, right) == Some(std::cmp::Ordering::Equal) || left == right
+}
+
+fn map_string_value(value: Value, transform: fn(&str) -> String) -> Value {
+    match value {
+        Value::String(text) => Value::String(transform(&text)),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| map_string_value(value, transform))
+                .collect(),
+        ),
+        Value::Null => Value::Null,
+        _ => Value::Null,
+    }
+}
+
+fn eval_nonnegative_index(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<usize, String> {
+    let value = eval_arg(args, index, ctx)?;
+    let number = as_number(&value);
+    if value.is_null() || number.is_nan() {
+        return Ok(0);
+    }
+    Ok(number.max(0.0) as usize)
+}
+
+fn anchored_pattern(pattern: &str) -> String {
+    if !pattern.starts_with('^') && !pattern.ends_with('$') {
+        format!("^{pattern}$")
+    } else {
+        pattern.to_string()
+    }
+}
+
+fn compile_regex(pattern: &str, function: &str) -> Result<Regex, String> {
+    Regex::new(pattern).map_err(|error| format!("invalid regex for {function}(): {error}"))
+}
+
+fn regex_split(text: &str, pattern: &str, limit: Option<usize>) -> Result<Vec<Value>, String> {
+    let regex = compile_regex(pattern, "split")?;
+    let max_items = limit.unwrap_or(usize::MAX);
+    if max_items == 0 {
+        return Ok(vec![]);
+    }
+
+    let mut result = Vec::new();
+    let mut last_end = 0;
+
+    for captures in regex.captures_iter(text) {
+        let Some(matched) = captures.get(0) else {
+            continue;
+        };
+
+        if result.len() >= max_items {
+            break;
+        }
+        result.push(Value::String(text[last_end..matched.start()].to_string()));
+        if result.len() >= max_items {
+            break;
+        }
+
+        for index in 1..captures.len() {
+            result.push(Value::String(
+                captures
+                    .get(index)
+                    .map_or_else(String::new, |capture| capture.as_str().to_string()),
+            ));
+            if result.len() >= max_items {
+                break;
+            }
+        }
+        if result.len() >= max_items {
+            break;
+        }
+
+        last_end = matched.end();
+    }
+
+    if result.len() < max_items {
+        result.push(Value::String(text[last_end..].to_string()));
+    }
+    result.truncate(max_items);
+    Ok(result)
+}
+
+fn substring_value(text: &str, start: usize, end: Option<usize>) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let start = start.min(chars.len());
+    let end = end.unwrap_or(chars.len()).min(chars.len());
+    chars[start..end.max(start)].iter().collect()
+}
+
+fn truncate_value(text: &str, length: usize, suffix: &str) -> String {
+    let text_len = text.chars().count();
+    if text_len <= length {
+        return text.to_string();
+    }
+
+    let suffix_len = suffix.chars().count();
+    let keep = length.saturating_sub(suffix_len);
+    format!("{}{}", substring_value(text, 0, Some(keep)), suffix)
+}
+
+fn pad_string(text: &str, target_length: usize, padding: &str, left: bool) -> String {
+    let text_len = text.chars().count();
+    if text_len >= target_length {
+        return text.to_string();
+    }
+
+    let pad_len = target_length - text_len;
+    let fill = repeated_fill(padding, pad_len);
+    if left {
+        format!("{fill}{text}")
+    } else {
+        format!("{text}{fill}")
+    }
+}
+
+fn repeated_fill(padding: &str, target_length: usize) -> String {
+    let padding_chars: Vec<char> = padding.chars().collect();
+    if padding_chars.is_empty() {
+        return String::new();
+    }
+
+    let mut result = String::new();
+    for index in 0..target_length {
+        result.push(padding_chars[index % padding_chars.len()]);
+    }
+    result
 }
 
 fn extreme_value(values: Vec<Value>, pick_max: bool) -> Value {

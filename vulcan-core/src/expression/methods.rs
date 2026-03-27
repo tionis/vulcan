@@ -1071,6 +1071,63 @@ mod tests {
     }
 
     #[test]
+    fn global_string_functions() {
+        assert_eq!(eval(r#"lower("Test")"#), serde_json::json!("test"));
+        assert_eq!(
+            eval(r#"lower(["YES", "nO"])"#),
+            serde_json::json!(["yes", "no"])
+        );
+        assert_eq!(eval(r#"upper("test")"#), serde_json::json!("TEST"));
+        assert_eq!(eval(r#"startswith("yes", "ye")"#), serde_json::json!(true));
+        assert_eq!(eval(r#"endswith("yes", "es")"#), serde_json::json!(true));
+        assert_eq!(eval(r#"substring("hello", 2, 4)"#), serde_json::json!("ll"));
+        assert_eq!(
+            eval(r#"split("hello world", " ")"#),
+            serde_json::json!(["hello", "world"])
+        );
+        assert_eq!(
+            eval(r#"split("hello there world", "(t?here)")"#),
+            serde_json::json!(["hello ", "there", " world"])
+        );
+        assert_eq!(
+            eval(r#"split("hello world", " ", 0)"#),
+            serde_json::json!([])
+        );
+        assert_eq!(
+            eval(r#"replace("The big dog chased the big cat.", "big", "small")"#),
+            serde_json::json!("The small dog chased the small cat.")
+        );
+        assert_eq!(
+            eval(r#"regextest("what", "what's up dog?")"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"regexmatch("what", "what's up dog?")"#),
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            eval(r#"regexreplace("Suite 1000", "\d+", "-")"#),
+            serde_json::json!("Suite -")
+        );
+        assert_eq!(
+            eval(r#"truncate("Hello there!", 8)"#),
+            serde_json::json!("Hello...")
+        );
+        assert_eq!(
+            eval(r#"truncate("Hello there!", 8, "/")"#),
+            serde_json::json!("Hello t/")
+        );
+        assert_eq!(
+            eval(r#"padleft("yes", 5, "!")"#),
+            serde_json::json!("!!yes")
+        );
+        assert_eq!(
+            eval(r#"padright("yes", 5, "!")"#),
+            serde_json::json!("yes!!")
+        );
+    }
+
+    #[test]
     fn escape_html_function() {
         assert_eq!(
             eval(r#"escapeHTML("<b>hi</b>")"#),
