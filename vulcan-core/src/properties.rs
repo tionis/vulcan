@@ -1,4 +1,7 @@
+use crate::expression::ast::Expr;
+use crate::expression::eval::{evaluate, is_truthy, EvalContext};
 use crate::expression::functions::parse_duration_string;
+use crate::expression::parse::Parser;
 use crate::file_metadata::synthetic_file_link;
 use crate::parser::{parse_document, types::InlineFieldKind};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
@@ -438,11 +441,13 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
 
+    let (sql_filters, expression_filters) = partition_note_query_filters(&query.filters)?;
+
     let NoteFilterSql {
         cte,
         clause: filter_clause,
         params,
-    } = build_note_filter_clause(&query.filters)?;
+    } = build_note_filter_clause(&sql_filters)?;
 
     let mut sql = cte;
     sql.push_str(
@@ -505,6 +510,28 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         .into_iter()
         .map(|(_, note)| note)
         .collect();
+
+    if !expression_filters.is_empty() {
+        let note_index = load_note_index(paths)?;
+        let formulas = BTreeMap::new();
+        let mut filtered = Vec::with_capacity(notes.len());
+        for note in notes {
+            let ctx = EvalContext::new(&note, &formulas).with_note_lookup(&note_index);
+            let mut keep = true;
+            for (filter, expr) in &expression_filters {
+                let value = evaluate(expr, &ctx)
+                    .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
+                if !expression_filter_matches(&value) {
+                    keep = false;
+                    break;
+                }
+            }
+            if keep {
+                filtered.push(note);
+            }
+        }
+        notes = filtered;
+    }
 
     if let Some(sort_by) = query.sort_by.as_deref() {
         notes.sort_by(|left, right| {
@@ -1490,8 +1517,12 @@ fn parse_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> 
         (" < ", FilterOperator::Lt),
     ] {
         if let Some((field, value)) = filter.split_once(separator) {
+            let field = field.trim();
+            if !is_legacy_filter_field(field) {
+                break;
+            }
             return Ok(ParsedFilter {
-                field: parse_filter_field(field.trim()),
+                field: parse_filter_field(field),
                 operator,
                 value: parse_filter_value(value.trim()),
             });
@@ -1499,6 +1530,43 @@ fn parse_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> 
     }
 
     Err(PropertyError::InvalidFilter(filter.to_string()))
+}
+
+fn is_legacy_filter_field(field: &str) -> bool {
+    matches!(field, "file.path" | "file.name" | "file.ext" | "file.mtime")
+        || (!field.is_empty()
+            && field
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
+}
+
+fn partition_note_query_filters(
+    filters: &[String],
+) -> Result<(Vec<String>, Vec<(String, Expr)>), PropertyError> {
+    let mut sql_filters = Vec::new();
+    let mut expression_filters = Vec::new();
+
+    for filter in filters {
+        if parse_filter_expression(filter).is_ok() {
+            sql_filters.push(filter.clone());
+            continue;
+        }
+
+        let expr = Parser::new(filter)
+            .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?
+            .parse()
+            .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
+        expression_filters.push((filter.clone(), expr));
+    }
+
+    Ok((sql_filters, expression_filters))
+}
+
+fn expression_filter_matches(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(expression_filter_matches),
+        value => is_truthy(value),
+    }
 }
 
 fn parse_filter_field(field: &str) -> FilterField {
@@ -2110,6 +2178,93 @@ mod tests {
                 .map(|note| note.document_path.clone())
                 .collect::<Vec<_>>(),
             vec!["Backlog.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_notes_expression_filters_support_regex_functions() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let release = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec![r#"regextest("release", file.tasks.text)"#.to_string()],
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("regex test filter should succeed");
+        assert_eq!(
+            release
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Dashboard.md".to_string()]
+        );
+
+        let exact = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec![r#"regexmatch("draft", status)"#.to_string()],
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("regex match filter should succeed");
+        assert_eq!(
+            exact
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Dashboard.md".to_string()]
+        );
+
+        let capture = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec![
+                    r#"regexreplace(owner, "\[\[(.+)\]\]", "$1") == "People/Bob""#.to_string(),
+                ],
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("regex replace filter should succeed");
+        assert_eq!(
+            capture
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Dashboard.md".to_string()]
+        );
+
+        let combined = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec![
+                    "reviewed = true".to_string(),
+                    r#"regextest("^(Dashboard|Alpha)$", file.name)"#.to_string(),
+                ],
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("combined sql and regex filters should succeed");
+        assert_eq!(
+            combined
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Dashboard.md".to_string(), "Projects/Alpha.md".to_string()]
         );
     }
 
