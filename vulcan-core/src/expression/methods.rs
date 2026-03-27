@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::expression::ast::Expr;
 use crate::expression::eval::{
-    as_number, evaluate, is_truthy, number_to_value, value_to_display, EvalContext,
+    as_number, compare_values, evaluate, is_truthy, number_to_value, value_to_display, EvalContext,
 };
 use crate::expression::functions::{date_components, format_date, parse_date_like_string};
 
@@ -520,20 +520,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 }
 
 fn compare_values_for_sort(a: &Value, b: &Value) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) => a
-            .as_f64()
-            .unwrap_or(0.0)
-            .partial_cmp(&b.as_f64().unwrap_or(0.0))
-            .unwrap_or(Ordering::Equal),
-        (Value::String(a), Value::String(b)) => a.cmp(b),
-        (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
-        (Value::Null, Value::Null) => Ordering::Equal,
-        (Value::Null, _) => Ordering::Less,
-        (_, Value::Null) => Ordering::Greater,
-        _ => Ordering::Equal,
-    }
+    compare_values(a, b).unwrap_or(std::cmp::Ordering::Equal)
 }
 
 #[cfg(test)]

@@ -114,6 +114,7 @@ impl<'a> Parser<'a> {
             let op = match self.current {
                 Token::Star => BinOp::Mul,
                 Token::Slash => BinOp::Div,
+                Token::Percent => BinOp::Mod,
                 _ => break,
             };
             self.advance()?;
@@ -329,6 +330,18 @@ mod tests {
                     BinOp::Mul,
                     Box::new(Expr::Number(3.0)),
                 ))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_modulo() {
+        assert_eq!(
+            parse("7 % 4"),
+            Expr::BinaryOp(
+                Box::new(Expr::Number(7.0)),
+                BinOp::Mod,
+                Box::new(Expr::Number(4.0)),
             )
         );
     }

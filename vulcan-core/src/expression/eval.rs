@@ -284,14 +284,18 @@ fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Value {
     match op {
         BinOp::Add => eval_add(left, right),
         BinOp::Sub => eval_sub(left, right),
-        BinOp::Mul => eval_arithmetic(left, right, |a, b| a * b),
+        BinOp::Mul => eval_mul(left, right),
         BinOp::Div => {
+            if left.is_null() || right.is_null() {
+                return Value::Null;
+            }
             let b = as_number(right);
             if b == 0.0 {
                 return Value::Null;
             }
-            eval_arithmetic(left, right, |a, b| a / b)
+            eval_div(left, right)
         }
+        BinOp::Mod => eval_mod(left, right),
         BinOp::Eq => Value::Bool(values_equal(left, right)),
         BinOp::Ne => Value::Bool(!values_equal(left, right)),
         BinOp::Gt => Value::Bool(compare_values(left, right) == Some(std::cmp::Ordering::Greater)),
@@ -310,20 +314,31 @@ fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Value {
 
 #[allow(clippy::cast_precision_loss)]
 fn eval_add(left: &Value, right: &Value) -> Value {
-    use crate::expression::functions::parse_duration_string;
-    // Date arithmetic: number + duration_string (e.g. now() + "7d")
-    if let (Value::Number(_), Value::String(s)) = (left, right) {
-        if let Some(ms) = parse_duration_string(s) {
-            let n = as_number(left);
-            return number_to_value(n + ms as f64);
+    if left.is_null() || right.is_null() {
+        return Value::Null;
+    }
+
+    if let Some(left_date_ms) = date_string_value_ms(left) {
+        if let Some(right_duration_ms) = duration_like_value_ms(right) {
+            return number_to_value((left_date_ms + right_duration_ms) as f64);
         }
     }
-    if let (Value::String(s), Value::Number(_)) = (left, right) {
-        if let Some(ms) = parse_duration_string(s) {
-            let n = as_number(right);
-            return number_to_value(ms as f64 + n);
+    if let Some(right_date_ms) = date_string_value_ms(right) {
+        if let Some(left_duration_ms) = duration_like_value_ms(left) {
+            return number_to_value((left_duration_ms + right_date_ms) as f64);
         }
     }
+    if let Some(left_duration_ms) = duration_string_value_ms(left) {
+        if let Some(right_duration_ms) = duration_like_value_ms(right) {
+            return number_to_value((left_duration_ms + right_duration_ms) as f64);
+        }
+    }
+    if let Some(right_duration_ms) = duration_string_value_ms(right) {
+        if let Some(left_duration_ms) = duration_like_value_ms(left) {
+            return number_to_value((left_duration_ms + right_duration_ms) as f64);
+        }
+    }
+
     // String concatenation if either side is a string
     match (left, right) {
         (Value::String(a), Value::String(b)) => Value::String(format!("{a}{b}")),
@@ -335,18 +350,94 @@ fn eval_add(left: &Value, right: &Value) -> Value {
 
 #[allow(clippy::cast_precision_loss)]
 fn eval_sub(left: &Value, right: &Value) -> Value {
-    use crate::expression::functions::parse_duration_string;
-    // Date arithmetic: number - duration_string (e.g. now() - "7d")
-    if let (Value::Number(_), Value::String(s)) = (left, right) {
-        if let Some(ms) = parse_duration_string(s) {
-            let n = as_number(left);
-            return number_to_value(n - ms as f64);
+    if left.is_null() || right.is_null() {
+        return Value::Null;
+    }
+
+    if let Some(left_date_ms) = date_string_value_ms(left) {
+        if let Some(right_date_ms) = date_like_value_ms(right) {
+            return number_to_value((left_date_ms - right_date_ms) as f64);
+        }
+        if let Some(right_duration_ms) = duration_like_value_ms(right) {
+            return number_to_value((left_date_ms - right_duration_ms) as f64);
+        }
+    }
+    if let Some(right_date_ms) = date_string_value_ms(right) {
+        if let Some(left_date_ms) = integer_value_ms(left) {
+            return number_to_value((left_date_ms - right_date_ms) as f64);
+        }
+    }
+    if let Some(left_duration_ms) = duration_string_value_ms(left) {
+        if let Some(right_duration_ms) = duration_like_value_ms(right) {
+            return number_to_value((left_duration_ms - right_duration_ms) as f64);
+        }
+    }
+    if let Some(right_duration_ms) = duration_string_value_ms(right) {
+        if let Some(left_duration_ms) = duration_like_value_ms(left) {
+            return number_to_value((left_duration_ms - right_duration_ms) as f64);
         }
     }
     eval_arithmetic(left, right, |a, b| a - b)
 }
 
+#[allow(clippy::cast_precision_loss)]
+fn eval_mul(left: &Value, right: &Value) -> Value {
+    if left.is_null() || right.is_null() {
+        return Value::Null;
+    }
+
+    if let Some(duration_ms) = duration_string_value_ms(left) {
+        let factor = as_number(right);
+        if factor.is_finite() {
+            return number_to_value(duration_ms as f64 * factor);
+        }
+    }
+    if let Some(duration_ms) = duration_string_value_ms(right) {
+        let factor = as_number(left);
+        if factor.is_finite() {
+            return number_to_value(duration_ms as f64 * factor);
+        }
+    }
+
+    if let Some(repeated) = repeat_string(left, right).or_else(|| repeat_string(right, left)) {
+        return Value::String(repeated);
+    }
+
+    eval_arithmetic(left, right, |a, b| a * b)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn eval_div(left: &Value, right: &Value) -> Value {
+    if let Some(left_duration_ms) = duration_string_value_ms(left) {
+        let divisor = as_number(right);
+        if divisor.is_finite() && divisor != 0.0 {
+            return number_to_value(left_duration_ms as f64 / divisor);
+        }
+    }
+    eval_arithmetic(left, right, |a, b| a / b)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn eval_mod(left: &Value, right: &Value) -> Value {
+    if left.is_null() || right.is_null() {
+        return Value::Null;
+    }
+    let divisor = as_number(right);
+    if divisor == 0.0 {
+        return Value::Null;
+    }
+    if let Some(left_duration_ms) = duration_string_value_ms(left) {
+        if divisor.is_finite() {
+            return number_to_value(left_duration_ms as f64 % divisor);
+        }
+    }
+    eval_arithmetic(left, right, |a, b| a % b)
+}
+
 fn eval_arithmetic(left: &Value, right: &Value, f: fn(f64, f64) -> f64) -> Value {
+    if left.is_null() || right.is_null() {
+        return Value::Null;
+    }
     let a = as_number(left);
     let b = as_number(right);
     if a.is_nan() || b.is_nan() {
@@ -356,6 +447,12 @@ fn eval_arithmetic(left: &Value, right: &Value, f: fn(f64, f64) -> f64) -> Value
 }
 
 fn values_equal(left: &Value, right: &Value) -> bool {
+    if let Some(ordering) = compare_date_like_values(left, right) {
+        return ordering == std::cmp::Ordering::Equal;
+    }
+    if let Some(ordering) = compare_duration_like_values(left, right) {
+        return ordering == std::cmp::Ordering::Equal;
+    }
     match (left, right) {
         (Value::Null, Value::Null) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,
@@ -366,7 +463,19 @@ fn values_equal(left: &Value, right: &Value) -> bool {
     }
 }
 
-fn compare_values(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+pub(crate) fn compare_values(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+    match (left, right) {
+        (Value::Null, Value::Null) => return Some(std::cmp::Ordering::Equal),
+        (Value::Null, _) => return Some(std::cmp::Ordering::Less),
+        (_, Value::Null) => return Some(std::cmp::Ordering::Greater),
+        _ => {}
+    }
+    if let Some(ordering) = compare_date_like_values(left, right) {
+        return Some(ordering);
+    }
+    if let Some(ordering) = compare_duration_like_values(left, right) {
+        return Some(ordering);
+    }
     match (left, right) {
         (Value::Number(a), Value::Number(b)) => a
             .as_f64()
@@ -376,6 +485,76 @@ fn compare_values(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
         (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
         _ => None,
     }
+}
+
+fn compare_date_like_values(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+    match (date_string_value_ms(left), date_string_value_ms(right)) {
+        (Some(left_ms), Some(right_ms)) => Some(left_ms.cmp(&right_ms)),
+        (Some(left_ms), None) => integer_value_ms(right).map(|right_ms| left_ms.cmp(&right_ms)),
+        (None, Some(right_ms)) => integer_value_ms(left).map(|left_ms| left_ms.cmp(&right_ms)),
+        (None, None) => None,
+    }
+}
+
+fn compare_duration_like_values(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+    match (
+        duration_string_value_ms(left),
+        duration_string_value_ms(right),
+    ) {
+        (Some(left_ms), Some(right_ms)) => Some(left_ms.cmp(&right_ms)),
+        (Some(left_ms), None) => integer_value_ms(right).map(|right_ms| left_ms.cmp(&right_ms)),
+        (None, Some(right_ms)) => integer_value_ms(left).map(|left_ms| left_ms.cmp(&right_ms)),
+        (None, None) => None,
+    }
+}
+
+fn date_like_value_ms(value: &Value) -> Option<i64> {
+    date_string_value_ms(value).or_else(|| integer_value_ms(value))
+}
+
+fn date_string_value_ms(value: &Value) -> Option<i64> {
+    let Value::String(text) = value else {
+        return None;
+    };
+    parse_date_like_string(text)
+}
+
+fn duration_like_value_ms(value: &Value) -> Option<i64> {
+    duration_string_value_ms(value).or_else(|| integer_value_ms(value))
+}
+
+fn duration_string_value_ms(value: &Value) -> Option<i64> {
+    let Value::String(text) = value else {
+        return None;
+    };
+    crate::expression::functions::parse_duration_string(text)
+}
+
+fn integer_value_ms(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number.as_i64().or_else(|| {
+            let value = number.as_f64()?;
+            if value.is_finite() && value.fract() == 0.0 {
+                Some(value as i64)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn repeat_string(string_value: &Value, count_value: &Value) -> Option<String> {
+    let Value::String(text) = string_value else {
+        return None;
+    };
+    if date_string_value_ms(string_value).is_some()
+        || duration_string_value_ms(string_value).is_some()
+    {
+        return None;
+    }
+    let count = integer_value_ms(count_value)?;
+    usize::try_from(count).ok().map(|count| text.repeat(count))
 }
 
 #[must_use]
@@ -493,6 +672,7 @@ mod tests {
         assert_eq!(eval("10 - 3"), serde_json::json!(7));
         assert_eq!(eval("4 * 5"), serde_json::json!(20));
         assert_eq!(eval("10 / 3"), serde_json::json!(10.0 / 3.0));
+        assert_eq!(eval("7 % 4"), serde_json::json!(3));
         assert_eq!(eval("(1 + 2) * 3"), serde_json::json!(9));
     }
 
@@ -661,6 +841,45 @@ mod tests {
             eval("typeof(dur(1d 3h))"),
             Value::String("duration".to_string())
         );
+    }
+
+    #[test]
+    fn eval_type_coercion_rules() {
+        use crate::expression::functions::parse_date_like_string;
+
+        assert_eq!(
+            eval("date(2026-04-18) - date(2026-04-17)"),
+            serde_json::json!(86_400_000_i64)
+        );
+        assert_eq!(
+            eval("due + dur(1d)"),
+            serde_json::json!(parse_date_like_string("2026-04-02").unwrap())
+        );
+        assert_eq!(
+            eval("estimate + dur(1h)"),
+            serde_json::json!(100_800_000_i64)
+        );
+        assert_eq!(eval(r#""ha" * 3"#), Value::String("hahaha".to_string()));
+        assert_eq!(eval(r#"3 * "ha""#), Value::String("hahaha".to_string()));
+        assert_eq!(eval("estimate * 2"), serde_json::json!(194_400_000_i64));
+    }
+
+    #[test]
+    fn eval_null_ordering_and_propagation() {
+        assert_eq!(eval("null < 0"), Value::Bool(true));
+        assert_eq!(eval("null <= date(today)"), Value::Bool(true));
+        assert_eq!(eval("nonexistent < 0"), Value::Bool(true));
+        assert_eq!(eval("1 + null"), Value::Null);
+        assert_eq!(eval("null * 3"), Value::Null);
+        assert_eq!(eval("10 % null"), Value::Null);
+    }
+
+    #[test]
+    fn eval_date_and_duration_comparisons() {
+        assert_eq!(eval("due < date(2026-05-01)"), Value::Bool(true));
+        assert_eq!(eval("due == date(2026-04)"), Value::Bool(true));
+        assert_eq!(eval("estimate == dur(1d 3h)"), Value::Bool(true));
+        assert_eq!(eval("estimate > dur(1d)"), Value::Bool(true));
     }
 
     #[test]

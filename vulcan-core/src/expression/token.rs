@@ -15,6 +15,7 @@ pub enum Token {
     Minus,
     Star,
     Slash,
+    Percent,
     EqEq,
     Ne,
     Gt,
@@ -128,6 +129,11 @@ impl<'a> Tokenizer<'a> {
                 self.pos += 1;
                 self.last_was_value = false;
                 Token::Star
+            }
+            b'%' => {
+                self.pos += 1;
+                self.last_was_value = false;
+                Token::Percent
             }
             b'/' if !self.last_was_value => {
                 self.pos += 1;
@@ -522,6 +528,14 @@ mod tests {
                 Token::Star,
                 Token::Number(3.0),
             ]
+        );
+    }
+
+    #[test]
+    fn modulo_operator() {
+        assert_eq!(
+            tokenize("7 % 4"),
+            vec![Token::Number(7.0), Token::Percent, Token::Number(4.0),]
         );
     }
 
