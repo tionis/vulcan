@@ -1213,15 +1213,15 @@ Extend the expression evaluator to support Dataview's full type system and expre
 
 **Type system:**
 - [ ] Extend the value representation to support all 8 Dataview types: Text, Number, Boolean, Date, Duration, Link, List, Object
-- [ ] Date type with sub-field access: `.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`, `.millisecond`, `.weekday`, `.week`, `.weekyear`
-- [ ] Date literal shortcuts: `date(today)`, `date(now)`, `date(tomorrow)`, `date(yesterday)`, `date(sow)`, `date(eow)`, `date(som)`, `date(eom)`, `date(soy)`, `date(eoy)`
-- [ ] Duration type with compound units: `dur(1d 3h 20m)`, individual unit abbreviations (`s`, `m`, `h`, `d`, `w`, `mo`, `yr`)
+- [x] Date type with sub-field access: `.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`, `.millisecond`, `.weekday`, `.week`, `.weekyear`
+- [x] Date literal shortcuts: `date(today)`, `date(now)`, `date(tomorrow)`, `date(yesterday)`, `date(sow)`, `date(eow)`, `date(som)`, `date(eom)`, `date(soy)`, `date(eoy)`
+- [x] Duration type with compound units: `dur(1d 3h 20m)`, individual unit abbreviations (`s`, `m`, `h`, `d`, `w`, `mo`, `yr`)
 - [ ] Link as first-class type with metadata access via `meta(link)`: `.path`, `.display`, `.embed`, `.type`, `.subpath`
 - [ ] Type coercion: Date - Date → Duration, Date ± Duration → Date, Duration + Duration → Duration, String + Number → String (concatenation), String * Number → String (repeat)
 - [ ] Null ordering: `null` is less than all non-null values; `null` first in ascending sort, last in descending; `null` propagates through most arithmetic/function calls
 - [ ] GROUP BY null handling: rows with `null` group key form a separate group with `key = null`
 - [ ] Date timezone semantics: `date(today)`, `date(now)`, etc. use system local timezone; `localtime(date)` converts UTC to local; timezone override configurable via `.vulcan/config.toml`
-- [ ] `typeof(value)` introspection returning type name strings
+- [x] `typeof(value)` introspection returning type name strings
 
 **Expression language extensions:**
 - [ ] Arithmetic operators on numbers, dates, and durations: `+`, `-`, `*`, `/`, `%`

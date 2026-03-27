@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::expression::ast::{BinOp, Expr, UnOp};
 use crate::expression::functions::call_function;
+use crate::expression::functions::{date_field_value, parse_date_like_string};
 use crate::expression::methods::call_method;
 use crate::file_metadata::FileMetadataResolver;
 use crate::properties::NoteRecord;
@@ -150,10 +151,17 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
     // Field access on different types
     match &receiver_val {
         // String fields
-        Value::String(s) => match field {
-            "length" => Ok(Value::Number(s.chars().count().into())),
-            _ => Ok(Value::Null),
-        },
+        Value::String(s) => {
+            if field == "length" {
+                return Ok(Value::Number(s.chars().count().into()));
+            }
+            if let Some(ms) = parse_date_like_string(s) {
+                if let Some(value) = date_field_value(ms, field) {
+                    return Ok(value);
+                }
+            }
+            Ok(Value::Null)
+        }
 
         // Array fields
         Value::Array(arr) => match field {
@@ -164,7 +172,15 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
         // Object field access
         Value::Object(map) => Ok(map.get(field).cloned().unwrap_or(Value::Null)),
 
-        // Number fields (none in Obsidian, but support for consistency)
+        Value::Number(n) => {
+            if let Some(ms) = n.as_i64() {
+                if let Some(value) = date_field_value(ms, field) {
+                    return Ok(value);
+                }
+            }
+            Ok(Value::Null)
+        }
+
         _ => Ok(Value::Null),
     }
 }
@@ -429,6 +445,10 @@ mod tests {
     use crate::expression::parse::Parser;
 
     fn eval(input: &str) -> Value {
+        eval_with_now(input, 1_776_482_700_000)
+    }
+
+    fn eval_with_now(input: &str, now_ms: i64) -> Value {
         let expr = Parser::new(input).unwrap().parse().unwrap();
         let note = NoteRecord {
             document_id: "note-id".to_string(),
@@ -437,7 +457,14 @@ mod tests {
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_000,
             file_size: 1234,
-            properties: serde_json::json!({"status": "done", "count": 42, "tags": ["a", "b"]}),
+            properties: serde_json::json!({
+                "status": "done",
+                "count": 42,
+                "tags": ["a", "b"],
+                "due": "2026-04",
+                "estimate": "1d 3h",
+                "author": "[[alice]]"
+            }),
             tags: vec!["#tag1".to_string(), "#tag2/nested".to_string()],
             links: vec!["other.md".to_string()],
             inlinks: vec!["[[home]]".to_string()],
@@ -445,7 +472,8 @@ mod tests {
             frontmatter: serde_json::json!({"Date": "2026-04-18", "status": "done"}),
         };
         let formulas = BTreeMap::new();
-        let ctx = EvalContext::new(&note, &formulas);
+        let mut ctx = EvalContext::new(&note, &formulas);
+        ctx.now_ms = now_ms;
         evaluate(&expr, &ctx).unwrap()
     }
 
@@ -521,6 +549,9 @@ mod tests {
         assert_eq!(eval("file.size"), serde_json::json!(1234));
         assert_eq!(eval("file.mtime"), serde_json::json!(1_700_000_000));
         assert_eq!(eval("file.mday"), Value::String("1970-01-20".to_string()));
+        assert_eq!(eval("file.mtime.year"), serde_json::json!(1970));
+        assert_eq!(eval("file.mtime.month"), serde_json::json!(1));
+        assert_eq!(eval("file.mtime.weekday"), serde_json::json!(2));
     }
 
     #[test]
@@ -542,9 +573,91 @@ mod tests {
     #[test]
     fn eval_file_day_and_frontmatter() {
         assert_eq!(eval("file.day"), Value::String("2026-04-18".to_string()));
+        assert_eq!(eval("file.day.year"), serde_json::json!(2026));
+        assert_eq!(eval("due.month"), serde_json::json!(4));
         assert_eq!(
             eval("file.frontmatter.status"),
             Value::String("done".to_string())
+        );
+    }
+
+    #[test]
+    fn eval_date_shortcuts() {
+        use crate::expression::functions::parse_date_string;
+
+        let now_ms = 1_776_482_700_000;
+
+        assert_eq!(
+            eval_with_now("date(now)", now_ms),
+            serde_json::json!(now_ms)
+        );
+        assert_eq!(
+            eval_with_now("date(today)", now_ms),
+            serde_json::json!(parse_date_string("2026-04-18").unwrap())
+        );
+        assert_eq!(
+            eval_with_now("date(tomorrow)", now_ms),
+            serde_json::json!(parse_date_string("2026-04-19").unwrap())
+        );
+        assert_eq!(
+            eval_with_now("date(yesterday)", now_ms),
+            serde_json::json!(parse_date_string("2026-04-17").unwrap())
+        );
+        assert_eq!(
+            eval_with_now("date(sow)", now_ms),
+            serde_json::json!(parse_date_string("2026-04-13").unwrap())
+        );
+        assert_eq!(
+            eval_with_now("date(eow)", now_ms),
+            serde_json::json!(parse_date_string("2026-04-19").unwrap())
+        );
+        assert_eq!(
+            eval_with_now("date(som)", now_ms),
+            serde_json::json!(parse_date_string("2026-04-01").unwrap())
+        );
+        assert_eq!(
+            eval_with_now("date(eom)", now_ms),
+            serde_json::json!(parse_date_string("2026-04-30").unwrap())
+        );
+        assert_eq!(
+            eval_with_now("date(soy)", now_ms),
+            serde_json::json!(parse_date_string("2026-01-01").unwrap())
+        );
+        assert_eq!(
+            eval_with_now("date(eoy)", now_ms),
+            serde_json::json!(parse_date_string("2026-12-31").unwrap())
+        );
+    }
+
+    #[test]
+    fn eval_unquoted_date_and_duration_literals() {
+        assert_eq!(
+            eval("date(2026-04-18)"),
+            serde_json::json!(1_776_470_400_000_i64)
+        );
+        assert_eq!(eval("dur(1d 3h 20m)"), serde_json::json!(98_400_000_i64));
+    }
+
+    #[test]
+    fn eval_typeof_and_duration_alias() {
+        assert_eq!(
+            eval("duration(\"1d 3h\")"),
+            serde_json::json!(97_200_000_i64)
+        );
+        assert_eq!(eval("dur(1d 3h)"), serde_json::json!(97_200_000_i64));
+        assert_eq!(eval("typeof(due)"), Value::String("date".to_string()));
+        assert_eq!(
+            eval("typeof(estimate)"),
+            Value::String("duration".to_string())
+        );
+        assert_eq!(eval("typeof(author)"), Value::String("link".to_string()));
+        assert_eq!(
+            eval("typeof(file.mtime)"),
+            Value::String("date".to_string())
+        );
+        assert_eq!(
+            eval("typeof(dur(1d 3h))"),
+            Value::String("duration".to_string())
         );
     }
 

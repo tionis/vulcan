@@ -191,6 +191,11 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 Ok(Expr::Str(s))
             }
+            Token::DateLiteral(s) | Token::DurationLiteral(s) => {
+                let s = s.clone();
+                self.advance()?;
+                Ok(Expr::Str(s))
+            }
             Token::Regex(pattern, flags) => {
                 let pattern = pattern.clone();
                 let flags = flags.clone();
@@ -441,6 +446,25 @@ mod tests {
         assert_eq!(
             parse("now()"),
             Expr::FunctionCall("now".to_string(), vec![])
+        );
+    }
+
+    #[test]
+    fn parse_unquoted_date_literal_argument() {
+        assert_eq!(
+            parse("date(2026-04-18)"),
+            Expr::FunctionCall(
+                "date".to_string(),
+                vec![Expr::Str("2026-04-18".to_string())],
+            )
+        );
+    }
+
+    #[test]
+    fn parse_unquoted_duration_literal_argument() {
+        assert_eq!(
+            parse("dur(1d 3h 20m)"),
+            Expr::FunctionCall("dur".to_string(), vec![Expr::Str("1d 3h 20m".to_string())],)
         );
     }
 

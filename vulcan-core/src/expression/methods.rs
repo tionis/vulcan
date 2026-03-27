@@ -4,7 +4,7 @@ use crate::expression::ast::Expr;
 use crate::expression::eval::{
     as_number, evaluate, is_truthy, number_to_value, value_to_display, EvalContext,
 };
-use crate::expression::functions::{date_components, format_date};
+use crate::expression::functions::{date_components, format_date, parse_date_like_string};
 
 pub fn call_method(
     receiver: &Value,
@@ -17,16 +17,10 @@ pub fn call_method(
         "isTruthy" => return Ok(Value::Bool(is_truthy(receiver))),
         "isType" => {
             let expected = eval_arg(args, 0, ctx)?;
-            let type_name = match receiver {
-                Value::Null => "null",
-                Value::Bool(_) => "boolean",
-                Value::Number(_) => "number",
-                Value::String(_) => "string",
-                Value::Array(_) => "list",
-                Value::Object(_) => "object",
-            };
             return Ok(Value::Bool(
-                expected.as_str().is_some_and(|s| s == type_name),
+                expected
+                    .as_str()
+                    .is_some_and(|s| value_matches_type_name(receiver, s)),
             ));
         }
         "toString" => return Ok(Value::String(value_to_display(receiver))),
@@ -180,9 +174,9 @@ fn string_method(s: &str, method: &str, args: &[Expr], ctx: &EvalContext) -> Res
         }
         // Date methods on strings that look like dates
         "format" | "date" | "time" | "relative" | "year" | "month" | "day" | "hour" | "minute"
-        | "second" | "millisecond" => {
+        | "second" | "millisecond" | "weekday" | "week" | "weekyear" => {
             // Try to parse as date
-            if let Some(ms) = crate::expression::functions::parse_date_string(s) {
+            if let Some(ms) = parse_date_like_string(s) {
                 return date_method(ms, method, args, ctx);
             }
             Ok(Value::Null)
@@ -232,7 +226,9 @@ fn number_method(n: f64, method: &str, args: &[Expr], ctx: &EvalContext) -> Resu
         "isEmpty" => Ok(Value::Bool(false)),
         // Treat numbers as date timestamps for date methods
         "format" | "date" | "time" | "relative" | "year" | "month" | "day" | "hour" | "minute"
-        | "second" | "millisecond" => date_method(n as i64, method, args, ctx),
+        | "second" | "millisecond" | "weekday" | "week" | "weekyear" => {
+            date_method(n as i64, method, args, ctx)
+        }
         _ => Ok(Value::Null),
     }
 }
@@ -241,6 +237,15 @@ fn number_method(n: f64, method: &str, args: &[Expr], ctx: &EvalContext) -> Resu
 
 fn date_method(ms: i64, method: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let (year, month, day, hour, minute, second, millisecond) = date_components(ms);
+    let weekday = crate::expression::functions::date_field_value(ms, "weekday")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let week = crate::expression::functions::date_field_value(ms, "week")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let weekyear = crate::expression::functions::date_field_value(ms, "weekyear")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(year);
 
     match method {
         "year" => Ok(Value::Number(year.into())),
@@ -250,6 +255,9 @@ fn date_method(ms: i64, method: &str, args: &[Expr], ctx: &EvalContext) -> Resul
         "minute" => Ok(Value::Number(minute.into())),
         "second" => Ok(Value::Number(second.into())),
         "millisecond" => Ok(Value::Number(millisecond.into())),
+        "weekday" => Ok(Value::Number(weekday.into())),
+        "week" => Ok(Value::Number(week.into())),
+        "weekyear" => Ok(Value::Number(weekyear.into())),
         "format" => {
             let fmt = eval_string_arg(args, 0, ctx)?;
             Ok(Value::String(format_date(ms, &fmt)))
@@ -284,6 +292,17 @@ fn date_method(ms: i64, method: &str, args: &[Expr], ctx: &EvalContext) -> Resul
         }
         "isEmpty" => Ok(Value::Bool(false)),
         _ => Ok(Value::Null),
+    }
+}
+
+fn value_matches_type_name(receiver: &Value, expected: &str) -> bool {
+    match receiver {
+        Value::Null => expected == "null",
+        Value::Bool(_) => expected == "boolean",
+        Value::Number(_) => expected == "number",
+        Value::String(_) => expected == "string",
+        Value::Array(_) => matches!(expected, "array" | "list"),
+        Value::Object(_) => expected == "object",
     }
 }
 
