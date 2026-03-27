@@ -1851,13 +1851,222 @@ Skills are Markdown-defined capabilities that combine a prompt with specific too
 
 Notes on other common Obsidian plugins and their relationship to Vulcan:
 
-**Excalidraw:** Drawings stored as `.excalidraw.md` (Markdown with LZ-String compressed JSON in code blocks) or `.excalidraw` (plain JSON). Vulcan should detect and index these as a document type alongside Canvas files (Phase 18). Full rendering and editing support is a WebUI concern (Phase 13+). **Roadmap note:** Add Excalidraw parsing to Phase 18 (Canvas support) as a sub-phase — both are visual document types with JSON-based structure.
+**Excalidraw:** Drawings stored as `.excalidraw.md` (Markdown with LZ-String compressed JSON in code blocks) or `.excalidraw` (plain JSON). Parsing, indexing, and WebUI rendering/editing are covered in **Phase 18.8 (Excalidraw support)** as a sub-phase of Canvas support.
 
-**Advanced Tables:** Primarily a UI feature for editing Markdown tables with tab navigation and auto-formatting. No data format to parse — Vulcan's existing Markdown parser already handles standard Markdown tables. No roadmap action needed.
+**Advanced Tables:** Primarily a UI feature for editing Markdown tables. No data format to parse — Vulcan's existing Markdown parser already handles standard Markdown tables. WebUI table editing (tab navigation, column add/remove, sorting, alignment, CSV paste) is covered in **Phase 14.1 (Note editor → Advanced table editing)**.
 
 **Calendar:** The Calendar plugin provides a calendar view linked to daily notes. Vulcan's browse TUI (9.2) could add a calendar navigation mode, and the WebUI (Phase 13) could render a calendar view. The DQL CALENDAR query type (9.8.6) already provides the data foundation. **Roadmap note:** Calendar navigation is a TUI/WebUI presentation concern, not a data/query concern.
 
 **Obsidian Git:** Git-based vault synchronization and versioning. Vulcan already has git integration (9.3 auto-commit, `diff` command, browse TUI git log). No additional compatibility needed.
+
+### 9.15 TaskNotes compatibility
+
+**Goal:** Full compatibility with the TaskNotes plugin — tasks stored as individual Markdown files with rich YAML frontmatter, powered by Obsidian Bases views. TaskNotes treats each task as a first-class vault note (unlike the Tasks plugin which operates on inline checkboxes). Vulcan should parse, index, query, create, and manage TaskNotes task files, register custom Bases view types, and support the full TaskNotes configuration surface.
+
+**Builds on:** Phase 4 (properties/Bases), Phase 9.8 (Dataview metadata), Phase 9.10 (Tasks plugin — complementary, not overlapping).
+**Reference material:** `references/tasknotes/` (TaskNotes source), requires Obsidian 1.10.1+ for public Bases API.
+
+#### 9.15.1 Task file format and parsing
+
+- [ ] Detect TaskNotes task files: configurable identification method — by tag (default: `task` tag in frontmatter) or by property presence (e.g., `status` + `priority` fields)
+- [ ] Configurable tasks folder: default `TaskNotes/Tasks/`, configurable via settings import
+- [ ] Parse task frontmatter properties:
+  | Property | Type | Description |
+  |---|---|---|
+  | `title` | string | Task title |
+  | `status` | string | Task status (maps to custom status config) |
+  | `priority` | string | Priority level (maps to custom priority config) |
+  | `due` | date | Due date |
+  | `scheduled` | date | Scheduled date |
+  | `completedDate` | date | Completion timestamp |
+  | `dateCreated` | date | Creation timestamp |
+  | `dateModified` | date | Last modification timestamp |
+  | `contexts` | list | Context tags (e.g., `@office`, `@home`) |
+  | `projects` | list | Wikilinks to project notes |
+  | `tags` | list | Standard tags |
+  | `timeEstimate` | number | Estimated duration in minutes |
+  | `recurrence` | string | RFC 5545 RRULE recurrence pattern |
+  | `complete_instances` | list | Completed recurrence instance dates |
+  | `skipped_instances` | list | Skipped recurrence instance dates |
+  | `archived` | boolean | Archive flag |
+  | `blockedBy` | list | Task dependency objects (uid, reltype, gap) |
+  | `reminders` | list | Reminder objects (id, type, relatedTo, offset, description) |
+  | `timeEntries` | list | Time tracking session objects (startTime, endTime, description) |
+- [ ] Field mapping support: TaskNotes allows users to remap internal field names to custom frontmatter keys — honor `fieldMapping` configuration
+- [ ] Custom user-defined fields: arbitrary additional frontmatter properties with typed schemas (text, number, date, boolean, list)
+- [ ] Store parsed task data in cache: extend `documents` metadata or add `tasknotes_tasks` table with indexed columns for status, priority, due, scheduled, project, context
+- [ ] Excluded folders: respect `excludedFolders` setting to skip non-task files in task folders
+
+#### 9.15.2 Custom statuses and priorities
+
+- [ ] Custom status definitions: each status has `id`, `value` (frontmatter string), `label` (display name), `color`, `isCompleted` (boolean), `autoArchive` (delay config)
+  - Default statuses: `todo`, `in-progress`, `done`, `cancelled`
+  - Users can add unlimited custom statuses with configurable completion semantics
+- [ ] Custom priority definitions: each priority has `id`, `value`, `label`, `color`, `weight` (numeric for sorting/scoring)
+  - Default priorities: `highest`, `high`, `medium`, `low`, `lowest`
+- [ ] Status and priority are first-class query dimensions: filterable, sortable, groupable in DQL, Tasks DSL, and Bases views
+- [ ] Auto-archive: when a task enters a completed status, optionally archive after a configurable delay
+
+#### 9.15.3 Natural language task creation
+
+- [ ] NLP parser for task input strings: extract structured properties from natural language
+  - Example: `"Buy groceries tomorrow at 3pm @home #errands high priority"` → `{ title: "Buy groceries", due: "2026-03-28T15:00", contexts: ["@home"], tags: ["errands"], priority: "high" }`
+- [ ] Configurable NLP trigger characters:
+  | Trigger | Default | Extracts |
+  |---|---|---|
+  | `@` | contexts | `@home`, `@office` |
+  | `#` | tags | `#errands`, `#work` |
+  | `+` | projects | `+[[Project Name]]` |
+  | `*` | status | `*done`, `*in-progress` |
+- [ ] Date extraction: "tomorrow", "next Monday", "in 3 days", "January 15th" — reuse chrono-like date parsing
+- [ ] Priority extraction: "high priority", "urgent", "low priority" — configurable keyword mapping
+- [ ] `vulcan tasknotes add "natural language input"` — create task file from NLP-parsed input
+- [ ] `--no-nlp` flag to create task with raw title (skip NLP parsing)
+- [ ] Configurable NLP language (default: English, supports multiple languages)
+
+#### 9.15.4 Recurring tasks (RRULE)
+
+- [ ] Parse `recurrence` field as RFC 5545 RRULE string (e.g., `FREQ=WEEKLY;BYDAY=MO,WE,FR`)
+- [ ] Recurrence expansion: compute next N occurrences for query and calendar display
+- [ ] Per-instance completion: `complete_instances` tracks which occurrences are done without completing the entire recurring task
+- [ ] Per-instance skipping: `skipped_instances` marks occurrences as intentionally skipped
+- [ ] Flexible vs fixed scheduling: next instance calculated from completion date (flexible) or from original schedule (fixed) — configurable via `recurrenceAnchor`
+- [ ] `vulcan tasknotes next <n>` — show next N upcoming task instances across all recurring tasks
+- [ ] Integrate with 9.10 recurring task infrastructure where overlapping
+
+#### 9.15.5 Task dependencies
+
+- [ ] Parse `blockedBy` array: each entry has `uid` (wikilink to blocking task), `reltype`, and optional `gap` (ISO 8601 duration)
+- [ ] Dependency relation types (RFC 9253):
+  | Type | Meaning |
+  |---|---|
+  | `FINISHTOSTART` | Blocked task can start after blocker finishes (default) |
+  | `FINISHTOFINISH` | Blocked task can finish after blocker finishes |
+  | `STARTTOSTART` | Blocked task can start after blocker starts |
+  | `STARTTOFINISH` | Blocked task can finish after blocker starts |
+- [ ] Duration gaps: `gap: P1D` means "1 day after the blocker completes"
+- [ ] Build dependency graph from task files (reuse graph infrastructure from Phase 2)
+- [ ] `vulcan tasknotes blocked` — list all blocked tasks with their blocking dependencies
+- [ ] `vulcan tasknotes graph` — visualize task dependency graph
+- [ ] Integrate with 9.10 task dependency infrastructure
+
+#### 9.15.6 Time tracking and pomodoro
+
+- [ ] Parse `timeEntries` array: each entry has `startTime`, `endTime`, `description`
+- [ ] `vulcan tasknotes track start <task>` — start a time tracking session (append to `timeEntries` with open `endTime`)
+- [ ] `vulcan tasknotes track stop [task]` — stop the active session (set `endTime`)
+- [ ] `vulcan tasknotes track status` — show currently active tracking session
+- [ ] `vulcan tasknotes track log <task>` — show time entries for a task
+- [ ] `vulcan tasknotes track summary [--period day|week|month]` — aggregate time spent across tasks
+- [ ] Pomodoro timer (CLI):
+  - [ ] `vulcan tasknotes pomodoro start <task>` — start a pomodoro work session
+  - [ ] Configurable durations: `pomodoro.work_duration` (default 25min), `pomodoro.short_break` (5min), `pomodoro.long_break` (15min), `pomodoro.long_break_interval` (every 4 pomodoros)
+  - [ ] Desktop notification on session end (best-effort, platform-dependent)
+  - [ ] Pomodoro session history stored in task frontmatter (`pomodoros` array) or daily note (configurable)
+- [ ] `timeEstimate` field: compare estimated vs actual time in reports
+
+#### 9.15.7 Reminders
+
+- [ ] Parse `reminders` array: each reminder has `id`, `type` (relative/absolute), `relatedTo` (due/scheduled), `offset` (ISO 8601 duration, e.g., `-PT15M`), `description`
+- [ ] `vulcan tasknotes reminders [--upcoming <duration>]` — list upcoming reminders within a time window
+- [ ] Daemon mode (Phase 10+): trigger desktop notifications for due reminders
+- [ ] CLI mode: `vulcan tasknotes due [--within <duration>]` — show tasks due within a time window (simpler alternative to daemon-based reminders)
+
+#### 9.15.8 Bases view integration
+
+TaskNotes v4+ is built entirely on Obsidian Bases. Vulcan should register equivalent custom Bases view types:
+
+- [ ] Register custom Bases source type: `tasknotes` with config subtypes:
+  | View type | Description |
+  |---|---|
+  | `tasknotesTaskList` | Filterable, sortable, groupable task table |
+  | `tasknotesKanban` | Kanban board (columns = status or custom field) |
+  | `tasknotesCalendar` | Full calendar view (month/week/day/year) |
+  | `tasknotesMiniCalendar` | Compact month overview |
+- [ ] Parse `.base` view files in `TaskNotes/Views/` (YAML format):
+  - Filter conditions: grouped AND/OR tree of property-based conditions
+  - Sort key and direction
+  - Group key and optional sub-group key
+  - Formula definitions for computed columns
+- [ ] Built-in formula support for TaskNotes views:
+  | Formula | Expression |
+  |---|---|
+  | `daysUntilDue` | `if(due, ((number(date(due)) - number(today())) / 86400000).floor(), null)` |
+  | `isOverdue` | `due && date(due) < today() && status != "done"` |
+  | `urgencyScore` | `formula.priorityWeight + max(0, 10 - formula.daysUntilDue)` |
+  | `efficiencyRatio` | `if(timeEstimate > 0, totalTimeSpent / timeEstimate, null)` |
+- [ ] `vulcan tasknotes view <name>` — evaluate a saved Bases view from the command line
+- [ ] `vulcan tasknotes view list` — list available TaskNotes views
+- [ ] `--output json|table` on view evaluation
+- [ ] Saved filter views: support `savedViews` config (named filter+sort+group presets) as CLI aliases
+
+#### 9.15.9 CLI surface
+
+- [ ] `vulcan tasknotes add <title-or-nlp-string>` — create a new task file
+  - [ ] `--status`, `--priority`, `--due`, `--scheduled`, `--context`, `--project`, `--tag` flags for explicit property setting
+  - [ ] `--template <name>` — create from a task template
+- [ ] `vulcan tasknotes list [--filter <expr>]` — list tasks with optional filter expression
+  - [ ] `--status <s>`, `--priority <p>`, `--due-before <date>`, `--due-after <date>`, `--project <p>`, `--context <c>` — shorthand filters
+  - [ ] `--group-by <field>`, `--sort-by <field>` — grouping and sorting
+  - [ ] `--include-archived` — include archived tasks (excluded by default)
+- [ ] `vulcan tasknotes show <task>` — display task details (all properties, time entries, dependencies)
+- [ ] `vulcan tasknotes edit <task>` — open task file in `$EDITOR`
+- [ ] `vulcan tasknotes set <task> <property> <value>` — update a task property
+- [ ] `vulcan tasknotes complete <task>` — mark task as completed (set status to done, record `completedDate`)
+- [ ] `vulcan tasknotes archive <task>` — archive a completed task
+- [ ] `vulcan tasknotes convert <file> [--line <n>]` — convert a line, checkbox, or heading in an existing note into a TaskNotes task file (inline task conversion)
+- [ ] `--output json` on all subcommands
+
+#### 9.15.10 Calendar sync (future — behind feature flag)
+
+Calendar sync requires OAuth2 flows and HTTP clients; gate behind a `calendar-sync` compile-time feature flag.
+
+- [ ] Google Calendar sync: OAuth2 authentication, selective calendar selection, incremental sync via sync tokens
+- [ ] Microsoft Calendar sync: OAuth2 authentication, delta link-based sync
+- [ ] ICS integration: subscribe to remote ICS feeds (periodic fetch + cache), watch local `.ics` files
+- [ ] Timeblocking: create time blocks in calendar from task schedules
+- [ ] Auto-export: export tasks to `.ics` file on configurable interval
+- [ ] `vulcan tasknotes calendar sync` — trigger a manual sync cycle
+- [ ] `vulcan tasknotes calendar list` — list connected calendars and sync status
+
+#### 9.15.11 Settings import
+
+- [ ] Read TaskNotes settings from `.obsidian/plugins/tasknotes/data.json` — comprehensive import covering:
+  | Setting category | Key settings |
+  |---|---|
+  | **Core** | `tasksFolder`, `taskTag`, `taskIdentificationMethod`, `excludedFolders`, `defaultTaskPriority`, `defaultTaskStatus` |
+  | **Field mapping** | `fieldMapping` — full property name remapping table (22 fields) |
+  | **Custom types** | `customStatuses` (id, value, label, color, isCompleted, autoArchive), `customPriorities` (id, value, label, color, weight) |
+  | **User fields** | `userFields` — custom field definitions (id, displayName, key, type, defaultValue, autosuggestFilter) |
+  | **NLP** | `enableNaturalLanguageInput`, `nlpLanguage`, `nlpDefaultToScheduled`, `nlpTriggers` (trigger chars → property mapping) |
+  | **Pomodoro** | `pomodoroWorkDuration`, `pomodoroShortBreakDuration`, `pomodoroLongBreakDuration`, `pomodoroLongBreakInterval`, `pomodoroAutoStartBreaks`, `pomodoroAutoStartWork`, `pomodoroStorageLocation` |
+  | **Calendar** | `calendarViewSettings` (defaultView, slotDuration, firstDay, timeFormat, visibility flags), `enableTimeblocking` |
+  | **ICS** | `icsIntegration` (enableAutoExport, autoExportPath, autoExportInterval, useICSEndAsDue) |
+  | **Google Calendar** | `enableGoogleCalendar`, `enabledGoogleCalendars`, `googleCalendarExport` settings |
+  | **Microsoft Calendar** | `enableMicrosoftCalendar`, `enabledMicrosoftCalendars` |
+  | **API** | `enableAPI`, `apiPort`, `apiAuthToken`, `enableMCP`, `webhooks` |
+  | **Bases** | `enableBases`, `autoCreateDefaultBasesFiles`, `commandFileMapping` |
+  | **Saved views** | `savedViews` — named filter/sort/group presets |
+  | **Task defaults** | `taskCreationDefaults` (defaultContexts, defaultTags, defaultProjects, defaultDueDate, defaultTimeEstimate, defaultReminders) |
+  | **UI/Editor** | `modalFieldsConfig`, `defaultVisibleProperties`, `singleClickAction` — informational for future TUI/WebUI |
+- [ ] `vulcan config import tasknotes` — import TaskNotes settings, create Vulcan-native config, report mapping
+- [ ] Migrate `.base` view files: copy TaskNotes view definitions and validate they work with Vulcan's Bases evaluator
+
+#### 9.15.12 HTTP API compatibility (daemon phase)
+
+When the daemon is running (Phase 10+), expose TaskNotes-compatible REST endpoints:
+
+- [ ] `GET /tasks` — list tasks with filter/sort/group query params
+- [ ] `POST /tasks` — create a task (accepts NLP string or structured JSON)
+- [ ] `PATCH /tasks/{id}` — update task properties
+- [ ] `DELETE /tasks/{id}` — delete or archive a task
+- [ ] `POST /tasks/{id}/track/start` — start time tracking
+- [ ] `POST /tasks/{id}/track/stop` — stop time tracking
+- [ ] `POST /tasks/{id}/pomodoro/start` — start pomodoro session
+- [ ] `POST /tasks/{id}/pomodoro/stop` — stop pomodoro session
+- [ ] `GET /tasks/calendar` — calendar events (tasks + calendar sync)
+- [ ] Webhook support: configurable webhooks for task events (create, update, complete, archive, time tracked)
+- [ ] MCP (Model Context Protocol) support: expose task operations as MCP tools for AI integration (cross-reference with 9.12 AI assistant)
 
 ---
 
@@ -1865,7 +2074,7 @@ Notes on other common Obsidian plugins and their relationship to Vulcan:
 
 **Goal:** A long-running process that serves multiple vaults over a proper REST API. The CLI can connect to it instead of opening the cache directly, eliminating per-command startup cost and enabling multi-vault workflows.
 
-**Depends on:** Phase 7 complete. Phases 9.8–9.14 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins.
+**Depends on:** Phase 7 complete. Phases 9.8–9.15 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins.
 **Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
 
 Search API note: search request semantics are already defined earlier by the shared `SearchQuery` contract from Phase 9.6. Phase 10 daemon work reuses that surface; it does not introduce a second search-parameter design step.
@@ -2124,6 +2333,15 @@ trait SyncBackend: Send + Sync {
 - [ ] Frontmatter property editor (structured form UI, not raw YAML editing)
 - [ ] Materialization pipeline: flush Automerge doc state to disk via `PATCH /{id}/notes/{path}`, which rescans and optionally commits
 - [ ] Optional session persistence: store Automerge binary doc in `.vulcan/` for crash recovery, discard after successful materialization
+- [ ] **Advanced table editing** (inspired by Advanced Tables plugin):
+  - [ ] Tab/Shift-Tab navigation between cells
+  - [ ] Auto-formatting: column alignment, padding, separator row maintenance
+  - [ ] Add/remove columns and rows via toolbar or keyboard shortcuts
+  - [ ] Column sorting (click header to sort by column, reorder rows in Markdown)
+  - [ ] Column alignment toggle (left/center/right via `:---`, `:---:`, `---:` syntax)
+  - [ ] Formula support in tables: spreadsheet-like expressions in cells (e.g., `=sum(col)`) evaluated on save — maps to Bases-style expressions where applicable
+  - [ ] CSV/TSV paste: pasting tabular data auto-converts to Markdown table
+  - [ ] Table toolbar: contextual toolbar when cursor is inside a table
 
 ### 14.2 Note management
 
@@ -2667,6 +2885,43 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] **Permission filtering (Phase 17):** Canvas files subject to the same ACL rules as notes. File nodes referencing restricted notes render as `[restricted]` for unauthorized users.
 - [ ] **Export:** Canvas data included in vault export/backup operations.
 
+### 18.8 Excalidraw support
+
+**Goal:** Parse, index, and (in WebUI) render Excalidraw drawings stored in the vault. Excalidraw is a visual document type similar to JSON Canvas — both are JSON-based with spatial layout — making Phase 18 the natural home.
+
+**Reference:** [Excalidraw plugin](https://github.com/zsviczian/obsidian-excalidraw-plugin)
+
+#### 18.8.1 Parsing and indexing
+
+- [ ] Detect Excalidraw files: `.excalidraw` (plain JSON) and `.excalidraw.md` (Markdown wrapper with LZ-String compressed JSON in a code block)
+- [ ] `.excalidraw.md` format parsing: extract the LZ-String compressed JSON from the `excalidraw-json` or `drawing` code fence, decompress, parse as Excalidraw JSON
+- [ ] `.excalidraw` format parsing: direct JSON parse
+- [ ] Extract text content from Excalidraw elements (text elements, labels on shapes, embedded links) for FTS indexing
+- [ ] Extract embedded file references: Excalidraw supports embedding vault images and notes — register these as links in the `links` table
+- [ ] Extract frontmatter from `.excalidraw.md` files (Excalidraw plugin stores metadata like `excalidraw-plugin`, `excalidraw-link-prefix`, etc.)
+- [ ] Store Excalidraw metadata in cache: reuse `canvas_nodes` pattern or add `excalidraw_elements` table
+- [ ] Incremental rescan on file change
+
+#### 18.8.2 CLI commands
+
+- [ ] `vulcan canvas list` extended: include `.excalidraw` and `.excalidraw.md` files alongside `.canvas` files (with type indicator)
+- [ ] `vulcan canvas show <path>` for Excalidraw files: element count by type (rectangle, ellipse, text, arrow, etc.), embedded file references, text content preview
+- [ ] `vulcan canvas refs <path>` for Excalidraw files: list embedded vault references and their resolution status
+
+#### 18.8.3 WebUI rendering (read-only)
+
+- [ ] Integrate Excalidraw's open-source React component (or a lightweight SVG renderer) for read-only rendering in the vault browser
+- [ ] Excalidraw detail view: render the drawing as an interactive pannable/zoomable SVG surface
+- [ ] Embedded vault files render as clickable links to the referenced notes
+- [ ] API endpoint: `GET /{id}/excalidraw/{path}` returns parsed Excalidraw JSON
+
+#### 18.8.4 WebUI editing (interactive)
+
+- [ ] Embed the full Excalidraw editor component in the WebUI (Excalidraw is open-source, MIT licensed)
+- [ ] Save: serialize Excalidraw state back to `.excalidraw.md` or `.excalidraw` format, write via API, rescan, auto-commit
+- [ ] Vault file embedding: picker to insert vault note/image references into the drawing
+- [ ] ACL enforcement: Excalidraw files respect folder/tag ACLs (Phase 17)
+
 ---
 
 ## Dependency graph
@@ -2715,7 +2970,9 @@ Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and adds the T
 Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.
 Phase 9.12 (AI assistant) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. Requires an external inference API.
 Phase 9.13 (QuickAdd) is an investigation phase — scope depends on CLI applicability findings. May be deferred or replaced by a Vulcan-native automation DSL.
-Phase 18 (Canvas) should be extended to include Excalidraw parsing as an additional visual document type alongside JSON Canvas.
+Phase 9.15 (TaskNotes) builds on Phase 4 (properties/Bases) and Phase 9.8 (Dataview metadata). It complements Phase 9.10 (Tasks plugin) — TaskNotes uses task-as-note files with rich frontmatter and Bases views, while Tasks plugin operates on inline checkboxes. Calendar sync (9.15.10) is behind a `calendar-sync` feature flag. HTTP API compatibility (9.15.12) depends on Phase 10 (daemon).
+Phase 18.8 (Excalidraw) is part of Phase 18 (Canvas) — both are visual JSON-based document types. Parsing/indexing (18.8.1–18.8.2) depends on Phase 7. WebUI rendering (18.8.3) depends on Phase 13. WebUI editing (18.8.4) depends on Phase 14.
+Phase 14.1 (Note editor) includes Advanced Tables-style table editing for the WebUI — tab navigation, column management, sorting, CSV paste, and formula support.
 
 ---
 
