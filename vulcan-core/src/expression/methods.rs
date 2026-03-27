@@ -1128,6 +1128,108 @@ mod tests {
     }
 
     #[test]
+    fn constructor_and_object_functions() {
+        assert_eq!(eval(r#"number("18 years")"#), serde_json::json!(18));
+        assert_eq!(eval(r#"string(18)"#), serde_json::json!("18"));
+        assert_eq!(
+            eval(r#"dateformat(date("12/31/2022", "MM/dd/yyyy"), "yyyy-MM-dd")"#),
+            serde_json::json!("2022-12-31")
+        );
+        assert_eq!(
+            eval(r#"dateformat(date("210313", "yyMMdd"), "yyyy-MM-dd")"#),
+            serde_json::json!("2021-03-13")
+        );
+        assert_eq!(
+            eval(r#"dateformat(date([[2021-04-16]]), "yyyy-MM-dd")"#),
+            serde_json::json!("2021-04-16")
+        );
+        assert_eq!(
+            eval(r#"string(date("2021-08-15"))"#),
+            serde_json::json!("August 15, 2021")
+        );
+        assert_eq!(
+            eval(r#"durationformat(dur(dur("8 hours")), "hh'h'")"#),
+            serde_json::json!("08h")
+        );
+        assert_eq!(
+            eval(r#"embed(link("Hello"))"#),
+            serde_json::json!("![[Hello]]")
+        );
+        assert_eq!(
+            eval(r#"embed(link("Hello"), false)"#),
+            serde_json::json!("[[Hello]]")
+        );
+        assert_eq!(
+            eval(r#"elink("https://example.com", "Example")"#),
+            serde_json::json!("[Example](https://example.com)")
+        );
+        assert_eq!(
+            eval(r#"extract(object("a", 1, "b", 2), "b", "c")"#),
+            serde_json::json!({"b": 2, "c": null})
+        );
+        assert_eq!(
+            eval(r#"extract([object("a", 1), object("a", 2)], "a")"#),
+            serde_json::json!([{"a": 1}, {"a": 2}])
+        );
+    }
+
+    #[test]
+    fn date_duration_and_utility_functions() {
+        assert_eq!(
+            eval(r#"dateformat(date("2022-01-05T12:18:04"), "yyyy-MM-dd HH:mm:ss")"#),
+            serde_json::json!("2022-01-05 12:18:04")
+        );
+        assert_eq!(
+            eval(r#"dateformat(striptime(date("2022-01-05T12:18:04")), "yyyy-MM-dd HH:mm:ss")"#),
+            serde_json::json!("2022-01-05 00:00:00")
+        );
+        assert_eq!(
+            eval(r#"dateformat(localtime(date("2022-01-05")), "yyyy-MM-dd")"#),
+            serde_json::json!("2022-01-05")
+        );
+        assert_eq!(
+            eval(r#"durationformat(dur("3 days 7 hours 43 seconds"), "ddd'd' hh'h' ss's'")"#),
+            serde_json::json!("003d 07h 43s")
+        );
+        assert_eq!(
+            eval(r#"durationformat(dur("14d"), "s 'seconds'")"#),
+            serde_json::json!("1209600 seconds")
+        );
+        assert_eq!(
+            eval(r#"display("**Hello** World")"#),
+            serde_json::json!("Hello World")
+        );
+        assert_eq!(
+            eval(r#"display("[Hello](https://example.com) [[World]]")"#),
+            serde_json::json!("Hello World")
+        );
+        assert_eq!(
+            eval(r#"display(link("path/to/file.md"))"#),
+            serde_json::json!("file")
+        );
+        assert_eq!(
+            eval(r#"display(link("path/to/file.md", "displayname"))"#),
+            serde_json::json!("displayname")
+        );
+        assert_eq!(
+            eval(r#"display(list("Hello", "World"))"#),
+            serde_json::json!("Hello, World")
+        );
+        assert_eq!(
+            eval(r#"currencyformat(123456.789, "EUR")"#),
+            serde_json::json!("EUR 123,456.79")
+        );
+        assert_eq!(
+            eval(r#"hash("seed", "text") == hash("seed", "text")"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"hash("seed", "text") != hash("seed", "other")"#),
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
     fn escape_html_function() {
         assert_eq!(
             eval(r#"escapeHTML("<b>hi</b>")"#),

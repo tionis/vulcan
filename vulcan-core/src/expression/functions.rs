@@ -1,12 +1,14 @@
+use blake3::Hasher;
 use regex::Regex;
 use serde_json::Value;
 
 use crate::expression::ast::{BinOp, Expr};
 use crate::expression::eval::{
     as_number, compare_values, eval_binary_op, evaluate, is_truthy, number_to_value,
-    value_to_display, EvalContext,
+    resolve_note_reference, value_to_display, EvalContext,
 };
 use crate::expression::methods::{call_method, evaluate_callback};
+use crate::file_metadata::FileMetadataResolver;
 
 #[allow(clippy::too_many_lines)]
 pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -19,6 +21,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "typeof" => func_typeof(args, ctx),
         "length" => func_length(args, ctx),
         "object" => func_object(args, ctx),
+        "extract" => func_extract(args, ctx),
         "round" => func_round(args, ctx),
         "trunc" => func_numeric_unary(args, ctx, f64::trunc),
         "floor" => func_numeric_unary(args, ctx, f64::floor),
@@ -26,6 +29,9 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "default" => func_default(args, ctx, true),
         "ldefault" => func_default(args, ctx, false),
         "choice" => func_choice(args, ctx),
+        "display" => func_display(args, ctx),
+        "hash" => func_hash(args, ctx),
+        "currencyformat" => func_currencyformat(args, ctx),
         "contains" => func_contains(args, ctx, ContainsMode::Recursive),
         "icontains" => func_contains(args, ctx, ContainsMode::Insensitive),
         "econtains" => func_contains(args, ctx, ContainsMode::Exact),
@@ -49,18 +55,14 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "truncate" => func_truncate(args, ctx),
         "padleft" => func_pad(args, ctx, true),
         "padright" => func_pad(args, ctx, false),
+        "dateformat" => func_dateformat(args, ctx),
+        "durationformat" => func_durationformat(args, ctx),
+        "striptime" => func_striptime(args, ctx),
+        "localtime" => func_localtime(args, ctx),
         "map" | "filter" | "sort" | "reverse" | "unique" | "flat" | "slice" => {
             func_array_alias(name, args, ctx)
         }
-        "number" => {
-            let val = eval_arg(args, 0, ctx)?;
-            let n = as_number(&val);
-            if n.is_nan() {
-                Ok(Value::Null)
-            } else {
-                Ok(number_to_value(n))
-            }
-        }
+        "number" => func_number(args, ctx),
         "max" => func_extreme(args, ctx, true),
         "min" => func_extreme(args, ctx, false),
         "sum" => func_aggregate(args, ctx, "+"),
@@ -82,6 +84,9 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
                 None => Ok(Value::String(format!("[[{path_str}]]"))),
             }
         }
+        "embed" => func_embed(args, ctx),
+        "elink" => func_elink(args, ctx),
+        "string" => func_string(args, ctx),
         "list" => {
             let values = eval_all_args(args, ctx)?;
             match values.as_slice() {
@@ -128,6 +133,12 @@ enum TruthyAggregate {
     None,
 }
 
+#[derive(Clone, Copy)]
+enum RenderMode {
+    String,
+    Display,
+}
+
 fn func_if(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     if args.is_empty() {
         return Ok(Value::Null);
@@ -151,10 +162,21 @@ fn func_date(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
         return Ok(Value::Number(shortcut_ms.into()));
     }
 
+    if args.len() > 1 {
+        let text = eval_arg(args, 0, ctx)?;
+        let format = eval_arg(args, 1, ctx)?;
+        return Ok(match (&text, &format) {
+            (Value::String(text), Value::String(format)) => parse_date_with_format(text, format)
+                .map_or(Value::Null, |ms| Value::Number(ms.into())),
+            (Value::Null, _) | (_, Value::Null) => Value::Null,
+            _ => Value::Null,
+        });
+    }
+
     let val = eval_arg(args, 0, ctx)?;
     match &val {
         Value::String(s) => {
-            Ok(parse_date_like_string(s).map_or(Value::Null, |ms| Value::Number(ms.into())))
+            Ok(resolve_date_value(s, ctx).map_or(Value::Null, |ms| Value::Number(ms.into())))
         }
         Value::Number(_) => Ok(val),
         _ => Ok(Value::Null),
@@ -167,6 +189,7 @@ fn func_duration(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
         Value::String(s) => {
             Ok(parse_duration_string(s).map_or(Value::Null, |ms| Value::Number(ms.into())))
         }
+        Value::Number(_) => Ok(val),
         _ => Ok(Value::Null),
     }
 }
@@ -219,6 +242,19 @@ fn func_object(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     Ok(Value::Object(map))
 }
 
+fn func_extract(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    match value {
+        Value::Array(values) => Ok(Value::Array(
+            values
+                .into_iter()
+                .map(|value| extract_keys(value, args, ctx))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        value => extract_keys(value, args, ctx),
+    }
+}
+
 fn func_round(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     let number = as_number(&value);
@@ -249,6 +285,15 @@ fn func_numeric_unary(
     Ok(number_to_value(op(number)))
 }
 
+fn func_number(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let val = eval_arg(args, 0, ctx)?;
+    Ok(match &val {
+        Value::Number(_) => val,
+        Value::String(text) => first_number_in_text(text).map_or(Value::Null, number_to_value),
+        _ => Value::Null,
+    })
+}
+
 fn func_default(args: &[Expr], ctx: &EvalContext, vectorize: bool) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     let fallback = eval_arg(args, 1, ctx)?;
@@ -266,6 +311,46 @@ fn func_choice(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     } else {
         eval_arg(args, 2, ctx)
     }
+}
+
+fn func_display(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let expr = args.first();
+    let value = eval_arg(args, 0, ctx)?;
+    Ok(Value::String(render_value(
+        expr,
+        &value,
+        RenderMode::Display,
+    )))
+}
+
+fn func_hash(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let values = eval_all_args(args, ctx)?;
+    let mut hasher = Hasher::new();
+    for value in &values {
+        hasher.update(render_value(None, value, RenderMode::String).as_bytes());
+        hasher.update(&[0]);
+    }
+    let bytes = hasher.finalize();
+    let mut raw = [0_u8; 8];
+    raw.copy_from_slice(&bytes.as_bytes()[..8]);
+    let value = u64::from_le_bytes(raw) % 9_000_000_000_000_000;
+    Ok(Value::Number((value as i64).into()))
+}
+
+fn func_currencyformat(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let number = as_number(&value);
+    if value.is_null() || number.is_nan() {
+        return Ok(Value::Null);
+    }
+
+    let currency = match eval_arg(args, 1, ctx)? {
+        Value::String(code) => code,
+        Value::Null => "USD".to_string(),
+        _ => return Ok(Value::Null),
+    };
+
+    Ok(Value::String(format_currency_value(number, &currency)))
 }
 
 fn func_contains(args: &[Expr], ctx: &EvalContext, mode: ContainsMode) -> Result<Value, String> {
@@ -460,6 +545,102 @@ fn func_pad(args: &[Expr], ctx: &EvalContext, left: bool) -> Result<Value, Strin
         target_length,
         &padding,
         left,
+    )))
+}
+
+fn func_dateformat(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let format = eval_arg(args, 1, ctx)?;
+    let Value::String(format) = format else {
+        return Ok(Value::Null);
+    };
+
+    match date_value_ms(&value) {
+        Some(ms) => Ok(Value::String(format_date(ms, &format))),
+        None if value.is_null() => Ok(Value::Null),
+        None => Ok(Value::Null),
+    }
+}
+
+fn func_durationformat(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let format = eval_arg(args, 1, ctx)?;
+    let Value::String(format) = format else {
+        return Ok(Value::Null);
+    };
+
+    match duration_value_ms(&value) {
+        Some(ms) => Ok(Value::String(format_duration(ms, &format))),
+        None if value.is_null() => Ok(Value::Null),
+        None => Ok(Value::Null),
+    }
+}
+
+fn func_striptime(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    Ok(match date_value_ms(&value) {
+        Some(ms) => Value::Number(start_of_day(ms).into()),
+        None if value.is_null() => Value::Null,
+        None => Value::Null,
+    })
+}
+
+fn func_localtime(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    Ok(match date_value_ms(&value) {
+        Some(ms) => Value::Number(ms.into()),
+        None if value.is_null() => Value::Null,
+        None => Value::Null,
+    })
+}
+
+fn func_embed(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let Value::String(text) = value else {
+        return Ok(if value.is_null() {
+            Value::Null
+        } else {
+            Value::Null
+        });
+    };
+
+    let Some(link) = parse_wikilink(&text) else {
+        return Ok(Value::Null);
+    };
+    let should_embed = match eval_arg(args, 1, ctx)? {
+        Value::Bool(embed) => embed,
+        Value::Null => true,
+        _ => return Ok(Value::Null),
+    };
+
+    Ok(Value::String(rebuild_link(&link, should_embed)))
+}
+
+fn func_elink(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let url = eval_arg(args, 0, ctx)?;
+    let Value::String(url) = url else {
+        return Ok(if url.is_null() {
+            Value::Null
+        } else {
+            Value::Null
+        });
+    };
+    let display = match eval_arg(args, 1, ctx)? {
+        Value::String(display) => display,
+        Value::Null => url.clone(),
+        _ => return Ok(Value::Null),
+    };
+
+    Ok(Value::String(format!("[{display}]({url})")))
+}
+
+fn func_string(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let expr = args.first();
+    let value = eval_arg(args, 0, ctx)?;
+    Ok(Value::String(render_value(
+        expr,
+        &value,
+        RenderMode::String,
     )))
 }
 
@@ -801,6 +982,113 @@ fn values_match(left: &Value, right: &Value) -> bool {
     compare_values(left, right) == Some(std::cmp::Ordering::Equal) || left == right
 }
 
+fn extract_keys(value: Value, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let mut result = serde_json::Map::new();
+    for key_expr in &args[1..] {
+        let key = evaluate(key_expr, ctx)?;
+        let Value::String(key) = key else {
+            return Err("extract(object, key1, ...) must be called with string keys".to_string());
+        };
+        let extracted = match &value {
+            Value::Object(map) => map.get(&key).cloned().unwrap_or(Value::Null),
+            _ => Value::Null,
+        };
+        result.insert(key, extracted);
+    }
+    Ok(Value::Object(result))
+}
+
+fn resolve_date_value(value: &str, ctx: &EvalContext) -> Option<i64> {
+    parse_date_like_string(value).or_else(|| date_from_link(value, ctx))
+}
+
+fn date_from_link(value: &str, ctx: &EvalContext) -> Option<i64> {
+    let link = parse_wikilink(value)?;
+    if let Some(display) = link.display.as_deref().and_then(parse_date_like_string) {
+        return Some(display);
+    }
+    if let Some(path) = parse_date_like_string(&link.path) {
+        return Some(path);
+    }
+
+    let lookup = ctx.note_lookup?;
+    let note = resolve_note_reference(lookup, &ctx.note.document_path, &link.path)?;
+    match FileMetadataResolver::field(note, "day") {
+        Value::String(day) => parse_date_like_string(&day),
+        Value::Number(ms) => ms.as_i64(),
+        _ => None,
+    }
+}
+
+fn first_number_in_text(text: &str) -> Option<f64> {
+    Regex::new(r"-?[0-9]+(\.[0-9]+)?")
+        .ok()?
+        .find(text)
+        .and_then(|m| m.as_str().parse::<f64>().ok())
+}
+
+fn date_value_ms(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number.as_i64(),
+        Value::String(text) => parse_date_like_string(text),
+        _ => None,
+    }
+}
+
+fn duration_value_ms(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number.as_i64(),
+        Value::String(text) => parse_duration_string(text),
+        _ => None,
+    }
+}
+
+fn render_value(expr: Option<&Expr>, value: &Value, mode: RenderMode) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(_) => value_to_display(value),
+        Value::Number(number) => {
+            let hint = expr.and_then(type_name_hint);
+            if hint == Some("date") {
+                return pretty_date(number.as_i64().unwrap_or(0));
+            }
+            if hint == Some("duration") {
+                return human_duration(number.as_i64().unwrap_or(0));
+            }
+            value_to_display(value)
+        }
+        Value::String(text) => {
+            let hint = expr.and_then(type_name_hint);
+            if hint == Some("date") {
+                if let Some(ms) = parse_date_like_string(text) {
+                    return pretty_date(ms);
+                }
+            }
+            if hint == Some("duration") {
+                if let Some(ms) = parse_duration_string(text) {
+                    return human_duration(ms);
+                }
+            }
+            if let Some(link) = parse_wikilink(text) {
+                return match mode {
+                    RenderMode::String => text.clone(),
+                    RenderMode::Display => link_display_text(&link),
+                };
+            }
+            match mode {
+                RenderMode::String => text.clone(),
+                RenderMode::Display => strip_markdown_display(text),
+            }
+        }
+        Value::Array(values) => values
+            .iter()
+            .map(|value| render_value(None, value, mode))
+            .collect::<Vec<_>>()
+            .join(", "),
+        Value::Object(_) => value_to_display(value),
+    }
+}
+
 fn map_string_value(value: Value, transform: fn(&str) -> String) -> Value {
     match value {
         Value::String(text) => Value::String(transform(&text)),
@@ -925,6 +1213,109 @@ fn repeated_fill(padding: &str, target_length: usize) -> String {
     let mut result = String::new();
     for index in 0..target_length {
         result.push(padding_chars[index % padding_chars.len()]);
+    }
+    result
+}
+
+fn link_display_text(link: &ParsedWikilink) -> String {
+    link.display.clone().unwrap_or_else(|| {
+        let base = link.path.rsplit('/').next().unwrap_or(&link.path);
+        base.trim_end_matches(".md").to_string()
+    })
+}
+
+fn strip_markdown_display(text: &str) -> String {
+    let markdown_link = Regex::new(r"\[([^\]]+)\]\([^)]+\)").expect("valid markdown-link regex");
+    let wikilink = Regex::new(r"!?(\[\[[^\]]+\]\])").expect("valid wikilink regex");
+
+    let text = markdown_link.replace_all(text, "$1");
+    let text = wikilink.replace_all(&text, |captures: &regex::Captures<'_>| {
+        captures
+            .get(1)
+            .and_then(|m| parse_wikilink(m.as_str()))
+            .map_or_else(String::new, |link| link_display_text(&link))
+    });
+
+    text.replace("**", "")
+        .replace("__", "")
+        .replace("~~", "")
+        .replace("==", "")
+        .replace('`', "")
+        .replace('*', "")
+        .replace('_', "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn pretty_date(ms: i64) -> String {
+    format_date(ms, "MMMM d, yyyy")
+}
+
+fn human_duration(ms: i64) -> String {
+    let mut remaining = ms.abs();
+    let sign = if ms < 0 { "-" } else { "" };
+    let mut parts = Vec::new();
+
+    for (label, unit_ms) in [
+        ("year", 365 * 86_400_000_i64),
+        ("month", 30 * 86_400_000_i64),
+        ("week", 7 * 86_400_000_i64),
+        ("day", 86_400_000_i64),
+        ("hour", 3_600_000_i64),
+        ("minute", 60_000_i64),
+        ("second", 1_000_i64),
+        ("millisecond", 1_i64),
+    ] {
+        let count = remaining / unit_ms;
+        if count > 0 {
+            parts.push(format!(
+                "{count} {label}{}",
+                if count == 1 { "" } else { "s" }
+            ));
+            remaining %= unit_ms;
+        }
+    }
+
+    if parts.is_empty() {
+        "0 milliseconds".to_string()
+    } else {
+        format!("{sign}{}", parts.join(" "))
+    }
+}
+
+fn rebuild_link(link: &ParsedWikilink, embed: bool) -> String {
+    let mut target = link.path.clone();
+    if let Some(subpath) = &link.subpath {
+        target.push('#');
+        if link.link_type == "block" {
+            target.push('^');
+        }
+        target.push_str(subpath);
+    }
+    let display = link
+        .display
+        .as_ref()
+        .map_or_else(String::new, |display| format!("|{display}"));
+    let prefix = if embed { "!" } else { "" };
+    format!("{prefix}[[{target}{display}]]")
+}
+
+fn format_currency_value(number: f64, currency: &str) -> String {
+    let sign = if number < 0.0 { "-" } else { "" };
+    let rounded = format!("{:.2}", number.abs());
+    let (whole, fractional) = rounded.split_once('.').unwrap_or((&rounded, "00"));
+    format!("{sign}{currency} {}.{fractional}", comma_separate(whole))
+}
+
+fn comma_separate(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let mut result = String::new();
+    for (index, ch) in chars.iter().enumerate() {
+        if index > 0 && (chars.len() - index) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(*ch);
     }
     result
 }
@@ -1074,6 +1465,73 @@ pub fn parse_date_like_string(s: &str) -> Option<i64> {
             None
         }
     })
+}
+
+#[must_use]
+pub fn parse_date_with_format(text: &str, format: &str) -> Option<i64> {
+    if format == "x" || format == "X" {
+        let value = first_number_in_text(text)? as i64;
+        return Some(if format == "X" { value * 1000 } else { value });
+    }
+
+    let text = text.trim();
+    let mut text_index = 0_usize;
+    let mut format_index = 0_usize;
+    let format_bytes = format.as_bytes();
+    let text_bytes = text.as_bytes();
+
+    let mut year = None;
+    let mut month = None;
+    let mut day = None;
+    let mut hour = Some(0_i64);
+    let mut minute = Some(0_i64);
+    let mut second = Some(0_i64);
+
+    while format_index < format.len() {
+        if let Some((token, width)) = date_format_token(&format[format_index..]) {
+            if text_index + width > text.len() {
+                return None;
+            }
+            let segment = &text[text_index..text_index + width];
+            if !segment.chars().all(|ch| ch.is_ascii_digit()) {
+                return None;
+            }
+            let value = segment.parse::<i64>().ok()?;
+            match token {
+                "yyyy" => year = Some(value),
+                "yy" => year = Some(2000 + value),
+                "MM" => month = Some(value),
+                "dd" => day = Some(value),
+                "HH" => hour = Some(value),
+                "mm" => minute = Some(value),
+                "ss" => second = Some(value),
+                _ => {}
+            }
+            format_index += token.len();
+            text_index += width;
+        } else {
+            if text_bytes.get(text_index) != format_bytes.get(format_index) {
+                return None;
+            }
+            format_index += 1;
+            text_index += 1;
+        }
+    }
+
+    if text_index != text.len() {
+        return None;
+    }
+
+    let date = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year?,
+        month?,
+        day?,
+        hour.unwrap_or(0),
+        minute.unwrap_or(0),
+        second.unwrap_or(0)
+    );
+    parse_date_string(&date)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1443,6 +1901,25 @@ fn split_unescaped_pipe(link: &str) -> (String, Option<String>) {
     (link.replace("\\|", "|"), None)
 }
 
+fn date_format_token(format: &str) -> Option<(&'static str, usize)> {
+    for token in [
+        "yyyy", "MMMM", "MMM", "ffff", "SSS", "YYYY", "yy", "MM", "dd", "DD", "HH", "mm", "ss",
+        "YY", "X", "x", "d", "D",
+    ] {
+        if format.starts_with(token) {
+            let width = match token {
+                "yyyy" | "YYYY" => 4,
+                "yy" | "YY" | "MM" | "dd" | "DD" | "HH" | "mm" | "ss" => 2,
+                "d" | "D" => 1,
+                "x" | "X" => 1,
+                _ => token.len(),
+            };
+            return Some((token, width));
+        }
+    }
+    None
+}
+
 /// Days since Unix epoch to civil date.
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
@@ -1462,14 +1939,151 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 #[must_use]
 pub fn format_date(ms: i64, format: &str) -> String {
     let (year, month, day, hour, minute, second, millisecond) = date_components(ms);
-    format
-        .replace("YYYY", &format!("{year:04}"))
-        .replace("MM", &format!("{month:02}"))
-        .replace("DD", &format!("{day:02}"))
-        .replace("HH", &format!("{hour:02}"))
-        .replace("mm", &format!("{minute:02}"))
-        .replace("ss", &format!("{second:02}"))
-        .replace("SSS", &format!("{millisecond:03}"))
+    let mut rendered = String::new();
+    let mut index = 0_usize;
+    while index < format.len() {
+        let remainder = &format[index..];
+        if let Some((token, _)) = date_format_token(remainder) {
+            rendered.push_str(&match token {
+                "yyyy" | "YYYY" => format!("{year:04}"),
+                "yy" | "YY" => format!("{:02}", year.rem_euclid(100)),
+                "MMMM" => month_name(month).to_string(),
+                "MMM" => month_name(month)[..3].to_string(),
+                "MM" => format!("{month:02}"),
+                "dd" | "DD" => format!("{day:02}"),
+                "d" | "D" => day.to_string(),
+                "HH" => format!("{hour:02}"),
+                "mm" => format!("{minute:02}"),
+                "ss" => format!("{second:02}"),
+                "SSS" => format!("{millisecond:03}"),
+                "x" => ms.to_string(),
+                "X" => (ms / 1000).to_string(),
+                "ffff" => format!(
+                    "{}, {} {}, {} {:02}:{:02}:{:02}",
+                    weekday_name(iso_weekday(year, month, day)),
+                    month_name(month),
+                    day,
+                    year,
+                    hour,
+                    minute,
+                    second
+                ),
+                _ => token.to_string(),
+            });
+            index += token.len();
+        } else if let Some(ch) = remainder.chars().next() {
+            rendered.push(ch);
+            index += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    rendered
+}
+
+#[must_use]
+pub fn format_duration(ms: i64, format: &str) -> String {
+    let mut remainder = ms.abs();
+    let units = [
+        ('y', 365 * 86_400_000_i64),
+        ('M', 30 * 86_400_000_i64),
+        ('w', 7 * 86_400_000_i64),
+        ('d', 86_400_000_i64),
+        ('h', 3_600_000_i64),
+        ('m', 60_000_i64),
+        ('s', 1_000_i64),
+        ('S', 1_i64),
+    ];
+    let present = duration_tokens_in_format(format);
+
+    let mut values = std::collections::BTreeMap::new();
+    for (token, unit_ms) in units {
+        if !present.contains(&token) {
+            continue;
+        }
+        let value = remainder / unit_ms;
+        values.insert(token, value);
+        remainder %= unit_ms;
+    }
+
+    let mut rendered = String::new();
+    let mut chars = format.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\'' {
+            while let Some(literal) = chars.next() {
+                if literal == '\'' {
+                    break;
+                }
+                rendered.push(literal);
+            }
+            continue;
+        }
+
+        if values.contains_key(&ch) {
+            let mut width = 1_usize;
+            while chars.peek().is_some_and(|next| *next == ch) {
+                chars.next();
+                width += 1;
+            }
+            let value = values.get(&ch).copied().unwrap_or(0);
+            rendered.push_str(&format!("{value:0width$}"));
+        } else {
+            rendered.push(ch);
+        }
+    }
+    rendered
+}
+
+fn duration_tokens_in_format(format: &str) -> Vec<char> {
+    let mut tokens = Vec::new();
+    let mut in_literal = false;
+    for ch in format.chars() {
+        if ch == '\'' {
+            in_literal = !in_literal;
+            continue;
+        }
+        if !in_literal
+            && matches!(ch, 'y' | 'M' | 'w' | 'd' | 'h' | 'm' | 's' | 'S')
+            && !tokens.contains(&ch)
+        {
+            tokens.push(ch);
+        }
+    }
+    tokens
+}
+
+fn month_name(month: i64) -> &'static str {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    usize::try_from(month.saturating_sub(1))
+        .ok()
+        .and_then(|index| MONTHS.get(index).copied())
+        .unwrap_or("")
+}
+
+fn weekday_name(weekday: i64) -> &'static str {
+    match weekday {
+        1 => "Monday",
+        2 => "Tuesday",
+        3 => "Wednesday",
+        4 => "Thursday",
+        5 => "Friday",
+        6 => "Saturday",
+        7 => "Sunday",
+        _ => "",
+    }
 }
 
 #[cfg(test)]
