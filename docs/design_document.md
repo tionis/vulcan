@@ -40,6 +40,7 @@ The first release should optimize for practical vault engineering tasks instead 
 - Provide fast content lookup: exact search, hybrid search, semantic similarity, near-duplicate detection, clustering, topic exploration.
 - Expose structured querying over note properties and file metadata.
 - Parse and query a useful subset of Obsidian Bases files, which are stored as `.base` YAML files and define views, filters, and formulas.[3][4]
+- Support Dataview-style inline fields (`key:: value`) and Dataview Query Language (DQL) as a query surface, since many vaults depend on these conventions for metadata and dynamic views.[17]
 - Let users treat a vault as a dynamic, queryable document database with saved views, ad hoc queries, and safe edit workflows.
 - Offer an implementation-friendly automation surface for scripts, agents, and shell workflows.
 
@@ -109,6 +110,8 @@ Recommended logical entities:
 - `diagnostics`: unresolved links, parse errors, type mismatches, unsupported syntax.
 - `vectors`: chunk embeddings keyed by chunk identity and model identity.
 - `canvas_nodes` and `canvas_edges`: structured data from `.canvas` files (JSON Canvas format). Canvas files are a distinct document type — they are JSON, not Markdown. Text node content is chunked and indexed in FTS5; file node references create link edges in the vault graph. See §5.1 and Roadmap Phase 18.
+- `tasks`: structured task items (`- [ ]`, `- [x]`, etc.) extracted from note body text, with status, text, nesting, and section context. See §12b and Roadmap Phase 9.8.
+- `task_properties`: inline fields extracted from within task text (e.g., `[due:: 2026-04-01]`). See §12b and Roadmap Phase 9.8.
 
 Every entity should carry enough provenance to support incremental repair: source document id, content hash, parser version, and extraction version where relevant.
 
@@ -402,6 +405,116 @@ Recommended direction:
 
 The preferred sequence is to make note and property editing solid before attempting create/delete/rename/edit flows for Bases views themselves.
 
+## 12b. Dataview-compatible metadata and querying
+
+Many Obsidian vaults rely heavily on the Dataview community plugin for inline metadata and dynamic queries. Vulcan should support Dataview-style conventions as a first-class concern rather than treating them as opaque plugin syntax.
+
+### Inline fields
+
+Dataview extends Obsidian's property model beyond YAML frontmatter with inline fields written directly in note body text:
+
+- **Key-value fields:** `key:: value` — a key followed by `::` and a value, written on its own line or inline within a paragraph. The value extends to the end of the line.
+- **Parenthesized fields:** `(key:: value)` — same semantics but rendered without the key in Obsidian's reading mode.
+- **Bracket fields:** `[key:: value]` — same semantics, rendered as just the value as a clickable link-like element.
+
+Inline fields should be extracted during the parsing pipeline (Stage 2 of the parser) and stored alongside frontmatter properties. The property model already distinguishes `origin_context` for links; properties should carry a similar provenance indicator (`frontmatter`, `inline`, `inline_paren`, `inline_bracket`) so that roundtrip editing and diagnostics can distinguish them.
+
+### Recommended inline field handling
+
+- Extract inline fields during the semantic pass by detecting `key:: value` patterns in `Text` events, excluding content inside code blocks, math blocks, and comment regions.
+- Normalize inline field keys to match frontmatter property key normalization (lowercase, trimmed).
+- Store inline fields in the existing `property_values` table with an `origin` column indicating extraction source. A single note may define the same property in both frontmatter and inline fields — store both, with frontmatter taking precedence for typed queries unless the user explicitly queries inline fields.
+- Inline fields that contain link syntax (`[[Target]]`) should be detected and stored as link-valued properties, consistent with existing link-valued frontmatter handling.
+- The property catalog should track inline field usage alongside frontmatter usage.
+
+### Dataview Query Language (DQL)
+
+Dataview defines a SQL-like query language written in fenced code blocks (` ```dataview `). The core query types are:
+
+- **TABLE** — tabular output with configurable columns (expressions evaluated per row)
+- **LIST** — flat or grouped list of matching notes, with optional per-note expressions
+- **TASK** — query and display tasks (`- [ ]` items) from matching notes, with task-specific filters
+- **CALENDAR** — date-based calendar view of matching notes
+
+A DQL query follows this general structure:
+
+```
+TABLE|LIST|TASK|CALENDAR [expressions]
+FROM <source>
+WHERE <filter>
+SORT <field> ASC|DESC
+GROUP BY <field>
+FLATTEN <field>
+LIMIT <n>
+```
+
+**FROM sources** select the initial note set:
+- `#tag` — notes with a given tag
+- `"folder"` — notes in a folder
+- `[[note]]` — notes linked from a specific note (outgoing links)
+- `[[note]]` with `-` prefix — notes that link to a specific note (incoming links / backlinks)
+- Boolean combinations: `#tag AND "folder"`, `#a OR #b`, `!#excluded`
+
+**WHERE filters** support field access, comparisons, boolean logic, and function calls. The expression language includes date arithmetic, string operations, list operations, and type coercion.
+
+### Recommended DQL implementation
+
+DQL should compile to Vulcan's canonical internal query model (the same AST that Bases, CLI flags, and JSON payloads target). This avoids building a parallel query engine.
+
+- **Parser:** Hand-rolled recursive descent parser for DQL syntax, producing the internal query AST. DQL is simple enough that a full parser generator is unnecessary.
+- **FROM → source resolution:** Translate FROM clauses to the existing source/filter primitives. Tag and folder sources map to SQL filters on the `tags` and `documents` tables. Link sources map to joins on the `links` table.
+- **WHERE → filter expressions:** DQL WHERE expressions are structurally similar to Bases filter expressions and should lower to the same `FilterExpression` representation. Much of the expression evaluation infrastructure from Phase 4.5 (Bases expression language) is reusable.
+- **TABLE columns / LIST expressions → projections:** DQL column expressions compile to the same projection model used by Bases formulas.
+- **TASK queries:** Require the task extraction infrastructure. Task items (`- [ ]`, `- [x]`, `- [/]`, etc.) must be parsed and stored during indexing (see inline field and task extraction below). TASK queries filter and display these items.
+- **CALENDAR queries:** Require a date-valued field per note. The CLI and WebUI rendering of calendar output is a presentation concern, not a query engine concern.
+- **GROUP BY / FLATTEN / LIMIT:** These are standard query operations that the internal query model should already support or can be extended to support.
+
+### Inline expressions
+
+Dataview supports inline expressions prefixed with `=` that evaluate in the context of the current note:
+
+- **Inline queries:** `` `= this.property` `` — evaluates an expression and renders the result inline
+- **`this` context:** Within an inline expression, `this` refers to the current note's metadata (frontmatter + inline fields + file properties)
+
+Inline expression evaluation is primarily a rendering concern. For Vulcan's purposes:
+
+- During indexing, detect inline expressions (backtick-delimited text starting with `=`) and store them as metadata so they can be evaluated at query or render time.
+- The expression evaluator from the Bases expression language (Phase 4.5) should handle the expression syntax with the addition of the `this` binding.
+- In CLI output and WebUI rendering, inline expressions can be evaluated and substituted or displayed as-is with a diagnostic note.
+
+### Task extraction
+
+DQL's TASK query type requires structured task data. Task extraction should be added to the parser pipeline:
+
+- Detect task list items (`- [ ]`, `- [x]`, `- [/]`, `- [-]`, and custom status characters) during the semantic pass.
+- Store tasks in a `tasks` table: `id`, `document_id`, `status_char`, `text`, `byte_offset`, `parent_task_id` (for nested tasks), `section_heading` (nearest ancestor heading).
+- Extract inline fields within task text (e.g., `- [ ] Buy groceries [due:: 2026-04-01]`).
+- Task completion state is derived from the status character: `x` = done, ` ` = todo, `/` = in-progress, `-` = cancelled. Support custom status characters via configuration.
+
+### DataviewJS
+
+Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. These are arbitrary JS programs with access to a Dataview API object.
+
+**DataviewJS is a non-goal for Vulcan.** Running arbitrary JavaScript in a Rust CLI would require embedding a JS runtime, which adds significant complexity for a feature that is better served by Vulcan's own query and scripting surfaces. DataviewJS code blocks should be:
+
+- Detected during parsing and stored as metadata (code block language = `dataviewjs`).
+- Surfaced in diagnostics as unsupported syntax rather than silently ignored.
+- Excluded from FTS indexing (they are code, not content).
+
+### Relationship to existing query surfaces
+
+Dataview support reinforces the design direction in §12 (Bases: Query model beyond version 1):
+
+| Frontend | Purpose | Format |
+|----------|---------|--------|
+| CLI flags | Ad hoc one-liner queries | `--where`, `--sort`, `--fields` |
+| JSON API | Agent and automation queries | Structured JSON payloads |
+| Bases (`.base`) | Saved views and reports | YAML files |
+| DQL (code blocks) | Inline dynamic queries in notes | ` ```dataview ` blocks |
+| Inline expressions | Per-note computed values | `` `= expr` `` |
+
+All five compile to the same internal query AST, share the same filter and expression evaluation engine, and run against the same cache tables. The difference is where the query is authored (CLI, API, file, or note body) and how results are rendered.
+
 ## 13. Language and framework recommendations
 
 ### Primary recommendation: Rust
@@ -623,7 +736,7 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements (edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates)
+- **Phase 9:** CLI refinements (edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates, Dataview-compatible metadata and querying)
 - **Phase 10:** Multi-vault daemon with REST API
 - **Phase 11:** Git auto-versioning at the daemon level
 - **Phase 12:** Sync integration
@@ -659,6 +772,7 @@ Maintain a set of test vaults in the repository (e.g., `tests/fixtures/vaults/`)
 - **`broken-frontmatter/`**: Notes with malformed YAML, unclosed delimiters, and mixed indentation, testing parser resilience and diagnostic output.
 - **`move-rewrite/`**: A vault structured to test move-safe rewrites — after running a `move` operation, assert that all inbound links are rewritten correctly and no links are broken.
 - **`bases/`**: A vault with `.base` files exercising supported filter and formula constructs, plus unsupported constructs that should produce diagnostics.
+- **`dataview/`**: A vault with Dataview-style inline fields (`key:: value`, `(key:: value)`, `[key:: value]`), task items with inline field annotations, `` ```dataview `` code blocks with DQL queries, and inline expressions (`` `= this.property` ``). Tests inline field extraction, task parsing, DQL compilation, and inline expression evaluation.
 
 Integration tests should run the full indexing pipeline against these vaults and assert on the resulting database state: row counts, resolved link targets, diagnostic entries, property types, etc.
 
@@ -728,5 +842,6 @@ The implementation agent should treat the following as mandatory:
 [14] Obsidian Help: Callouts and Internal links.
 [15] comrak documentation — extensions for source positions, front matter, alerts, and wikilinks.
 [16] tree-sitter-markdown README — correctness limitations and editor-oriented positioning.
+[17] Dataview documentation — inline fields, DQL query language, inline expressions, DataviewJS, implicit metadata.
 
 This document is intentionally opinionated. It is optimized to keep the first implementation correct, rebuildable, and extensible rather than feature-maximal.

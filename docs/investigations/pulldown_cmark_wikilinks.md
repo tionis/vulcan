@@ -114,7 +114,7 @@ The `has_pothole` field indicates whether the pipe separator was present (pulldo
 
 These are explicitly out of scope per §3 (no plugin-specific syntax extensions). They are listed here because they are extremely common in real vaults and worth understanding for triage purposes.
 
-- **Dataview:** `` ```dataview `` code blocks and inline expressions (`= this.property`). pulldown-cmark emits code blocks as `Tag::CodeBlock` and inline expressions as regular text. Both pass through harmlessly as inert chunk content. No special handling needed.
+- **Dataview:** `` ```dataview `` code blocks and inline expressions (`= this.property`). pulldown-cmark emits code blocks as `Tag::CodeBlock` and inline expressions as regular text. Both pass through harmlessly as inert chunk content. No special handling needed at the pulldown-cmark level. See §12b in the design document and Roadmap §9.8 for Vulcan's planned Dataview-compatible metadata and querying support (inline fields, DQL parser, inline expression evaluation).
 - **Templater:** `<% %>` template tags. pulldown-cmark may emit these as `Event::InlineHtml` or `Event::Html` depending on context. Harmless — templates are typically resolved before the note is saved, so they rarely appear in vault content at rest. If they do, they're just noise in the index.
 
 Neither requires special-casing in the parser. If `doctor` ever grows a "plugin syntax detected" advisory diagnostic, these would be the first candidates.

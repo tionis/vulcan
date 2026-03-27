@@ -1087,6 +1087,112 @@ vulcan template insert <template> --append     # append to end (default)
 - [x] Template list (`vulcan template --list`) shows templates from both `.vulcan/templates/` and the Obsidian template folder, with source indicated
 - [x] On conflict (same template name in both locations): `.vulcan/templates/` takes precedence, with a warning
 
+### 9.8 Dataview-compatible metadata and querying
+
+**Goal:** Support Dataview-style inline fields, DQL queries, inline expressions, and task queries. Many Obsidian vaults depend on Dataview conventions for metadata and dynamic views — Vulcan should treat these as first-class rather than opaque plugin syntax.
+
+**Builds on:** Phase 4 (properties and Bases expression language provide the filter/expression evaluation engine), Phase 1 (parser pipeline for inline field and task extraction), Phase 9.6 (search operators, task search).
+**Design refs:** §12b (Dataview-compatible metadata and querying), §9 (property handling), §12 (query model beyond v1)
+
+#### 9.8.1 Inline field extraction
+
+Extend the parser pipeline to extract Dataview-style inline fields from note body text.
+
+- [ ] Detect `key:: value` patterns in `Text` events during the semantic pass, excluding code blocks, math blocks, and comment regions
+- [ ] Support parenthesized `(key:: value)` and bracket `[key:: value]` variants
+- [ ] Normalize inline field keys to match frontmatter property key normalization (lowercase, trimmed)
+- [ ] Store inline fields in `property_values` with a new `origin` column (`frontmatter`, `inline`, `inline_paren`, `inline_bracket`)
+- [ ] Schema migration: add `origin` column to `property_values` (default `frontmatter` for existing rows)
+- [ ] Handle inline fields containing link syntax (`[[Target]]`) as link-valued properties
+- [ ] Update property catalog to track inline field usage alongside frontmatter usage
+- [ ] Precedence: frontmatter properties take precedence over inline fields for typed queries; both are stored and queryable
+- [ ] Unit tests: all inline field variants, mixed frontmatter + inline, link-valued inline fields, fields inside code blocks (should be ignored)
+- [ ] Integration test: vault with Dataview-style inline fields, verify property extraction and precedence
+
+#### 9.8.2 Task extraction and storage
+
+Add structured task item parsing and storage to the indexer.
+
+- [ ] Detect task list items (`- [ ]`, `- [x]`, `- [/]`, `- [-]`, custom status characters) during the semantic pass
+- [ ] Schema migration: `tasks` table — `id`, `document_id`, `status_char`, `text`, `byte_offset`, `parent_task_id` (nullable, for nested tasks), `section_heading` (nearest ancestor heading text), `line_number`
+- [ ] Extract inline fields within task text (e.g., `- [ ] Buy groceries [due:: 2026-04-01]`) and store as task-scoped properties
+- [ ] Schema migration: `task_properties` table — `task_id`, `key`, `value_text`, `value_type`
+- [ ] Index on `tasks(document_id)`, `tasks(status_char)`, `task_properties(task_id)`, `task_properties(key)`
+- [ ] Task completion state mapping: `x` = done, ` ` = todo, `/` = in-progress, `-` = cancelled; configurable custom status characters via `.vulcan/config.toml`
+- [ ] Unit tests: basic tasks, nested tasks, tasks with inline fields, custom status characters
+- [ ] Integration test: vault with varied task items, verify task extraction and property association
+
+#### 9.8.3 DQL parser
+
+Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's internal query AST.
+
+- [ ] Detect `` ```dataview `` fenced code blocks during parsing; store raw DQL text as block metadata
+- [ ] DQL tokenizer: keywords (`TABLE`, `LIST`, `TASK`, `CALENDAR`, `FROM`, `WHERE`, `SORT`, `GROUP BY`, `FLATTEN`, `LIMIT`, `ASC`, `DESC`, `AND`, `OR`, `NOT`), identifiers, string literals, numbers, operators, parentheses
+- [ ] DQL parser: recursive descent parser producing the internal query AST
+  - [ ] Query type: `TABLE`, `LIST`, `TASK`, `CALENDAR`
+  - [ ] FROM clause: tag sources (`#tag`), folder sources (`"folder"`), link sources (`[[note]]` for outgoing, `-[[note]]` for incoming), boolean combinations (`AND`, `OR`, `!`)
+  - [ ] WHERE clause: field access (dotted paths), comparisons (`=`, `!=`, `<`, `>`, `<=`, `>=`), boolean logic (`AND`, `OR`, `!`), function calls, `contains()`, `startswith()`, `endswith()`
+  - [ ] SORT clause: field + direction (`ASC`/`DESC`), multiple sort keys
+  - [ ] GROUP BY clause: field expression
+  - [ ] FLATTEN clause: list field expansion into individual rows
+  - [ ] LIMIT clause: integer cap on result count
+  - [ ] TABLE column expressions: arbitrary expressions evaluated per note (reuse Bases expression evaluator)
+  - [ ] LIST display expression: optional per-note expression
+- [ ] Compile FROM clauses to source/filter primitives (tag → `tags` table filter, folder → `documents.path` prefix, links → `links` table join)
+- [ ] Compile WHERE expressions to `FilterExpression` structs (shared with Bases and `--where` CLI flag)
+- [ ] Error recovery: malformed DQL produces diagnostics, not panics
+- [ ] Unit tests: parse each clause type, boolean FROM combinations, nested WHERE expressions, malformed input
+- [ ] Integration test: round-trip DQL parse → AST → evaluation against a test vault
+
+#### 9.8.4 DQL evaluation and CLI surface
+
+Execute parsed DQL queries against the cache and expose results via CLI.
+
+- [ ] `vulcan dataview eval <file> [--block <n>]` — evaluate a DQL code block from a specific note (by block index or the first/only block)
+- [ ] `vulcan dataview query <dql-string>` — evaluate a DQL query string directly from the command line
+- [ ] TABLE output: columnar table in human mode, array-of-objects in `--output json`
+- [ ] LIST output: note list with optional expression values
+- [ ] TASK output: task items grouped by source note, with status and text
+- [ ] CALENDAR output: JSON with date-keyed entries (human mode shows a flat date-grouped list; calendar rendering is a WebUI concern)
+- [ ] GROUP BY support: nested output structure with group keys
+- [ ] FLATTEN support: list expansion into individual result rows
+- [ ] LIMIT support: cap result count
+- [ ] Diagnostics for unsupported DQL features surfaced in output
+- [ ] `--output json` on all subcommands
+- [ ] Integration tests: TABLE, LIST, TASK queries against test vault with known results
+
+#### 9.8.5 Inline expression evaluation
+
+Support Dataview inline expressions (`` `= expr` ``) for note rendering and query contexts.
+
+- [ ] Detect inline expressions (backtick-delimited text starting with `=`) during the semantic pass; store as inline expression metadata
+- [ ] `this` binding: within an inline expression, `this` resolves to the current note's metadata (frontmatter + inline fields + file properties)
+- [ ] Reuse the Bases expression evaluator (Phase 4.5) with the `this` context extension
+- [ ] `vulcan dataview inline <file>` — evaluate all inline expressions in a note, output results alongside source expressions
+- [ ] In `--output json` mode, include evaluated inline expression results in note metadata
+- [ ] Diagnostics for expressions that fail to evaluate (type errors, missing fields)
+- [ ] Unit tests: `this.property` access, nested field access, function calls, missing field handling
+- [ ] Integration test: note with inline expressions, verify evaluation results
+
+#### 9.8.6 DataviewJS detection (non-goal boundary)
+
+DataviewJS (`` ```dataviewjs `` code blocks) runs arbitrary JavaScript and is out of scope.
+
+- [ ] Detect `dataviewjs` code blocks during parsing
+- [ ] Store as block metadata with `language = "dataviewjs"`
+- [ ] Emit diagnostic: "DataviewJS blocks are not evaluated by Vulcan"
+- [ ] Exclude from FTS indexing (code, not content)
+- [ ] Unit test: dataviewjs block detected and diagnosed
+
+#### 9.8.7 Cross-cutting integration
+
+- [ ] **Search:** DQL code blocks and inline expressions are stored as metadata but excluded from FTS content indexing (they are queries, not prose). Inline field *values* are included in FTS.
+- [ ] **Doctor:** Report notes with DQL blocks that fail to parse. Report inline fields with type inconsistencies against the property catalog. Report DataviewJS blocks as unsupported.
+- [ ] **Browse TUI:** Notes with DQL blocks could show evaluated query results in a detail pane (future enhancement, not required for initial implementation).
+- [ ] **HTTP API:** `GET /{id}/dataview/eval` endpoint accepts a DQL string and returns structured results. Inline expression evaluation available via note render endpoints.
+- [ ] **Property queries:** Inline fields are queryable via the existing `--where` filter surface. `vulcan notes --where "due < date(today)"` finds notes where the `due` inline field is in the past.
+- [ ] **Bases interop:** Bases views and DQL queries share the same expression evaluation engine and filter primitives. A Bases view and a DQL TABLE query with equivalent logic should produce identical results.
+
 ---
 
 ## Phase 10: Multi-Vault Daemon
@@ -1937,6 +2043,7 @@ Phase 15 requires 10. Phase 16 requires 13, 14, and 17.4–17.5 (document secret
 Phase 17.6 (OIDC/SSO) is a future direction — deferred until the local auth system is stable.
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas ACLs follow from Phase 17.
+Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language) and Phase 9.6 (search operators, task search). Sub-phases 9.8.1–9.8.2 (inline fields, tasks) extend the parser pipeline. Sub-phases 9.8.3–9.8.5 (DQL parser, evaluation, inline expressions) reuse the Phase 4.5 expression evaluator. Dataview metadata and queries are available to all later phases (daemon, web, wiki) as foundation infrastructure.
 
 ---
 
