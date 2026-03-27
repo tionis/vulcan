@@ -2251,6 +2251,8 @@ mod tests {
     use crate::config::{
         load_vault_config, AttachmentExtractionConfig, LinkResolutionMode, LinkStylePreference,
     };
+    use crate::file_metadata::FileMetadataResolver;
+    use crate::properties::load_note_index;
     use crate::{search_vault, SearchQuery};
     use serde_json::{json, Value};
     use tempfile::TempDir;
@@ -2703,6 +2705,49 @@ mod tests {
                     "Follow up [due:: 2026-04-02]".to_string(),
                 ),
             ]
+        );
+
+        let note_index = load_note_index(&paths).expect("note index should load");
+        let dashboard = note_index
+            .get("Dashboard")
+            .expect("dashboard note should be indexed");
+        let dashboard_lists = FileMetadataResolver::field(dashboard, "lists");
+        let dashboard_lists = dashboard_lists
+            .as_array()
+            .expect("file.lists should return an array");
+        assert_eq!(dashboard_lists.len(), 4);
+        assert_eq!(dashboard_lists[0]["line"], Value::Number(19.into()));
+        assert_eq!(dashboard_lists[0]["annotated"], Value::Bool(true));
+        assert_eq!(dashboard_lists[0]["task"], Value::Bool(false));
+        assert_eq!(
+            dashboard_lists[0]["children"][0]["line"],
+            Value::Number(20.into())
+        );
+        assert_eq!(
+            dashboard_lists[1]["link"],
+            Value::String("[[Dashboard#^list-child]]".to_string())
+        );
+
+        let dashboard_tasks = FileMetadataResolver::field(dashboard, "tasks");
+        let dashboard_tasks = dashboard_tasks
+            .as_array()
+            .expect("file.tasks should return an array");
+        assert_eq!(dashboard_tasks.len(), 2);
+        assert_eq!(dashboard_tasks[0]["status"], Value::String(" ".to_string()));
+        assert_eq!(dashboard_tasks[0]["checked"], Value::Bool(false));
+        assert_eq!(dashboard_tasks[0]["completed"], Value::Bool(false));
+        assert_eq!(dashboard_tasks[0]["fullyCompleted"], Value::Bool(false));
+        assert_eq!(
+            dashboard_tasks[0]["due"],
+            Value::String("2026-04-01".to_string())
+        );
+        assert_eq!(
+            dashboard_tasks[0]["children"][0]["status"],
+            Value::String("x".to_string())
+        );
+        assert_eq!(
+            dashboard_tasks[1]["owner"],
+            Value::String("[[People/Bob]]".to_string())
         );
 
         let search = search_vault(

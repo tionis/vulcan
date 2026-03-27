@@ -345,7 +345,9 @@ pub fn file_field_type_name(field: &str) -> Option<&'static str> {
         "link" => Some("link"),
         "size" => Some("number"),
         "mtime" | "ctime" | "mday" | "cday" | "day" => Some("date"),
-        "tags" | "etags" | "inlinks" | "outlinks" | "links" | "aliases" => Some("array"),
+        "tags" | "etags" | "inlinks" | "outlinks" | "links" | "aliases" | "tasks" | "lists" => {
+            Some("array")
+        }
         "frontmatter" | "properties" => Some("object"),
         "starred" => Some("boolean"),
         _ => None,
