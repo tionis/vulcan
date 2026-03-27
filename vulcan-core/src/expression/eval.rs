@@ -71,12 +71,13 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
             if let Some(value) = ctx.locals.get(name) {
                 return Ok(value.clone());
             }
+            let normalized_name = normalize_field_name(name);
             // `file` standalone → basename string (usable as link target)
-            if name == "file" {
+            if normalized_name == "file" {
                 return Ok(Value::String(ctx.note.file_name.clone()));
             }
             // `note` standalone → properties object (so note.title accesses frontmatter)
-            if name == "note" {
+            if normalized_name == "note" {
                 return Ok(ctx.note.properties.clone());
             }
             // Then check note properties
@@ -145,7 +146,7 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
 fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<Value, String> {
     // Special-case: `file.X` on the implicit file object
     if let Expr::Identifier(name) = receiver {
-        if name == "file" {
+        if normalize_field_name(name) == "file" {
             return Ok(resolve_file_field(ctx, field));
         }
     }
@@ -156,7 +157,7 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
 
 fn eval_index_access(receiver: &Expr, index: &Expr, ctx: &EvalContext) -> Result<Value, String> {
     if let Expr::Identifier(name) = receiver {
-        if name == "file" {
+        if normalize_field_name(name) == "file" {
             let field = evaluate(index, ctx)?;
             return Ok(match field {
                 Value::String(field) => resolve_file_field(ctx, &field),
@@ -181,44 +182,48 @@ fn eval_index_access(receiver: &Expr, index: &Expr, ctx: &EvalContext) -> Result
             };
             Ok(values.get(index).cloned().unwrap_or(Value::Null))
         }
-        (Value::Object(object), Value::String(key)) => {
-            Ok(object.get(key).cloned().unwrap_or(Value::Null))
-        }
+        (Value::Object(object), Value::String(key)) => Ok(normalized_object_field(object, key)
+            .cloned()
+            .unwrap_or(Value::Null)),
         _ => Ok(Value::Null),
     }
 }
 
 fn resolve_file_field(ctx: &EvalContext, field: &str) -> Value {
-    FileMetadataResolver::field(ctx.note, field)
+    let field = canonical_file_field_name(field);
+    FileMetadataResolver::field(ctx.note, &field)
 }
 
 fn resolve_value_field(value: &Value, field: &str, ctx: &EvalContext) -> Value {
+    let normalized_field = normalize_field_name(field);
     match value {
         Value::String(s) => {
             if parse_wikilink(s).is_some() {
                 return resolve_link_field(ctx, s, field);
             }
-            if field == "length" {
+            if normalized_field == "length" {
                 return Value::Number(s.chars().count().into());
             }
             if let Some(ms) = parse_date_like_string(s) {
-                if let Some(value) = date_field_value(ms, field) {
+                if let Some(value) = date_field_value(ms, &canonical_date_field_name(field)) {
                     return value;
                 }
             }
             Value::Null
         }
         Value::Array(arr) => {
-            if field == "length" {
+            if normalized_field == "length" {
                 Value::Number(arr.len().into())
             } else {
                 swizzle_array_field(arr, field, ctx)
             }
         }
-        Value::Object(map) => map.get(field).cloned().unwrap_or(Value::Null),
+        Value::Object(map) => normalized_object_field(map, field)
+            .cloned()
+            .unwrap_or(Value::Null),
         Value::Number(n) => n
             .as_i64()
-            .and_then(|ms| date_field_value(ms, field))
+            .and_then(|ms| date_field_value(ms, &canonical_date_field_name(field)))
             .unwrap_or(Value::Null),
         _ => Value::Null,
     }
@@ -313,7 +318,7 @@ fn resolve_link_field(ctx: &EvalContext, link: &str, field: &str) -> Value {
         return Value::Null;
     };
 
-    if field == "file" {
+    if normalize_field_name(field) == "file" {
         return note_to_file_object(note);
     }
     resolve_property_for_note(note, field)
@@ -322,7 +327,7 @@ fn resolve_link_field(ctx: &EvalContext, link: &str, field: &str) -> Value {
 fn resolve_property_for_note(note: &NoteRecord, name: &str) -> Value {
     note.properties
         .as_object()
-        .and_then(|props| props.get(name))
+        .and_then(|props| normalized_object_field(props, name))
         .cloned()
         .unwrap_or(Value::Null)
 }
@@ -407,6 +412,91 @@ fn call_file_method(
 
 fn resolve_property(ctx: &EvalContext, name: &str) -> Value {
     resolve_property_for_note(ctx.note, name)
+}
+
+fn normalized_object_field<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+) -> Option<&'a Value> {
+    object.get(field).or_else(|| {
+        let normalized_field = normalize_field_name(field);
+        object.iter().find_map(|(key, value)| {
+            (normalize_field_name(key) == normalized_field).then_some(value)
+        })
+    })
+}
+
+fn canonical_date_field_name(field: &str) -> String {
+    match normalize_field_name(field).as_str() {
+        "week-year" => "weekyear".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn canonical_file_field_name(field: &str) -> String {
+    match normalize_field_name(field).as_str() {
+        "base-name" => "basename".to_string(),
+        "c-day" => "cday".to_string(),
+        "c-time" => "ctime".to_string(),
+        "front-matter" => "frontmatter".to_string(),
+        "in-links" => "inlinks".to_string(),
+        "m-day" => "mday".to_string(),
+        "m-time" => "mtime".to_string(),
+        "out-links" => "outlinks".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn normalize_field_name(field: &str) -> String {
+    let stripped = strip_field_formatting(field);
+    let mut normalized = String::new();
+    let mut last_was_hyphen = false;
+
+    for ch in stripped.trim().chars() {
+        if ch.is_alphanumeric() {
+            for lower in ch.to_lowercase() {
+                normalized.push(lower);
+            }
+            last_was_hyphen = false;
+        } else if ch.is_whitespace() || ch == '_' || ch == '-' || ch.is_ascii_punctuation() {
+            if !normalized.is_empty() && !last_was_hyphen {
+                normalized.push('-');
+                last_was_hyphen = true;
+            }
+        } else {
+            for lower in ch.to_lowercase() {
+                normalized.push(lower);
+            }
+            last_was_hyphen = false;
+        }
+    }
+
+    normalized.trim_matches('-').to_string()
+}
+
+fn strip_field_formatting(field: &str) -> String {
+    let mut stripped = field.trim().to_string();
+
+    loop {
+        let next = strip_wrapping_field_formatting(&stripped);
+        if next == stripped {
+            return stripped;
+        }
+        stripped = next;
+    }
+}
+
+fn strip_wrapping_field_formatting(field: &str) -> String {
+    for marker in ["**", "__", "~~", "`", "*", "_"] {
+        if let Some(inner) = field
+            .strip_prefix(marker)
+            .and_then(|inner| inner.strip_suffix(marker))
+        {
+            return inner.trim().to_string();
+        }
+    }
+
+    field.to_string()
 }
 
 pub(crate) fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Value {
@@ -770,8 +860,11 @@ mod tests {
                 "count": 42,
                 "tags": ["a", "b"],
                 "due": "2026-04",
+                "due date": "2026-04",
                 "estimate": "1d 3h",
-                "author": "[[alice]]"
+                "author": "[[alice]]",
+                "Mixed CASE": "loud",
+                "snake_case": "yes"
             }),
             tags: vec!["#tag1".to_string(), "#tag2/nested".to_string()],
             links: vec!["other.md".to_string()],
@@ -841,6 +934,22 @@ mod tests {
         assert_eq!(eval("status"), Value::String("done".to_string()));
         assert_eq!(eval("count"), serde_json::json!(42));
         assert_eq!(eval("nonexistent"), Value::Null);
+    }
+
+    #[test]
+    fn eval_field_name_normalization() {
+        assert_eq!(eval("DUE-DATE.month"), serde_json::json!(4));
+        assert_eq!(eval("mixed-case"), Value::String("loud".to_string()));
+        assert_eq!(eval("SNAKE-CASE"), Value::String("yes".to_string()));
+        assert_eq!(eval("FILE.NAME"), Value::String("note".to_string()));
+        assert_eq!(
+            eval(r#"{"Due Date": "2026-04"}["due-date"].month"#),
+            serde_json::json!(4)
+        );
+        assert_eq!(
+            eval(r#"{"Mixed CASE": 7}.mixed-case"#),
+            serde_json::json!(7)
+        );
     }
 
     #[test]
@@ -1235,7 +1344,7 @@ mod tests {
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_001,
             file_size: 500,
-            properties: serde_json::json!({"role": "editor", "team": "docs"}),
+            properties: serde_json::json!({"role": "editor", "team": "docs", "Display Name": "Alice A."}),
             tags: vec!["#person".to_string()],
             links: vec!["[[note]]".to_string()],
             inlinks: vec!["[[note]]".to_string()],
@@ -1261,6 +1370,14 @@ mod tests {
         );
         assert_eq!(
             eval_with_lookup("[[alice]].file.name", &lookup),
+            Value::String("alice".to_string())
+        );
+        assert_eq!(
+            eval_with_lookup("[[Alice]].display-name", &lookup),
+            Value::String("Alice A.".to_string())
+        );
+        assert_eq!(
+            eval_with_lookup("[[Alice]].FILE.NAME", &lookup),
             Value::String("alice".to_string())
         );
         assert_eq!(eval_with_lookup("[[nobody]].role", &lookup), Value::Null);

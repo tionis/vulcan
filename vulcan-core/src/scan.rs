@@ -2787,6 +2787,7 @@ mod tests {
         };
 
         assert_eq!(eval("typeof(month)"), Value::String("date".to_string()));
+        assert_eq!(eval("DUE-DATE.month"), json!(4));
         assert_eq!(
             eval(r#"dateformat(month + dur(1d), "yyyy-MM-dd")"#),
             Value::String("2026-04-02".to_string())
@@ -2819,6 +2820,10 @@ mod tests {
         assert_eq!(
             eval(r#"[[Alpha]].file.tasks[0].due"#),
             Value::String("2026-04-02".to_string())
+        );
+        assert_eq!(
+            eval(r#"[[Alpha]].FILE.NAME"#),
+            Value::String("Alpha".to_string())
         );
         assert_eq!(eval(r#"[[Bob]].role"#), Value::String("editor".to_string()));
     }
