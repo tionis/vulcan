@@ -85,6 +85,8 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
 
         Expr::FieldAccess(receiver, field) => eval_field_access(receiver, field, ctx),
 
+        Expr::IndexAccess(receiver, index) => eval_index_access(receiver, index, ctx),
+
         Expr::FormulaRef(name) => Ok(ctx.formulas.get(name).cloned().unwrap_or(Value::Null)),
 
         Expr::BinaryOp(left, op, right) => {
@@ -181,6 +183,36 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
             Ok(Value::Null)
         }
 
+        _ => Ok(Value::Null),
+    }
+}
+
+fn eval_index_access(receiver: &Expr, index: &Expr, ctx: &EvalContext) -> Result<Value, String> {
+    if let Expr::Identifier(name) = receiver {
+        if name == "file" {
+            let field = evaluate(index, ctx)?;
+            return Ok(match field {
+                Value::String(field) => resolve_file_field(ctx, &field),
+                _ => Value::Null,
+            });
+        }
+    }
+
+    let receiver_val = evaluate(receiver, ctx)?;
+    let index_val = evaluate(index, ctx)?;
+
+    match (&receiver_val, &index_val) {
+        (Value::Array(values), _) => {
+            let Some(index) =
+                integer_value_ms(&index_val).and_then(|index| usize::try_from(index).ok())
+            else {
+                return Ok(Value::Null);
+            };
+            Ok(values.get(index).cloned().unwrap_or(Value::Null))
+        }
+        (Value::Object(object), Value::String(key)) => {
+            Ok(object.get(key).cloned().unwrap_or(Value::Null))
+        }
         _ => Ok(Value::Null),
     }
 }
@@ -757,6 +789,7 @@ mod tests {
         assert_eq!(eval("file.day"), Value::String("2026-04-18".to_string()));
         assert_eq!(eval("file.day.year"), serde_json::json!(2026));
         assert_eq!(eval("due.month"), serde_json::json!(4));
+        assert_eq!(eval(r#"note["status"]"#), Value::String("done".to_string()));
         assert_eq!(
             eval("file.frontmatter.status"),
             Value::String("done".to_string())
@@ -945,6 +978,17 @@ mod tests {
     #[test]
     fn eval_array_literal() {
         assert_eq!(eval("[1, 2, 3]"), serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn eval_index_access() {
+        assert_eq!(eval("[10, 20, 30][1 + 1]"), serde_json::json!(30));
+        assert_eq!(eval(r#"{"where": 7}["where"]"#), serde_json::json!(7));
+        assert_eq!(eval(r#"file["name"]"#), Value::String("note".to_string()));
+        assert_eq!(
+            eval(r#"file["aliases"][0]"#),
+            Value::String("Note Alias".to_string())
+        );
     }
 
     #[test]

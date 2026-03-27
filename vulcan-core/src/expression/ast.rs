@@ -17,6 +17,9 @@ pub enum Expr {
     /// Dot access — `expr.field` (e.g., `file.name`, `date_prop.year`)
     FieldAccess(Box<Expr>, String),
 
+    /// Bracket access / indexing — `expr[key]`, `array[0]`
+    IndexAccess(Box<Expr>, Box<Expr>),
+
     /// Reference to another formula — `formula.some_name`
     FormulaRef(String),
 
