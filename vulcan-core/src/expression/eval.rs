@@ -87,6 +87,8 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
 
         Expr::IndexAccess(receiver, index) => eval_index_access(receiver, index, ctx),
 
+        Expr::Lambda(_, _) => Err("cannot evaluate lambda outside a higher-order call".to_string()),
+
         Expr::FormulaRef(name) => Ok(ctx.formulas.get(name).cloned().unwrap_or(Value::Null)),
 
         Expr::BinaryOp(left, op, right) => {

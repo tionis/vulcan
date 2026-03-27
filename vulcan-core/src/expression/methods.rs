@@ -401,18 +401,12 @@ fn array_method(
             }
             let mut result = Vec::new();
             for (i, item) in arr.iter().enumerate() {
-                let mut local_ctx = EvalContext {
-                    note: ctx.note,
-                    formulas: ctx.formulas,
-                    now_ms: ctx.now_ms,
-                    locals: ctx.locals.clone(),
-                    note_lookup: ctx.note_lookup,
-                };
-                local_ctx.locals.insert("value".to_string(), item.clone());
-                local_ctx
-                    .locals
-                    .insert("index".to_string(), Value::Number(i.into()));
-                let keep = evaluate(&args[0], &local_ctx)?;
+                let keep = evaluate_callback(
+                    &args[0],
+                    ctx,
+                    &[("value", item.clone()), ("index", Value::Number(i.into()))],
+                    &[item.clone(), Value::Number(i.into())],
+                )?;
                 if is_truthy(&keep) {
                     result.push(item.clone());
                 }
@@ -425,18 +419,12 @@ fn array_method(
             }
             let mut result = Vec::new();
             for (i, item) in arr.iter().enumerate() {
-                let mut local_ctx = EvalContext {
-                    note: ctx.note,
-                    formulas: ctx.formulas,
-                    now_ms: ctx.now_ms,
-                    locals: ctx.locals.clone(),
-                    note_lookup: ctx.note_lookup,
-                };
-                local_ctx.locals.insert("value".to_string(), item.clone());
-                local_ctx
-                    .locals
-                    .insert("index".to_string(), Value::Number(i.into()));
-                result.push(evaluate(&args[0], &local_ctx)?);
+                result.push(evaluate_callback(
+                    &args[0],
+                    ctx,
+                    &[("value", item.clone()), ("index", Value::Number(i.into()))],
+                    &[item.clone(), Value::Number(i.into())],
+                )?);
             }
             Ok(Value::Array(result))
         }
@@ -447,19 +435,16 @@ fn array_method(
             let initial = evaluate(&args[1], ctx)?;
             let mut acc = initial;
             for (i, item) in arr.iter().enumerate() {
-                let mut local_ctx = EvalContext {
-                    note: ctx.note,
-                    formulas: ctx.formulas,
-                    now_ms: ctx.now_ms,
-                    locals: ctx.locals.clone(),
-                    note_lookup: ctx.note_lookup,
-                };
-                local_ctx.locals.insert("value".to_string(), item.clone());
-                local_ctx
-                    .locals
-                    .insert("index".to_string(), Value::Number(i.into()));
-                local_ctx.locals.insert("acc".to_string(), acc);
-                acc = evaluate(&args[0], &local_ctx)?;
+                acc = evaluate_callback(
+                    &args[0],
+                    ctx,
+                    &[
+                        ("acc", acc.clone()),
+                        ("value", item.clone()),
+                        ("index", Value::Number(i.into())),
+                    ],
+                    &[acc, item.clone(), Value::Number(i.into())],
+                )?;
             }
             Ok(acc)
         }
@@ -492,6 +477,39 @@ pub fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value,
 
 fn eval_all_args(args: &[Expr], ctx: &EvalContext) -> Result<Vec<Value>, String> {
     args.iter().map(|e| evaluate(e, ctx)).collect()
+}
+
+fn evaluate_callback(
+    expr: &Expr,
+    ctx: &EvalContext,
+    legacy_bindings: &[(&str, Value)],
+    lambda_args: &[Value],
+) -> Result<Value, String> {
+    let mut local_ctx = EvalContext {
+        note: ctx.note,
+        formulas: ctx.formulas,
+        now_ms: ctx.now_ms,
+        locals: ctx.locals.clone(),
+        note_lookup: ctx.note_lookup,
+    };
+
+    match expr {
+        Expr::Lambda(params, body) => {
+            for (index, param) in params.iter().enumerate() {
+                local_ctx.locals.insert(
+                    param.clone(),
+                    lambda_args.get(index).cloned().unwrap_or(Value::Null),
+                );
+            }
+            evaluate(body, &local_ctx)
+        }
+        _ => {
+            for (name, value) in legacy_bindings {
+                local_ctx.locals.insert((*name).to_string(), value.clone());
+            }
+            evaluate(expr, &local_ctx)
+        }
+    }
 }
 
 fn eval_string_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<String, String> {
@@ -715,6 +733,10 @@ mod tests {
             eval("[1, 2, 3, 4].filter(value > 2)"),
             serde_json::json!([3, 4])
         );
+        assert_eq!(
+            eval("[1, 2, 3, 4].filter((x) => x > 2)"),
+            serde_json::json!([3, 4])
+        );
     }
 
     #[test]
@@ -723,12 +745,20 @@ mod tests {
             eval("[1, 2, 3].map(value + 1)"),
             serde_json::json!([2, 3, 4])
         );
+        assert_eq!(
+            eval("[5, 6].map((value, index) => value + index)"),
+            serde_json::json!([5, 7])
+        );
     }
 
     #[test]
     fn array_reduce() {
         assert_eq!(
             eval("[1, 2, 3].reduce(acc + value, 0)"),
+            serde_json::json!(6)
+        );
+        assert_eq!(
+            eval("[1, 2, 3].reduce((accum, curr) => accum + curr, 0)"),
             serde_json::json!(6)
         );
     }

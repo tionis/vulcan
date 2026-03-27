@@ -17,6 +17,7 @@ pub enum Token {
     Star,
     Slash,
     Percent,
+    FatArrow,
     EqEq,
     Ne,
     Gt,
@@ -41,6 +42,7 @@ pub enum Token {
     Eof,
 }
 
+#[derive(Clone)]
 pub struct Tokenizer<'a> {
     source: &'a str,
     bytes: &'a [u8],
@@ -150,6 +152,11 @@ impl<'a> Tokenizer<'a> {
                 self.pos += 1;
                 self.last_was_value = false;
                 Token::Percent
+            }
+            b'=' if self.peek_next() == Some(b'>') => {
+                self.pos += 2;
+                self.last_was_value = false;
+                Token::FatArrow
             }
             b'/' if !self.last_was_value => {
                 self.pos += 1;
@@ -800,6 +807,24 @@ mod tests {
                 Token::Ident("abs".to_string()),
                 Token::LParen,
                 Token::RParen,
+            ]
+        );
+    }
+
+    #[test]
+    fn lambda_tokens() {
+        assert_eq!(
+            tokenize("(x, y) => x + y"),
+            vec![
+                Token::LParen,
+                Token::Ident("x".to_string()),
+                Token::Comma,
+                Token::Ident("y".to_string()),
+                Token::RParen,
+                Token::FatArrow,
+                Token::Ident("x".to_string()),
+                Token::Plus,
+                Token::Ident("y".to_string()),
             ]
         );
     }
