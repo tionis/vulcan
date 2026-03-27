@@ -998,6 +998,56 @@ mod tests {
         );
         assert_eq!(eval("firstvalue([null, null, 2])"), serde_json::json!(2));
         assert_eq!(
+            eval(r#"contains(object("hello", 1), "hello")"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"contains(list("hello"), "he")"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(eval(r#"contains("Hello", "Lo")"#), serde_json::json!(false));
+        assert_eq!(eval(r#"contains("Hello", "lo")"#), serde_json::json!(true));
+        assert_eq!(eval(r#"icontains("Hello", "Lo")"#), serde_json::json!(true));
+        assert_eq!(
+            eval(r#"econtains(list("hello", 19), "he")"#),
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            eval(r#"econtains(list("hello", 19), 19)"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"containsword("Hello there, chap!", "hello")"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"containsword(list("word", "Words"), "Word")"#),
+            serde_json::json!([true, false])
+        );
+        assert_eq!(eval("all([1, 2, 3])"), serde_json::json!(true));
+        assert_eq!(
+            eval("all([1, 2, 3], (x) => x > 1)"),
+            serde_json::json!(false)
+        );
+        assert_eq!(eval("all(true, [false])"), serde_json::json!(true));
+        assert_eq!(eval("any(true, false)"), serde_json::json!(true));
+        assert_eq!(
+            eval("any(list(1, 2, 3), (x) => x > 2)"),
+            serde_json::json!(true)
+        );
+        assert_eq!(eval("none([])"), serde_json::json!(true));
+        assert_eq!(
+            eval("none([1, 2, 3], (x) => x == 0)"),
+            serde_json::json!(true)
+        );
+        assert_eq!(eval("join(list(1, 2, 3))"), serde_json::json!("1, 2, 3"));
+        assert_eq!(
+            eval(r#"join(list(1, 2, 3), " ")"#),
+            serde_json::json!("1 2 3")
+        );
+        assert_eq!(eval("join(6)"), serde_json::json!("6"));
+        assert_eq!(eval("join(list())"), serde_json::json!(""));
+        assert_eq!(
             eval("map([1, 2, 3], (x) => x + 2)"),
             serde_json::json!([3, 4, 5])
         );

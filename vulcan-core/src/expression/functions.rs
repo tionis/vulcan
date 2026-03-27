@@ -25,8 +25,16 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "default" => func_default(args, ctx, true),
         "ldefault" => func_default(args, ctx, false),
         "choice" => func_choice(args, ctx),
+        "contains" => func_contains(args, ctx, ContainsMode::Recursive),
+        "icontains" => func_contains(args, ctx, ContainsMode::Insensitive),
+        "econtains" => func_contains(args, ctx, ContainsMode::Exact),
+        "containsword" => func_contains_word(args, ctx),
         "nonnull" => func_nonnull(args, ctx),
         "firstvalue" => func_firstvalue(args, ctx),
+        "join" => func_join(args, ctx),
+        "all" => func_truthy_aggregate(args, ctx, TruthyAggregate::All),
+        "any" => func_truthy_aggregate(args, ctx, TruthyAggregate::Any),
+        "none" => func_truthy_aggregate(args, ctx, TruthyAggregate::None),
         "map" | "filter" | "sort" | "reverse" | "unique" | "flat" | "slice" => {
             func_array_alias(name, args, ctx)
         }
@@ -90,6 +98,20 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "duration" | "dur" => func_duration(args, ctx),
         _ => Err(format!("unknown function `{name}`")),
     }
+}
+
+#[derive(Clone, Copy)]
+enum ContainsMode {
+    Recursive,
+    Insensitive,
+    Exact,
+}
+
+#[derive(Clone, Copy)]
+enum TruthyAggregate {
+    All,
+    Any,
+    None,
 }
 
 fn func_if(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -232,6 +254,27 @@ fn func_choice(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     }
 }
 
+fn func_contains(args: &[Expr], ctx: &EvalContext, mode: ContainsMode) -> Result<Value, String> {
+    let haystack = eval_arg(args, 0, ctx)?;
+    let needle = eval_arg(args, 1, ctx)?;
+    Ok(Value::Bool(contains_value(&haystack, &needle, mode)))
+}
+
+fn func_contains_word(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let haystack = eval_arg(args, 0, ctx)?;
+    let needle = eval_arg(args, 1, ctx)?;
+
+    Ok(match haystack {
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| contains_word_value(&value, &needle))
+                .collect(),
+        ),
+        _ => contains_word_value(&haystack, &needle),
+    })
+}
+
 fn func_nonnull(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let values = eval_all_args(args, ctx)?;
     match values.as_slice() {
@@ -258,6 +301,73 @@ fn func_firstvalue(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
         _ => values.into_iter().find(|value| !value.is_null()),
     };
     Ok(first.unwrap_or(Value::Null))
+}
+
+fn func_join(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    match value {
+        Value::Array(_) => call_method(&value, "join", &args[1..], ctx),
+        _ => Ok(Value::String(value_to_display(&value))),
+    }
+}
+
+fn func_truthy_aggregate(
+    args: &[Expr],
+    ctx: &EvalContext,
+    aggregate: TruthyAggregate,
+) -> Result<Value, String> {
+    if args.is_empty() {
+        return Ok(Value::Bool(matches!(
+            aggregate,
+            TruthyAggregate::All | TruthyAggregate::None
+        )));
+    }
+
+    if args.len() <= 2 {
+        let first = eval_arg(args, 0, ctx)?;
+        if let Value::Array(values) = first {
+            return if args.len() == 1 {
+                Ok(Value::Bool(apply_truthy_aggregate(
+                    values.iter().map(is_truthy),
+                    aggregate,
+                )))
+            } else {
+                func_truthy_aggregate_with_callback(values, &args[1], ctx, aggregate)
+            };
+        }
+    }
+
+    let values = eval_all_args(args, ctx)?;
+    Ok(Value::Bool(apply_truthy_aggregate(
+        values.iter().map(is_truthy),
+        aggregate,
+    )))
+}
+
+fn func_truthy_aggregate_with_callback(
+    values: Vec<Value>,
+    callback: &Expr,
+    ctx: &EvalContext,
+    aggregate: TruthyAggregate,
+) -> Result<Value, String> {
+    let mut results = Vec::with_capacity(values.len());
+    for (index, value) in values.into_iter().enumerate() {
+        let result = evaluate_callback(
+            callback,
+            ctx,
+            &[
+                ("value", value.clone()),
+                ("index", Value::Number(index.into())),
+            ],
+            &[value, Value::Number(index.into())],
+        )?;
+        results.push(result);
+    }
+
+    Ok(Value::Bool(apply_truthy_aggregate(
+        results.iter().map(is_truthy),
+        aggregate,
+    )))
 }
 
 fn func_extreme(args: &[Expr], ctx: &EvalContext, pick_max: bool) -> Result<Value, String> {
@@ -431,6 +541,76 @@ fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, Str
 
 fn eval_all_args(args: &[Expr], ctx: &EvalContext) -> Result<Vec<Value>, String> {
     args.iter().map(|e| evaluate(e, ctx)).collect()
+}
+
+fn contains_value(haystack: &Value, needle: &Value, mode: ContainsMode) -> bool {
+    match mode {
+        ContainsMode::Recursive => contains_recursive(haystack, needle, false),
+        ContainsMode::Insensitive => contains_recursive(haystack, needle, true),
+        ContainsMode::Exact => contains_exact(haystack, needle),
+    }
+}
+
+fn contains_recursive(haystack: &Value, needle: &Value, case_insensitive: bool) -> bool {
+    match haystack {
+        Value::Array(values) => values
+            .iter()
+            .any(|value| contains_recursive(value, needle, case_insensitive)),
+        Value::String(text) => needle.as_str().is_some_and(|needle| {
+            if case_insensitive {
+                text.to_lowercase().contains(&needle.to_lowercase())
+            } else {
+                text.contains(needle)
+            }
+        }),
+        Value::Object(map) => needle.as_str().is_some_and(|needle| {
+            if case_insensitive {
+                let needle = needle.to_lowercase();
+                map.keys().any(|key| key.to_lowercase() == needle)
+            } else {
+                map.contains_key(needle)
+            }
+        }),
+        _ => values_match(haystack, needle),
+    }
+}
+
+fn contains_exact(haystack: &Value, needle: &Value) -> bool {
+    match haystack {
+        Value::Array(values) => values.iter().any(|value| values_match(value, needle)),
+        Value::String(text) => needle.as_str().is_some_and(|needle| text.contains(needle)),
+        Value::Object(map) => needle
+            .as_str()
+            .is_some_and(|needle| map.contains_key(needle)),
+        _ => values_match(haystack, needle),
+    }
+}
+
+fn contains_word_value(haystack: &Value, needle: &Value) -> Value {
+    let (Value::String(text), Value::String(needle)) = (haystack, needle) else {
+        return Value::Null;
+    };
+    let needle = needle.to_lowercase();
+    let contains = text
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .any(|word| word.to_lowercase() == needle);
+    Value::Bool(contains)
+}
+
+fn apply_truthy_aggregate<I>(mut values: I, aggregate: TruthyAggregate) -> bool
+where
+    I: Iterator<Item = bool>,
+{
+    match aggregate {
+        TruthyAggregate::All => values.all(std::convert::identity),
+        TruthyAggregate::Any => values.any(std::convert::identity),
+        TruthyAggregate::None => !values.any(std::convert::identity),
+    }
+}
+
+fn values_match(left: &Value, right: &Value) -> bool {
+    compare_values(left, right) == Some(std::cmp::Ordering::Equal) || left == right
 }
 
 fn extreme_value(values: Vec<Value>, pick_max: bool) -> Value {
