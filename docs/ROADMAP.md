@@ -1262,7 +1262,7 @@ Extend the expression evaluator to support Dataview's full type system and expre
 *Utility:*
 - [x] `default(field, value)` (null coalescing, vectorizes), `ldefault(list, value)` (non-vectorizing), `choice(bool, left, right)` (ternary), `display(any)`, `hash(seed, [text], [variant])`, `currencyformat(number, [currency])`, `meta(link)`
 
-- [ ] Function vectorization: all functions auto-apply over array arguments (e.g., `lower(["A", "B"])` → `["a", "b"]`). Exception: `ldefault(list, value)` does NOT vectorize (treats list as single value). `default(field, value)` DOES vectorize (applies element-wise).
+- [x] Function vectorization: all functions auto-apply over array arguments (e.g., `lower(["A", "B"])` → `["a", "b"]`). Exception: `ldefault(list, value)` does NOT vectorize (treats list as single value). `default(field, value)` DOES vectorize (applies element-wise).
 - [ ] Regex functions usable in WHERE clauses: `regextest()`, `regexmatch()`, `regexreplace()` with capture group support (`$1`, etc.)
 - [ ] Integration test: expression evaluation against test vault covering type coercion, functions, `file.*` access, null handling, vectorization
 
