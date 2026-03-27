@@ -10,22 +10,9 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
     match name {
         "if" => func_if(args, ctx),
         "now" => Ok(Value::Number(ctx.now_ms.into())),
-        "today" => {
-            // Truncate to start of day (UTC)
-            let day_ms = 86_400_000_i64;
-            let today = (ctx.now_ms / day_ms) * day_ms;
-            Ok(Value::Number(today.into()))
-        }
-        "date" => {
-            let val = eval_arg(args, 0, ctx)?;
-            match &val {
-                Value::String(s) => {
-                    Ok(parse_date_string(s).map_or(Value::Null, |ms| Value::Number(ms.into())))
-                }
-                Value::Number(_) => Ok(val),
-                _ => Ok(Value::Null),
-            }
-        }
+        "today" => Ok(Value::Number(start_of_day(ctx.now_ms).into())),
+        "date" => func_date(args, ctx),
+        "typeof" => func_typeof(args, ctx),
         "number" => {
             let val = eval_arg(args, 0, ctx)?;
             let n = as_number(&val);
@@ -99,15 +86,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
             let val = eval_arg(args, 0, ctx)?;
             Ok(Value::String(value_to_display(&val)))
         }
-        "duration" => {
-            let val = eval_arg(args, 0, ctx)?;
-            match &val {
-                Value::String(s) => {
-                    Ok(parse_duration_string(s).map_or(Value::Null, |ms| Value::Number(ms.into())))
-                }
-                _ => Ok(Value::Null),
-            }
-        }
+        "duration" | "dur" => func_duration(args, ctx),
         _ => Err(format!("unknown function `{name}`")),
     }
 }
@@ -128,6 +107,44 @@ fn func_if(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     } else {
         Ok(Value::Null)
     }
+}
+
+fn func_date(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    if let Some(shortcut_ms) = args.first().and_then(|expr| date_shortcut_arg(expr, ctx)) {
+        return Ok(Value::Number(shortcut_ms.into()));
+    }
+
+    let val = eval_arg(args, 0, ctx)?;
+    match &val {
+        Value::String(s) => {
+            Ok(parse_date_like_string(s).map_or(Value::Null, |ms| Value::Number(ms.into())))
+        }
+        Value::Number(_) => Ok(val),
+        _ => Ok(Value::Null),
+    }
+}
+
+fn func_duration(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let val = eval_arg(args, 0, ctx)?;
+    match &val {
+        Value::String(s) => {
+            Ok(parse_duration_string(s).map_or(Value::Null, |ms| Value::Number(ms.into())))
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+fn func_typeof(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let Some(expr) = args.first() else {
+        return Ok(Value::String("null".to_string()));
+    };
+
+    if let Some(type_name) = type_name_hint(expr) {
+        return Ok(Value::String(type_name.to_string()));
+    }
+
+    let value = evaluate(expr, ctx)?;
+    Ok(Value::String(value_type_name(&value).to_string()))
 }
 
 fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, String> {
@@ -180,6 +197,19 @@ pub fn parse_date_string(s: &str) -> Option<i64> {
     Some(days * 86400 * 1000 + hour * 3600 * 1000 + minute * 60 * 1000 + second * 1000)
 }
 
+/// Parse a Dataview-style date string into milliseconds since epoch.
+#[must_use]
+pub fn parse_date_like_string(s: &str) -> Option<i64> {
+    let s = s.trim();
+    parse_date_string(s).or_else(|| {
+        if matches_iso_year_month(s) {
+            parse_date_string(&format!("{s}-01"))
+        } else {
+            None
+        }
+    })
+}
+
 /// Civil date to days since Unix epoch (algorithm from Howard Hinnant).
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
@@ -189,6 +219,10 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let doy = (153 * m + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+fn timestamp_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    days_from_civil(year, month, day) * 86_400_000
 }
 
 /// Parse a duration string like "1d", "2w", "3h", "30m", "10s" into milliseconds.
@@ -283,6 +317,179 @@ pub fn date_components(ms: i64) -> (i64, i64, i64, i64, i64, i64, i64) {
     (year, month, day, hour, minute, second, millisecond)
 }
 
+#[must_use]
+pub fn date_field_value(ms: i64, field: &str) -> Option<Value> {
+    let (year, month, day, hour, minute, second, millisecond) = date_components(ms);
+    let (weekyear, week) = iso_week_components(year, month, day);
+    let weekday = iso_weekday(year, month, day);
+
+    match field {
+        "year" => Some(Value::Number(year.into())),
+        "month" => Some(Value::Number(month.into())),
+        "day" => Some(Value::Number(day.into())),
+        "hour" => Some(Value::Number(hour.into())),
+        "minute" => Some(Value::Number(minute.into())),
+        "second" => Some(Value::Number(second.into())),
+        "millisecond" => Some(Value::Number(millisecond.into())),
+        "weekday" => Some(Value::Number(weekday.into())),
+        "week" => Some(Value::Number(week.into())),
+        "weekyear" => Some(Value::Number(weekyear.into())),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn file_field_type_name(field: &str) -> Option<&'static str> {
+    match field {
+        "path" | "name" | "basename" | "ext" | "folder" => Some("string"),
+        "link" => Some("link"),
+        "size" => Some("number"),
+        "mtime" | "ctime" | "mday" | "cday" | "day" => Some("date"),
+        "tags" | "etags" | "inlinks" | "outlinks" | "links" | "aliases" => Some("array"),
+        "frontmatter" | "properties" => Some("object"),
+        "starred" => Some("boolean"),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn value_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if looks_like_wikilink(trimmed) {
+                "link"
+            } else if parse_date_like_string(trimmed).is_some() {
+                "date"
+            } else if parse_duration_string(trimmed).is_some() {
+                "duration"
+            } else {
+                "string"
+            }
+        }
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn type_name_hint(expr: &Expr) -> Option<&'static str> {
+    match expr {
+        Expr::Null => Some("null"),
+        Expr::Bool(_) => Some("boolean"),
+        Expr::Number(_) => Some("number"),
+        Expr::Str(text) => Some(value_type_name(&Value::String(text.clone()))),
+        Expr::Array(_) => Some("array"),
+        Expr::Object(_) => Some("object"),
+        Expr::FunctionCall(name, _) => match name.as_str() {
+            "now" | "today" | "date" => Some("date"),
+            "duration" | "dur" => Some("duration"),
+            "link" => Some("link"),
+            "list" => Some("array"),
+            "typeof" => Some("string"),
+            _ => None,
+        },
+        Expr::FieldAccess(receiver, field) if matches!(receiver.as_ref(), Expr::Identifier(name) if name == "file") => {
+            file_field_type_name(field)
+        }
+        _ => None,
+    }
+}
+
+fn date_shortcut_arg(expr: &Expr, ctx: &EvalContext) -> Option<i64> {
+    let Expr::Identifier(name) = expr else {
+        return None;
+    };
+    date_shortcut_value(name, ctx.now_ms)
+}
+
+fn date_shortcut_value(name: &str, now_ms: i64) -> Option<i64> {
+    let today = start_of_day(now_ms);
+    let day_ms = 86_400_000_i64;
+    let (year, month, day, _, _, _, _) = date_components(today);
+
+    match name {
+        "today" => Some(today),
+        "now" => Some(now_ms),
+        "tomorrow" => Some(today + day_ms),
+        "yesterday" => Some(today - day_ms),
+        "sow" => {
+            let weekday = iso_weekday(year, month, day);
+            Some(today - (weekday - 1) * day_ms)
+        }
+        "eow" => {
+            let weekday = iso_weekday(year, month, day);
+            Some(today + (7 - weekday) * day_ms)
+        }
+        "som" => Some(timestamp_from_civil(year, month, 1)),
+        "eom" => {
+            let (next_year, next_month) = if month == 12 {
+                (year + 1, 1)
+            } else {
+                (year, month + 1)
+            };
+            Some(timestamp_from_civil(next_year, next_month, 1) - day_ms)
+        }
+        "soy" => Some(timestamp_from_civil(year, 1, 1)),
+        "eoy" => Some(timestamp_from_civil(year + 1, 1, 1) - day_ms),
+        _ => None,
+    }
+}
+
+fn start_of_day(ms: i64) -> i64 {
+    ms.div_euclid(86_400_000) * 86_400_000
+}
+
+fn iso_weekday(year: i64, month: i64, day: i64) -> i64 {
+    (days_from_civil(year, month, day) + 3).rem_euclid(7) + 1
+}
+
+fn iso_week_components(year: i64, month: i64, day: i64) -> (i64, i64) {
+    let weekday = iso_weekday(year, month, day);
+    let ordinal = ordinal_day(year, month, day);
+    let mut week = (ordinal - weekday + 10).div_euclid(7);
+    let mut weekyear = year;
+
+    if week < 1 {
+        weekyear -= 1;
+        week = iso_weeks_in_year(weekyear);
+    } else if week > iso_weeks_in_year(weekyear) {
+        weekyear += 1;
+        week = 1;
+    }
+
+    (weekyear, week)
+}
+
+fn ordinal_day(year: i64, month: i64, day: i64) -> i64 {
+    days_from_civil(year, month, day) - days_from_civil(year, 1, 1) + 1
+}
+
+fn iso_weeks_in_year(year: i64) -> i64 {
+    let jan1_weekday = iso_weekday(year, 1, 1);
+    let dec31_weekday = iso_weekday(year, 12, 31);
+    if jan1_weekday == 4 || dec31_weekday == 4 {
+        53
+    } else {
+        52
+    }
+}
+
+fn matches_iso_year_month(value: &str) -> bool {
+    value.len() == 7
+        && value.as_bytes()[4] == b'-'
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || byte.is_ascii_digit())
+}
+
+fn looks_like_wikilink(value: &str) -> bool {
+    value.starts_with("[[") && value.ends_with("]]")
+}
+
 /// Days since Unix epoch to civil date.
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
@@ -346,6 +553,31 @@ mod tests {
             Some(304_963_320_000)
         );
         assert_eq!(parse_duration_string("2yr8mo12d"), Some(84_844_800_000));
+    }
+
+    #[test]
+    fn test_parse_date_like_string() {
+        let ms = parse_date_like_string("2026-04").unwrap();
+        let (year, month, day, _, _, _, _) = date_components(ms);
+        assert_eq!((year, month, day), (2026, 4, 1));
+    }
+
+    #[test]
+    fn test_date_field_value() {
+        let ms = parse_date_string("2026-01-01T12:34:56").unwrap();
+        assert_eq!(
+            date_field_value(ms, "year"),
+            Some(Value::Number(2026.into()))
+        );
+        assert_eq!(date_field_value(ms, "week"), Some(Value::Number(1.into())));
+        assert_eq!(
+            date_field_value(ms, "weekyear"),
+            Some(Value::Number(2026.into()))
+        );
+        assert_eq!(
+            date_field_value(ms, "weekday"),
+            Some(Value::Number(4.into()))
+        );
     }
 
     #[test]

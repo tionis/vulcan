@@ -5,6 +5,8 @@ pub enum Token {
     False,
     Number(f64),
     Str(String),
+    DateLiteral(String),
+    DurationLiteral(String),
     Regex(String, String), // pattern, flags
     Ident(String),
 
@@ -187,7 +189,10 @@ impl<'a> Tokenizer<'a> {
                 token
             }
             b'0'..=b'9' => {
-                let token = self.read_number();
+                let token = self
+                    .read_date_literal()
+                    .or_else(|| self.read_duration_literal())
+                    .unwrap_or_else(|| self.read_number());
                 self.last_was_value = true;
                 token
             }
@@ -269,6 +274,121 @@ impl<'a> Tokenizer<'a> {
         Token::Number(text.parse().unwrap_or(0.0))
     }
 
+    fn read_date_literal(&mut self) -> Option<Token> {
+        let start = self.pos;
+        let bytes = &self.bytes[start..];
+
+        if bytes.len() < 7
+            || !bytes[0..4].iter().all(u8::is_ascii_digit)
+            || bytes[4] != b'-'
+            || !bytes[5].is_ascii_digit()
+            || !bytes[6].is_ascii_digit()
+        {
+            return None;
+        }
+
+        let mut end = 7;
+        if bytes.len() >= 10
+            && bytes[7] == b'-'
+            && bytes[8].is_ascii_digit()
+            && bytes[9].is_ascii_digit()
+        {
+            end = 10;
+        }
+
+        if matches!(bytes.get(end), Some(b'T')) {
+            let mut time_end = end + 1;
+            let mut saw_digit = false;
+            while time_end < bytes.len()
+                && (bytes[time_end].is_ascii_digit()
+                    || matches!(bytes[time_end], b':' | b'.' | b'Z' | b'+' | b'-'))
+            {
+                saw_digit |= bytes[time_end].is_ascii_digit();
+                time_end += 1;
+            }
+            if saw_digit {
+                end = time_end;
+            }
+        }
+
+        if bytes
+            .get(end)
+            .is_some_and(|ch| is_ident_continue(*ch) || matches!(ch, b'.' | b':'))
+        {
+            return None;
+        }
+
+        self.pos = start + end;
+        Some(Token::DateLiteral(self.source[start..self.pos].to_string()))
+    }
+
+    fn read_duration_literal(&mut self) -> Option<Token> {
+        let start = self.pos;
+        let mut scan = start;
+        let end = loop {
+            let number_start = scan;
+            while scan < self.bytes.len()
+                && (self.bytes[scan].is_ascii_digit() || self.bytes[scan] == b'.')
+            {
+                scan += 1;
+            }
+            if number_start == scan {
+                return None;
+            }
+
+            while scan < self.bytes.len() && self.bytes[scan].is_ascii_whitespace() {
+                scan += 1;
+            }
+
+            let unit_start = scan;
+            while scan < self.bytes.len() && self.bytes[scan].is_ascii_alphabetic() {
+                scan += 1;
+            }
+            if unit_start == scan {
+                return None;
+            }
+
+            if !is_duration_unit(&self.source[unit_start..scan]) {
+                return None;
+            }
+            let unit_end = scan;
+
+            let mut separator_scan = scan;
+            while separator_scan < self.bytes.len()
+                && self.bytes[separator_scan].is_ascii_whitespace()
+            {
+                separator_scan += 1;
+            }
+            if separator_scan < self.bytes.len() && self.bytes[separator_scan] == b',' {
+                separator_scan += 1;
+                while separator_scan < self.bytes.len()
+                    && self.bytes[separator_scan].is_ascii_whitespace()
+                {
+                    separator_scan += 1;
+                }
+            }
+
+            if separator_scan < self.bytes.len() && self.bytes[separator_scan].is_ascii_digit() {
+                scan = separator_scan;
+                continue;
+            }
+
+            break unit_end;
+        };
+        if self
+            .bytes
+            .get(end)
+            .is_some_and(|ch| is_ident_continue(*ch) || matches!(ch, b'.' | b':'))
+        {
+            return None;
+        }
+
+        self.pos = end;
+        Some(Token::DurationLiteral(
+            self.source[start..self.pos].to_string(),
+        ))
+    }
+
     fn read_identifier(&mut self) -> Token {
         let start = self.pos;
         while self.pos < self.bytes.len() && is_ident_continue(self.bytes[self.pos]) {
@@ -330,6 +450,48 @@ fn is_ident_start(ch: u8) -> bool {
 
 fn is_ident_continue(ch: u8) -> bool {
     ch.is_ascii_alphanumeric() || ch == b'_' || ch == b'-'
+}
+
+fn is_duration_unit(unit: &str) -> bool {
+    matches!(
+        unit.to_ascii_lowercase().as_str(),
+        "ms" | "msec"
+            | "msecs"
+            | "millisecond"
+            | "milliseconds"
+            | "s"
+            | "sec"
+            | "secs"
+            | "second"
+            | "seconds"
+            | "m"
+            | "min"
+            | "mins"
+            | "minute"
+            | "minutes"
+            | "h"
+            | "hr"
+            | "hrs"
+            | "hour"
+            | "hours"
+            | "d"
+            | "day"
+            | "days"
+            | "w"
+            | "wk"
+            | "wks"
+            | "week"
+            | "weeks"
+            | "mo"
+            | "mos"
+            | "month"
+            | "months"
+            | "y"
+            | "yr"
+            | "yrs"
+            | "year"
+            | "years"
+    )
 }
 
 #[cfg(test)]
@@ -468,6 +630,50 @@ mod tests {
     #[allow(clippy::approx_constant)]
     fn decimal_number() {
         assert_eq!(tokenize("3.14"), vec![Token::Number(3.14)]);
+    }
+
+    #[test]
+    fn date_literals() {
+        assert_eq!(
+            tokenize("date(2026-04-18)"),
+            vec![
+                Token::Ident("date".to_string()),
+                Token::LParen,
+                Token::DateLiteral("2026-04-18".to_string()),
+                Token::RParen,
+            ]
+        );
+        assert_eq!(
+            tokenize("date(2026-04)"),
+            vec![
+                Token::Ident("date".to_string()),
+                Token::LParen,
+                Token::DateLiteral("2026-04".to_string()),
+                Token::RParen,
+            ]
+        );
+    }
+
+    #[test]
+    fn duration_literals() {
+        assert_eq!(
+            tokenize("dur(1d 3h 20m)"),
+            vec![
+                Token::Ident("dur".to_string()),
+                Token::LParen,
+                Token::DurationLiteral("1d 3h 20m".to_string()),
+                Token::RParen,
+            ]
+        );
+        assert_eq!(
+            tokenize("dur(3 hours, 20 minutes)"),
+            vec![
+                Token::Ident("dur".to_string()),
+                Token::LParen,
+                Token::DurationLiteral("3 hours, 20 minutes".to_string()),
+                Token::RParen,
+            ]
+        );
     }
 
     #[test]
