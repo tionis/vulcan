@@ -1157,7 +1157,7 @@ Extract **all** list items (not just tasks) as structured data, matching Datavie
 - [x] Track `annotated` flag: true if item text contains inline field annotations
 - [x] Index on `list_items(document_id)`, `list_items(is_task)`, `list_items(parent_item_id)`
 - [x] Unit tests: plain list items, nested lists, mixed task and non-task items, numbered lists
-- [ ] Integration test: vault with varied list items, verify `file.lists` returns all items
+- [x] Integration test: vault with varied list items, verify `file.lists` returns all items
 
 **Task extraction (extends list items):**
 - [x] Detect task list items (`- [ ]`, `- [x]`, `- [/]`, `- [-]`, custom status characters) during the semantic pass
@@ -1197,8 +1197,8 @@ Implement the full `file.*` implicit metadata namespace that Dataview exposes on
 - [x] `file.inlinks` — files linking to this file (reverse `links` table query)
 - [x] `file.outlinks` — links from this file (`links` table)
 - [x] `file.aliases` — aliases from frontmatter (from `property_values`)
-- [ ] `file.tasks` — all task items in file (from `tasks` table, returns task objects with full metadata)
-- [ ] `file.lists` — all list items including tasks (from `list_items` table, returns list item objects)
+- [x] `file.tasks` — all task items in file (from `tasks` table, returns task objects with full metadata)
+- [x] `file.lists` — all list items including tasks (from `list_items` table, returns list item objects)
 - [x] `file.frontmatter` — raw frontmatter as object (from `property_values` where `origin = 'frontmatter'`)
 - [x] `file.day` — date extracted from filename (`yyyy-mm-dd` or `yyyymmdd` patterns), null if no date pattern
 - [ ] `file.starred` — bookmarked status (from `.obsidian/` bookmarks data if available, false otherwise)

@@ -153,6 +153,38 @@ pub struct NoteRecord {
     pub aliases: Vec<String>,
     #[serde(skip)]
     pub frontmatter: Value,
+    #[serde(skip)]
+    pub list_items: Vec<NoteListItemRecord>,
+    #[serde(skip)]
+    pub tasks: Vec<NoteTaskRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteListItemRecord {
+    pub id: String,
+    pub text: String,
+    pub line_number: i64,
+    pub line_count: i64,
+    pub byte_offset: i64,
+    pub section_heading: Option<String>,
+    pub parent_item_id: Option<String>,
+    pub is_task: bool,
+    pub block_id: Option<String>,
+    pub annotated: bool,
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoteTaskRecord {
+    pub id: String,
+    pub list_item_id: String,
+    pub status_char: String,
+    pub text: String,
+    pub byte_offset: i64,
+    pub parent_task_id: Option<String>,
+    pub section_heading: Option<String>,
+    pub line_number: i64,
+    pub properties: Map<String, Value>,
 }
 
 pub fn extract_indexed_properties(
@@ -459,6 +491,8 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
                     inlinks: Vec::new(),
                     aliases: Vec::new(),
                     frontmatter: parse_frontmatter_json_object(&raw_yaml),
+                    list_items: Vec::new(),
+                    tasks: Vec::new(),
                 },
             ))
         },
@@ -539,6 +573,8 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
                 inlinks: vec![],
                 aliases: vec![],
                 frontmatter: parse_frontmatter_json_object(&raw_yaml),
+                list_items: vec![],
+                tasks: vec![],
             },
         ));
     }
@@ -630,6 +666,114 @@ fn hydrate_note_records(
             .push(synthetic_file_link(&source_path, &source_ext));
     }
 
+    let mut list_item_map: HashMap<String, Vec<NoteListItemRecord>> = HashMap::new();
+    let list_item_sql = format!(
+        "SELECT id, document_id, text, line_number, line_count, byte_offset, section_heading, \
+         parent_item_id, is_task, block_id, annotated, symbol \
+         FROM list_items WHERE document_id IN ({placeholders})"
+    );
+    let mut list_item_stmt = connection.prepare(&list_item_sql)?;
+    let list_item_rows = list_item_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(1)?,
+            NoteListItemRecord {
+                id: row.get(0)?,
+                text: row.get(2)?,
+                line_number: row.get(3)?,
+                line_count: row.get(4)?,
+                byte_offset: row.get(5)?,
+                section_heading: row.get(6)?,
+                parent_item_id: row.get(7)?,
+                is_task: row.get::<_, i64>(8)? != 0,
+                block_id: row.get(9)?,
+                annotated: row.get::<_, i64>(10)? != 0,
+                symbol: row.get(11)?,
+            },
+        ))
+    })?;
+    for list_item_row in list_item_rows {
+        let (doc_id, list_item) = list_item_row?;
+        list_item_map.entry(doc_id).or_default().push(list_item);
+    }
+
+    let mut task_ids_by_doc: HashMap<String, Vec<String>> = HashMap::new();
+    let mut task_records: HashMap<String, NoteTaskRecord> = HashMap::new();
+    let task_sql = format!(
+        "SELECT id, document_id, list_item_id, status_char, text, byte_offset, parent_task_id, \
+         section_heading, line_number \
+         FROM tasks WHERE document_id IN ({placeholders})"
+    );
+    let mut task_stmt = connection.prepare(&task_sql)?;
+    let task_rows = task_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(1)?,
+            NoteTaskRecord {
+                id: row.get(0)?,
+                list_item_id: row.get(2)?,
+                status_char: row.get(3)?,
+                text: row.get(4)?,
+                byte_offset: row.get(5)?,
+                parent_task_id: row.get(6)?,
+                section_heading: row.get(7)?,
+                line_number: row.get(8)?,
+                properties: Map::new(),
+            },
+        ))
+    })?;
+    for task_row in task_rows {
+        let (doc_id, task) = task_row?;
+        task_ids_by_doc
+            .entry(doc_id)
+            .or_default()
+            .push(task.id.clone());
+        task_records.insert(task.id.clone(), task);
+    }
+
+    if !task_records.is_empty() {
+        let task_ids: Vec<&str> = task_records.keys().map(String::as_str).collect();
+        let task_placeholders = task_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let task_property_sql = format!(
+            "SELECT task_id, key, value_text, value_number, value_bool, value_date, value_type
+             FROM task_properties
+             WHERE task_id IN ({task_placeholders})"
+        );
+        let mut task_property_stmt = connection.prepare(&task_property_sql)?;
+        let task_property_rows =
+            task_property_stmt.query_map(params_from_iter(task_ids.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    typed_property_json_value(
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get::<_, Option<i64>>(4)?.map(|value| value != 0),
+                        row.get(5)?,
+                        row.get::<_, String>(6)?,
+                    ),
+                ))
+            })?;
+
+        let mut property_map: HashMap<String, BTreeMap<String, Vec<Value>>> = HashMap::new();
+        for property_row in task_property_rows {
+            let (task_id, key, value) = property_row?;
+            property_map
+                .entry(task_id)
+                .or_default()
+                .entry(key)
+                .or_default()
+                .push(value);
+        }
+
+        for (task_id, grouped_properties) in property_map {
+            let Some(task) = task_records.get_mut(&task_id) else {
+                continue;
+            };
+            for (key, values) in grouped_properties {
+                merge_property_json_values(&mut task.properties, key, values);
+            }
+        }
+    }
+
     for (doc_id, note) in doc_ids_and_notes {
         if let Some(tags) = tag_map.remove(doc_id.as_str()) {
             note.tags = tags;
@@ -643,9 +787,39 @@ fn hydrate_note_records(
         if let Some(inlinks) = inlink_map.remove(doc_id.as_str()) {
             note.inlinks = inlinks;
         }
+        if let Some(mut list_items) = list_item_map.remove(doc_id.as_str()) {
+            list_items.sort_by_key(|item| (item.line_number, item.byte_offset));
+            note.list_items = list_items;
+        }
+        if let Some(task_ids) = task_ids_by_doc.remove(doc_id.as_str()) {
+            let mut tasks = task_ids
+                .into_iter()
+                .filter_map(|task_id| task_records.remove(&task_id))
+                .collect::<Vec<_>>();
+            tasks.sort_by_key(|task| (task.line_number, task.byte_offset));
+            note.tasks = tasks;
+        }
     }
 
     Ok(())
+}
+
+fn typed_property_json_value(
+    value_text: Option<String>,
+    value_number: Option<f64>,
+    value_bool: Option<bool>,
+    value_date: Option<String>,
+    value_type: String,
+) -> Value {
+    match value_type.as_str() {
+        "null" => Value::Null,
+        "boolean" => value_bool.map_or(Value::Null, Value::Bool),
+        "number" => value_number
+            .and_then(serde_json::Number::from_f64)
+            .map_or(Value::Null, Value::Number),
+        "date" => value_date.map_or(Value::Null, Value::String),
+        _ => value_text.map_or(Value::Null, Value::String),
+    }
 }
 
 /// The result of building a filter clause.
