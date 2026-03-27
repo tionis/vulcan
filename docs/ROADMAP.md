@@ -536,6 +536,16 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
   Requirement: operate on a parsed/validated view model and write back through a serializer; do not patch `.base` files with ad hoc string replacements.
   Recommended first scope: create/delete/rename view, edit columns, sort, filters, and group-by.
   Constraint: preview the resulting row set and diagnostics before save.
+- [ ] **Create note from Bases view** (matches Obsidian behavior):
+  - [ ] Derive the target folder from the view's filter context — if the view has a `file.folder = "Projects"` or `file.inFolder("Projects")` filter, new notes are created in `Projects/`
+  - [ ] Filter analysis: walk the filter tree to extract folder constraints; prefer the most specific folder if multiple constraints exist
+  - [ ] Fallback: if no folder can be derived, use the vault root or a configurable default
+  - [ ] Pre-populate frontmatter properties from the view's filter context — if the view filters on `status = "todo"`, new notes get `status: todo` in frontmatter
+  - [ ] Property derivation rules: only derive from equality filters (`=`, `is`), not from range or contains filters
+  - [ ] Template support: if the view has an associated template (configurable per `.base` file via `create_template` key), use it as the base
+  - [ ] TUI: `n` hotkey in Bases TUI creates a new note with derived folder and properties, then opens in `$EDITOR`
+  - [ ] CLI: `vulcan bases create <file.base> [--title <title>]` — create a note matching the view's context
+  - [ ] `--dry-run` shows derived folder, properties, and template without creating
 
 #### 7.12 Current implementation baseline
 - All items in 7.12 are now complete.
