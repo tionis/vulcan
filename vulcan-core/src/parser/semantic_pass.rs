@@ -261,11 +261,13 @@ impl<'a> SemanticProcessor<'a> {
 
         if let Some(expression) = text.strip_prefix('=').map(str::trim) {
             if !expression.is_empty() {
-                self.parsed.inline_expressions.push(crate::RawInlineExpression {
-                    expression: expression.to_string(),
-                    byte_range: range.clone(),
-                    line_number: line_number_for_offset(self.source, range.start),
-                });
+                self.parsed
+                    .inline_expressions
+                    .push(crate::RawInlineExpression {
+                        expression: expression.to_string(),
+                        byte_range: range.clone(),
+                        line_number: line_number_for_offset(self.source, range.start),
+                    });
             }
             return;
         }
@@ -442,18 +444,16 @@ impl<'a> SemanticProcessor<'a> {
 
     fn finish(mut self) -> ParsedDocument {
         self.parsed.block_refs = detect_block_refs(&self.semantic_blocks);
-        let dataview = extract_dataview_metadata(
-            self.source,
-            self.comment_regions,
-            &self.semantic_blocks,
-        );
+        let dataview =
+            extract_dataview_metadata(self.source, self.comment_regions, &self.semantic_blocks);
         self.parsed.inline_fields = dataview.inline_fields;
         self.parsed.list_items = dataview.list_items;
         self.parsed.tasks = dataview.tasks;
         self.parsed.dataview_blocks = dataview.dataview_blocks;
         for property_range in dataview.property_value_ranges {
             for link in &mut self.parsed.links {
-                if property_range.start <= link.byte_offset && link.byte_offset < property_range.end {
+                if property_range.start <= link.byte_offset && link.byte_offset < property_range.end
+                {
                     link.origin_context = OriginContext::Property;
                 }
             }

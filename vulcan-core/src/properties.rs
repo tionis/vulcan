@@ -1,3 +1,4 @@
+use crate::expression::functions::parse_duration_string;
 use crate::parser::{parse_document, types::InlineFieldKind};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
 use rusqlite::params_from_iter;
@@ -64,7 +65,6 @@ impl PropertyValueOrigin {
             Self::InlineBracket => "inline_bracket",
         }
     }
-
 }
 
 #[derive(Debug)]
@@ -165,7 +165,11 @@ pub fn extract_indexed_properties(
         .unwrap_or_default();
     let mut inline_json_values: BTreeMap<String, Vec<Value>> = BTreeMap::new();
 
-    if let Some(mapping) = parsed.frontmatter.as_ref().and_then(serde_yaml::Value::as_mapping) {
+    if let Some(mapping) = parsed
+        .frontmatter
+        .as_ref()
+        .and_then(serde_yaml::Value::as_mapping)
+    {
         for (key, value) in mapping {
             let Some(key) = key.as_str() else {
                 continue;
@@ -197,27 +201,19 @@ pub fn extract_indexed_properties(
             config,
             expected_type,
         );
-        if let Some(diagnostic) = extracted.diagnostic {
+        if let Some(diagnostic) = extracted.diagnostic.clone() {
             diagnostics.push(diagnostic);
         }
         inline_json_values
             .entry(inline_field.key.clone())
             .or_default()
-            .push(property_json_value(&extracted.value));
+            .push(extracted_property_json_value(&extracted));
         values.push(extracted.value);
         list_items.extend(extracted.list_items);
     }
 
     for (key, inline_values) in inline_json_values {
-        if merged_properties.contains_key(&key) {
-            continue;
-        }
-        let merged_value = if inline_values.len() == 1 {
-            inline_values.into_iter().next().unwrap_or(Value::Null)
-        } else {
-            Value::Array(inline_values)
-        };
-        merged_properties.insert(key, merged_value);
+        merge_property_json_values(&mut merged_properties, key, inline_values);
     }
 
     Ok(Some(IndexedProperties {
@@ -257,12 +253,92 @@ pub(crate) fn indexed_inline_property_value(
 }
 
 fn inline_text_to_yaml_value(value_text: &str, config: &VaultConfig) -> serde_yaml::Value {
-    if is_internal_link_value(value_text, config) {
-        return serde_yaml::Value::String(value_text.trim().to_string());
+    let trimmed = value_text.trim();
+
+    if is_internal_link_value(trimmed, config) {
+        return serde_yaml::Value::String(trimmed.to_string());
     }
 
-    serde_yaml::from_str::<serde_yaml::Value>(value_text)
-        .unwrap_or_else(|_| serde_yaml::Value::String(value_text.trim().to_string()))
+    if let Some(values) = parse_inline_quoted_list(trimmed) {
+        return serde_yaml::Value::Sequence(
+            values.into_iter().map(serde_yaml::Value::String).collect(),
+        );
+    }
+
+    match serde_yaml::from_str::<serde_yaml::Value>(trimmed) {
+        Ok(serde_yaml::Value::Bool(value_bool)) if parse_boolean(trimmed).is_some() => {
+            serde_yaml::Value::Bool(value_bool)
+        }
+        Ok(serde_yaml::Value::Number(number)) if matches_number_literal(trimmed) => {
+            serde_yaml::Value::Number(number)
+        }
+        Ok(serde_yaml::Value::String(text)) => serde_yaml::Value::String(text),
+        Ok(serde_yaml::Value::Null) => serde_yaml::Value::Null,
+        Ok(_) | Err(_) => serde_yaml::Value::String(trimmed.to_string()),
+    }
+}
+
+fn merge_property_json_values(
+    merged_properties: &mut Map<String, Value>,
+    key: String,
+    mut additional_values: Vec<Value>,
+) {
+    match merged_properties.remove(&key) {
+        Some(existing_value) => {
+            let mut values = match existing_value {
+                Value::Array(values) => values,
+                other => vec![other],
+            };
+            values.append(&mut additional_values);
+            merged_properties.insert(key, Value::Array(values));
+        }
+        None => {
+            let merged_value = if additional_values.len() == 1 {
+                additional_values.into_iter().next().unwrap_or(Value::Null)
+            } else {
+                Value::Array(additional_values)
+            };
+            merged_properties.insert(key, merged_value);
+        }
+    }
+}
+
+fn parse_inline_quoted_list(value_text: &str) -> Option<Vec<String>> {
+    if !value_text.contains(',') {
+        return None;
+    }
+    if !value_text.split(',').all(is_quoted_inline_list_segment) {
+        return None;
+    }
+
+    let parsed = serde_yaml::from_str::<serde_yaml::Value>(&format!("[{value_text}]")).ok()?;
+    let serde_yaml::Value::Sequence(values) = parsed else {
+        return None;
+    };
+    values
+        .into_iter()
+        .map(|value| match value {
+            serde_yaml::Value::String(text) => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+fn is_quoted_inline_list_segment(segment: &str) -> bool {
+    let trimmed = segment.trim();
+    trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+}
+
+fn matches_number_literal(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && trimmed.parse::<f64>().is_ok_and(f64::is_finite)
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, '+' | '-' | '.' | 'e' | 'E'))
+        && trimmed.chars().any(|ch| ch.is_ascii_digit())
 }
 
 fn property_json_value(value: &IndexedPropertyValue) -> Value {
@@ -282,6 +358,20 @@ fn property_json_value(value: &IndexedPropertyValue) -> Value {
             .as_ref()
             .map_or(Value::Null, |value_text| Value::String(value_text.clone())),
     }
+}
+
+fn extracted_property_json_value(value: &ExtractedPropertyValue) -> Value {
+    if value.value.value_type == "list" {
+        return Value::Array(
+            value
+                .list_items
+                .iter()
+                .map(|item| Value::String(item.value_text.clone()))
+                .collect(),
+        );
+    }
+
+    property_json_value(&value.value)
 }
 
 fn yaml_to_json_object(value: &serde_yaml::Value) -> Map<String, Value> {
@@ -674,7 +764,10 @@ pub(crate) fn refresh_property_catalog_for_documents(
     let insert_sql = insert_sql
         .replace("{frontmatter_param}", &frontmatter_param.to_string())
         .replace("{inline_param}", &inline_param.to_string());
-    transaction.execute(&insert_sql, rusqlite::params_from_iter(insert_params.iter()))?;
+    transaction.execute(
+        &insert_sql,
+        rusqlite::params_from_iter(insert_params.iter()),
+    )?;
 
     insert_configured_property_types(transaction, configured_types)?;
 
@@ -813,6 +906,16 @@ fn normalize_property_value(
             list_items: Vec::new(),
         },
         serde_yaml::Value::String(text) => {
+            if is_internal_link_value(text, config) {
+                return NormalizedPropertyValue {
+                    value_text: Some(text.clone()),
+                    value_number: None,
+                    value_bool: None,
+                    value_date: None,
+                    value_type: "link".to_string(),
+                    list_items: Vec::new(),
+                };
+            }
             if let Some(normalized_date) = normalize_date_string(text) {
                 return NormalizedPropertyValue {
                     value_text: None,
@@ -823,13 +926,13 @@ fn normalize_property_value(
                     list_items: Vec::new(),
                 };
             }
-            if is_internal_link_value(text, config) {
+            if let Some(normalized_duration) = normalize_duration_string(text) {
                 return NormalizedPropertyValue {
-                    value_text: Some(text.clone()),
+                    value_text: Some(normalized_duration.to_string()),
                     value_number: None,
                     value_bool: None,
                     value_date: None,
-                    value_type: "link".to_string(),
+                    value_type: "duration".to_string(),
                     list_items: Vec::new(),
                 };
             }
@@ -898,6 +1001,16 @@ fn coerce_string_to_expected_type(
             value_type: "date".to_string(),
             list_items: Vec::new(),
         }),
+        "duration" => {
+            normalize_duration_string(text).map(|value_duration| NormalizedPropertyValue {
+                value_text: Some(value_duration.to_string()),
+                value_number: None,
+                value_bool: None,
+                value_date: None,
+                value_type: "duration".to_string(),
+                list_items: Vec::new(),
+            })
+        }
         "link" => {
             if is_internal_link_value(text, config) {
                 Some(NormalizedPropertyValue {
@@ -912,6 +1025,14 @@ fn coerce_string_to_expected_type(
                 None
             }
         }
+        "list" => parse_inline_quoted_list(text).map(|list_items| NormalizedPropertyValue {
+            value_text: None,
+            value_number: None,
+            value_bool: None,
+            value_date: None,
+            value_type: "list".to_string(),
+            list_items,
+        }),
         _ => None,
     }
 }
@@ -924,6 +1045,7 @@ pub(crate) fn canonical_property_type(raw_type: &str) -> &str {
     match raw_type.to_ascii_lowercase().as_str() {
         "bool" | "boolean" | "checkbox" => "boolean",
         "date" | "datetime" => "date",
+        "duration" | "interval" => "duration",
         "list" | "multitext" | "tags" => "list",
         "link" | "file" => "link",
         "number" => "number",
@@ -977,7 +1099,7 @@ fn yaml_scalar_to_text(value: &serde_yaml::Value) -> String {
 }
 
 fn parse_boolean(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
+    match value.trim() {
         "true" => Some(true),
         "false" => Some(false),
         _ => None,
@@ -986,11 +1108,26 @@ fn parse_boolean(value: &str) -> Option<bool> {
 
 fn normalize_date_string(value: &str) -> Option<&str> {
     let trimmed = value.trim();
-    if matches_iso_date(trimmed) || matches_iso_datetime(trimmed) {
+    if matches_iso_year_month(trimmed) || matches_iso_date(trimmed) || matches_iso_datetime(trimmed)
+    {
         Some(trimmed)
     } else {
         None
     }
+}
+
+fn normalize_duration_string(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    parse_duration_string(trimmed).map(|_| trimmed)
+}
+
+fn matches_iso_year_month(value: &str) -> bool {
+    value.len() == 7
+        && value.as_bytes()[4] == b'-'
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || byte.is_ascii_digit())
 }
 
 fn matches_iso_date(value: &str) -> bool {
@@ -1455,8 +1592,8 @@ mod tests {
             &config,
         );
         let indexed = extract_indexed_properties(&parsed, &config)
-        .expect("property extraction should succeed")
-        .expect("frontmatter should produce properties");
+            .expect("property extraction should succeed")
+            .expect("frontmatter should produce properties");
 
         assert_eq!(indexed.values.len(), 4);
         assert_eq!(
@@ -1493,6 +1630,141 @@ mod tests {
         );
         assert_eq!(indexed.diagnostics.len(), 1);
         assert_eq!(indexed.diagnostics[0].key, "status");
+    }
+
+    #[test]
+    fn inline_fields_infer_dataview_types() {
+        let config = VaultConfig::default();
+        let parsed = parse_document(
+            concat!(
+                "month:: 2026-04\n",
+                "duration:: 1d 3h\n",
+                "flag:: true\n",
+                "estimate:: -7\n",
+                "choices:: \"alpha\", \"beta\"\n",
+                "plain:: alpha, beta\n",
+            ),
+            &config,
+        );
+        let indexed = extract_indexed_properties(&parsed, &config)
+            .expect("property extraction should succeed")
+            .expect("inline fields should produce properties");
+
+        let month = indexed
+            .values
+            .iter()
+            .find(|value| value.key == "month")
+            .expect("month property should exist");
+        assert_eq!(month.value_type, "date");
+        assert_eq!(month.value_date.as_deref(), Some("2026-04"));
+
+        let duration = indexed
+            .values
+            .iter()
+            .find(|value| value.key == "duration")
+            .expect("duration property should exist");
+        assert_eq!(duration.value_type, "duration");
+        assert_eq!(duration.value_text.as_deref(), Some("1d 3h"));
+
+        let flag = indexed
+            .values
+            .iter()
+            .find(|value| value.key == "flag")
+            .expect("flag property should exist");
+        assert_eq!(flag.value_type, "boolean");
+        assert_eq!(flag.value_bool, Some(true));
+
+        let estimate = indexed
+            .values
+            .iter()
+            .find(|value| value.key == "estimate")
+            .expect("estimate property should exist");
+        assert_eq!(estimate.value_type, "number");
+        assert_eq!(estimate.value_number, Some(-7.0));
+
+        let choices = indexed
+            .values
+            .iter()
+            .find(|value| value.key == "choices")
+            .expect("choices property should exist");
+        assert_eq!(choices.value_type, "list");
+        assert_eq!(
+            indexed
+                .list_items
+                .iter()
+                .filter(|item| item.key == "choices")
+                .map(|item| item.value_text.clone())
+                .collect::<Vec<_>>(),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+
+        let plain = indexed
+            .values
+            .iter()
+            .find(|value| value.key == "plain")
+            .expect("plain property should exist");
+        assert_eq!(plain.value_type, "text");
+        assert_eq!(plain.value_text.as_deref(), Some("alpha, beta"));
+
+        let canonical_json = serde_json::from_str::<Value>(&indexed.canonical_json)
+            .expect("canonical json should deserialize");
+        assert_eq!(
+            canonical_json["month"],
+            Value::String("2026-04".to_string())
+        );
+        assert_eq!(
+            canonical_json["duration"],
+            Value::String("1d 3h".to_string())
+        );
+        assert_eq!(canonical_json["flag"], Value::Bool(true));
+        assert_eq!(
+            canonical_json["estimate"],
+            Value::Number(serde_json::Number::from_f64(-7.0).expect("finite"))
+        );
+        assert_eq!(
+            canonical_json["choices"],
+            Value::Array(vec![
+                Value::String("alpha".to_string()),
+                Value::String("beta".to_string()),
+            ])
+        );
+        assert_eq!(
+            canonical_json["plain"],
+            Value::String("alpha, beta".to_string())
+        );
+    }
+
+    #[test]
+    fn duplicate_frontmatter_and_inline_keys_merge_into_lists() {
+        let config = VaultConfig::default();
+        let parsed = parse_document(
+            concat!(
+                "---\n",
+                "status: draft\n",
+                "reviewed: true\n",
+                "---\n",
+                "status:: done\n",
+                "reviewed:: false\n",
+            ),
+            &config,
+        );
+        let indexed = extract_indexed_properties(&parsed, &config)
+            .expect("property extraction should succeed")
+            .expect("mixed properties should produce values");
+        let canonical_json = serde_json::from_str::<Value>(&indexed.canonical_json)
+            .expect("canonical json should deserialize");
+
+        assert_eq!(
+            canonical_json["status"],
+            Value::Array(vec![
+                Value::String("draft".to_string()),
+                Value::String("done".to_string()),
+            ])
+        );
+        assert_eq!(
+            canonical_json["reviewed"],
+            Value::Array(vec![Value::Bool(true), Value::Bool(false)])
+        );
     }
 
     #[test]
@@ -1632,6 +1904,42 @@ mod tests {
             vec!["Dashboard.md".to_string()]
         );
 
+        let month = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["month = 2026-04".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .expect("month-only date query should succeed");
+        assert_eq!(
+            month
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Dashboard.md".to_string()]
+        );
+
+        let reviewed = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["reviewed = true".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .expect("frontmatter-reviewed query should succeed");
+        assert_eq!(
+            reviewed
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Dashboard.md".to_string(), "Projects/Alpha.md".to_string()]
+        );
+
         let all_notes = query_notes(
             &paths,
             &NoteQuery {
@@ -1647,7 +1955,10 @@ mod tests {
             .find(|note| note.document_path == "Dashboard.md")
             .expect("dashboard note should be present");
 
-        assert_eq!(dashboard.properties["status"], Value::String("draft".to_string()));
+        assert_eq!(
+            dashboard.properties["status"],
+            Value::String("draft".to_string())
+        );
         assert_eq!(
             dashboard.properties["priority"],
             Value::Array(vec![
@@ -1658,6 +1969,10 @@ mod tests {
         assert_eq!(
             dashboard.properties["owner"],
             Value::String("[[People/Bob]]".to_string())
+        );
+        assert_eq!(
+            dashboard.properties["reviewed"],
+            Value::Array(vec![Value::Bool(true), Value::Bool(false)])
         );
     }
 

@@ -199,37 +199,68 @@ pub fn parse_duration_string(s: &str) -> Option<i64> {
         return None;
     }
 
-    let mut total_ms: i64 = 0;
-    let mut num_str = String::new();
+    let mut total_ms = 0.0_f64;
+    let mut matched_any = false;
+    let mut index = 0_usize;
+    let bytes = s.as_bytes();
 
-    for ch in s.chars() {
-        if ch.is_ascii_digit() || ch == '.' {
-            num_str.push(ch);
-        } else {
-            let n: f64 = num_str.parse().ok()?;
-            num_str.clear();
-            let ms = match ch {
-                's' => n * 1000.0,
-                'm' => n * 60.0 * 1000.0,
-                'h' => n * 3600.0 * 1000.0,
-                'd' => n * 86400.0 * 1000.0,
-                'w' => n * 7.0 * 86400.0 * 1000.0,
-                'M' => n * 30.0 * 86400.0 * 1000.0,
-                'y' => n * 365.0 * 86400.0 * 1000.0,
-                _ => return None,
-            };
-            #[allow(clippy::cast_possible_truncation)]
-            {
-                total_ms += ms as i64;
-            }
+    while index < s.len() {
+        while index < s.len() && (bytes[index].is_ascii_whitespace() || bytes[index] == b',') {
+            index += 1;
         }
+        if index >= s.len() {
+            break;
+        }
+
+        let number_start = index;
+        if matches!(bytes[index], b'+' | b'-') {
+            index += 1;
+        }
+        while index < s.len() && (bytes[index].is_ascii_digit() || bytes[index] == b'.') {
+            index += 1;
+        }
+        if number_start == index
+            || (index == number_start + 1 && matches!(bytes[number_start], b'+' | b'-'))
+        {
+            return None;
+        }
+        let value = s[number_start..index].parse::<f64>().ok()?;
+
+        while index < s.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+
+        let unit_start = index;
+        while index < s.len() && bytes[index].is_ascii_alphabetic() {
+            index += 1;
+        }
+        if unit_start == index {
+            return None;
+        }
+
+        let multiplier = match s[unit_start..index].to_ascii_lowercase().as_str() {
+            "ms" | "msec" | "msecs" | "millisecond" | "milliseconds" => 1.0,
+            "s" | "sec" | "secs" | "second" | "seconds" => 1000.0,
+            "m" | "min" | "mins" | "minute" | "minutes" => 60.0 * 1000.0,
+            "h" | "hr" | "hrs" | "hour" | "hours" => 3600.0 * 1000.0,
+            "d" | "day" | "days" => 86_400.0 * 1000.0,
+            "w" | "wk" | "wks" | "week" | "weeks" => 7.0 * 86_400.0 * 1000.0,
+            "mo" | "mos" | "month" | "months" => 30.0 * 86_400.0 * 1000.0,
+            "y" | "yr" | "yrs" | "year" | "years" => 365.0 * 86_400.0 * 1000.0,
+            _ => return None,
+        };
+        total_ms += value * multiplier;
+        matched_any = true;
     }
 
-    if total_ms == 0 {
+    if !matched_any || total_ms == 0.0 {
         return None;
     }
 
-    Some(total_ms)
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        Some(total_ms as i64)
+    }
 }
 
 /// Extract date components from a millisecond timestamp.
@@ -308,6 +339,13 @@ mod tests {
         assert_eq!(parse_duration_string("2h"), Some(7_200_000));
         assert_eq!(parse_duration_string("30m"), Some(1_800_000));
         assert_eq!(parse_duration_string("1w"), Some(604_800_000));
+        assert_eq!(parse_duration_string("3 hours"), Some(10_800_000));
+        assert_eq!(parse_duration_string("1d 3h 20m"), Some(98_400_000));
+        assert_eq!(
+            parse_duration_string("9 years, 8 months, 4 days, 16 hours, 2 minutes"),
+            Some(304_963_320_000)
+        );
+        assert_eq!(parse_duration_string("2yr8mo12d"), Some(84_844_800_000));
     }
 
     #[test]

@@ -1135,16 +1135,16 @@ Extend the parser pipeline to extract Dataview-style inline fields from note bod
 - [x] Integration test: vault with Dataview-style inline fields, verify property extraction and precedence
 
 **Automatic type inference on inline field values:**
-- [ ] Apply type inference during extraction: Link (`[[...]]`), Boolean (`true`/`false`), Date (ISO 8601 patterns including `yyyy-mm` month-only), Duration (unit patterns like `3 hours`, `1d 3h`), Number (numeric literals), List (comma-separated quoted strings), Text (fallback)
-- [ ] Unquoted comma-separated values (`a, b, c`) remain Text; only quoted (`"a", "b", "c"`) become List
-- [ ] Duplicate keys across frontmatter and inline fields collected into List type
-- [ ] Store inferred `value_type` alongside `value_text` so typed comparisons work in WHERE clauses
+- [x] Apply type inference during extraction: Link (`[[...]]`), Boolean (`true`/`false`), Date (ISO 8601 patterns including `yyyy-mm` month-only), Duration (unit patterns like `3 hours`, `1d 3h`), Number (numeric literals), List (comma-separated quoted strings), Text (fallback)
+- [x] Unquoted comma-separated values (`a, b, c`) remain Text; only quoted (`"a", "b", "c"`) become List
+- [x] Duplicate keys across frontmatter and inline fields collected into List type
+- [x] Store inferred `value_type` alongside `value_text` so typed comparisons work in WHERE clauses
 
 **Inline field parsing edge cases:**
-- [ ] Strip Markdown formatting tokens from field keys (`**bold**` → `bold`, `_italic_` → `italic`)
-- [ ] Emoji keys require bracket syntax: `[🎅:: value]`
-- [ ] Multiline inline field values: value ends at line break (only YAML frontmatter supports multiline)
-- [ ] Unit tests: type inference for each type, formatting in keys, emoji keys, unquoted vs quoted lists
+- [x] Strip Markdown formatting tokens from field keys (`**bold**` → `bold`, `_italic_` → `italic`)
+- [x] Emoji keys require bracket syntax: `[🎅:: value]`
+- [x] Multiline inline field values: value ends at line break (only YAML frontmatter supports multiline)
+- [x] Unit tests: type inference for each type, formatting in keys, emoji keys, unquoted vs quoted lists
 
 #### 9.8.2 List item and task extraction
 
