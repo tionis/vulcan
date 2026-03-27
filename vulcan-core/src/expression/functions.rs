@@ -12,6 +12,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "now" => Ok(Value::Number(ctx.now_ms.into())),
         "today" => Ok(Value::Number(start_of_day(ctx.now_ms).into())),
         "date" => func_date(args, ctx),
+        "meta" => func_meta(args, ctx),
         "typeof" => func_typeof(args, ctx),
         "number" => {
             let val = eval_arg(args, 0, ctx)?;
@@ -147,6 +148,11 @@ fn func_typeof(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     Ok(Value::String(value_type_name(&value).to_string()))
 }
 
+fn func_meta(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    Ok(link_meta_value(&value))
+}
+
 fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, String> {
     args.get(index)
         .map_or(Ok(Value::Null), |e| evaluate(e, ctx))
@@ -208,6 +214,77 @@ pub fn parse_date_like_string(s: &str) -> Option<i64> {
             None
         }
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedWikilink {
+    pub path: String,
+    pub display: Option<String>,
+    pub embed: bool,
+    pub subpath: Option<String>,
+    pub link_type: &'static str,
+}
+
+pub(crate) fn parse_wikilink(value: &str) -> Option<ParsedWikilink> {
+    let trimmed = value.trim();
+    let (embed, inner) = if trimmed.starts_with("![[") && trimmed.ends_with("]]") {
+        (true, &trimmed[3..trimmed.len() - 2])
+    } else if trimmed.starts_with("[[") && trimmed.ends_with("]]") {
+        (false, &trimmed[2..trimmed.len() - 2])
+    } else {
+        return None;
+    };
+
+    let (target, display) = split_unescaped_pipe(inner);
+    let (path, subpath, link_type) = if let Some((path, block_id)) = target.split_once("#^") {
+        (
+            path.trim().to_string(),
+            Some(block_id.trim().to_string()),
+            "block",
+        )
+    } else if let Some((path, heading)) = target.split_once('#') {
+        (
+            path.trim().to_string(),
+            Some(heading.trim().to_string()),
+            "header",
+        )
+    } else {
+        (target.trim().to_string(), None, "file")
+    };
+
+    Some(ParsedWikilink {
+        path,
+        display,
+        embed,
+        subpath: subpath.filter(|value| !value.is_empty()),
+        link_type,
+    })
+}
+
+pub(crate) fn link_meta_value(value: &Value) -> Value {
+    let Value::String(text) = value else {
+        return Value::Null;
+    };
+    let Some(link) = parse_wikilink(text) else {
+        return Value::Null;
+    };
+
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "display".to_string(),
+        link.display.map_or(Value::Null, Value::String),
+    );
+    object.insert("embed".to_string(), Value::Bool(link.embed));
+    object.insert("path".to_string(), Value::String(link.path));
+    object.insert(
+        "subpath".to_string(),
+        link.subpath.map_or(Value::Null, Value::String),
+    );
+    object.insert(
+        "type".to_string(),
+        Value::String(link.link_type.to_string()),
+    );
+    Value::Object(object)
 }
 
 /// Civil date to days since Unix epoch (algorithm from Howard Hinnant).
@@ -390,6 +467,7 @@ fn type_name_hint(expr: &Expr) -> Option<&'static str> {
             "duration" | "dur" => Some("duration"),
             "link" => Some("link"),
             "list" => Some("array"),
+            "meta" => Some("object"),
             "typeof" => Some("string"),
             _ => None,
         },
@@ -489,7 +567,20 @@ fn matches_iso_year_month(value: &str) -> bool {
 }
 
 fn looks_like_wikilink(value: &str) -> bool {
-    value.starts_with("[[") && value.ends_with("]]")
+    parse_wikilink(value).is_some()
+}
+
+fn split_unescaped_pipe(link: &str) -> (String, Option<String>) {
+    let bytes = link.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'|' && (index == 0 || bytes[index - 1] != b'\\') {
+            return (
+                link[..index].replace("\\|", "|"),
+                Some(link[index + 1..].replace("\\|", "|")),
+            );
+        }
+    }
+    (link.replace("\\|", "|"), None)
 }
 
 /// Days since Unix epoch to civil date.
@@ -589,6 +680,34 @@ mod tests {
         assert_eq!(
             format_date(ms, "YYYY-MM-DD HH:mm:ss"),
             "2025-06-15 14:30:45"
+        );
+    }
+
+    #[test]
+    fn test_parse_wikilink() {
+        assert_eq!(
+            parse_wikilink("![[My Project#^9bcbe8|Preview]]"),
+            Some(ParsedWikilink {
+                path: "My Project".to_string(),
+                display: Some("Preview".to_string()),
+                embed: true,
+                subpath: Some("9bcbe8".to_string()),
+                link_type: "block",
+            })
+        );
+    }
+
+    #[test]
+    fn test_link_meta_value() {
+        assert_eq!(
+            link_meta_value(&Value::String("[[My Project#Next Actions]]".to_string())),
+            serde_json::json!({
+                "display": null,
+                "embed": false,
+                "path": "My Project",
+                "subpath": "Next Actions",
+                "type": "header",
+            })
         );
     }
 

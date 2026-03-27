@@ -1227,7 +1227,7 @@ Extend the expression evaluator to support Dataview's full type system and expre
 - [x] Arithmetic operators on numbers, dates, and durations: `+`, `-`, `*`, `/`, `%`
 - [x] Dotted field access: `object.field`, `object["field"]`
 - [x] Array indexing: `array[0]`, `array[expr]` (0-indexed)
-- [ ] Link indexing: `[[Note]].field` — cross-note field access (join against linked page's metadata); returns `null` if target note doesn't exist; follows Vulcan's link resolution (shortest-path, alias matching)
+- [x] Link indexing: `[[Note]].field` — cross-note field access (join against linked page's metadata); returns `null` if target note doesn't exist; follows Vulcan's link resolution (shortest-path, alias matching)
 - [ ] Array/DataArray swizzling: `array.field` auto-maps and flattens; chained swizzling (`array.field.subfield`) maps through nested objects; null propagation through swizzles
 - [ ] Lambda expressions: `(arg1, arg2) => expression` for use in higher-order functions
 - [ ] Column aliases: `field AS "Display Name"` in TABLE/LIST projections

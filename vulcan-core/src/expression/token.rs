@@ -5,6 +5,7 @@ pub enum Token {
     False,
     Number(f64),
     Str(String),
+    Wikilink(String),
     DateLiteral(String),
     DurationLiteral(String),
     Regex(String, String), // pattern, flags
@@ -70,6 +71,14 @@ impl<'a> Tokenizer<'a> {
 
         let ch = self.bytes[self.pos];
         let token = match ch {
+            b'!' if self.peek_next() == Some(b'[')
+                && self.bytes.get(self.pos + 2) == Some(&b'[')
+                && self.looks_like_wikilink_literal(self.pos) =>
+            {
+                let token = self.read_wikilink()?;
+                self.last_was_value = true;
+                token
+            }
             b'(' => {
                 self.pos += 1;
                 self.last_was_value = false;
@@ -79,6 +88,13 @@ impl<'a> Tokenizer<'a> {
                 self.pos += 1;
                 self.last_was_value = true;
                 Token::RParen
+            }
+            b'[' if self.peek_next() == Some(b'[')
+                && self.looks_like_wikilink_literal(self.pos) =>
+            {
+                let token = self.read_wikilink()?;
+                self.last_was_value = true;
+                token
             }
             b'[' => {
                 self.pos += 1;
@@ -231,6 +247,25 @@ impl<'a> Tokenizer<'a> {
         self.bytes.get(self.pos + 1).copied()
     }
 
+    fn looks_like_wikilink_literal(&self, start: usize) -> bool {
+        let mut pos = start;
+        if self.bytes.get(pos) == Some(&b'!') {
+            pos += 1;
+        }
+        if self.bytes.get(pos) != Some(&b'[') || self.bytes.get(pos + 1) != Some(&b'[') {
+            return false;
+        }
+
+        pos += 2;
+        while pos + 1 < self.bytes.len() {
+            if self.bytes[pos] == b']' {
+                return self.bytes[pos + 1] == b']';
+            }
+            pos += 1;
+        }
+        false
+    }
+
     fn read_string(&mut self, quote: u8) -> Result<Token, String> {
         self.pos += 1; // skip opening quote
         let mut s = String::new();
@@ -260,6 +295,28 @@ impl<'a> Tokenizer<'a> {
             self.pos += 1;
         }
         Err("unterminated string literal".to_string())
+    }
+
+    fn read_wikilink(&mut self) -> Result<Token, String> {
+        let start = self.pos;
+        if self.bytes[self.pos] == b'!' {
+            self.pos += 1;
+        }
+
+        if self.bytes.get(self.pos) != Some(&b'[') || self.bytes.get(self.pos + 1) != Some(&b'[') {
+            return Err(format!("invalid wikilink at position {start}"));
+        }
+
+        self.pos += 2;
+        while self.pos + 1 < self.bytes.len() {
+            if self.bytes[self.pos] == b']' && self.bytes[self.pos + 1] == b']' {
+                self.pos += 2;
+                return Ok(Token::Wikilink(self.source[start..self.pos].to_string()));
+            }
+            self.pos += 1;
+        }
+
+        Err("unterminated wikilink".to_string())
     }
 
     fn read_number(&mut self) -> Token {
@@ -686,6 +743,47 @@ mod tests {
                 Token::LParen,
                 Token::DurationLiteral("3 hours, 20 minutes".to_string()),
                 Token::RParen,
+            ]
+        );
+    }
+
+    #[test]
+    fn wikilink_literals() {
+        assert_eq!(
+            tokenize("[[alice]].role"),
+            vec![
+                Token::Wikilink("[[alice]]".to_string()),
+                Token::Dot,
+                Token::Ident("role".to_string()),
+            ]
+        );
+        assert_eq!(
+            tokenize("meta(![[alice#^bio|Bio]])"),
+            vec![
+                Token::Ident("meta".to_string()),
+                Token::LParen,
+                Token::Wikilink("![[alice#^bio|Bio]]".to_string()),
+                Token::RParen,
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_arrays_are_not_wikilinks() {
+        assert_eq!(
+            tokenize("[[1, 2], [3]]"),
+            vec![
+                Token::LBracket,
+                Token::LBracket,
+                Token::Number(1.0),
+                Token::Comma,
+                Token::Number(2.0),
+                Token::RBracket,
+                Token::Comma,
+                Token::LBracket,
+                Token::Number(3.0),
+                Token::RBracket,
+                Token::RBracket,
             ]
         );
     }
