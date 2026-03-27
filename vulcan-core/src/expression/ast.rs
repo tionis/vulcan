@@ -20,6 +20,9 @@ pub enum Expr {
     /// Bracket access / indexing — `expr[key]`, `array[0]`
     IndexAccess(Box<Expr>, Box<Expr>),
 
+    /// Lambda callback — `(arg1, arg2) => expression`
+    Lambda(Vec<String>, Box<Expr>),
+
     /// Reference to another formula — `formula.some_name`
     FormulaRef(String),
 

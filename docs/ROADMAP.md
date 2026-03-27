@@ -1229,7 +1229,7 @@ Extend the expression evaluator to support Dataview's full type system and expre
 - [x] Array indexing: `array[0]`, `array[expr]` (0-indexed)
 - [x] Link indexing: `[[Note]].field` — cross-note field access (join against linked page's metadata); returns `null` if target note doesn't exist; follows Vulcan's link resolution (shortest-path, alias matching)
 - [x] Array/DataArray swizzling: `array.field` auto-maps and flattens; chained swizzling (`array.field.subfield`) maps through nested objects; null propagation through swizzles
-- [ ] Lambda expressions: `(arg1, arg2) => expression` for use in higher-order functions
+- [x] Lambda expressions: `(arg1, arg2) => expression` for use in higher-order functions
 - [ ] Column aliases: `field AS "Display Name"` in TABLE/LIST projections
 - [ ] `WITHOUT ID` modifier for TABLE and LIST queries
 - [ ] Keyword-escaped field access: `row["where"]` for reserved word collision (all DQL keywords must be escapable)

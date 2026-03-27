@@ -1,6 +1,7 @@
 use crate::expression::ast::{BinOp, Expr, UnOp};
 use crate::expression::token::{Token, Tokenizer};
 
+#[derive(Clone)]
 pub struct Parser<'a> {
     tokenizer: Tokenizer<'a>,
     current: Token,
@@ -240,6 +241,12 @@ impl<'a> Parser<'a> {
                 }
             }
             Token::LParen => {
+                let snapshot = self.clone();
+                if let Ok(lambda) = self.parse_lambda() {
+                    return Ok(lambda);
+                }
+                *self = snapshot;
+
                 self.advance()?;
                 let expr = self.parse_or()?;
                 self.expect(&Token::RParen)?;
@@ -289,6 +296,27 @@ impl<'a> Parser<'a> {
             self.advance()?;
         }
         Ok(args)
+    }
+
+    fn parse_lambda(&mut self) -> Result<Expr, String> {
+        self.expect(&Token::LParen)?;
+        let mut params = Vec::new();
+        if self.current != Token::RParen {
+            loop {
+                let Token::Ident(name) = self.advance()? else {
+                    return Err("expected lambda parameter name".to_string());
+                };
+                params.push(name);
+                if self.current != Token::Comma {
+                    break;
+                }
+                self.advance()?;
+            }
+        }
+        self.expect(&Token::RParen)?;
+        self.expect(&Token::FatArrow)?;
+        let body = self.parse_or()?;
+        Ok(Expr::Lambda(params, Box::new(body)))
     }
 }
 
@@ -607,6 +635,21 @@ mod tests {
                 )),
                 BinOp::Mul,
                 Box::new(Expr::Number(3.0)),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_lambda() {
+        assert_eq!(
+            parse("(value, index) => value + index"),
+            Expr::Lambda(
+                vec!["value".to_string(), "index".to_string()],
+                Box::new(Expr::BinaryOp(
+                    Box::new(Expr::Identifier("value".to_string())),
+                    BinOp::Add,
+                    Box::new(Expr::Identifier("index".to_string())),
+                ))
             )
         );
     }
