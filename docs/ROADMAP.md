@@ -1273,15 +1273,50 @@ Support Dataview inline expressions (`` `= expr` ``) for note rendering and quer
 - [ ] Unit tests: `this.property` access, `this.file.name`, nested field access, function calls, missing field handling
 - [ ] Integration test: note with inline expressions, verify evaluation results
 
-#### 9.8.8 DataviewJS detection (non-goal boundary)
+#### 9.8.8 DataviewJS evaluation (compile-time feature flag)
 
-DataviewJS (`` ```dataviewjs `` code blocks) runs arbitrary JavaScript and is out of scope.
+Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript runtime. Gated behind a `dataviewjs` Cargo feature flag — default builds detect and diagnose these blocks without a JS dependency.
 
+**Detection and fallback (always available):**
 - [ ] Detect `dataviewjs` code blocks during parsing
 - [ ] Store as block metadata with `language = "dataviewjs"`
-- [ ] Emit diagnostic: "DataviewJS blocks are not evaluated by Vulcan"
+- [ ] When feature is not compiled in: emit diagnostic "DataviewJS blocks require the `dataviewjs` feature flag"
 - [ ] Exclude from FTS indexing (code, not content)
-- [ ] Unit test: dataviewjs block detected and diagnosed
+- [ ] Unit test: dataviewjs block detected and diagnosed without feature flag
+
+**JS runtime integration (behind `dataviewjs` feature):**
+- [ ] Add `dataviewjs` feature flag to `vulcan-core/Cargo.toml` and `vulcan-cli/Cargo.toml`
+- [ ] Embed JS runtime: Boa (pure Rust, preferred for build simplicity) or rquickjs/QuickJS bindings (alternative if performance requires it)
+- [ ] Sandbox constraints: no filesystem access, no network access, no `eval` of external scripts
+- [ ] Execution timeout: configurable via `.vulcan/config.toml` (default 5 seconds per block)
+- [ ] Memory limit: cap JS heap allocation to prevent runaway scripts
+
+**`dv` API object:**
+- [ ] `dv.pages(source?)` — return page objects matching a DQL FROM source (or all pages)
+- [ ] `dv.page(path)` — return a single page's metadata
+- [ ] `dv.current()` — return current note's metadata (`this` equivalent)
+- [ ] `dv.table(headers, rows)` — render table output (CLI: columnar; JSON: array-of-objects)
+- [ ] `dv.list(items)` — render list output
+- [ ] `dv.taskList(tasks, groupByFile?)` — render task list output
+- [ ] `dv.paragraph(text)`, `dv.header(level, text)`, `dv.el(element, text)`, `dv.span(text)` — text/element output (map to plain text in CLI)
+- [ ] `dv.execute(dql)` — evaluate a DQL string and return results programmatically (reuses 9.8.6 evaluation engine)
+- [ ] `dv.io.load(path)` — read a note's content (read-only, within vault boundary only)
+- [ ] `dv.date(input)`, `dv.duration(input)` — type constructors matching DQL semantics
+- [ ] `dv.compare(a, b)`, `dv.equal(a, b)` — Dataview comparison/equality semantics
+- [ ] `dv.func.*` — namespace exposing all DQL built-in functions (e.g., `dv.func.contains()`)
+- [ ] Page objects expose frontmatter, inline fields, and full `file.*` namespace — same fields as DQL queries
+
+**CLI surface:**
+- [ ] `vulcan dataview eval <file> [--block <n>]` evaluates DataviewJS blocks when feature is compiled in (same command as DQL, dispatches by block language)
+- [ ] `vulcan dataview query-js <js-string>` — evaluate a JS snippet directly from the command line
+- [ ] `--output json` on both subcommands
+- [ ] Diagnostics for runtime errors, timeout, and sandbox violations
+
+**Testing:**
+- [ ] Unit tests: `dv.pages()`, `dv.page()`, `dv.current()`, `dv.table()`, `dv.list()`, `dv.taskList()`, `dv.execute()`
+- [ ] Integration test: DataviewJS blocks in test vault produce expected output
+- [ ] Sandbox test: verify filesystem/network access is blocked, timeout triggers correctly
+- [ ] Feature flag test: build without `dataviewjs`, verify detection-only behavior
 
 #### 9.8.9 Cross-cutting integration
 
@@ -1291,7 +1326,7 @@ DataviewJS (`` ```dataviewjs `` code blocks) runs arbitrary JavaScript and is ou
 - [ ] **HTTP API:** `GET /{id}/dataview/eval` endpoint accepts a DQL string and returns structured results. Inline expression evaluation available via note render endpoints.
 - [ ] **Property queries:** Inline fields and `file.*` fields are queryable via the existing `--where` filter surface. `vulcan notes --where "due < date(today)"` finds notes where the `due` inline field is in the past. `vulcan notes --where "file.size > 10000"` finds large notes.
 - [ ] **Bases interop:** Bases views and DQL queries share the same expression evaluation engine and filter primitives. A Bases view and a DQL TABLE query with equivalent logic should produce identical results.
-- [ ] **Dataview test vault:** `tests/fixtures/vaults/dataview/` must exercise all features: inline fields (all variants), list items (plain and task), `file.*` metadata access, DQL queries (TABLE, LIST, TASK, CALENDAR), GROUP BY, FLATTEN, inline expressions, function calls, link indexing, date/duration arithmetic, Tasks plugin emoji shorthand.
+- [ ] **Dataview test vault:** `tests/fixtures/vaults/dataview/` must exercise all features: inline fields (all variants), list items (plain and task), `file.*` metadata access, DQL queries (TABLE, LIST, TASK, CALENDAR), GROUP BY, FLATTEN, inline expressions, function calls, link indexing, date/duration arithmetic, Tasks plugin emoji shorthand, and DataviewJS blocks (evaluated when feature is compiled in, diagnosed otherwise).
 
 #### 9.8 Recommended implementation order
 
@@ -1301,7 +1336,7 @@ DataviewJS (`` ```dataviewjs `` code blocks) runs arbitrary JavaScript and is ou
 4. **DQL parser** (9.8.5) — tokenizer and recursive descent parser producing the internal query AST.
 5. **DQL evaluation and CLI** (9.8.6) — wire the parser to the evaluator, implement GROUP BY / FLATTEN / LIMIT semantics, add CLI commands.
 6. **Inline expressions** (9.8.7) — `this` binding and CLI evaluation command.
-7. **DataviewJS detection** (9.8.8) — trivial boundary marker.
+7. **DataviewJS** (9.8.8) — detection always; sandboxed JS evaluation behind `dataviewjs` feature flag.
 8. **Cross-cutting integration** (9.8.9) — search exclusions, doctor checks, API endpoints, test vault expansion.
 
 ---
@@ -2154,7 +2189,7 @@ Phase 15 requires 10. Phase 16 requires 13, 14, and 17.4–17.5 (document secret
 Phase 17.6 (OIDC/SSO) is a future direction — deferred until the local auth system is stable.
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas ACLs follow from Phase 17.
-Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language) and Phase 9.6 (search operators, task search). Sub-phase 9.8.1 (inline fields) and 9.8.2 (list items and tasks) extend the parser pipeline. Sub-phase 9.8.3 (file.* metadata) synthesizes implicit fields from existing cache tables. Sub-phase 9.8.4 (type system and expression evaluator) extends the value representation with Date, Duration, Link types, ~60 built-in functions, lambda expressions, and link indexing. Sub-phases 9.8.5–9.8.7 (DQL parser, evaluation, inline expressions) build the query surface on top. Dataview metadata and queries are available to all later phases (daemon, web, wiki) as foundation infrastructure.
+Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language) and Phase 9.6 (search operators, task search). Sub-phase 9.8.1 (inline fields) and 9.8.2 (list items and tasks) extend the parser pipeline. Sub-phase 9.8.3 (file.* metadata) synthesizes implicit fields from existing cache tables. Sub-phase 9.8.4 (type system and expression evaluator) extends the value representation with Date, Duration, Link types, ~60 built-in functions, lambda expressions, and link indexing. Sub-phases 9.8.5–9.8.7 (DQL parser, evaluation, inline expressions) build the query surface on top. Sub-phase 9.8.8 (DataviewJS) adds sandboxed JS evaluation behind a `dataviewjs` compile-time feature flag. Dataview metadata and queries are available to all later phases (daemon, web, wiki) as foundation infrastructure.
 
 ---
 
