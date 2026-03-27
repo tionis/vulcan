@@ -1242,7 +1242,7 @@ Extend the expression evaluator to support Dataview's full type system and expre
 - [ ] `date(any)`, `date(text, format)`, `dur(any)`, `number(string)`, `string(any)`, `link(path, [display])`, `embed(link, [embed])`, `elink(url, [display])`, `typeof(any)`, `object(key, value, ...)`, `list(value1, value2, ...)`
 
 *Numeric:*
-- [ ] `round(n, [digits])`, `trunc(n)`, `floor(n)`, `ceil(n)`, `min(a, b, ...)`, `max(a, b, ...)`, `sum(array)`, `product(array)`, `average(array)`, `reduce(array, operand)`, `minby(array, func)`, `maxby(array, func)`
+- [x] `round(n, [digits])`, `trunc(n)`, `floor(n)`, `ceil(n)`, `min(a, b, ...)`, `max(a, b, ...)`, `sum(array)`, `product(array)`, `average(array)`, `reduce(array, operand)`, `minby(array, func)`, `maxby(array, func)`
 
 *Array/list:*
 - [x] `length(array|object)`, `sort(list)`, `reverse(list)`, `unique(array)`, `flat(array, [depth])`, `slice(array, [start, [end]])`, `nonnull(array)`, `firstvalue(array)`

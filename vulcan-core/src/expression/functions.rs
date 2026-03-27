@@ -1,10 +1,11 @@
 use serde_json::Value;
 
-use crate::expression::ast::Expr;
+use crate::expression::ast::{BinOp, Expr};
 use crate::expression::eval::{
-    as_number, evaluate, is_truthy, number_to_value, value_to_display, EvalContext,
+    as_number, compare_values, eval_binary_op, evaluate, is_truthy, number_to_value,
+    value_to_display, EvalContext,
 };
-use crate::expression::methods::call_method;
+use crate::expression::methods::{call_method, evaluate_callback};
 
 #[allow(clippy::too_many_lines)]
 pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -17,6 +18,10 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "typeof" => func_typeof(args, ctx),
         "length" => func_length(args, ctx),
         "object" => func_object(args, ctx),
+        "round" => func_round(args, ctx),
+        "trunc" => func_numeric_unary(args, ctx, f64::trunc),
+        "floor" => func_numeric_unary(args, ctx, f64::floor),
+        "ceil" => func_numeric_unary(args, ctx, f64::ceil),
         "default" => func_default(args, ctx, true),
         "ldefault" => func_default(args, ctx, false),
         "choice" => func_choice(args, ctx),
@@ -34,30 +39,14 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
                 Ok(number_to_value(n))
             }
         }
-        "max" => {
-            let values = eval_all_args(args, ctx)?;
-            let result = values
-                .iter()
-                .filter_map(serde_json::Value::as_f64)
-                .fold(f64::NEG_INFINITY, f64::max);
-            if result == f64::NEG_INFINITY {
-                Ok(Value::Null)
-            } else {
-                Ok(number_to_value(result))
-            }
-        }
-        "min" => {
-            let values = eval_all_args(args, ctx)?;
-            let result = values
-                .iter()
-                .filter_map(serde_json::Value::as_f64)
-                .fold(f64::INFINITY, f64::min);
-            if result == f64::INFINITY {
-                Ok(Value::Null)
-            } else {
-                Ok(number_to_value(result))
-            }
-        }
+        "max" => func_extreme(args, ctx, true),
+        "min" => func_extreme(args, ctx, false),
+        "sum" => func_aggregate(args, ctx, "+"),
+        "product" => func_aggregate(args, ctx, "*"),
+        "average" => func_average(args, ctx),
+        "reduce" => func_reduce(args, ctx),
+        "minby" => func_extreme_by(args, ctx, false),
+        "maxby" => func_extreme_by(args, ctx, true),
         "link" => {
             let path = eval_arg(args, 0, ctx)?;
             let display = if args.len() > 1 {
@@ -194,6 +183,36 @@ fn func_object(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     Ok(Value::Object(map))
 }
 
+fn func_round(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let number = as_number(&value);
+    if value.is_null() || number.is_nan() {
+        return Ok(Value::Null);
+    }
+
+    let precision_value = eval_arg(args, 1, ctx)?;
+    let precision = as_number(&precision_value);
+    if args.len() < 2 || precision_value.is_null() || precision.is_nan() || precision <= 0.0 {
+        return Ok(number_to_value(number.round()));
+    }
+
+    let factor = 10_f64.powi(precision as i32);
+    Ok(number_to_value((number * factor).round() / factor))
+}
+
+fn func_numeric_unary(
+    args: &[Expr],
+    ctx: &EvalContext,
+    op: fn(f64) -> f64,
+) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let number = as_number(&value);
+    if value.is_null() || number.is_nan() {
+        return Ok(Value::Null);
+    }
+    Ok(number_to_value(op(number)))
+}
+
 fn func_default(args: &[Expr], ctx: &EvalContext, vectorize: bool) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     let fallback = eval_arg(args, 1, ctx)?;
@@ -239,6 +258,109 @@ fn func_firstvalue(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
         _ => values.into_iter().find(|value| !value.is_null()),
     };
     Ok(first.unwrap_or(Value::Null))
+}
+
+fn func_extreme(args: &[Expr], ctx: &EvalContext, pick_max: bool) -> Result<Value, String> {
+    let values = eval_variadic_values(args, ctx)?;
+    Ok(extreme_value(values, pick_max))
+}
+
+fn func_aggregate(args: &[Expr], ctx: &EvalContext, operator: &str) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    match value {
+        Value::Array(values) => reduce_values_by_operator(values, operator),
+        other => Ok(other),
+    }
+}
+
+fn func_average(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let Value::Array(values) = value else {
+        return Ok(value);
+    };
+
+    if values.is_empty() {
+        return Ok(Value::Null);
+    }
+
+    let count = values.len();
+    let sum = reduce_values_by_operator(values, "+")?;
+    if sum.is_null() {
+        return Ok(Value::Null);
+    }
+
+    Ok(eval_binary_op(
+        &sum,
+        BinOp::Div,
+        &Value::Number(count.into()),
+    ))
+}
+
+fn func_reduce(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let Value::Array(values) = eval_arg(args, 0, ctx)? else {
+        return Ok(Value::Null);
+    };
+    let Some(operand_expr) = args.get(1) else {
+        return Ok(Value::Null);
+    };
+    if values.is_empty() {
+        return Ok(Value::Null);
+    }
+
+    match operand_expr {
+        Expr::Str(operator) => reduce_values_by_operator(values, operator),
+        _ => reduce_values_by_callback(values, operand_expr, ctx),
+    }
+}
+
+fn func_extreme_by(args: &[Expr], ctx: &EvalContext, pick_max: bool) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let Value::Array(values) = value else {
+        return Ok(Value::Null);
+    };
+    let Some(callback) = args.get(1) else {
+        return Ok(Value::Null);
+    };
+    if values.is_empty() {
+        return Ok(Value::Null);
+    }
+
+    let first = values.first().cloned().unwrap_or(Value::Null);
+    let mut mapped = Vec::new();
+    for (index, item) in values.into_iter().enumerate() {
+        let mapped_value = evaluate_callback(
+            callback,
+            ctx,
+            &[
+                ("value", item.clone()),
+                ("index", Value::Number(index.into())),
+            ],
+            &[item.clone(), Value::Number(index.into())],
+        )?;
+        if !mapped_value.is_null() {
+            mapped.push((item, mapped_value));
+        }
+    }
+
+    let mut mapped_iter = mapped.into_iter();
+    let Some((mut best_item, mut best_key)) = mapped_iter.next() else {
+        return Ok(first);
+    };
+
+    for (item, key) in mapped_iter {
+        let ordering = compare_values(&best_key, &key);
+        let keep_candidate = if pick_max {
+            ordering == Some(std::cmp::Ordering::Less)
+        } else {
+            ordering == Some(std::cmp::Ordering::Greater)
+        };
+        if keep_candidate {
+            best_item = item;
+            best_key = key;
+        }
+    }
+
+    Ok(best_item)
 }
 
 fn func_array_alias(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -294,6 +416,14 @@ fn default_value(value: Value, fallback: Value, vectorize: bool) -> Value {
     }
 }
 
+fn eval_variadic_values(args: &[Expr], ctx: &EvalContext) -> Result<Vec<Value>, String> {
+    let values = eval_all_args(args, ctx)?;
+    Ok(match values.as_slice() {
+        [Value::Array(items)] => items.clone(),
+        _ => values,
+    })
+}
+
 fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, String> {
     args.get(index)
         .map_or(Ok(Value::Null), |e| evaluate(e, ctx))
@@ -301,6 +431,99 @@ fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, Str
 
 fn eval_all_args(args: &[Expr], ctx: &EvalContext) -> Result<Vec<Value>, String> {
     args.iter().map(|e| evaluate(e, ctx)).collect()
+}
+
+fn extreme_value(values: Vec<Value>, pick_max: bool) -> Value {
+    let mut iter = values.into_iter();
+    let Some(mut best) = iter.next() else {
+        return Value::Null;
+    };
+
+    for candidate in iter {
+        best = choose_extreme(best, candidate, pick_max);
+    }
+
+    best
+}
+
+fn choose_extreme(left: Value, right: Value, pick_max: bool) -> Value {
+    match (&left, &right) {
+        (Value::Null, _) => return right,
+        (_, Value::Null) => return left,
+        _ => {}
+    }
+
+    match compare_values(&left, &right) {
+        Some(std::cmp::Ordering::Less) => {
+            if pick_max {
+                right
+            } else {
+                left
+            }
+        }
+        Some(std::cmp::Ordering::Greater) => {
+            if pick_max {
+                left
+            } else {
+                right
+            }
+        }
+        Some(std::cmp::Ordering::Equal) | None => left,
+    }
+}
+
+fn reduce_values_by_operator(values: Vec<Value>, operator: &str) -> Result<Value, String> {
+    let mut iter = values.into_iter();
+    let Some(mut acc) = iter.next() else {
+        return Ok(Value::Null);
+    };
+
+    for value in iter {
+        acc = match operator {
+            "+" => eval_binary_op(&acc, BinOp::Add, &value),
+            "-" => eval_binary_op(&acc, BinOp::Sub, &value),
+            "*" => eval_binary_op(&acc, BinOp::Mul, &value),
+            "/" => eval_binary_op(&acc, BinOp::Div, &value),
+            "&" => Value::Bool(is_truthy(&acc) && is_truthy(&value)),
+            "|" => Value::Bool(is_truthy(&acc) || is_truthy(&value)),
+            _ => {
+                return Err(
+                    "reduce(array, op) supports '+', '-', '/', '*', '&', and '|'".to_string(),
+                )
+            }
+        };
+    }
+
+    Ok(acc)
+}
+
+fn reduce_values_by_callback(
+    values: Vec<Value>,
+    callback: &Expr,
+    ctx: &EvalContext,
+) -> Result<Value, String> {
+    let mut iter = values.into_iter().enumerate();
+    let Some((_, mut acc)) = iter.next() else {
+        return Ok(Value::Null);
+    };
+
+    for (index, item) in iter {
+        if item.is_null() {
+            continue;
+        }
+        acc = evaluate_callback(
+            callback,
+            ctx,
+            &[
+                ("acc", acc.clone()),
+                ("value", item.clone()),
+                ("index", Value::Number(index.into())),
+            ],
+            &[acc, item, Value::Number(index.into())],
+        )?;
+    }
+
+    Ok(acc)
 }
 
 /// Parse an ISO 8601 date string into milliseconds since epoch.
