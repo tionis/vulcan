@@ -1,23 +1,24 @@
 # Vulcan
 
-Headless CLI and multi-vault platform for Obsidian vaults and plain Markdown directories. Indexes notes into a SQLite cache for graph queries, full-text search, and vector search. Expanding into a daemon with REST API, sync integration, and web-based wiki.
+Headless CLI and multi-vault platform for Obsidian vaults and plain Markdown directories. Indexes notes into a SQLite cache for graph queries, full-text search, and vector search. Expanding into a daemon with REST API, sync, web wiki, and broad Obsidian plugin compatibility.
 
 ## Key documents
 
 - `docs/design_document.md` — Full architecture and design decisions. Read this first for any non-trivial work.
 - `docs/ROADMAP.md` — Phased task breakdown with checkboxes. Update task status as you complete work.
 - `docs/investigations/` — Dependency research (pulldown-cmark gaps, sqlite-vec build, parser comparison).
+- `references/` — Plugin source repos and documentation (obsidian-dataview, Templater, obsidian-kanban, quickadd, tasknotes, obsidian-skills). Use these as authoritative references when implementing plugin compatibility.
 
 ## Architecture
 
 Three-layer model: vault (source of truth) → SQLite cache (rebuildable) → search indexes (derived).
 
 Cargo workspace with crates:
-- `vulcan-core` — Parser, indexer, data model, SQLite cache, file scanning, config, git integration
+- `vulcan-core` — Parser, indexer, data model, SQLite cache, file scanning, config, git integration, expression evaluator, query AST
 - `vulcan-embed` — Embedding provider trait, OpenAI-compatible provider, vector store abstraction
 - `vulcan-cli` — CLI binary, command handlers, output formatting, TUI (note picker, bases TUI, browse TUI)
 - `vulcan-daemon` (planned) — axum-based HTTP daemon, multi-vault registry, middleware
-- `vulcan-sync` (planned) — Sync backend trait and implementations (obsidian-headless, git remote, passive)
+- `vulcan-sync` (planned) — Sync backend trait and implementations
 
 ## Critical constraints
 
@@ -29,66 +30,70 @@ Cargo workspace with crates:
 - Unsupported syntax surfaces as diagnostics, never silently ignored.
 - Correctness and repairability over cleverness.
 - `vulcan-core` stays synchronous. Async boundaries live in the daemon layer (`spawn_blocking`).
-- Shell out to `git` CLI for git operations — avoid libgit2 to keep dependencies light.
-- Every CLI command must work without the daemon running (direct SQLite access). The daemon is an optional acceleration/multi-vault layer.
+- Shell out to `git` CLI for git operations — avoid libgit2.
+- Every CLI command must work without the daemon running (direct SQLite access).
 
 ## Tech stack
 
-Core (existing):
-- Rust edition 2021, MSRV 1.77
-- ULIDs for all internal identifiers (`ulid` crate)
+- Rust edition 2021, MSRV 1.77, ULIDs for all internal identifiers
 - `pulldown-cmark` 0.13+ with ENABLE_WIKILINKS, ENABLE_GFM, ENABLE_MATH, ENABLE_FOOTNOTES, ENABLE_YAML_STYLE_METADATA_BLOCKS
 - `rusqlite` with `bundled` feature, WAL mode, `user_version` pragma for migrations
 - `sqlite-vec` 0.1.x for vector search (statically compiled from bundled C source)
-- `blake3` for content hashing
-- `clap` for CLI
-- `serde` / `serde_yaml` / `toml` for config and frontmatter
-- `ratatui` + `crossterm` for TUI (note picker, bases TUI, browse TUI)
+- `blake3` for content hashing, `clap` for CLI, `ratatui` + `crossterm` for TUI
+- Planned: `axum` + `tokio` for daemon, `automerge` for collaborative editing
 
-Daemon (planned):
-- `axum` + `tokio` for async HTTP
-- `tower-http` for middleware (CORS, compression, logging)
-- `argon2` for token hashing
+## Current implementation status
 
-WebUI / Wiki (planned):
-- `automerge` for CRDT-based collaborative editing document model (Rust-native, also compiles to WASM)
+Phases 1–8 and 9.1–9.7 are complete. The codebase has:
+- Full vault indexing with incremental scan, link resolution, graph queries, FTS5 search, vector search
+- Bases evaluator with full expression language, formulas, and interactive TUI
+- Canonical query AST shared across CLI, Bases, and API surfaces
+- Query-driven mutations (`update`, `unset`) with dry-run support
+- Browse TUI, note picker, auto-commit, templates, inbox, diff
+- Performance optimizations (Aho-Corasick, graph caching, batch filtering)
 
-## Parser pipeline
+## Next implementation phases (Phase 9.8+)
 
-The parser has a two-stage design (see design doc §8 for full detail):
-1. **Pre-scan** raw source for `%%comment%%` regions (byte ranges)
-2. **Single-pass semantic processor** over pulldown-cmark's event stream that simultaneously:
-   - Extracts graph entities (links, headings, block refs, tags) with original byte offsets
-   - Builds clean chunk text (comments stripped, `==highlight==` markers removed)
-   - Extracts frontmatter from MetadataBlock events
+See "Phase 9 implementation order" in `docs/ROADMAP.md` for the full dependency graph. Summary:
 
-pulldown-cmark does NOT handle: `#heading`/`#^block` subpath splitting, note-vs-image embed classification, `%%comments%%`, `==highlights==`, inline tags, `obsidian://` URIs, or HTML link detection. These are all handled in the semantic pass.
+1. **9.8 Dataview** (largest) — Inline fields, type inference, `file.*` metadata, DQL parser/evaluator, ~60 built-in functions, DataviewJS sandbox (behind `dataviewjs` feature flag)
+2. **9.9 Templater** — `<% %>` template syntax, `tp.*` API modules, reuses DataviewJS sandbox for JS
+3. **9.10 Tasks plugin** — `tasks` code block DSL, recurring tasks (RRULE), dependencies, custom statuses
+4. **9.11 Kanban** — Board parsing, configurable date/time triggers, archive, CLI commands
+5. **9.12 AI assistant** — OpenAI-compatible inference, vault tool interface, conversation persistence (gemini-scribe callout format), prompts and skills as markdown files
+6. **9.13 QuickAdd** — Investigation phase for macro/capture automation
+7. **9.15 TaskNotes** — Task-as-note files, NLP creation, Bases view integration (requires 4.5.1 custom source types), time tracking, pomodoro
+8. **9.16 Periodic notes** — Daily/weekly/monthly note infrastructure (shared dependency for many plugins)
+9. **9.17 Unified import** — `vulcan config import --all` for all plugin settings
+
+Each plugin phase includes a settings importer reading from `.obsidian/plugins/<plugin>/data.json`.
+
+## Key modules for new work
+
+- `vulcan-core/src/expression/` — Bases expression evaluator (tokenizer, parser, evaluator). Foundation for Dataview expressions.
+- `vulcan-core/src/bases.rs` — Bases file parsing, evaluation, view management. Extend with custom source types (4.5.1).
+- `vulcan-core/src/query.rs` — Canonical query AST. DQL compiles to this.
+- `vulcan-core/src/parser/` — Markdown parser pipeline. Extend for inline fields, list item extraction.
+- `vulcan-core/src/properties.rs` — Property storage and typed projections.
+- `vulcan-core/src/config/mod.rs` — `VaultConfig` struct. New config sections go here.
+- `vulcan-cli/src/bases_tui.rs` — Bases TUI with editor handoff. Shared TUI utilities extracted here.
+- `vulcan-cli/src/browse_tui.rs` — File browser TUI.
+- `vulcan-cli/src/serve.rs` — Single-vault HTTP server. Will be superseded by daemon.
 
 ## Conventions
 
 - `--output json` on all commands. Line-delimited JSON for streamed output.
 - `--dry-run` on all mutating commands.
 - All CLI commands must work in non-interactive mode (no TTY prompts).
-- Tests go alongside the code they test. Integration tests use fixture vaults in `tests/fixtures/vaults/`.
+- Tests alongside code. Integration tests use fixture vaults in `tests/fixtures/vaults/`.
 - Schema migrations use `PRAGMA user_version`. Additive migrations preserve data; breaking migrations trigger rebuild.
-- TUI utilities (`open_in_editor`, `with_terminal_suspended`) live in shared modules, not duplicated per TUI.
-- Daemon REST API response format matches CLI `--output json` format — same report structs, same serialization.
+- Daemon REST API response format matches CLI `--output json` format.
 - Auto-commit is always opt-in and suppressible with `--no-commit`.
-
-## Key modules for new work
-
-These existing modules are foundations that Phase 8+ builds on:
-
-- `vulcan-cli/src/note_picker.rs` — Fuzzy note picker TUI with preview. Reuse for `edit` and extend for `browse`.
-- `vulcan-cli/src/bases_tui.rs` — Full TUI with `open_in_editor()` and `with_terminal_suspended()`. Extract shared editor utilities from here.
-- `vulcan-cli/src/serve.rs` — Single-vault HTTP server (hand-rolled). Will be superseded by the daemon but shows the existing API surface.
-- `vulcan-core/src/vector.rs` — Multi-model vector storage with cache key namespacing. Recently refactored.
-- `vulcan-core/src/config/mod.rs` — `VaultConfig` struct and `DEFAULT_CONFIG_TEMPLATE`. New config sections (`[git]`, `[inbox]`) go here.
 
 ## Testing
 
 - Unit tests for every module.
-- Integration tests against fixture vaults (basic, ambiguous-links, mixed-properties, broken-frontmatter, move-rewrite, bases).
+- Integration tests against fixture vaults: `basic/`, `ambiguous-links/`, `mixed-properties/`, `broken-frontmatter/`, `move-rewrite/`, `bases/`, `dataview/`. Additional vaults planned for `templater/`, `tasks-plugin/`, `kanban/`, `tasknotes/`, `periodic/`, `ai-sessions/`.
 - Reindex idempotency: index twice, assert identical state.
 - Move roundtrip: move then move back, assert original link text restored.
 - JSON output snapshot tests for CLI commands.
