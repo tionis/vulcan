@@ -1,4 +1,5 @@
 use crate::expression::functions::parse_duration_string;
+use crate::file_metadata::synthetic_file_link;
 use crate::parser::{parse_document, types::InlineFieldKind};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
 use rusqlite::params_from_iter;
@@ -136,6 +137,8 @@ pub struct NotesReport {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NoteRecord {
+    #[serde(skip)]
+    pub document_id: String,
     pub document_path: String,
     pub file_name: String,
     pub file_ext: String,
@@ -144,6 +147,12 @@ pub struct NoteRecord {
     pub properties: Value,
     pub tags: Vec<String>,
     pub links: Vec<String>,
+    #[serde(skip)]
+    pub inlinks: Vec<String>,
+    #[serde(skip)]
+    pub aliases: Vec<String>,
+    #[serde(skip)]
+    pub frontmatter: Value,
 }
 
 pub fn extract_indexed_properties(
@@ -381,6 +390,17 @@ fn yaml_to_json_object(value: &serde_yaml::Value) -> Map<String, Value> {
     }
 }
 
+fn parse_frontmatter_json_object(raw_yaml: &str) -> Value {
+    if raw_yaml.trim().is_empty() {
+        return Value::Object(Map::new());
+    }
+
+    serde_yaml::from_str::<serde_yaml::Value>(raw_yaml)
+        .ok()
+        .map(|value| Value::Object(yaml_to_json_object(&value)))
+        .unwrap_or_else(|| Value::Object(Map::new()))
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport, PropertyError> {
     let database = open_existing_cache(paths)?;
@@ -401,7 +421,8 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             documents.extension,
             documents.file_mtime,
             documents.file_size,
-            COALESCE(properties.canonical_json, '{}')
+            COALESCE(properties.canonical_json, '{}'),
+            COALESCE(properties.raw_yaml, '')
         FROM documents
         LEFT JOIN properties ON properties.document_id = documents.id
         WHERE documents.extension = 'md'",
@@ -415,6 +436,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         |row| -> Result<(String, NoteRecord), rusqlite::Error> {
             let doc_id: String = row.get(0)?;
             let canonical_json: String = row.get(6)?;
+            let raw_yaml: String = row.get(7)?;
             let properties = serde_json::from_str::<Value>(&canonical_json).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
                     6,
@@ -423,8 +445,9 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
                 )
             })?;
             Ok((
-                doc_id,
+                doc_id.clone(),
                 NoteRecord {
+                    document_id: doc_id.clone(),
                     document_path: row.get(1)?,
                     file_name: row.get(2)?,
                     file_ext: row.get(3)?,
@@ -433,56 +456,16 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
                     properties,
                     tags: Vec::new(),
                     links: Vec::new(),
+                    inlinks: Vec::new(),
+                    aliases: Vec::new(),
+                    frontmatter: parse_frontmatter_json_object(&raw_yaml),
                 },
             ))
         },
     )?;
     let mut doc_ids_and_notes: Vec<(String, NoteRecord)> = rows.collect::<Result<Vec<_>, _>>()?;
 
-    // Batch-load tags and links for only the matching documents
-    if !doc_ids_and_notes.is_empty() {
-        let doc_ids: Vec<&str> = doc_ids_and_notes
-            .iter()
-            .map(|(id, _)| id.as_str())
-            .collect();
-        let placeholders = doc_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-
-        let mut tag_map: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        let tag_sql =
-            format!("SELECT document_id, tag_text FROM tags WHERE document_id IN ({placeholders})");
-        let mut tag_stmt = connection.prepare(&tag_sql)?;
-        let tag_rows = tag_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for tag_row in tag_rows {
-            let (doc_id, tag_text) = tag_row?;
-            tag_map.entry(doc_id).or_default().push(tag_text);
-        }
-
-        let mut link_map: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        let link_sql = format!(
-            "SELECT source_document_id, raw_text FROM links WHERE link_kind = 'wikilink' AND source_document_id IN ({placeholders})"
-        );
-        let mut link_stmt = connection.prepare(&link_sql)?;
-        let link_rows = link_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for link_row in link_rows {
-            let (doc_id, raw_text) = link_row?;
-            link_map.entry(doc_id).or_default().push(raw_text);
-        }
-
-        for (doc_id, note) in &mut doc_ids_and_notes {
-            if let Some(tags) = tag_map.remove(doc_id.as_str()) {
-                note.tags = tags;
-            }
-            if let Some(links) = link_map.remove(doc_id.as_str()) {
-                note.links = links;
-            }
-        }
-    }
+    hydrate_note_records(connection, &mut doc_ids_and_notes)?;
 
     let mut notes: Vec<NoteRecord> = doc_ids_and_notes
         .into_iter()
@@ -512,37 +495,39 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     })
 }
 
-/// Load a lightweight index of all notes keyed by `file_name` (basename without extension).
-/// Loads only core document fields and frontmatter properties; tags and links are left empty
-/// since they require expensive batch queries. Notes in the current view should be overlaid
-/// on top of this index so their tags/links are available.
+/// Load an index of all notes keyed by `file_name` (basename without extension).
+/// This includes enough derived metadata for expression evaluation on linked notes.
 pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let mut stmt = connection.prepare(
-        "SELECT d.path, d.filename, d.extension, d.file_mtime, d.file_size, \
-         COALESCE(p.canonical_json, '{}') \
+        "SELECT d.id, d.path, d.filename, d.extension, d.file_mtime, d.file_size, \
+         COALESCE(p.canonical_json, '{}'), COALESCE(p.raw_yaml, '') \
          FROM documents d LEFT JOIN properties p ON p.document_id = d.id",
     )?;
     let rows = stmt.query_map([], |row| {
-        let props_json: String = row.get(5)?;
+        let props_json: String = row.get(6)?;
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
-            row.get::<_, i64>(3)?,
+            row.get::<_, String>(3)?,
             row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
             props_json,
+            row.get::<_, String>(7)?,
         ))
     })?;
-    let mut map = HashMap::new();
+    let mut doc_ids_and_notes = Vec::new();
     for row in rows {
-        let (path, file_name, file_ext, file_mtime, file_size, props_json) = row?;
+        let (document_id, path, file_name, file_ext, file_mtime, file_size, props_json, raw_yaml) =
+            row?;
         let properties =
             serde_json::from_str(&props_json).unwrap_or(Value::Object(serde_json::Map::default()));
-        map.insert(
-            file_name.clone(),
+        doc_ids_and_notes.push((
+            document_id.clone(),
             NoteRecord {
+                document_id,
                 document_path: path,
                 file_name,
                 file_ext,
@@ -551,10 +536,116 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
                 properties,
                 tags: vec![],
                 links: vec![],
+                inlinks: vec![],
+                aliases: vec![],
+                frontmatter: parse_frontmatter_json_object(&raw_yaml),
             },
-        );
+        ));
+    }
+
+    hydrate_note_records(connection, &mut doc_ids_and_notes)?;
+
+    let mut map = HashMap::new();
+    for (_, note) in doc_ids_and_notes {
+        map.insert(note.file_name.clone(), note);
     }
     Ok(map)
+}
+
+fn hydrate_note_records(
+    connection: &rusqlite::Connection,
+    doc_ids_and_notes: &mut Vec<(String, NoteRecord)>,
+) -> Result<(), rusqlite::Error> {
+    if doc_ids_and_notes.is_empty() {
+        return Ok(());
+    }
+
+    let doc_ids: Vec<&str> = doc_ids_and_notes
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
+    let placeholders = doc_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+
+    let mut tag_map: HashMap<String, Vec<String>> = HashMap::new();
+    let tag_sql =
+        format!("SELECT document_id, tag_text FROM tags WHERE document_id IN ({placeholders})");
+    let mut tag_stmt = connection.prepare(&tag_sql)?;
+    let tag_rows = tag_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for tag_row in tag_rows {
+        let (doc_id, tag_text) = tag_row?;
+        tag_map.entry(doc_id).or_default().push(tag_text);
+    }
+
+    let mut link_map: HashMap<String, Vec<String>> = HashMap::new();
+    let link_sql = format!(
+        "SELECT source_document_id, raw_text
+         FROM links
+         WHERE link_kind = 'wikilink' AND source_document_id IN ({placeholders})"
+    );
+    let mut link_stmt = connection.prepare(&link_sql)?;
+    let link_rows = link_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for link_row in link_rows {
+        let (doc_id, raw_text) = link_row?;
+        link_map.entry(doc_id).or_default().push(raw_text);
+    }
+
+    let mut alias_map: HashMap<String, Vec<String>> = HashMap::new();
+    let alias_sql = format!(
+        "SELECT document_id, alias_text FROM aliases WHERE document_id IN ({placeholders})"
+    );
+    let mut alias_stmt = connection.prepare(&alias_sql)?;
+    let alias_rows = alias_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for alias_row in alias_rows {
+        let (doc_id, alias_text) = alias_row?;
+        alias_map.entry(doc_id).or_default().push(alias_text);
+    }
+
+    let mut inlink_map: HashMap<String, Vec<String>> = HashMap::new();
+    let inlink_sql = format!(
+        "SELECT links.resolved_target_id, source.path, source.extension
+         FROM links
+         JOIN documents AS source ON source.id = links.source_document_id
+         WHERE links.link_kind = 'wikilink'
+           AND links.resolved_target_id IN ({placeholders})"
+    );
+    let mut inlink_stmt = connection.prepare(&inlink_sql)?;
+    let inlink_rows = inlink_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for inlink_row in inlink_rows {
+        let (doc_id, source_path, source_ext) = inlink_row?;
+        inlink_map
+            .entry(doc_id)
+            .or_default()
+            .push(synthetic_file_link(&source_path, &source_ext));
+    }
+
+    for (doc_id, note) in doc_ids_and_notes {
+        if let Some(tags) = tag_map.remove(doc_id.as_str()) {
+            note.tags = tags;
+        }
+        if let Some(links) = link_map.remove(doc_id.as_str()) {
+            note.links = links;
+        }
+        if let Some(aliases) = alias_map.remove(doc_id.as_str()) {
+            note.aliases = aliases;
+        }
+        if let Some(inlinks) = inlink_map.remove(doc_id.as_str()) {
+            note.inlinks = inlinks;
+        }
+    }
+
+    Ok(())
 }
 
 /// The result of building a filter clause.

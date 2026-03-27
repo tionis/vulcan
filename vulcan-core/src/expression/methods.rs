@@ -527,6 +527,7 @@ mod tests {
     fn eval(input: &str) -> Value {
         let expr = Parser::new(input).unwrap().parse().unwrap();
         let note = NoteRecord {
+            document_id: "note-id".to_string(),
             document_path: "folder/note.md".to_string(),
             file_name: "note".to_string(),
             file_ext: "md".to_string(),
@@ -535,6 +536,9 @@ mod tests {
             properties: serde_json::json!({"status": "done", "items": [1, 2, 3, 2]}),
             tags: vec![],
             links: vec![],
+            inlinks: vec![],
+            aliases: vec![],
+            frontmatter: serde_json::json!({}),
         };
         let formulas = BTreeMap::new();
         let ctx = EvalContext::new(&note, &formulas);
