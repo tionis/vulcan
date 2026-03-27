@@ -1,4 +1,4 @@
-use crate::parser::parse_document;
+use crate::parser::{parse_document, types::InlineFieldKind};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
 use rusqlite::params_from_iter;
 use rusqlite::types::Value as SqlValue;
@@ -10,6 +10,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 const PROPERTY_NAMESPACE_FRONTMATTER: &str = "frontmatter";
+const PROPERTY_NAMESPACE_INLINE: &str = "inline";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndexedProperties {
@@ -28,6 +29,7 @@ pub struct IndexedPropertyValue {
     pub value_bool: Option<bool>,
     pub value_date: Option<String>,
     pub value_type: String,
+    pub origin: PropertyValueOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +45,26 @@ pub struct PropertyTypeDiagnostic {
     pub expected_type: String,
     pub actual_type: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyValueOrigin {
+    Frontmatter,
+    Inline,
+    InlineParen,
+    InlineBracket,
+}
+
+impl PropertyValueOrigin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Frontmatter => "frontmatter",
+            Self::Inline => "inline",
+            Self::InlineParen => "inline_paren",
+            Self::InlineBracket => "inline_bracket",
+        }
+    }
+
 }
 
 #[derive(Debug)]
@@ -125,21 +147,25 @@ pub struct NoteRecord {
 }
 
 pub fn extract_indexed_properties(
-    raw_frontmatter: Option<&str>,
-    frontmatter: Option<&serde_yaml::Value>,
+    parsed: &crate::ParsedDocument,
     config: &VaultConfig,
 ) -> Result<Option<IndexedProperties>, serde_json::Error> {
-    let Some(frontmatter) = frontmatter else {
+    if parsed.frontmatter.is_none() && parsed.inline_fields.is_empty() {
         return Ok(None);
-    };
+    }
 
-    let raw_yaml = raw_frontmatter.unwrap_or_default().to_string();
-    let canonical_json = serde_json::to_string(&yaml_to_json(frontmatter))?;
+    let raw_yaml = parsed.raw_frontmatter.clone().unwrap_or_default();
     let mut values = Vec::new();
     let mut list_items = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut merged_properties = parsed
+        .frontmatter
+        .as_ref()
+        .map(yaml_to_json_object)
+        .unwrap_or_default();
+    let mut inline_json_values: BTreeMap<String, Vec<Value>> = BTreeMap::new();
 
-    if let Some(mapping) = frontmatter.as_mapping() {
+    if let Some(mapping) = parsed.frontmatter.as_ref().and_then(serde_yaml::Value::as_mapping) {
         for (key, value) in mapping {
             let Some(key) = key.as_str() else {
                 continue;
@@ -158,13 +184,111 @@ pub fn extract_indexed_properties(
         }
     }
 
+    for inline_field in &parsed.inline_fields {
+        let expected_type = config
+            .property_types
+            .get(&inline_field.key)
+            .map(String::as_str)
+            .map(canonical_property_type);
+        let extracted = extract_inline_property_value(
+            &inline_field.key,
+            &inline_field.value_text,
+            inline_field.kind,
+            config,
+            expected_type,
+        );
+        if let Some(diagnostic) = extracted.diagnostic {
+            diagnostics.push(diagnostic);
+        }
+        inline_json_values
+            .entry(inline_field.key.clone())
+            .or_default()
+            .push(property_json_value(&extracted.value));
+        values.push(extracted.value);
+        list_items.extend(extracted.list_items);
+    }
+
+    for (key, inline_values) in inline_json_values {
+        if merged_properties.contains_key(&key) {
+            continue;
+        }
+        let merged_value = if inline_values.len() == 1 {
+            inline_values.into_iter().next().unwrap_or(Value::Null)
+        } else {
+            Value::Array(inline_values)
+        };
+        merged_properties.insert(key, merged_value);
+    }
+
     Ok(Some(IndexedProperties {
         raw_yaml,
-        canonical_json,
+        canonical_json: serde_json::to_string(&Value::Object(merged_properties))?,
         values,
         list_items,
         diagnostics,
     }))
+}
+
+fn extract_inline_property_value(
+    key: &str,
+    value_text: &str,
+    kind: InlineFieldKind,
+    config: &VaultConfig,
+    expected_type: Option<&str>,
+) -> ExtractedPropertyValue {
+    let yaml_value = inline_text_to_yaml_value(value_text, config);
+    let mut extracted = extract_property_value(key, &yaml_value, config, expected_type);
+    extracted.value.origin = match kind {
+        InlineFieldKind::Bare => PropertyValueOrigin::Inline,
+        InlineFieldKind::Parenthesized => PropertyValueOrigin::InlineParen,
+        InlineFieldKind::Bracket => PropertyValueOrigin::InlineBracket,
+    };
+    extracted
+}
+
+pub(crate) fn indexed_inline_property_value(
+    key: &str,
+    value_text: &str,
+    kind: InlineFieldKind,
+    config: &VaultConfig,
+    expected_type: Option<&str>,
+) -> IndexedPropertyValue {
+    extract_inline_property_value(key, value_text, kind, config, expected_type).value
+}
+
+fn inline_text_to_yaml_value(value_text: &str, config: &VaultConfig) -> serde_yaml::Value {
+    if is_internal_link_value(value_text, config) {
+        return serde_yaml::Value::String(value_text.trim().to_string());
+    }
+
+    serde_yaml::from_str::<serde_yaml::Value>(value_text)
+        .unwrap_or_else(|_| serde_yaml::Value::String(value_text.trim().to_string()))
+}
+
+fn property_json_value(value: &IndexedPropertyValue) -> Value {
+    match value.value_type.as_str() {
+        "null" => Value::Null,
+        "boolean" => value.value_bool.map_or(Value::Null, Value::Bool),
+        "number" => value
+            .value_number
+            .and_then(serde_json::Number::from_f64)
+            .map_or(Value::Null, Value::Number),
+        "date" => value
+            .value_date
+            .as_ref()
+            .map_or(Value::Null, |value_date| Value::String(value_date.clone())),
+        _ => value
+            .value_text
+            .as_ref()
+            .map_or(Value::Null, |value_text| Value::String(value_text.clone())),
+    }
+}
+
+fn yaml_to_json_object(value: &serde_yaml::Value) -> Map<String, Value> {
+    match yaml_to_json(value) {
+        Value::Object(object) => object,
+        _ => Map::new(),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -452,11 +576,24 @@ pub(crate) fn rebuild_property_catalog(
     transaction.execute(
         "
         INSERT INTO property_catalog (key, observed_type, usage_count, namespace)
-        SELECT key, value_type, COUNT(*), ?1
+        SELECT
+            key,
+            value_type,
+            COUNT(*),
+            CASE
+                WHEN origin = 'frontmatter' THEN ?1
+                ELSE ?2
+            END
         FROM property_values
-        GROUP BY key, value_type
+        GROUP BY
+            key,
+            value_type,
+            CASE
+                WHEN origin = 'frontmatter' THEN ?1
+                ELSE ?2
+            END
         ",
-        [PROPERTY_NAMESPACE_FRONTMATTER],
+        [PROPERTY_NAMESPACE_FRONTMATTER, PROPERTY_NAMESPACE_INLINE],
     )?;
 
     insert_configured_property_types(transaction, configured_types)?;
@@ -501,28 +638,43 @@ pub(crate) fn refresh_property_catalog_for_documents(
         return Ok(());
     }
 
-    // Use numbered params: ?1..?N for keys, ?{N+1} for namespace.
     let key_placeholders: Vec<String> =
         (1..=affected_keys.len()).map(|i| format!("?{i}")).collect();
     let key_list = key_placeholders.join(", ");
-    let ns_param = affected_keys.len() + 1;
 
-    let mut params: Vec<String> = affected_keys.clone();
-    params.push(PROPERTY_NAMESPACE_FRONTMATTER.to_string());
-
-    let delete_sql = format!(
-        "DELETE FROM property_catalog WHERE key IN ({key_list}) AND namespace = ?{ns_param}"
-    );
+    let params: Vec<String> = affected_keys.clone();
+    let delete_sql = format!("DELETE FROM property_catalog WHERE key IN ({key_list})");
     transaction.execute(&delete_sql, rusqlite::params_from_iter(params.iter()))?;
 
     let insert_sql = format!(
         "INSERT INTO property_catalog (key, observed_type, usage_count, namespace)
-         SELECT key, value_type, COUNT(*), ?{ns_param}
+         SELECT
+             key,
+             value_type,
+             COUNT(*),
+             CASE
+                 WHEN origin = 'frontmatter' THEN ?{{frontmatter_param}}
+                 ELSE ?{{inline_param}}
+             END
          FROM property_values
          WHERE key IN ({key_list})
-         GROUP BY key, value_type"
+         GROUP BY
+             key,
+             value_type,
+             CASE
+                 WHEN origin = 'frontmatter' THEN ?{{frontmatter_param}}
+                 ELSE ?{{inline_param}}
+             END"
     );
-    transaction.execute(&insert_sql, rusqlite::params_from_iter(params.iter()))?;
+    let mut insert_params: Vec<String> = affected_keys;
+    let frontmatter_param = insert_params.len() + 1;
+    insert_params.push(PROPERTY_NAMESPACE_FRONTMATTER.to_string());
+    let inline_param = insert_params.len() + 1;
+    insert_params.push(PROPERTY_NAMESPACE_INLINE.to_string());
+    let insert_sql = insert_sql
+        .replace("{frontmatter_param}", &frontmatter_param.to_string())
+        .replace("{inline_param}", &inline_param.to_string());
+    transaction.execute(&insert_sql, rusqlite::params_from_iter(insert_params.iter()))?;
 
     insert_configured_property_types(transaction, configured_types)?;
 
@@ -596,6 +748,7 @@ fn extract_property_value(
             value_bool: normalized.value_bool,
             value_date: normalized.value_date,
             value_type: normalized.value_type,
+            origin: PropertyValueOrigin::Frontmatter,
         },
         list_items: normalized
             .list_items
@@ -767,7 +920,7 @@ fn property_type_matches(expected_type: &str, actual_type: &str) -> bool {
     expected_type == actual_type || (expected_type == "text" && actual_type == "link")
 }
 
-fn canonical_property_type(raw_type: &str) -> &str {
+pub(crate) fn canonical_property_type(raw_type: &str) -> &str {
     match raw_type.to_ascii_lowercase().as_str() {
         "bool" | "boolean" | "checkbox" => "boolean",
         "date" | "datetime" => "date",
@@ -996,10 +1149,7 @@ fn filter_sql_clause(
     match (&filter.field, filter.operator, &filter.value) {
         (FilterField::Property(key), FilterOperator::Exists, _) => {
             params.push(SqlValue::Text(key.clone()));
-            Ok(
-                "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ?)"
-                    .to_string(),
-            )
+            Ok(property_exists_clause())
         }
         (FilterField::Property(key), FilterOperator::Contains, FilterValue::Text(value)) => {
             params.push(SqlValue::Text(key.clone()));
@@ -1034,9 +1184,7 @@ fn filter_sql_clause(
         (FilterField::Property(key), FilterOperator::StartsWith, FilterValue::Text(value)) => {
             params.push(SqlValue::Text(key.clone()));
             params.push(SqlValue::Text(format!("{value}%")));
-            Ok(
-                "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_text LIKE ?)".to_string(),
-            )
+            Ok(property_effective_clause("pv.value_text LIKE ?"))
         }
         (FilterField::Property(key), operator, value) => {
             property_scalar_clause(key, operator, value, params)
@@ -1080,50 +1228,73 @@ fn property_scalar_clause(
         FilterValue::Null => {
             let _ = sql_comparator(operator)?;
             params.push(SqlValue::Text(key.to_string()));
-            Ok(
-                "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_type = 'null')".to_string(),
-            )
+            Ok(property_effective_clause("pv.value_type = 'null'"))
         }
         FilterValue::Bool(value_bool) => {
             let comparator = sql_comparator(operator)?;
             params.push(SqlValue::Text(key.to_string()));
             params.push(SqlValue::Integer(i64::from(*value_bool)));
-            Ok(format!(
-                "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_bool {comparator} ?)"
-            ))
+            Ok(property_effective_clause(&format!(
+                "pv.value_bool {comparator} ?"
+            )))
         }
         FilterValue::Number(value_number) => {
             let comparator = sql_comparator(operator)?;
             params.push(SqlValue::Text(key.to_string()));
             params.push(SqlValue::Real(*value_number));
-            Ok(format!(
-                "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_number {comparator} ?)"
-            ))
+            Ok(property_effective_clause(&format!(
+                "pv.value_number {comparator} ?"
+            )))
         }
         FilterValue::Date(value_date) => {
             let comparator = sql_comparator(operator)?;
             params.push(SqlValue::Text(key.to_string()));
             params.push(SqlValue::Text(value_date.clone()));
-            Ok(format!(
-                "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_date {comparator} ?)"
-            ))
+            Ok(property_effective_clause(&format!(
+                "pv.value_date {comparator} ?"
+            )))
         }
         FilterValue::Text(value_text) => {
             params.push(SqlValue::Text(key.to_string()));
             if operator == FilterOperator::StartsWith {
                 params.push(SqlValue::Text(format!("{value_text}%")));
-                Ok(
-                    "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_text LIKE ?)".to_string(),
-                )
+                Ok(property_effective_clause("pv.value_text LIKE ?"))
             } else {
                 let comparator = sql_comparator(operator)?;
                 params.push(SqlValue::Text(value_text.clone()));
-                Ok(format!(
-                    "EXISTS (SELECT 1 FROM property_values WHERE property_values.document_id = documents.id AND property_values.key = ? AND property_values.value_text {comparator} ?)"
-                ))
+                Ok(property_effective_clause(&format!(
+                    "pv.value_text {comparator} ?"
+                )))
             }
         }
     }
+}
+
+fn property_exists_clause() -> String {
+    "EXISTS (SELECT 1 FROM property_values pv WHERE pv.document_id = documents.id AND pv.key = ?)"
+        .to_string()
+}
+
+fn property_effective_clause(predicate: &str) -> String {
+    format!(
+        "EXISTS (
+            SELECT 1
+            FROM property_values pv
+            WHERE pv.document_id = documents.id
+              AND pv.key = ?
+              AND (
+                    pv.origin = 'frontmatter'
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM property_values pv_front
+                        WHERE pv_front.document_id = documents.id
+                          AND pv_front.key = pv.key
+                          AND pv_front.origin = 'frontmatter'
+                    )
+              )
+              AND {predicate}
+        )"
+    )
 }
 
 fn file_field_clause(
@@ -1283,11 +1454,7 @@ mod tests {
             "---\ndue: 2026-03-01\nreviewed: \"true\"\nrelated:\n  - \"[[Backlog]]\"\n  - sprint\nstatus:\n  - done\n---\n",
             &config,
         );
-        let indexed = extract_indexed_properties(
-            parsed.raw_frontmatter.as_deref(),
-            parsed.frontmatter.as_ref(),
-            &config,
-        )
+        let indexed = extract_indexed_properties(&parsed, &config)
         .expect("property extraction should succeed")
         .expect("frontmatter should produce properties");
 
@@ -1406,6 +1573,91 @@ mod tests {
                 .map(|note| note.document_path.clone())
                 .collect::<Vec<_>>(),
             vec!["Backlog.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn inline_fields_merge_into_properties_but_frontmatter_wins_filters() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let draft = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["status = draft".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .expect("frontmatter precedence query should succeed");
+        assert_eq!(
+            draft
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Dashboard.md".to_string()]
+        );
+
+        let done = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["status = done".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .expect("inline status query should succeed");
+        assert!(done.notes.is_empty());
+
+        let priority = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["priority = 2".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .expect("inline numeric query should succeed");
+        assert_eq!(
+            priority
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Dashboard.md".to_string()]
+        );
+
+        let all_notes = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: Vec::new(),
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("full note query should succeed");
+        let dashboard = all_notes
+            .notes
+            .iter()
+            .find(|note| note.document_path == "Dashboard.md")
+            .expect("dashboard note should be present");
+
+        assert_eq!(dashboard.properties["status"], Value::String("draft".to_string()));
+        assert_eq!(
+            dashboard.properties["priority"],
+            Value::Array(vec![
+                Value::Number(serde_json::Number::from_f64(2.0).expect("finite")),
+                Value::Number(serde_json::Number::from_f64(3.0).expect("finite")),
+            ])
+        );
+        assert_eq!(
+            dashboard.properties["owner"],
+            Value::String("[[People/Bob]]".to_string())
         );
     }
 

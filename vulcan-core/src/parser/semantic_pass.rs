@@ -2,6 +2,7 @@ use crate::chunking::chunk_blocks;
 use crate::config::VaultConfig;
 use crate::parser::block_ref::{detect_block_refs, is_block_id_block};
 use crate::parser::comment_scanner::{overlaps_comment, visible_subranges};
+use crate::parser::dataview::{extract_dataview_metadata, is_dataview_code_block};
 use crate::parser::link_classifier::{classify_link, explicit_display_text};
 use crate::parser::parse_document_fragment;
 use crate::parser::tag_extractor::extract_inline_tags;
@@ -9,7 +10,7 @@ use crate::parser::types::{
     OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument, RawHeading, SemanticBlock,
     SemanticBlockKind,
 };
-use pulldown_cmark::{Event, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 use std::ops::Range;
 
 pub fn process_events<'a, I>(
@@ -66,7 +67,8 @@ impl<'a> SemanticProcessor<'a> {
             Event::Start(tag) => self.handle_start(tag, range),
             Event::End(tag_end) => self.handle_end(tag_end, range),
             Event::Text(text) => self.handle_text(&text, range),
-            Event::Code(text) | Event::InlineMath(text) | Event::DisplayMath(text) => {
+            Event::Code(text) => self.handle_inline_code(&text, range),
+            Event::InlineMath(text) | Event::DisplayMath(text) => {
                 self.handle_literal(&text, range);
             }
             Event::Html(text) | Event::InlineHtml(text) => self.handle_html(&text, range),
@@ -95,30 +97,47 @@ impl<'a> SemanticProcessor<'a> {
                 });
             }
             Tag::Paragraph if self.current_block.is_none() => {
-                self.start_block(SemanticBlockKind::Paragraph, TagEnd::Paragraph, range.start);
+                self.start_block(
+                    SemanticBlockKind::Paragraph,
+                    TagEnd::Paragraph,
+                    range.start,
+                    None,
+                );
             }
             Tag::BlockQuote(_) if self.current_block.is_none() => {
                 self.start_block(
                     SemanticBlockKind::BlockQuote,
                     TagEnd::BlockQuote(None),
                     range.start,
+                    None,
                 );
             }
-            Tag::CodeBlock(_) if self.current_block.is_none() => {
-                self.start_block(SemanticBlockKind::CodeBlock, TagEnd::CodeBlock, range.start);
+            Tag::CodeBlock(kind) if self.current_block.is_none() => {
+                self.start_block(
+                    SemanticBlockKind::CodeBlock,
+                    TagEnd::CodeBlock,
+                    range.start,
+                    code_block_language(kind),
+                );
             }
             Tag::HtmlBlock if self.current_block.is_none() => {
-                self.start_block(SemanticBlockKind::HtmlBlock, TagEnd::HtmlBlock, range.start);
+                self.start_block(
+                    SemanticBlockKind::HtmlBlock,
+                    TagEnd::HtmlBlock,
+                    range.start,
+                    None,
+                );
             }
             Tag::List(ordered) if self.current_block.is_none() => {
                 self.start_block(
                     SemanticBlockKind::List,
                     TagEnd::List(ordered.is_some()),
                     range.start,
+                    None,
                 );
             }
             Tag::Table(_) if self.current_block.is_none() => {
-                self.start_block(SemanticBlockKind::Table, TagEnd::Table, range.start);
+                self.start_block(SemanticBlockKind::Table, TagEnd::Table, range.start, None);
             }
             Tag::Link {
                 link_type,
@@ -235,6 +254,25 @@ impl<'a> SemanticProcessor<'a> {
         }
     }
 
+    fn handle_inline_code(&mut self, text: &str, range: Range<usize>) {
+        if overlaps_comment(&range, self.comment_regions) {
+            return;
+        }
+
+        if let Some(expression) = text.strip_prefix('=').map(str::trim) {
+            if !expression.is_empty() {
+                self.parsed.inline_expressions.push(crate::RawInlineExpression {
+                    expression: expression.to_string(),
+                    byte_range: range.clone(),
+                    line_number: line_number_for_offset(self.source, range.start),
+                });
+            }
+            return;
+        }
+
+        self.handle_literal(text, range);
+    }
+
     fn handle_html(&mut self, text: &str, range: Range<usize>) {
         if let Some(metadata) = self.current_metadata.as_mut() {
             metadata.byte_offset_start.get_or_insert(range.start);
@@ -277,13 +315,20 @@ impl<'a> SemanticProcessor<'a> {
         }
     }
 
-    fn start_block(&mut self, kind: SemanticBlockKind, end_tag: TagEnd, byte_offset_start: usize) {
+    fn start_block(
+        &mut self,
+        kind: SemanticBlockKind,
+        end_tag: TagEnd,
+        byte_offset_start: usize,
+        code_language: Option<String>,
+    ) {
         self.current_block = Some(BlockAccumulator {
             block_kind: kind,
             byte_offset_start,
             end_tag,
             heading_path: self.heading_path.clone(),
             text: String::new(),
+            code_language,
         });
     }
 
@@ -307,6 +352,7 @@ impl<'a> SemanticProcessor<'a> {
             byte_offset_start: block.byte_offset_start,
             byte_offset_end,
             heading_path: block.heading_path,
+            code_language: block.code_language,
         });
     }
 
@@ -383,16 +429,46 @@ impl<'a> SemanticProcessor<'a> {
         self.parsed.links.extend(parsed.links);
         self.parsed.tags.extend(parsed.tags);
         self.parsed.aliases.extend(parsed.aliases);
+        self.parsed.inline_fields.extend(parsed.inline_fields);
+        self.parsed.tasks.extend(parsed.tasks);
+        self.parsed.dataview_blocks.extend(parsed.dataview_blocks);
+        self.parsed
+            .inline_expressions
+            .extend(parsed.inline_expressions);
         self.parsed.chunk_texts.extend(parsed.chunk_texts);
         self.parsed.diagnostics.extend(parsed.diagnostics);
     }
 
     fn finish(mut self) -> ParsedDocument {
         self.parsed.block_refs = detect_block_refs(&self.semantic_blocks);
+        let dataview = extract_dataview_metadata(
+            self.source,
+            self.comment_regions,
+            &self.semantic_blocks,
+        );
+        self.parsed.inline_fields = dataview.inline_fields;
+        self.parsed.tasks = dataview.tasks;
+        self.parsed.dataview_blocks = dataview.dataview_blocks;
+        for property_range in dataview.property_value_ranges {
+            for link in &mut self.parsed.links {
+                if property_range.start <= link.byte_offset && link.byte_offset < property_range.end {
+                    link.origin_context = OriginContext::Property;
+                }
+            }
+        }
+        for block in &self.parsed.dataview_blocks {
+            if block.language == "dataviewjs" {
+                self.parsed.diagnostics.push(ParseDiagnostic {
+                    kind: ParseDiagnosticKind::UnsupportedSyntax,
+                    message: "DataviewJS blocks are not evaluated by Vulcan".to_string(),
+                    byte_range: Some(block.byte_range.clone()),
+                });
+            }
+        }
         let semantic_blocks = self
             .semantic_blocks
             .iter()
-            .filter(|block| !is_block_id_block(block))
+            .filter(|block| !is_block_id_block(block) && !is_dataview_code_block(block))
             .cloned()
             .collect::<Vec<_>>();
         self.parsed.chunk_texts = chunk_blocks(&semantic_blocks, &self.config.chunking);
@@ -422,6 +498,7 @@ struct BlockAccumulator {
     end_tag: TagEnd,
     heading_path: Vec<String>,
     text: String,
+    code_language: Option<String>,
 }
 
 struct MetadataAccumulator {
@@ -638,6 +715,24 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
     }
 
     deduped
+}
+
+fn code_block_language(kind: CodeBlockKind<'_>) -> Option<String> {
+    match kind {
+        CodeBlockKind::Fenced(info) => info
+            .split_ascii_whitespace()
+            .next()
+            .map(|value| value.to_ascii_lowercase()),
+        CodeBlockKind::Indented => None,
+    }
+}
+
+fn line_number_for_offset(source: &str, offset: usize) -> usize {
+    1 + source[..offset]
+        .as_bytes()
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
 }
 
 fn dedupe_tags(values: Vec<crate::parser::types::RawTag>) -> Vec<crate::parser::types::RawTag> {

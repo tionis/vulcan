@@ -1098,29 +1098,29 @@ vulcan template insert <template> --append     # append to end (default)
 
 Extend the parser pipeline to extract Dataview-style inline fields from note body text.
 
-- [ ] Detect `key:: value` patterns in `Text` events during the semantic pass, excluding code blocks, math blocks, and comment regions
-- [ ] Support parenthesized `(key:: value)` and bracket `[key:: value]` variants
-- [ ] Normalize inline field keys to match frontmatter property key normalization (lowercase, trimmed)
-- [ ] Store inline fields in `property_values` with a new `origin` column (`frontmatter`, `inline`, `inline_paren`, `inline_bracket`)
-- [ ] Schema migration: add `origin` column to `property_values` (default `frontmatter` for existing rows)
-- [ ] Handle inline fields containing link syntax (`[[Target]]`) as link-valued properties
-- [ ] Update property catalog to track inline field usage alongside frontmatter usage
-- [ ] Precedence: frontmatter properties take precedence over inline fields for typed queries; both are stored and queryable
-- [ ] Unit tests: all inline field variants, mixed frontmatter + inline, link-valued inline fields, fields inside code blocks (should be ignored)
-- [ ] Integration test: vault with Dataview-style inline fields, verify property extraction and precedence
+- [x] Detect `key:: value` patterns in `Text` events during the semantic pass, excluding code blocks, math blocks, and comment regions
+- [x] Support parenthesized `(key:: value)` and bracket `[key:: value]` variants
+- [x] Normalize inline field keys to match frontmatter property key normalization (lowercase, trimmed)
+- [x] Store inline fields in `property_values` with a new `origin` column (`frontmatter`, `inline`, `inline_paren`, `inline_bracket`)
+- [x] Schema migration: add `origin` column to `property_values` (default `frontmatter` for existing rows)
+- [x] Handle inline fields containing link syntax (`[[Target]]`) as link-valued properties
+- [x] Update property catalog to track inline field usage alongside frontmatter usage
+- [x] Precedence: frontmatter properties take precedence over inline fields for typed queries; both are stored and queryable
+- [x] Unit tests: all inline field variants, mixed frontmatter + inline, link-valued inline fields, fields inside code blocks (should be ignored)
+- [x] Integration test: vault with Dataview-style inline fields, verify property extraction and precedence
 
 #### 9.8.2 Task extraction and storage
 
 Add structured task item parsing and storage to the indexer.
 
-- [ ] Detect task list items (`- [ ]`, `- [x]`, `- [/]`, `- [-]`, custom status characters) during the semantic pass
-- [ ] Schema migration: `tasks` table — `id`, `document_id`, `status_char`, `text`, `byte_offset`, `parent_task_id` (nullable, for nested tasks), `section_heading` (nearest ancestor heading text), `line_number`
-- [ ] Extract inline fields within task text (e.g., `- [ ] Buy groceries [due:: 2026-04-01]`) and store as task-scoped properties
-- [ ] Schema migration: `task_properties` table — `task_id`, `key`, `value_text`, `value_type`
-- [ ] Index on `tasks(document_id)`, `tasks(status_char)`, `task_properties(task_id)`, `task_properties(key)`
+- [x] Detect task list items (`- [ ]`, `- [x]`, `- [/]`, `- [-]`, custom status characters) during the semantic pass
+- [x] Schema migration: `tasks` table — `id`, `document_id`, `status_char`, `text`, `byte_offset`, `parent_task_id` (nullable, for nested tasks), `section_heading` (nearest ancestor heading text), `line_number`
+- [x] Extract inline fields within task text (e.g., `- [ ] Buy groceries [due:: 2026-04-01]`) and store as task-scoped properties
+- [x] Schema migration: `task_properties` table — `task_id`, `key`, `value_text`, `value_type`
+- [x] Index on `tasks(document_id)`, `tasks(status_char)`, `task_properties(task_id)`, `task_properties(key)`
 - [ ] Task completion state mapping: `x` = done, ` ` = todo, `/` = in-progress, `-` = cancelled; configurable custom status characters via `.vulcan/config.toml`
-- [ ] Unit tests: basic tasks, nested tasks, tasks with inline fields, custom status characters
-- [ ] Integration test: vault with varied task items, verify task extraction and property association
+- [x] Unit tests: basic tasks, nested tasks, tasks with inline fields, custom status characters
+- [x] Integration test: vault with varied task items, verify task extraction and property association
 
 #### 9.8.3 DQL parser
 

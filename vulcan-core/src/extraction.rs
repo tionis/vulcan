@@ -194,6 +194,7 @@ fn push_extracted_block(blocks: &mut Vec<SemanticBlock>, segment: &str, base_off
         byte_offset_start: base_offset + leading,
         byte_offset_end: base_offset + segment.len().saturating_sub(trailing),
         heading_path: Vec::new(),
+        code_language: None,
     });
 }
 
