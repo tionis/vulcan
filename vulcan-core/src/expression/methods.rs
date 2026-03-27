@@ -501,7 +501,7 @@ fn eval_all_args(args: &[Expr], ctx: &EvalContext) -> Result<Vec<Value>, String>
     args.iter().map(|e| evaluate(e, ctx)).collect()
 }
 
-fn evaluate_callback(
+pub(crate) fn evaluate_callback(
     expr: &Expr,
     ctx: &EvalContext,
     legacy_bindings: &[(&str, Value)],
@@ -892,6 +892,62 @@ mod tests {
     fn max_min_functions() {
         assert_eq!(eval("max(1, 5, 3)"), serde_json::json!(5));
         assert_eq!(eval("min(1, 5, 3)"), serde_json::json!(1));
+        assert_eq!(eval("max([1, 5, 3])"), serde_json::json!(5));
+        assert_eq!(eval("min([1, 5, 3])"), serde_json::json!(1));
+        assert_eq!(eval(r#"min("a", "ab", "abc")"#), serde_json::json!("a"));
+        assert_eq!(eval(r#"max("a", "ab", "abc")"#), serde_json::json!("abc"));
+        assert_eq!(eval("min(null, 6, 2)"), serde_json::json!(2));
+        assert_eq!(eval("max(null, 6, 2)"), serde_json::json!(6));
+    }
+
+    #[test]
+    fn numeric_rounding_functions() {
+        assert_eq!(eval("round(16.555555)"), serde_json::json!(17));
+        assert_eq!(eval("round(16.555555, 2)"), serde_json::json!(16.56));
+        assert_eq!(eval("trunc(12.937)"), serde_json::json!(12));
+        assert_eq!(eval("trunc(-0.837764)"), serde_json::json!(0));
+        assert_eq!(eval("floor(-93.33333)"), serde_json::json!(-94));
+        assert_eq!(eval("ceil(-93.33333)"), serde_json::json!(-93));
+    }
+
+    #[test]
+    fn aggregate_functions() {
+        assert_eq!(eval("sum([2, 3, 1])"), serde_json::json!(6));
+        assert_eq!(eval(r#"sum(["a", "b", "c"])"#), serde_json::json!("abc"));
+        assert_eq!(eval("sum([])"), Value::Null);
+        assert_eq!(eval("product([1, 2, 3])"), serde_json::json!(6));
+        assert_eq!(eval("product([])"), Value::Null);
+        assert_eq!(eval("average([2, 3, 1])"), serde_json::json!(2));
+        assert_eq!(
+            eval("average(nonnull([2, 3, null, 1]))"),
+            serde_json::json!(2)
+        );
+        assert_eq!(eval("average([])"), Value::Null);
+        assert_eq!(eval(r#"reduce([100, 20, 3], "-")"#), serde_json::json!(77));
+        assert_eq!(eval(r#"reduce([200, 10, 2], "/")"#), serde_json::json!(10));
+        assert_eq!(
+            eval(r#"reduce(["ab", 3], "*")"#),
+            serde_json::json!("ababab")
+        );
+        assert_eq!(
+            eval(r#"reduce([true, false, true], "&")"#),
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            eval(r#"reduce([1, 2, 3], (accum, curr) => accum + curr)"#),
+            serde_json::json!(6)
+        );
+    }
+
+    #[test]
+    fn minby_maxby_functions() {
+        assert_eq!(eval("minby([], (k) => k)"), Value::Null);
+        assert_eq!(eval("maxby([], (k) => k)"), Value::Null);
+        assert_eq!(eval("minby([1], (k) => k)"), serde_json::json!(1));
+        assert_eq!(eval("maxby([1], (k) => k)"), serde_json::json!(1));
+        assert_eq!(eval("minby([1, 2, 3], (k) => 0 - k)"), serde_json::json!(3));
+        assert_eq!(eval("maxby([1, 2, 3], (k) => 0 - k)"), serde_json::json!(1));
+        assert_eq!(eval("minby([1, 2], (k) => null)"), serde_json::json!(1));
     }
 
     #[test]

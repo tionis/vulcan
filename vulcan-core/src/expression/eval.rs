@@ -409,7 +409,7 @@ fn resolve_property(ctx: &EvalContext, name: &str) -> Value {
     resolve_property_for_note(ctx.note, name)
 }
 
-fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Value {
+pub(crate) fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Value {
     match op {
         BinOp::Add => eval_add(left, right),
         BinOp::Sub => eval_sub(left, right),
