@@ -1146,9 +1146,14 @@ Extract **all** list items (not just tasks) as structured data, matching Datavie
 - [ ] Nested task query semantics: when a TASK query matches a parent, include child tasks in results even if children don't independently match the WHERE clause. Task hierarchy is preserved in output.
 - [ ] Tasks inherit page-level fields (frontmatter, inline fields) from their containing note
 - [ ] Tasks plugin emoji shorthand: detect `🗓️` (due), `✅` (completion), `➕` (created), `🛫` (start), `⏳` (scheduled) date annotations in task text and store as task properties with auto-parsed Date type
+- [ ] Tasks plugin priority levels: detect `⏫` (highest), `🔺` (high), `🔼` (medium), `🔽` (low), `⏬` (lowest) and store as `priority` task property
+- [ ] Tasks plugin recurrence notation: detect `🔁 every <pattern>` in task text and store as `recurrence` task property (parsing the RRULE pattern is deferred to §9.10)
+- [ ] Tasks plugin dependency notation: detect `⛔ <id>` (blocked by) and `🆔 <id>` (task ID) and store as task properties (dependency resolution deferred to §9.10)
 - [x] Unit tests: basic tasks, nested tasks, tasks with inline fields, custom status characters
-- [ ] Unit tests: `fullyCompleted` recursive check, nested task inclusion semantics, emoji shorthand date parsing
+- [ ] Unit tests: `fullyCompleted` recursive check, nested task inclusion semantics, emoji shorthand date parsing, priority levels
 - [x] Integration test: vault with varied task items, verify task extraction and property association
+
+**Note:** The Obsidian Tasks plugin has a richer feature set beyond what Dataview extracts (its own query DSL in `` ```tasks `` blocks, recurring task expansion, task dependencies, custom status types). Full Tasks plugin compatibility is tracked in §9.10.
 
 #### 9.8.3 Implicit file metadata (`file.*` namespace)
 
@@ -1403,13 +1408,258 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 9. **DataviewJS** (9.8.8) — detection always; sandboxed JS evaluation with full `dv` API, DataArray, and `dv.view()` behind `dataviewjs` feature flag.
 10. **Cross-cutting integration** (9.8.10) — search exclusions, doctor checks, API endpoints, comprehensive test vault.
 
+### 9.9 Templater-compatible template engine
+
+**Goal:** Support Templater-style `<% %>` template syntax in Vulcan's template system, allowing users to share templates between Obsidian (with Templater) and Vulcan. The DataviewJS sandbox (9.8.8) provides the JS runtime foundation; Templater reuses it for `<%* %>` execution commands.
+
+**Builds on:** Phase 9.7 (enhanced templates), Phase 9.8.8 (DataviewJS sandbox for JS execution).
+**Design refs:** §12b (expression evaluator), existing `template` command (9.4.3/9.7)
+**Reference material:** `references/Templater/` (Templater source and documentation)
+
+#### 9.9.1 Template syntax parsing
+
+- [ ] Parse Templater command tags: `<% expr %>` (interpolation), `<%* code %>` (JS execution), `<%+ expr %>` (dynamic/deferred)
+- [ ] Whitespace control: `<%_`/`_%>` (trim all whitespace), `<%-`/`-%>` (trim one newline)
+- [ ] Detect Templater syntax in `.vulcan/templates/` and Obsidian template folder
+- [ ] Backward compatibility: existing `{{date}}`, `{{title}}` variables continue to work; Templater syntax is an extension
+- [ ] Templater folder discovery: read Templater settings from `.obsidian/plugins/templater-obsidian/data.json` for template folder location and user script folder
+
+#### 9.9.2 `tp` API object — native modules
+
+Implement the `tp` namespace natively (no JS required) for the most common template functions:
+
+**tp.date:**
+- [ ] `tp.date.now(format?, offset?, reference?, reference_format?)` — current/relative date with Moment.js-compatible formatting (reuse 9.7.1 format engine)
+- [ ] `tp.date.tomorrow(format?)`, `tp.date.yesterday(format?)` — convenience shortcuts
+- [ ] `tp.date.weekday(format?, weekday_number?, reference?, reference_format?)` — specific weekday
+
+**tp.file:**
+- [ ] `tp.file.title` — filename without extension
+- [ ] `tp.file.path(absolute?)` — file path (vault-relative or absolute)
+- [ ] `tp.file.folder(absolute?)` — parent folder name or path
+- [ ] `tp.file.creation_date(format?)`, `tp.file.last_modified_date(format?)` — file timestamps
+- [ ] `tp.file.content` — full file content
+- [ ] `tp.file.tags` — all tags in file
+- [ ] `tp.file.exists(filepath)` — check if file exists in vault
+- [ ] `tp.file.include(filepath)` — include another template (recursive, depth limit 10)
+- [ ] `tp.file.create_new(template, filename, open_new?, folder?)` — create new note from template
+- [ ] `tp.file.move(new_path)`, `tp.file.rename(new_name)` — file operations (reuse move-rewrite engine)
+- [ ] `tp.file.cursor(order?)` — insert cursor position placeholder (meaningful in editor contexts; no-op in non-interactive CLI)
+
+**tp.frontmatter:**
+- [ ] `tp.frontmatter.<key>` — direct access to frontmatter properties (reuse property resolver)
+- [ ] Bracket notation for keys with spaces: `tp.frontmatter["key name"]`
+
+**tp.system (CLI-adapted):**
+- [ ] `tp.system.prompt(text, default?, throw_on_cancel?, multi_line?)` — CLI: read from stdin or use `--var key=value` flag; TUI: show input dialog
+- [ ] `tp.system.suggester(items, values, ...)` — CLI: use existing note picker or `--var` flag; TUI: show selection picker
+- [ ] `tp.system.clipboard()` — read system clipboard (platform-dependent, best-effort)
+
+#### 9.9.3 `tp` API object — JS-dependent modules (behind `dataviewjs` feature)
+
+These require the sandboxed JS runtime and are only available when `--features dataviewjs` is compiled:
+
+- [ ] `<%* %>` execution commands — arbitrary JS with `tR` output accumulator
+- [ ] `tp.web.request(url, json_path?)` — sandboxed HTTP GET (allowlist-based, configurable)
+- [ ] `tp.web.daily_quote()`, `tp.web.random_picture(size?, query?)` — convenience web functions
+- [ ] User script functions: load `.js` files from configured scripts folder as `tp.user.<name>(args)`
+- [ ] System command user functions: execute shell commands with template variable substitution (requires explicit opt-in via config, disabled by default for security)
+- [ ] `tp.hooks.on_all_templates_executed(callback)` — post-processing hook
+- [ ] `tp.app` and `tp.obsidian` namespaces — provide Vulcan equivalents where possible; emit diagnostic for Obsidian-specific APIs that have no CLI equivalent
+
+#### 9.9.4 CLI integration
+
+- [ ] `vulcan template` command detects Templater syntax and processes it (existing command, extended)
+- [ ] `vulcan template --engine native|templater|auto` — force template engine selection (default: auto-detect based on `<% %>` presence)
+- [ ] `--var key=value` flag for non-interactive template variable binding (replaces `tp.system.prompt()` in CI/automation contexts)
+- [ ] Template preview: `vulcan template preview <name>` — show expanded template without creating a file
+- [ ] Error diagnostics for Templater syntax that requires unavailable features (e.g., `tp.web` without `dataviewjs` feature)
+- [ ] Integration test: Templater-syntax templates produce expected output, including `tp.file`, `tp.date`, `tp.frontmatter` access
+
+### 9.10 Tasks plugin compatibility
+
+**Goal:** Full compatibility with the Obsidian Tasks plugin — parse `` ```tasks `` query blocks, support recurring task expansion, task dependencies, custom status types, and priority-based filtering. This extends the Dataview task extraction (9.8.2) with Tasks-plugin-specific features.
+
+**Builds on:** Phase 9.8.2 (task extraction and storage), Phase 9.8.4 (expression evaluator).
+**Reference material:** [Obsidian Tasks documentation](https://publish.obsidian.md/tasks/)
+
+#### 9.10.1 Tasks query language parser
+
+- [ ] Detect `` ```tasks `` fenced code blocks during parsing; store raw query text as block metadata
+- [ ] Tasks DSL parser: line-based filter language (each line is a filter or instruction)
+  - [ ] Status filters: `not done`, `done`, `status.name includes <text>`, `status.type is <type>`
+  - [ ] Date filters: `due before <date>`, `due after <date>`, `due on <date>`, `has due date`, `no due date` — and same for `created`, `start`, `scheduled`, `done` dates
+  - [ ] Property filters: `description includes <text>`, `path includes <text>`, `heading includes <text>`, `tag includes <tag>`, `priority is <level>`
+  - [ ] Recurrence filters: `is recurring`, `is not recurring`
+  - [ ] Dependency filters: `is blocked`, `is not blocked`, `has id`
+  - [ ] Boolean composition: `(filter1) AND (filter2)`, `(filter1) OR (filter2)`, `NOT (filter)`
+  - [ ] Sort instructions: `sort by <field> [reverse]`
+  - [ ] Group instructions: `group by <field> [reverse]`
+  - [ ] Limit: `limit <n>`, `limit groups <n>`
+  - [ ] Display options: `hide <field>`, `show <field>`, `short mode`
+  - [ ] Explain: `explain` — output the parsed query plan
+
+#### 9.10.2 Recurring task support
+
+- [ ] Parse recurrence patterns from task text: `🔁 every <pattern>` (Tasks emoji) and `[repeat:: <pattern>]` (Dataview inline field)
+- [ ] Support recurrence patterns: `every day`, `every week`, `every month`, `every year`, `every <n> days/weeks/months/years`, `every weekday`, `every Monday`, `every month on the 15th`
+- [ ] Optional RRULE support for complex recurrence (RFC 5545 subset)
+- [ ] Recurrence expansion: given a recurring task, compute next occurrence dates for query purposes
+- [ ] `vulcan tasks next <n>` — show next N upcoming task instances (expanding recurrence)
+- [ ] Store recurrence metadata in `task_properties` for query access
+
+#### 9.10.3 Task dependencies
+
+- [ ] Parse dependency annotations: `🆔 <id>` (task identifier), `⛔ <id>` (blocked by)
+- [ ] Build task dependency graph from `tasks` and `task_properties` tables
+- [ ] `is blocked` / `is not blocked` filter: a task is blocked if any of its `⛔` dependencies are not completed
+- [ ] `vulcan tasks blocked` — list all blocked tasks with their blocking dependencies
+- [ ] `vulcan tasks graph` — show task dependency graph (reuse graph analysis infrastructure)
+
+#### 9.10.4 Custom status types
+
+- [ ] Support Tasks plugin custom status configuration: `[x]` = DONE, `[ ]` = TODO, `[/]` = IN_PROGRESS, `[-]` = CANCELLED, `[!]` = IMPORTANT, etc.
+- [ ] Status type categories: `TODO`, `DONE`, `IN_PROGRESS`, `CANCELLED`, `NON_TASK` — configurable via `.vulcan/config.toml` or imported from Tasks plugin settings
+- [ ] Read Tasks plugin status configuration from `.obsidian/plugins/obsidian-tasks-plugin/data.json`
+- [ ] `status.type` and `status.name` queryable in both DQL and Tasks DSL
+
+#### 9.10.5 CLI surface and evaluation
+
+- [ ] `vulcan tasks query <query-string>` — evaluate a Tasks DSL query from the command line
+- [ ] `vulcan tasks eval <file> [--block <n>]` — evaluate a `` ```tasks `` block from a note
+- [ ] `vulcan tasks list [--filter <expr>]` — list tasks with optional DQL or Tasks DSL filter
+- [ ] `--output json` on all subcommands
+- [ ] Integration tests: Tasks DSL queries against test vault with known results
+
+### 9.11 Kanban board support
+
+**Goal:** Parse and query Obsidian Kanban plugin boards (`.md` files with column-as-heading structure), expose board state via CLI, and support board manipulation.
+
+**Builds on:** Phase 9.8.2 (list item extraction), Phase 7.1 (metadata refactors).
+**Reference material:** `references/obsidian-kanban/` (Kanban plugin source)
+
+#### 9.11.1 Kanban board parsing
+
+- [ ] Detect Kanban board files: presence of `kanban-plugin` key in frontmatter or YAML config code block at top of file
+- [ ] Parse board structure: headings → columns, list items under headings → cards
+- [ ] Extract card metadata: checkbox status, inline dates, tags, links, inline fields
+- [ ] Parse board configuration from YAML code block (if present): column settings, archive column, completed column
+- [ ] Store board structure in cache: `kanban_boards` table (or extend existing tables with board context)
+- [ ] Index on board → column → card hierarchy
+
+#### 9.11.2 CLI surface
+
+- [ ] `vulcan kanban list` — list all Kanban boards in the vault
+- [ ] `vulcan kanban show <board>` — display board state (columns and card counts; `--verbose` shows all cards)
+- [ ] `vulcan kanban cards <board> [--column <name>] [--status <status>]` — list cards with optional filters
+- [ ] `vulcan kanban move <board> <card> <target-column>` — move a card between columns (rewrite the `.md` file)
+- [ ] `--output json` on all subcommands
+
+#### 9.11.3 TUI and WebUI (future)
+
+- [ ] Browse TUI: `o` hotkey on Kanban `.md` files opens a board view with columns displayed side-by-side
+- [ ] WebUI: Kanban board rendered as interactive drag-and-drop columns (depends on Phase 13/14)
+
+### 9.12 AI assistant
+
+**Goal:** A vault-aware AI assistant that can search, read, write, and analyze notes using an LLM inference backend (e.g., OpenRouter, local models via OpenAI-compatible API). This is a CLI-first feature — the assistant runs in the terminal and has full access to the vault through Vulcan's existing query and mutation infrastructure.
+
+**Builds on:** Phase 5 (vectors/embeddings for semantic search), Phase 7.12 (query model), Phase 9.6 (search).
+
+#### 9.12.1 Inference backend
+
+- [ ] `AssistantProvider` trait: `chat(messages, tools?) -> Response`, `stream_chat(messages, tools?) -> Stream<Token>`
+- [ ] `OpenAICompatibleProvider`: HTTP client for `/v1/chat/completions` endpoint (covers OpenRouter, local Ollama/vLLM, OpenAI, Anthropic via proxy)
+- [ ] Config in `.vulcan/config.toml`:
+  ```toml
+  [assistant]
+  provider = "openrouter"  # or "openai", "local", custom URL
+  base_url = "https://openrouter.ai/api/v1"
+  api_key_env = "OPENROUTER_API_KEY"  # env var name, not the key itself
+  model = "anthropic/claude-sonnet-4"
+  max_tokens = 4096
+  temperature = 0.7
+  ```
+- [ ] Model selection via `--model` flag override
+- [ ] Streaming output for interactive use
+
+#### 9.12.2 Tool interface
+
+The assistant has access to Vulcan's query and mutation tools:
+
+- [ ] `search(query)` — full-text, semantic, and hybrid search
+- [ ] `read_note(path)` — read a note's content
+- [ ] `list_notes(filter?)` — list notes with optional property filter
+- [ ] `query(dql)` — execute a DQL query
+- [ ] `note_metadata(path)` — get frontmatter, inline fields, tags, links, tasks
+- [ ] `backlinks(path)` — get notes linking to a given note
+- [ ] `similar(path)` — find semantically similar notes (requires vectors)
+- [ ] `create_note(path, content)` — create a new note
+- [ ] `update_note(path, content)` — update a note's content
+- [ ] `update_property(path, key, value)` — set a frontmatter property
+- [ ] `append_to_note(path, text)` — append text to a note
+- [ ] Tool calls require `--allow-write` flag for mutation tools (read-only by default)
+
+#### 9.12.3 CLI surface
+
+- [ ] `vulcan assistant <prompt>` — one-shot prompt with vault context
+- [ ] `vulcan assistant --chat` — interactive multi-turn conversation
+- [ ] `vulcan assistant --file <note> <prompt>` — prompt about a specific note (note content injected as context)
+- [ ] `vulcan assistant --summarize <note>` — summarize a note
+- [ ] `vulcan assistant --ask <question>` — RAG-style question answering against the vault (semantic search → context → answer)
+- [ ] `--output json` for structured output
+- [ ] `--dry-run` on write operations shows planned changes without applying
+- [ ] Conversation history stored in `.vulcan/assistant/` for multi-turn sessions
+
+#### 9.12.4 System prompt and vault awareness
+
+- [ ] Auto-generated system prompt includes: vault name, note count, tag summary, property catalog summary
+- [ ] Vault context injection: relevant notes retrieved via search and injected into context window
+- [ ] Context window management: truncate long note contents, prioritize recent/relevant sections
+- [ ] `vulcan assistant --context <dql>` — pre-filter vault context with a DQL query before prompting
+
+### 9.13 QuickAdd-compatible automation (investigation phase)
+
+**Goal:** Investigate and design Vulcan's equivalent of QuickAdd's macro/capture/template automation workflows. QuickAdd chains multiple operations (template creation, content capture, Obsidian commands, user scripts) into single-trigger actions.
+
+**Status:** Investigation phase — the scope depends on how much of QuickAdd's functionality is valuable in a CLI context vs. being inherently UI-driven.
+
+**Reference material:** `references/quickadd/` (QuickAdd source), [QuickAdd documentation](https://quickadd.obsidian.guide/docs/)
+
+#### 9.13.1 Investigation tasks
+
+- [ ] Audit QuickAdd's choice types: Templates, Captures, Macros, Multis — identify which map to CLI workflows
+- [ ] Evaluate QuickAdd's format syntax: `{{DATE}}`, `{{VALUE}}`, `{{FILE_NAME}}`, `{{MACRO:<name>}}` — overlap with Templater and Vulcan's existing template variables
+- [ ] Assess QuickAdd macro chains: are these valuable as CLI pipelines or better served by shell scripts?
+- [ ] Read `.obsidian/plugins/quickadd/data.json` to understand configuration structure
+- [ ] Design decision: should Vulcan implement QuickAdd compatibility, a Vulcan-native automation DSL, or both?
+
+#### 9.13.2 Likely scope (pending investigation)
+
+- [ ] `vulcan capture <target-note> <text>` — quick append to a configured note (similar to `inbox` but configurable per target)
+- [ ] `vulcan macro <name>` — execute a named sequence of Vulcan commands defined in `.vulcan/macros.toml`
+- [ ] Macro definition format: TOML file defining named command sequences with variable interpolation
+- [ ] Import QuickAdd configurations from `.obsidian/plugins/quickadd/data.json` where feasible
+
+### 9.14 Plugin compatibility notes
+
+Notes on other common Obsidian plugins and their relationship to Vulcan:
+
+**Excalidraw:** Drawings stored as `.excalidraw.md` (Markdown with LZ-String compressed JSON in code blocks) or `.excalidraw` (plain JSON). Vulcan should detect and index these as a document type alongside Canvas files (Phase 18). Full rendering and editing support is a WebUI concern (Phase 13+). **Roadmap note:** Add Excalidraw parsing to Phase 18 (Canvas support) as a sub-phase — both are visual document types with JSON-based structure.
+
+**Advanced Tables:** Primarily a UI feature for editing Markdown tables with tab navigation and auto-formatting. No data format to parse — Vulcan's existing Markdown parser already handles standard Markdown tables. No roadmap action needed.
+
+**Calendar:** The Calendar plugin provides a calendar view linked to daily notes. Vulcan's browse TUI (9.2) could add a calendar navigation mode, and the WebUI (Phase 13) could render a calendar view. The DQL CALENDAR query type (9.8.6) already provides the data foundation. **Roadmap note:** Calendar navigation is a TUI/WebUI presentation concern, not a data/query concern.
+
+**Obsidian Git:** Git-based vault synchronization and versioning. Vulcan already has git integration (9.3 auto-commit, `diff` command, browse TUI git log). No additional compatibility needed.
+
 ---
 
 ## Phase 10: Multi-Vault Daemon
 
 **Goal:** A long-running process that serves multiple vaults over a proper REST API. The CLI can connect to it instead of opening the cache directly, eliminating per-command startup cost and enabling multi-vault workflows.
 
-**Depends on:** Phase 7 complete. Independent of Phase 9 (can be developed in parallel).
+**Depends on:** Phase 7 complete. Phases 9.8–9.14 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins.
 **Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
 
 Search API note: search request semantics are already defined earlier by the shared `SearchQuery` contract from Phase 9.6. Phase 10 daemon work reuses that surface; it does not introduce a second search-parameter design step.
@@ -2254,6 +2504,12 @@ Phase 17.6 (OIDC/SSO) is a future direction — deferred until the local auth sy
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas ACLs follow from Phase 17.
 Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language) and Phase 9.6 (search operators, task search). Sub-phase 9.8.1 (inline fields + type inference) and 9.8.2 (list items and tasks) extend the parser pipeline. Sub-phase 9.8.3 (file.* metadata) synthesizes implicit fields from existing cache tables. Sub-phase 9.8.4 (type system and expression evaluator) extends the value representation with Date, Duration, Link types, ~60 built-in functions with auto-vectorization, lambda expressions, link indexing, swizzling, and null ordering. Sub-phases 9.8.5–9.8.7 (DQL parser, evaluation, inline expressions) build the query surface on top. Sub-phase 9.8.8 (DataviewJS) adds sandboxed JS evaluation with full dv API and DataArray behind a `dataviewjs` compile-time feature flag. Sub-phase 9.8.9 imports Dataview plugin settings from `.obsidian/plugins/dataview/data.json`. Dataview metadata and queries are available to all later phases (daemon, web, wiki) as foundation infrastructure.
+Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
+Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and adds the Tasks DSL parser, recurring task expansion, dependency graph, and custom status types. Independent of 9.9.
+Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.
+Phase 9.12 (AI assistant) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. Requires an external inference API.
+Phase 9.13 (QuickAdd) is an investigation phase — scope depends on CLI applicability findings. May be deferred or replaced by a Vulcan-native automation DSL.
+Phase 18 (Canvas) should be extended to include Excalidraw parsing as an additional visual document type alongside JSON Canvas.
 
 ---
 

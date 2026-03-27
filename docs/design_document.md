@@ -1021,8 +1021,8 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements (edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates, Dataview-compatible metadata and querying)
-- **Phase 10:** Multi-vault daemon with REST API
+- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), AI assistant (9.12), QuickAdd automation (9.13)
+- **Phase 10:** Multi-vault daemon with REST API (depends on Phase 9 foundation work being well-advanced)
 - **Phase 11:** Git auto-versioning at the daemon level
 - **Phase 12:** Sync integration
 - **Phase 13:** WebUI — admin panel and vault browser
