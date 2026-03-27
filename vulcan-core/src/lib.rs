@@ -69,8 +69,8 @@ pub use maintenance::{
 pub use move_rewrite::{move_note, LinkChange, MoveError, MoveSummary, RewrittenFile};
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
-    ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression,
-    RawInlineField, RawLink, RawListItem, RawTag, RawTask, RawTaskField,
+    ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField,
+    RawLink, RawListItem, RawTag, RawTask, RawTaskField,
 };
 pub use paths::{
     VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, LOCAL_CONFIG_FILE_NAME,

@@ -297,8 +297,8 @@ mod tests {
             Migration::new(2, "add chunk content column", schema::apply_schema_v2),
             Migration::new(3, "add chunk search index", schema::apply_schema_v3),
         ])
-            .migrate(&mut connection)
-            .expect("migration to v3 should succeed");
+        .migrate(&mut connection)
+        .expect("migration to v3 should succeed");
 
         let search_row: (String, String, String, String) = connection
             .query_row(
@@ -499,8 +499,8 @@ mod tests {
                 schema::apply_schema_v4,
             ),
         ])
-            .migrate(&mut reopened)
-            .expect("migration to v4 should repair the schema");
+        .migrate(&mut reopened)
+        .expect("migration to v4 should repair the schema");
 
         let matched_paths = search_matches(&reopened, "dashboard");
         assert_eq!(matched_paths, vec!["Home.md".to_string()]);

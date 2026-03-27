@@ -1186,8 +1186,8 @@ fn replace_derived_rows(
         reusable_chunk_ids,
     )?;
     insert_diagnostics(transaction, document_id, &parsed.diagnostics)?;
-    if let Some(properties) =
-        extract_indexed_properties(parsed, config).map_err(|error| ScanError::Io(std::io::Error::other(error)))?
+    if let Some(properties) = extract_indexed_properties(parsed, config)
+        .map_err(|error| ScanError::Io(std::io::Error::other(error)))?
     {
         insert_properties(transaction, document_id, &properties)?;
         insert_property_values(transaction, document_id, &properties)?;
@@ -2491,7 +2491,7 @@ mod tests {
                 0,
                 None,
                 1,
-                11,
+                19,
                 "-".to_string(),
             )
         );
@@ -2502,15 +2502,23 @@ mod tests {
                 0,
                 Some("list-child".to_string()),
                 0,
-                12,
+                20,
                 "1.".to_string(),
             )
         );
 
-        let dashboard_properties: Vec<(String, String, Option<String>, Option<f64>, String)> = connection
+        let dashboard_properties: Vec<(
+            String,
+            String,
+            Option<String>,
+            Option<f64>,
+            Option<i64>,
+            Option<String>,
+            String,
+        )> = connection
             .prepare(
                 "
-                SELECT key, origin, value_text, value_number, value_type
+                SELECT key, origin, value_text, value_number, value_bool, value_date, value_type
                 FROM property_values
                 JOIN documents ON documents.id = property_values.document_id
                 WHERE documents.path = 'Dashboard.md'
@@ -2518,14 +2526,80 @@ mod tests {
                 ",
             )
             .expect("statement should prepare")
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })
             .expect("query should succeed")
             .map(|row| row.expect("row should deserialize"))
             .collect();
         assert!(dashboard_properties.contains(&(
+            "🎅".to_string(),
+            "inline_bracket".to_string(),
+            Some("gifts".to_string()),
+            None,
+            None,
+            None,
+            "text".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "choices".to_string(),
+            "inline".to_string(),
+            None,
+            None,
+            None,
+            None,
+            "list".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "due date".to_string(),
+            "inline".to_string(),
+            None,
+            None,
+            None,
+            Some("2026-04".to_string()),
+            "date".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "duration".to_string(),
+            "inline".to_string(),
+            Some("1d 3h".to_string()),
+            None,
+            None,
+            None,
+            "duration".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "month".to_string(),
+            "inline".to_string(),
+            None,
+            None,
+            None,
+            Some("2026-04".to_string()),
+            "date".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "noël".to_string(),
+            "inline".to_string(),
+            Some("un jeu de console".to_string()),
+            None,
+            None,
+            None,
+            "text".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
             "owner".to_string(),
             "inline_bracket".to_string(),
             Some("[[People/Bob]]".to_string()),
+            None,
+            None,
             None,
             "link".to_string(),
         )));
@@ -2534,6 +2608,8 @@ mod tests {
             "inline".to_string(),
             None,
             Some(2.0),
+            None,
+            None,
             "number".to_string(),
         )));
         assert!(dashboard_properties.contains(&(
@@ -2541,15 +2617,41 @@ mod tests {
             "inline_paren".to_string(),
             None,
             Some(3.0),
+            None,
+            None,
             "number".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "reviewed".to_string(),
+            "frontmatter".to_string(),
+            None,
+            None,
+            Some(1),
+            None,
+            "boolean".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "reviewed".to_string(),
+            "inline".to_string(),
+            None,
+            None,
+            Some(0),
+            None,
+            "boolean".to_string(),
         )));
         assert!(dashboard_properties.contains(&(
             "status".to_string(),
             "frontmatter".to_string(),
             Some("draft".to_string()),
             None,
+            None,
+            None,
             "text".to_string(),
         )));
+        assert_eq!(
+            property_list_items(connection, "Dashboard.md", "choices"),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
 
         let unsupported_messages: Vec<String> = connection
             .prepare(

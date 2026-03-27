@@ -108,7 +108,8 @@ fn scan_block(
             }
             let parent_item_index = item_stack.last().map(|(_, item_index)| *item_index);
             let parent_task_index = task_stack.last().map(|(_, task_index)| *task_index);
-            let visible_text = visible_line_text(source, comment_regions, line_start, raw_line.len());
+            let visible_text =
+                visible_line_text(source, comment_regions, line_start, raw_line.len());
             let trimmed_visible = visible_text
                 .get(
                     list_line.text_start.min(visible_text.len())
@@ -186,7 +187,10 @@ fn scan_inline_field_variants(
 
     for (regex, kind) in [
         (bracket_inline_field_regex(), InlineFieldKind::Bracket),
-        (parenthesized_inline_field_regex(), InlineFieldKind::Parenthesized),
+        (
+            parenthesized_inline_field_regex(),
+            InlineFieldKind::Parenthesized,
+        ),
     ] {
         for captures in regex.captures_iter(raw_line) {
             let Some(full_match) = captures.get(0) else {
@@ -272,7 +276,8 @@ fn parse_bare_inline_field(
     let full_match = captures.get(0)?;
     let key_match = captures.name("key")?;
     let value_match = captures.name("value")?;
-    let byte_range = (line_start + leading + full_match.start())..(line_start + leading + full_match.end());
+    let byte_range =
+        (line_start + leading + full_match.start())..(line_start + leading + full_match.end());
     if overlaps_comment(&byte_range, comment_regions) {
         return None;
     }
@@ -325,7 +330,7 @@ fn parse_list_item_block_id(text: &str) -> Option<String> {
 }
 
 fn normalize_inline_field_key(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
+    strip_inline_key_formatting(value).trim().to_lowercase()
 }
 
 fn visible_line_text(
@@ -378,7 +383,7 @@ fn parenthesized_inline_field_regex() -> &'static Regex {
 fn bare_inline_field_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(r"^(?P<key>[A-Za-z0-9_./ -]+?)::\s*(?P<value>.+?)\s*$")
+        Regex::new(r"^(?P<key>[\p{L}\p{N}\p{M}_./ \-*_~`]+?)::\s*(?P<value>.+?)\s*$")
             .expect("bare inline field regex should compile")
     })
 }
@@ -389,6 +394,31 @@ fn list_item_block_id_regex() -> &'static Regex {
         Regex::new(r"(?:^|\s)\^(?P<id>[A-Za-z0-9-]+)\s*$")
             .expect("list item block id regex should compile")
     })
+}
+
+fn strip_inline_key_formatting(value: &str) -> String {
+    let mut stripped = value.trim().to_string();
+
+    loop {
+        let next = strip_wrapping_inline_key_formatting(&stripped);
+        if next == stripped {
+            return stripped;
+        }
+        stripped = next;
+    }
+}
+
+fn strip_wrapping_inline_key_formatting(value: &str) -> String {
+    for marker in ["**", "__", "~~", "`", "*", "_"] {
+        if let Some(inner) = value
+            .strip_prefix(marker)
+            .and_then(|inner| inner.strip_suffix(marker))
+        {
+            return inner.trim().to_string();
+        }
+    }
+
+    value.to_string()
 }
 
 #[cfg(test)]
@@ -489,5 +519,27 @@ mod tests {
             Some("child-id")
         );
         assert!(extraction.tasks.is_empty());
+    }
+
+    #[test]
+    fn normalizes_formatted_unicode_and_emoji_inline_keys() {
+        let source =
+            "**Due Date**:: 2026-04\nNoël:: un jeu de console\nsnake_case:: yes\n[🎅:: gifts]\n";
+        let block = SemanticBlock {
+            block_kind: SemanticBlockKind::Paragraph,
+            text: source.to_string(),
+            byte_offset_start: 0,
+            byte_offset_end: source.len(),
+            heading_path: Vec::new(),
+            code_language: None,
+        };
+
+        let extraction = extract_dataview_metadata(source, &[], &[block]);
+
+        assert_eq!(extraction.inline_fields.len(), 4);
+        assert_eq!(extraction.inline_fields[0].key, "due date");
+        assert_eq!(extraction.inline_fields[1].key, "noël");
+        assert_eq!(extraction.inline_fields[2].key, "snake_case");
+        assert_eq!(extraction.inline_fields[3].key, "🎅");
     }
 }

@@ -5,6 +5,14 @@ reviewed: true
 
 priority:: 2
 (priority:: 3)
+month:: 2026-04
+duration:: 1d 3h
+choices:: "alpha", "beta"
+plain:: alpha, beta
+**Due Date**:: 2026-04
+Noël:: un jeu de console
+[🎅:: gifts]
+reviewed:: false
 [owner:: [[People/Bob]]]
 
 ## Lists
