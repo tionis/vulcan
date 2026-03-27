@@ -347,7 +347,11 @@ fn array_method(
         }
         "isEmpty" => Ok(Value::Bool(arr.is_empty())),
         "join" => {
-            let sep = eval_string_arg(args, 0, ctx)?;
+            let sep = if args.is_empty() {
+                ", ".to_string()
+            } else {
+                eval_string_arg(args, 0, ctx)?
+            };
             let joined: String = arr
                 .iter()
                 .map(value_to_display)
@@ -356,14 +360,12 @@ fn array_method(
             Ok(Value::String(joined))
         }
         "flat" => {
-            let mut result = Vec::new();
-            for item in arr {
-                match item {
-                    Value::Array(inner) => result.extend(inner.iter().cloned()),
-                    other => result.push(other.clone()),
-                }
-            }
-            Ok(Value::Array(result))
+            let depth = if args.is_empty() {
+                1
+            } else {
+                eval_number_arg(args, 0, ctx)? as i64
+            };
+            Ok(Value::Array(flatten_array(arr, depth)))
         }
         "reverse" => {
             let mut result: Vec<Value> = arr.to_vec();
@@ -371,9 +373,26 @@ fn array_method(
             Ok(Value::Array(result))
         }
         "sort" => {
-            let mut result: Vec<Value> = arr.to_vec();
-            result.sort_by(compare_values_for_sort);
-            Ok(Value::Array(result))
+            if args.is_empty() {
+                let mut result: Vec<Value> = arr.to_vec();
+                result.sort_by(compare_values_for_sort);
+                return Ok(Value::Array(result));
+            }
+
+            let mut keyed = Vec::with_capacity(arr.len());
+            for (i, item) in arr.iter().enumerate() {
+                let key = evaluate_callback(
+                    &args[0],
+                    ctx,
+                    &[("value", item.clone()), ("index", Value::Number(i.into()))],
+                    &[item.clone(), Value::Number(i.into())],
+                )?;
+                keyed.push((item.clone(), key));
+            }
+            keyed.sort_by(|left, right| compare_values_for_sort(&left.1, &right.1));
+            Ok(Value::Array(
+                keyed.into_iter().map(|(item, _)| item).collect(),
+            ))
         }
         "unique" => {
             let mut result = Vec::new();
@@ -385,14 +404,17 @@ fn array_method(
             Ok(Value::Array(result))
         }
         "slice" => {
-            let start = eval_number_arg(args, 0, ctx)? as usize;
-            let end = if args.len() > 1 {
-                eval_number_arg(args, 1, ctx)? as usize
+            let start = if args.is_empty() {
+                0
             } else {
-                arr.len()
+                eval_number_arg(args, 0, ctx)? as i64
             };
-            let start = start.min(arr.len());
-            let end = end.min(arr.len());
+            let end = if args.len() > 1 {
+                Some(eval_number_arg(args, 1, ctx)? as i64)
+            } else {
+                None
+            };
+            let (start, end) = normalize_slice_bounds(arr.len(), start, end);
             Ok(Value::Array(arr[start..end].to_vec()))
         }
         "filter" => {
@@ -510,6 +532,39 @@ fn evaluate_callback(
             evaluate(expr, &local_ctx)
         }
     }
+}
+
+fn flatten_array(values: &[Value], depth: i64) -> Vec<Value> {
+    if depth <= 0 {
+        return values.to_vec();
+    }
+
+    let mut result = Vec::new();
+    for item in values {
+        match item {
+            Value::Array(inner) => result.extend(flatten_array(inner, depth - 1)),
+            other => result.push(other.clone()),
+        }
+    }
+    result
+}
+
+fn normalize_slice_bounds(length: usize, start: i64, end: Option<i64>) -> (usize, usize) {
+    let len = i64::try_from(length).unwrap_or(i64::MAX);
+    let normalize = |index: i64| {
+        if index < 0 {
+            (len + index).clamp(0, len)
+        } else {
+            index.clamp(0, len)
+        }
+    };
+
+    let start = normalize(start);
+    let end = end.map_or(len, normalize).max(start);
+    (
+        usize::try_from(start).unwrap_or(0),
+        usize::try_from(end).unwrap_or(length),
+    )
 }
 
 fn eval_string_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<String, String> {
@@ -700,6 +755,10 @@ mod tests {
             eval(r#"[1, 2, 3].join(",")"#),
             Value::String("1,2,3".to_string())
         );
+        assert_eq!(
+            eval(r#"["a", "b", "c"].join()"#),
+            Value::String("a, b, c".to_string())
+        );
     }
 
     #[test]
@@ -710,6 +769,10 @@ mod tests {
     #[test]
     fn array_sort() {
         assert_eq!(eval("[3, 1, 2].sort()"), serde_json::json!([1, 2, 3]));
+        assert_eq!(
+            eval("[1, 2, 3].sort((k) => 0 - k)"),
+            serde_json::json!([3, 2, 1])
+        );
     }
 
     #[test]
@@ -720,11 +783,13 @@ mod tests {
     #[test]
     fn array_flat() {
         assert_eq!(eval("[[1, 2], [3]].flat()"), serde_json::json!([1, 2, 3]));
+        assert_eq!(eval("[1, [2, [3]]].flat(2)"), serde_json::json!([1, 2, 3]));
     }
 
     #[test]
     fn array_slice() {
         assert_eq!(eval("[1, 2, 3, 4].slice(1, 3)"), serde_json::json!([2, 3]));
+        assert_eq!(eval("[1, 2, 3, 4, 5].slice(-2)"), serde_json::json!([4, 5]));
     }
 
     #[test]
@@ -883,6 +948,19 @@ mod tests {
         assert_eq!(
             eval("filter([1, 2, 3], (x) => x >= 2)"),
             serde_json::json!([2, 3])
+        );
+        assert_eq!(eval("sort([3, 1, 2])"), serde_json::json!([1, 2, 3]));
+        assert_eq!(
+            eval("sort([1, 2, 3], (k) => 0 - k)"),
+            serde_json::json!([3, 2, 1])
+        );
+        assert_eq!(eval("reverse([1, 2, 3])"), serde_json::json!([3, 2, 1]));
+        assert_eq!(eval("unique([1, 2, 1, 3])"), serde_json::json!([1, 2, 3]));
+        assert_eq!(eval("flat([1, [2], [3]])"), serde_json::json!([1, 2, 3]));
+        assert_eq!(eval("flat([1, [2, [3]]], 2)"), serde_json::json!([1, 2, 3]));
+        assert_eq!(
+            eval("slice([1, 2, 3, 4, 5], -2)"),
+            serde_json::json!([4, 5])
         );
     }
 

@@ -22,7 +22,9 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "choice" => func_choice(args, ctx),
         "nonnull" => func_nonnull(args, ctx),
         "firstvalue" => func_firstvalue(args, ctx),
-        "map" | "filter" => func_array_alias(name, args, ctx),
+        "map" | "filter" | "sort" | "reverse" | "unique" | "flat" | "slice" => {
+            func_array_alias(name, args, ctx)
+        }
         "number" => {
             let val = eval_arg(args, 0, ctx)?;
             let n = as_number(&val);
