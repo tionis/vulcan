@@ -405,6 +405,7 @@ Recommended direction:
 - Add editing in stages: start with note/property edits and other safe structured mutations, then consider broader note editing.
 - If full in-TUI text editing remains too limited for some workflows, allow an optional handoff to an external editor while preserving the same validation and rescan path on return.
 - Treat future Bases-view editing as a higher-level workflow that edits validated view models and writes them back through a serializer, rather than patching `.base` files with ad hoc string edits.
+- **Note creation from Bases views** should match Obsidian's behavior: when creating a new note from within a Bases view (TUI `n` hotkey or CLI `bases create`), derive the target folder and initial properties from the view's filter context. For example, a view filtering on `file.inFolder("Projects")` and `status = "todo"` should create new notes in `Projects/` with `status: todo` pre-populated in frontmatter. This avoids the user having to manually specify the folder or duplicate the view's constraints. Filter analysis should walk the filter tree to extract folder and equality constraints; range/contains filters should not be derived. A configurable `create_template` key per `.base` file allows associating a template with a view.
 
 The preferred sequence is to make note and property editing solid before attempting create/delete/rename/edit flows for Bases views themselves.
 
