@@ -113,6 +113,8 @@ Recommended logical entities:
 - `list_items`: all list items (task and non-task) extracted from note body text, with text, line number, nesting, section context, and block ID. Tasks are a subset (`is_task = true`). Required for Dataview's `file.lists` metadata. See §12b and Roadmap Phase 9.8.
 - `tasks`: structured task items (`- [ ]`, `- [x]`, etc.) referencing `list_items`, with status char and task-specific computed fields (`checked`, `completed`, `fullyCompleted`). See §12b and Roadmap Phase 9.8.
 - `task_properties`: inline fields extracted from within task text (e.g., `[due:: 2026-04-01]`), plus Tasks plugin emoji shorthand fields. See §12b and Roadmap Phase 9.8.
+- `kanban_boards`: Kanban board metadata extracted from board files (detected via `kanban-plugin` frontmatter). Stores board → column → card hierarchy, card metadata (dates, tags, links), and board configuration. See Roadmap Phase 9.11.
+- `tasknotes_tasks`: TaskNotes task file metadata — indexed columns for status, priority, due, scheduled, project, context, and custom user fields. Task files are standard `documents` rows; this table adds structured query access to their rich frontmatter. See Roadmap Phase 9.15.
 
 Every entity should carry enough provenance to support incremental repair: source document id, content hash, parser version, and extraction version where relevant.
 
@@ -800,6 +802,20 @@ Dataview support reinforces the design direction in §12 (Bases: Query model bey
 
 All five compile to the same internal query AST, share the same filter and expression evaluation engine, and run against the same cache tables. The difference is where the query is authored (CLI, API, file, or note body) and how results are rendered.
 
+### Integration with other plugin compatibility phases
+
+The Dataview foundation in §12b serves as shared infrastructure for several subsequent plugin compatibility phases. Cross-references:
+
+- **Templater (Roadmap 9.9):** Templater's `<% %>` template syntax reuses the Dataview expression evaluator for template variable expansion. The DataviewJS sandbox (§12b DataviewJS) provides the JS runtime for Templater's `<%* %>` execution commands and `tp.web`/user script features. Native `tp.date`, `tp.file`, `tp.frontmatter` modules are implemented in Rust without the JS runtime.
+
+- **Tasks plugin (Roadmap 9.10):** Tasks plugin compatibility extends the task extraction from §12b (Task metadata) with a separate Tasks DSL parser for `` ```tasks `` query blocks. The Tasks plugin emoji shorthand (📅, ⏳, 🔁, etc.) is already parsed by §12b's task extraction. Phase 9.10 adds recurring task expansion (RRULE), task dependency graphs, and custom status types — queryable via both DQL and the Tasks DSL.
+
+- **Kanban (Roadmap 9.11):** Kanban board parsing builds on list item extraction (§12b List item extraction) since cards are Markdown list items under heading-based columns. Card inline fields use the same type inference rules as §12b inline fields.
+
+- **TaskNotes (Roadmap 9.15):** TaskNotes tasks are individual files with rich frontmatter, queried through Bases views with custom source types (see Roadmap 4.5.1). TaskNotes does not use Dataview directly but shares the property query infrastructure from §9 and §12. Its Bases views use the same filter/sort/group/formula pipeline.
+
+- **Periodic notes (Roadmap 9.16):** The `file.day` implicit metadata field (§12b `file.*` namespace) depends on periodic note configuration to resolve which notes represent specific dates.
+
 ## 13. Language and framework recommendations
 
 ### Primary recommendation: Rust
@@ -1021,16 +1037,16 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), AI assistant (9.12), QuickAdd automation (9.13)
+- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), AI assistant with conversation persistence and prompts/skills (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes infrastructure (9.16), unified plugin settings import (9.17)
 - **Phase 10:** Multi-vault daemon with REST API (depends on Phase 9 foundation work being well-advanced)
 - **Phase 11:** Git auto-versioning at the daemon level
 - **Phase 12:** Sync integration
 - **Phase 13:** WebUI — admin panel and vault browser
-- **Phase 14:** WebUI — note editor with Automerge CRDT sessions
+- **Phase 14:** WebUI — note editor with Automerge CRDT sessions, advanced table editing (Advanced Tables-style)
 - **Phase 15:** Extensibility and integrations (webhooks, Telegram, custom endpoints)
 - **Phase 16:** Wiki mode with live collaborative editing
 - **Phase 17:** User management, group-based ACLs, document-level secrets, share links
-- **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor)
+- **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor) and Excalidraw support (18.8)
 
 The design decisions in this document (three-layer architecture, cache as derived index, vault as source of truth, provider abstraction, parser pipeline) are load-bearing for all later phases. See the roadmap for dependency edges and implementation details.
 
@@ -1058,6 +1074,12 @@ Maintain a set of test vaults in the repository (e.g., `tests/fixtures/vaults/`)
 - **`move-rewrite/`**: A vault structured to test move-safe rewrites — after running a `move` operation, assert that all inbound links are rewritten correctly and no links are broken.
 - **`bases/`**: A vault with `.base` files exercising supported filter and formula constructs, plus unsupported constructs that should produce diagnostics.
 - **`dataview/`**: A vault exercising full Dataview compatibility: inline fields (all three variants), plain list items and task items (including nested items, Tasks plugin emoji shorthand), `file.*` metadata access, DQL queries (TABLE, LIST, TASK, CALENDAR with GROUP BY, FLATTEN, LIMIT, WITHOUT ID), inline expressions with `this` binding, the complete function library, link indexing (`[[Note]].field`), date/duration arithmetic, and DataviewJS blocks (detected but not evaluated). Tests inline field extraction, list/task parsing, `file.*` resolution, DQL compilation, expression evaluation, and type coercion.
+- **`templater/`**: Templates using `<% %>` syntax with `tp.date`, `tp.file`, `tp.frontmatter`, `tp.system`, `tp.config` calls. Tests template parsing, variable expansion, whitespace control (`<%_`/`_%>`), and error diagnostics for unavailable features (e.g., `tp.web` without JS runtime). See Roadmap Phase 9.9.
+- **`tasks-plugin/`**: Notes with `` ```tasks `` query blocks, tasks using emoji shorthand (📅 due, ⏳ scheduled, 🔁 recurrence, 🆔 identifiers, ⛔ dependencies), custom status characters (`[/]`, `[-]`, `[!]`), and recurring tasks with RRULE patterns. Tests Tasks DSL parsing, filter evaluation, dependency resolution, and recurrence expansion. See Roadmap Phase 9.10.
+- **`kanban/`**: Kanban board files with `kanban-plugin` frontmatter, heading-based columns, card items with inline dates and tags, YAML config blocks, and an archive section. Tests board detection, column/card extraction, configurable date triggers, and linked page metadata. See Roadmap Phase 9.11.
+- **`tasknotes/`**: TaskNotes task files with rich YAML frontmatter (status, priority, due, scheduled, contexts, projects, recurrence, blockedBy, timeEntries, reminders), custom user fields, and `.base` view files with filter/sort/group/formula configs. Tests task file parsing, field mapping, NLP input parsing, dependency graph construction, and Bases view evaluation with custom source types. See Roadmap Phase 9.15.
+- **`periodic/`**: Daily, weekly, and monthly note folders with date-formatted filenames, testing periodic note discovery, reverse date resolution, `file.day` integration, and gap detection. See Roadmap Phase 9.16.
+- **`ai-sessions/`**: Sample AI assistant conversation files in gemini-scribe callout format (YAML frontmatter with session metadata, `> [!user]+`/`> [!assistant]+`/`> [!metadata]-` callouts), prompt files, and skill files. Tests session parsing, resume, and prompt/skill discovery. See Roadmap Phase 9.12.
 
 Integration tests should run the full indexing pipeline against these vaults and assert on the resulting database state: row counts, resolved link targets, diagnostic entries, property types, etc.
 
