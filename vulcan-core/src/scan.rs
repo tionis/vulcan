@@ -2,8 +2,8 @@ use crate::cache::{drop_fts_triggers, rebuild_fts_index, restore_fts_triggers, C
 use crate::extraction::extract_attachment_chunks;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
 use crate::properties::{
-    extract_indexed_properties, rebuild_property_catalog, refresh_property_catalog_for_documents,
-    IndexedProperties,
+    extract_indexed_properties, indexed_inline_property_value, rebuild_property_catalog,
+    refresh_property_catalog_for_documents, IndexedProperties,
 };
 use crate::resolver::{LinkResolutionProblem, ResolverDocument, ResolverIndex, ResolverLink};
 use crate::write_lock::acquire_write_lock;
@@ -1186,18 +1186,17 @@ fn replace_derived_rows(
         reusable_chunk_ids,
     )?;
     insert_diagnostics(transaction, document_id, &parsed.diagnostics)?;
-    if let Some(properties) = extract_indexed_properties(
-        parsed.raw_frontmatter.as_deref(),
-        parsed.frontmatter.as_ref(),
-        config,
-    )
-    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?
+    if let Some(properties) =
+        extract_indexed_properties(parsed, config).map_err(|error| ScanError::Io(std::io::Error::other(error)))?
     {
         insert_properties(transaction, document_id, &properties)?;
         insert_property_values(transaction, document_id, &properties)?;
         insert_property_list_items(transaction, document_id, &properties)?;
         insert_property_diagnostics(transaction, document_id, &properties)?;
     }
+    insert_tasks(transaction, document_id, &parsed.tasks, config)?;
+    insert_dataview_blocks(transaction, document_id, &parsed.dataview_blocks)?;
+    insert_inline_expressions(transaction, document_id, &parsed.inline_expressions)?;
     Ok(())
 }
 
@@ -1573,19 +1572,22 @@ fn insert_property_values(
     let mut statement = transaction.prepare_cached(
         "
         INSERT INTO property_values (
+            id,
             document_id,
             key,
             value_text,
             value_number,
             value_bool,
             value_date,
-            value_type
+            value_type,
+            origin
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         ",
     )?;
     for property in &properties.values {
         statement.execute(params![
+            Ulid::new().to_string(),
             document_id,
             &property.key,
             property.value_text.as_deref(),
@@ -1593,6 +1595,7 @@ fn insert_property_values(
             property.value_bool.map(i64::from),
             property.value_date.as_deref(),
             &property.value_type,
+            property.origin.as_str(),
         ])?;
     }
     Ok(())
@@ -1651,12 +1654,210 @@ fn insert_property_diagnostics(
     Ok(())
 }
 
+fn insert_tasks(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    tasks: &[crate::RawTask],
+    config: &crate::VaultConfig,
+) -> Result<(), ScanError> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+
+    let task_ids = tasks
+        .iter()
+        .map(|_| Ulid::new().to_string())
+        .collect::<Vec<_>>();
+    let mut task_statement = transaction.prepare_cached(
+        "
+        INSERT INTO tasks (
+            id,
+            document_id,
+            status_char,
+            text,
+            byte_offset,
+            parent_task_id,
+            section_heading,
+            line_number
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ",
+    )?;
+
+    for (index, task) in tasks.iter().enumerate() {
+        task_statement.execute(params![
+            &task_ids[index],
+            document_id,
+            task.status_char.to_string(),
+            &task.text,
+            i64::try_from(task.byte_offset).map_err(|_| ScanError::MetadataOverflow {
+                field: "tasks.byte_offset",
+                path: PathBuf::from(document_id),
+            })?,
+            task.parent_task_index
+                .and_then(|parent_index| task_ids.get(parent_index))
+                .map(String::as_str),
+            task.section_heading.as_deref(),
+            i64::try_from(task.line_number).map_err(|_| ScanError::MetadataOverflow {
+                field: "tasks.line_number",
+                path: PathBuf::from(document_id),
+            })?,
+        ])?;
+    }
+
+    let mut property_statement = transaction.prepare_cached(
+        "
+        INSERT INTO task_properties (
+            id,
+            task_id,
+            key,
+            value_text,
+            value_number,
+            value_bool,
+            value_date,
+            value_type
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ",
+    )?;
+
+    for (task_id, task) in task_ids.iter().zip(tasks) {
+        for inline_field in &task.inline_fields {
+            let expected_type = config
+                .property_types
+                .get(&inline_field.key)
+                .map(String::as_str)
+                .map(crate::properties::canonical_property_type);
+            let value = indexed_inline_property_value(
+                &inline_field.key,
+                &inline_field.value_text,
+                inline_field.kind,
+                config,
+                expected_type,
+            );
+            property_statement.execute(params![
+                Ulid::new().to_string(),
+                task_id,
+                &inline_field.key,
+                value.value_text.as_deref(),
+                value.value_number,
+                value.value_bool.map(i64::from),
+                value.value_date.as_deref(),
+                value.value_type,
+            ])?;
+        }
+    }
+
+    Ok(())
+}
+
+fn insert_dataview_blocks(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    blocks: &[crate::RawDataviewBlock],
+) -> Result<(), ScanError> {
+    if blocks.is_empty() {
+        return Ok(());
+    }
+
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO dataview_blocks (
+            id,
+            document_id,
+            language,
+            block_index,
+            byte_offset_start,
+            byte_offset_end,
+            line_number,
+            raw_text
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ",
+    )?;
+    for block in blocks {
+        statement.execute(params![
+            Ulid::new().to_string(),
+            document_id,
+            &block.language,
+            i64::try_from(block.block_index).map_err(|_| ScanError::MetadataOverflow {
+                field: "dataview_blocks.block_index",
+                path: PathBuf::from(document_id),
+            })?,
+            i64::try_from(block.byte_range.start).map_err(|_| ScanError::MetadataOverflow {
+                field: "dataview_blocks.byte_offset_start",
+                path: PathBuf::from(document_id),
+            })?,
+            i64::try_from(block.byte_range.end).map_err(|_| ScanError::MetadataOverflow {
+                field: "dataview_blocks.byte_offset_end",
+                path: PathBuf::from(document_id),
+            })?,
+            i64::try_from(block.line_number).map_err(|_| ScanError::MetadataOverflow {
+                field: "dataview_blocks.line_number",
+                path: PathBuf::from(document_id),
+            })?,
+            &block.text,
+        ])?;
+    }
+    Ok(())
+}
+
+fn insert_inline_expressions(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    expressions: &[crate::RawInlineExpression],
+) -> Result<(), ScanError> {
+    if expressions.is_empty() {
+        return Ok(());
+    }
+
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO inline_expressions (
+            id,
+            document_id,
+            expression,
+            byte_offset_start,
+            byte_offset_end,
+            line_number
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ",
+    )?;
+    for expression in expressions {
+        statement.execute(params![
+            Ulid::new().to_string(),
+            document_id,
+            &expression.expression,
+            i64::try_from(expression.byte_range.start).map_err(|_| {
+                ScanError::MetadataOverflow {
+                    field: "inline_expressions.byte_offset_start",
+                    path: PathBuf::from(document_id),
+                }
+            })?,
+            i64::try_from(expression.byte_range.end).map_err(|_| ScanError::MetadataOverflow {
+                field: "inline_expressions.byte_offset_end",
+                path: PathBuf::from(document_id),
+            })?,
+            i64::try_from(expression.line_number).map_err(|_| ScanError::MetadataOverflow {
+                field: "inline_expressions.line_number",
+                path: PathBuf::from(document_id),
+            })?,
+        ])?;
+    }
+    Ok(())
+}
+
 fn clear_derived_rows(
     transaction: &Transaction<'_>,
     document_id: &str,
 ) -> Result<(), rusqlite::Error> {
     // Static SQL strings so prepare_cached can reuse them across calls.
     static CLEAR_STATEMENTS: &[&str] = &[
+        "DELETE FROM task_properties WHERE task_id IN (SELECT id FROM tasks WHERE document_id = ?1)",
+        "DELETE FROM tasks WHERE document_id = ?1",
+        "DELETE FROM dataview_blocks WHERE document_id = ?1",
+        "DELETE FROM inline_expressions WHERE document_id = ?1",
         "DELETE FROM headings WHERE document_id = ?1",
         "DELETE FROM block_refs WHERE document_id = ?1",
         "DELETE FROM links WHERE source_document_id = ?1",
@@ -1925,7 +2126,9 @@ fn origin_context_name(origin_context: OriginContext) -> &'static str {
 fn diagnostic_kind_name(kind: ParseDiagnosticKind) -> &'static str {
     match kind {
         ParseDiagnosticKind::MalformedFrontmatter => "parse_error",
-        ParseDiagnosticKind::HtmlLink | ParseDiagnosticKind::LinkInComment => "unsupported_syntax",
+        ParseDiagnosticKind::HtmlLink
+        | ParseDiagnosticKind::LinkInComment
+        | ParseDiagnosticKind::UnsupportedSyntax => "unsupported_syntax",
     }
 }
 
@@ -1967,6 +2170,7 @@ mod tests {
     use crate::config::{
         load_vault_config, AttachmentExtractionConfig, LinkResolutionMode, LinkStylePreference,
     };
+    use crate::{search_vault, SearchQuery};
     use serde_json::{json, Value};
     use tempfile::TempDir;
 
@@ -2155,6 +2359,96 @@ mod tests {
             diagnostic_count_by_kind(database.connection(), "type_mismatch"),
             5
         );
+    }
+
+    #[test]
+    fn dataview_fixture_indexes_inline_fields_tasks_and_metadata() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let connection = database.connection();
+
+        assert_eq!(count_rows(connection, "tasks"), 3);
+        assert_eq!(count_rows(connection, "task_properties"), 3);
+        assert_eq!(count_rows(connection, "dataview_blocks"), 2);
+        assert_eq!(count_rows(connection, "inline_expressions"), 1);
+
+        let dashboard_properties: Vec<(String, String, Option<String>, Option<f64>, String)> = connection
+            .prepare(
+                "
+                SELECT key, origin, value_text, value_number, value_type
+                FROM property_values
+                JOIN documents ON documents.id = property_values.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ORDER BY key, origin
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect();
+        assert!(dashboard_properties.contains(&(
+            "owner".to_string(),
+            "inline_bracket".to_string(),
+            Some("[[People/Bob]]".to_string()),
+            None,
+            "link".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "priority".to_string(),
+            "inline".to_string(),
+            None,
+            Some(2.0),
+            "number".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "priority".to_string(),
+            "inline_paren".to_string(),
+            None,
+            Some(3.0),
+            "number".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "status".to_string(),
+            "frontmatter".to_string(),
+            Some("draft".to_string()),
+            None,
+            "text".to_string(),
+        )));
+
+        let unsupported_messages: Vec<String> = connection
+            .prepare(
+                "
+                SELECT message
+                FROM diagnostics
+                JOIN documents ON documents.id = diagnostics.document_id
+                WHERE documents.path = 'Dashboard.md' AND kind = 'unsupported_syntax'
+                ORDER BY message
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect();
+        assert!(unsupported_messages
+            .iter()
+            .any(|message| message.contains("DataviewJS blocks are not evaluated by Vulcan")));
+
+        let search = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "dv.table".to_string(),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+        assert!(search.hits.is_empty());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 mod block_ref;
 mod comment_scanner;
+mod dataview;
 mod link_classifier;
 mod options;
 mod semantic_pass;
@@ -8,7 +9,8 @@ pub mod types;
 
 pub use types::{
     ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument,
-    RawBlockRef, RawHeading, RawLink, RawTag,
+    RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField, RawLink,
+    RawTag, RawTask, RawTaskField,
 };
 
 use crate::config::VaultConfig;
@@ -29,6 +31,10 @@ pub(crate) fn parse_document_fragment(
     base_offset: usize,
 ) -> ParsedDocument {
     let mut parsed = parse_document_internal(source, config, false);
+    parsed.inline_fields.clear();
+    parsed.tasks.clear();
+    parsed.dataview_blocks.clear();
+    parsed.inline_expressions.clear();
     shift_parsed_document_offsets(&mut parsed, base_offset);
     parsed
 }
@@ -62,6 +68,29 @@ fn shift_parsed_document_offsets(parsed: &mut ParsedDocument, base_offset: usize
     }
     for tag in &mut parsed.tags {
         tag.byte_offset += base_offset;
+    }
+    for inline_field in &mut parsed.inline_fields {
+        inline_field.byte_range.start += base_offset;
+        inline_field.byte_range.end += base_offset;
+        inline_field.value_byte_range.start += base_offset;
+        inline_field.value_byte_range.end += base_offset;
+    }
+    for task in &mut parsed.tasks {
+        task.byte_offset += base_offset;
+        for inline_field in &mut task.inline_fields {
+            inline_field.byte_range.start += base_offset;
+            inline_field.byte_range.end += base_offset;
+            inline_field.value_byte_range.start += base_offset;
+            inline_field.value_byte_range.end += base_offset;
+        }
+    }
+    for block in &mut parsed.dataview_blocks {
+        block.byte_range.start += base_offset;
+        block.byte_range.end += base_offset;
+    }
+    for expression in &mut parsed.inline_expressions {
+        expression.byte_range.start += base_offset;
+        expression.byte_range.end += base_offset;
     }
     for chunk in &mut parsed.chunk_texts {
         chunk.byte_offset_start += base_offset;
@@ -428,6 +457,47 @@ mod tests {
 
         assert_eq!(parsed.chunk_texts.len(), 2);
         assert_eq!(parsed.chunk_texts[0].chunk_strategy, "paragraph");
+    }
+
+    #[test]
+    fn dataview_metadata_is_extracted_without_polluting_chunks() {
+        let parsed = parse_document(
+            concat!(
+                "status:: draft\n",
+                "- [ ] Write docs [due:: 2026-04-01]\n",
+                "\n",
+                "`= this.status`\n",
+                "\n",
+                "```dataview\n",
+                "TABLE status\n",
+                "FROM #project\n",
+                "```\n",
+                "\n",
+                "```dataviewjs\n",
+                "dv.table([\"Status\"], [[this.status]])\n",
+                "```\n",
+            ),
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.inline_fields.len(), 1);
+        assert_eq!(parsed.inline_fields[0].key, "status");
+        assert_eq!(parsed.tasks.len(), 1);
+        assert_eq!(parsed.tasks[0].inline_fields[0].key, "due");
+        assert_eq!(parsed.inline_expressions.len(), 1);
+        assert_eq!(parsed.dataview_blocks.len(), 2);
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("DataviewJS blocks")));
+        assert!(parsed
+            .chunk_texts
+            .iter()
+            .all(|chunk| !chunk.content.contains("TABLE status")));
+        assert!(parsed
+            .chunk_texts
+            .iter()
+            .all(|chunk| !chunk.content.contains("this.status")));
     }
 
     #[test]

@@ -73,6 +73,11 @@ impl MigrationRegistry {
                 "add missing performance indexes",
                 schema::apply_schema_v9,
             ),
+            Migration::breaking(
+                10,
+                "add dataview metadata and multi-origin property storage",
+                schema::apply_schema_v10,
+            ),
         ])
     }
 
@@ -282,7 +287,11 @@ mod tests {
             )
             .expect("chunk should insert");
 
-        MigrationRegistry::schema_v1()
+        MigrationRegistry::new(vec![
+            Migration::new(1, "create cache schema v1", schema::apply_schema_v1),
+            Migration::new(2, "add chunk content column", schema::apply_schema_v2),
+            Migration::new(3, "add chunk search index", schema::apply_schema_v3),
+        ])
             .migrate(&mut connection)
             .expect("migration to v3 should succeed");
 
@@ -475,7 +484,16 @@ mod tests {
         drop(connection);
 
         let mut reopened = Connection::open(&database_path).expect("database should reopen");
-        MigrationRegistry::schema_v1()
+        MigrationRegistry::new(vec![
+            Migration::new(1, "create cache schema v1", schema::apply_schema_v1),
+            Migration::new(2, "add chunk content column", schema::apply_schema_v2),
+            Migration::new(3, "add chunk search index", schema::apply_schema_v3),
+            Migration::new(
+                4,
+                "repair chunk search schema naming",
+                schema::apply_schema_v4,
+            ),
+        ])
             .migrate(&mut reopened)
             .expect("migration to v4 should repair the schema");
 

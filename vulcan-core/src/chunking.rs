@@ -269,6 +269,7 @@ mod tests {
                 .iter()
                 .map(|value| (*value).to_string())
                 .collect(),
+            code_language: None,
         }
     }
 }

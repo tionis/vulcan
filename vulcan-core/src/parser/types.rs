@@ -10,6 +10,10 @@ pub struct ParsedDocument {
     pub links: Vec<RawLink>,
     pub tags: Vec<RawTag>,
     pub aliases: Vec<String>,
+    pub inline_fields: Vec<RawInlineField>,
+    pub tasks: Vec<RawTask>,
+    pub dataview_blocks: Vec<RawDataviewBlock>,
+    pub inline_expressions: Vec<RawInlineExpression>,
     pub chunk_texts: Vec<ChunkText>,
     pub diagnostics: Vec<ParseDiagnostic>,
 }
@@ -64,10 +68,64 @@ pub struct RawTag {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineFieldKind {
+    Bare,
+    Parenthesized,
+    Bracket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawInlineField {
+    pub key: String,
+    pub value_text: String,
+    pub kind: InlineFieldKind,
+    pub byte_range: Range<usize>,
+    pub value_byte_range: Range<usize>,
+    pub line_number: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTaskField {
+    pub key: String,
+    pub value_text: String,
+    pub kind: InlineFieldKind,
+    pub byte_range: Range<usize>,
+    pub value_byte_range: Range<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTask {
+    pub status_char: char,
+    pub text: String,
+    pub byte_offset: usize,
+    pub parent_task_index: Option<usize>,
+    pub section_heading: Option<String>,
+    pub line_number: usize,
+    pub inline_fields: Vec<RawTaskField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawDataviewBlock {
+    pub language: String,
+    pub text: String,
+    pub block_index: usize,
+    pub byte_range: Range<usize>,
+    pub line_number: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawInlineExpression {
+    pub expression: String,
+    pub byte_range: Range<usize>,
+    pub line_number: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseDiagnosticKind {
     HtmlLink,
     LinkInComment,
     MalformedFrontmatter,
+    UnsupportedSyntax,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,4 +188,5 @@ pub(crate) struct SemanticBlock {
     pub byte_offset_start: usize,
     pub byte_offset_end: usize,
     pub heading_path: Vec<String>,
+    pub code_language: Option<String>,
 }

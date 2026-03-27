@@ -1,6 +1,10 @@
 use rusqlite::Transaction;
 
 pub const TABLES_TO_CLEAR: &[&str] = &[
+    "task_properties",
+    "tasks",
+    "inline_expressions",
+    "dataview_blocks",
     "headings",
     "block_refs",
     "links",
@@ -433,6 +437,98 @@ pub fn apply_schema_v9(transaction: &Transaction<'_>) -> Result<(), rusqlite::Er
         CREATE INDEX IF NOT EXISTS idx_headings_document_id ON headings(document_id);
         CREATE INDEX IF NOT EXISTS idx_block_refs_document_id ON block_refs(document_id);
         CREATE INDEX IF NOT EXISTS idx_links_source_resolved ON links(source_document_id, resolved_target_id);
+        ",
+    )?;
+    Ok(())
+}
+
+pub fn apply_schema_v10(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        DROP TABLE IF EXISTS task_properties;
+        DROP TABLE IF EXISTS tasks;
+        DROP TABLE IF EXISTS inline_expressions;
+        DROP TABLE IF EXISTS dataview_blocks;
+        DROP TABLE IF EXISTS property_values;
+
+        CREATE TABLE property_values (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value_text TEXT,
+            value_number REAL,
+            value_bool INTEGER,
+            value_date TEXT,
+            value_type TEXT NOT NULL,
+            origin TEXT NOT NULL DEFAULT 'frontmatter'
+        );
+
+        CREATE INDEX idx_property_values_document_key
+            ON property_values(document_id, key);
+        CREATE INDEX idx_property_values_key ON property_values(key);
+        CREATE INDEX idx_property_values_key_origin ON property_values(key, origin);
+        CREATE INDEX idx_property_values_key_text
+            ON property_values(key, value_text);
+        CREATE INDEX idx_property_values_key_number
+            ON property_values(key, value_number);
+        CREATE INDEX idx_property_values_key_bool
+            ON property_values(key, value_bool);
+        CREATE INDEX idx_property_values_key_date
+            ON property_values(key, value_date);
+
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            status_char TEXT NOT NULL,
+            text TEXT NOT NULL,
+            byte_offset INTEGER NOT NULL,
+            parent_task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+            section_heading TEXT,
+            line_number INTEGER NOT NULL
+        );
+
+        CREATE INDEX idx_tasks_document_id ON tasks(document_id);
+        CREATE INDEX idx_tasks_status_char ON tasks(status_char);
+
+        CREATE TABLE task_properties (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value_text TEXT,
+            value_number REAL,
+            value_bool INTEGER,
+            value_date TEXT,
+            value_type TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_task_properties_task_id ON task_properties(task_id);
+        CREATE INDEX idx_task_properties_key ON task_properties(key);
+
+        CREATE TABLE dataview_blocks (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            language TEXT NOT NULL,
+            block_index INTEGER NOT NULL,
+            byte_offset_start INTEGER NOT NULL,
+            byte_offset_end INTEGER NOT NULL,
+            line_number INTEGER NOT NULL,
+            raw_text TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_dataview_blocks_document_id
+            ON dataview_blocks(document_id);
+
+        CREATE TABLE inline_expressions (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            expression TEXT NOT NULL,
+            byte_offset_start INTEGER NOT NULL,
+            byte_offset_end INTEGER NOT NULL,
+            line_number INTEGER NOT NULL
+        );
+
+        CREATE INDEX idx_inline_expressions_document_id
+            ON inline_expressions(document_id);
         ",
     )?;
     Ok(())
