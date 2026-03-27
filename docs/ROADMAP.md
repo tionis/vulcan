@@ -1183,26 +1183,26 @@ Extract **all** list items (not just tasks) as structured data, matching Datavie
 
 Implement the full `file.*` implicit metadata namespace that Dataview exposes on every note. These fields are synthesized at query time from existing cache tables, not stored redundantly.
 
-- [ ] `FileMetadataResolver` module: given a `document_id`, lazily resolve any `file.*` field from cache tables
-- [ ] `file.name` — filename without extension (from `documents`)
-- [ ] `file.path` — full vault-relative path (from `documents`)
-- [ ] `file.folder` — parent directory path (derived from `file.path`)
-- [ ] `file.ext` — file extension (derived from `file.path`)
-- [ ] `file.link` — synthetic link to the file
-- [ ] `file.size` — file size in bytes (from `documents` or filesystem)
+- [x] `FileMetadataResolver` module: given a `document_id`, lazily resolve any `file.*` field from cache tables
+- [x] `file.name` — filename without extension (from `documents`)
+- [x] `file.path` — full vault-relative path (from `documents`)
+- [x] `file.folder` — parent directory path (derived from `file.path`)
+- [x] `file.ext` — file extension (derived from `file.path`)
+- [x] `file.link` — synthetic link to the file
+- [x] `file.size` — file size in bytes (from `documents` or filesystem)
 - [ ] `file.ctime` / `file.cday` — creation timestamp / date (filesystem or `documents`)
-- [ ] `file.mtime` / `file.mday` — modification timestamp / date (from `documents.modified_at`)
-- [ ] `file.tags` — all tags broken down by level: `#A/B/C` → `[#A, #A/B, #A/B/C]` (subtag expansion, from `tags` table)
-- [ ] `file.etags` — explicit tags only, not broken down: `[#A/B/C]` (from `tags` table)
-- [ ] `file.inlinks` — files linking to this file (reverse `links` table query)
-- [ ] `file.outlinks` — links from this file (`links` table)
-- [ ] `file.aliases` — aliases from frontmatter (from `property_values`)
+- [x] `file.mtime` / `file.mday` — modification timestamp / date (from `documents.modified_at`)
+- [x] `file.tags` — all tags broken down by level: `#A/B/C` → `[#A, #A/B, #A/B/C]` (subtag expansion, from `tags` table)
+- [x] `file.etags` — explicit tags only, not broken down: `[#A/B/C]` (from `tags` table)
+- [x] `file.inlinks` — files linking to this file (reverse `links` table query)
+- [x] `file.outlinks` — links from this file (`links` table)
+- [x] `file.aliases` — aliases from frontmatter (from `property_values`)
 - [ ] `file.tasks` — all task items in file (from `tasks` table, returns task objects with full metadata)
 - [ ] `file.lists` — all list items including tasks (from `list_items` table, returns list item objects)
-- [ ] `file.frontmatter` — raw frontmatter as object (from `property_values` where `origin = 'frontmatter'`)
-- [ ] `file.day` — date extracted from filename (`yyyy-mm-dd` or `yyyymmdd` patterns), null if no date pattern
+- [x] `file.frontmatter` — raw frontmatter as object (from `property_values` where `origin = 'frontmatter'`)
+- [x] `file.day` — date extracted from filename (`yyyy-mm-dd` or `yyyymmdd` patterns), null if no date pattern
 - [ ] `file.starred` — bookmarked status (from `.obsidian/` bookmarks data if available, false otherwise)
-- [ ] `file.day` resolution: populated from filename date pattern (`yyyy-mm-dd`, `yyyymmdd`) OR from a frontmatter `Date` field; null otherwise
+- [x] `file.day` resolution: populated from filename date pattern (`yyyy-mm-dd`, `yyyymmdd`) OR from a frontmatter `Date` field; null otherwise
 - [ ] Subtag inheritance in FROM sources: `FROM #A` matches notes with `#A`, `#A/B`, `#A/B/C`, etc.
 - [ ] Unit tests: each `file.*` field resolves correctly from cache data
 - [ ] Integration test: DQL queries using `file.*` fields produce expected results

@@ -5,6 +5,7 @@ use serde_json::Value;
 use crate::expression::ast::{BinOp, Expr, UnOp};
 use crate::expression::functions::call_function;
 use crate::expression::methods::call_method;
+use crate::file_metadata::FileMetadataResolver;
 use crate::properties::NoteRecord;
 
 /// Context for evaluating expressions against a single note row.
@@ -169,70 +170,13 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
 }
 
 fn resolve_file_field(ctx: &EvalContext, field: &str) -> Value {
-    match field {
-        "path" => Value::String(ctx.note.document_path.clone()),
-        "name" | "basename" => Value::String(ctx.note.file_name.clone()),
-        "ext" => Value::String(ctx.note.file_ext.clone()),
-        "folder" => {
-            let path = &ctx.note.document_path;
-            let folder = path.rfind('/').map_or("", |i| &path[..i]);
-            Value::String(folder.to_string())
-        }
-        "size" => Value::Number(ctx.note.file_size.into()),
-        "mtime" => Value::Number(ctx.note.file_mtime.into()),
-        "ctime" => {
-            // Use mtime as fallback since ctime is not stored
-            Value::Number(ctx.note.file_mtime.into())
-        }
-        "tags" => {
-            let tags: Vec<Value> = ctx
-                .note
-                .tags
-                .iter()
-                .map(|t| Value::String(t.clone()))
-                .collect();
-            Value::Array(tags)
-        }
-        "links" => {
-            let links: Vec<Value> = ctx
-                .note
-                .links
-                .iter()
-                .map(|l| Value::String(l.clone()))
-                .collect();
-            Value::Array(links)
-        }
-        "properties" => ctx.note.properties.clone(),
-        _ => Value::Null,
-    }
+    FileMetadataResolver::field(ctx.note, field)
 }
 
 /// Convert a `NoteRecord` into the file object Value returned by `.asFile()`.
 #[must_use]
 pub fn note_to_file_object(note: &NoteRecord) -> Value {
-    let folder = note
-        .document_path
-        .rfind('/')
-        .map_or("", |i| &note.document_path[..i]);
-    let tags: Vec<Value> = note.tags.iter().map(|t| Value::String(t.clone())).collect();
-    let links: Vec<Value> = note
-        .links
-        .iter()
-        .map(|l| Value::String(l.clone()))
-        .collect();
-    serde_json::json!({
-        "path": note.document_path,
-        "name": note.file_name,
-        "basename": note.file_name,
-        "ext": note.file_ext,
-        "folder": folder,
-        "size": note.file_size,
-        "mtime": note.file_mtime,
-        "ctime": note.file_mtime,
-        "tags": tags,
-        "links": links,
-        "properties": note.properties,
-    })
+    FileMetadataResolver::object(note)
 }
 
 /// Parse the target filename from a wikilink string like `[[target]]` or `[[target|display]]`.
@@ -487,14 +431,18 @@ mod tests {
     fn eval(input: &str) -> Value {
         let expr = Parser::new(input).unwrap().parse().unwrap();
         let note = NoteRecord {
+            document_id: "note-id".to_string(),
             document_path: "folder/note.md".to_string(),
             file_name: "note".to_string(),
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_000,
             file_size: 1234,
             properties: serde_json::json!({"status": "done", "count": 42, "tags": ["a", "b"]}),
-            tags: vec!["tag1".to_string(), "tag2".to_string()],
+            tags: vec!["#tag1".to_string(), "#tag2/nested".to_string()],
             links: vec!["other.md".to_string()],
+            inlinks: vec!["[[home]]".to_string()],
+            aliases: vec!["Note Alias".to_string()],
+            frontmatter: serde_json::json!({"Date": "2026-04-18", "status": "done"}),
         };
         let formulas = BTreeMap::new();
         let ctx = EvalContext::new(&note, &formulas);
@@ -566,14 +514,38 @@ mod tests {
         assert_eq!(eval("file.basename"), Value::String("note".to_string()));
         assert_eq!(eval("file.ext"), Value::String("md".to_string()));
         assert_eq!(eval("file.folder"), Value::String("folder".to_string()));
+        assert_eq!(
+            eval("file.link"),
+            Value::String("[[folder/note]]".to_string())
+        );
         assert_eq!(eval("file.size"), serde_json::json!(1234));
         assert_eq!(eval("file.mtime"), serde_json::json!(1_700_000_000));
+        assert_eq!(eval("file.mday"), Value::String("1970-01-20".to_string()));
     }
 
     #[test]
     fn eval_file_tags_and_links() {
-        assert_eq!(eval("file.tags"), serde_json::json!(["tag1", "tag2"]));
+        assert_eq!(
+            eval("file.tags"),
+            serde_json::json!(["#tag1", "#tag2", "#tag2/nested"])
+        );
+        assert_eq!(
+            eval("file.etags"),
+            serde_json::json!(["#tag1", "#tag2/nested"])
+        );
         assert_eq!(eval("file.links"), serde_json::json!(["other.md"]));
+        assert_eq!(eval("file.outlinks"), serde_json::json!(["other.md"]));
+        assert_eq!(eval("file.inlinks"), serde_json::json!(["[[home]]"]));
+        assert_eq!(eval("file.aliases"), serde_json::json!(["Note Alias"]));
+    }
+
+    #[test]
+    fn eval_file_day_and_frontmatter() {
+        assert_eq!(eval("file.day"), Value::String("2026-04-18".to_string()));
+        assert_eq!(
+            eval("file.frontmatter.status"),
+            Value::String("done".to_string())
+        );
     }
 
     #[test]
@@ -590,6 +562,7 @@ mod tests {
     fn eval_formula_ref() {
         let expr = Parser::new("formula.total").unwrap().parse().unwrap();
         let note = NoteRecord {
+            document_id: "test-id".to_string(),
             document_path: "test.md".to_string(),
             file_name: "test".to_string(),
             file_ext: "md".to_string(),
@@ -598,6 +571,9 @@ mod tests {
             properties: serde_json::json!({}),
             tags: vec![],
             links: vec![],
+            inlinks: vec![],
+            aliases: vec![],
+            frontmatter: serde_json::json!({}),
         };
         let mut formulas = BTreeMap::new();
         formulas.insert("total".to_string(), serde_json::json!(100));
@@ -646,6 +622,7 @@ mod tests {
     fn eval_with_lookup(input: &str, lookup: &HashMap<String, NoteRecord>) -> Value {
         let expr = Parser::new(input).unwrap().parse().unwrap();
         let note = NoteRecord {
+            document_id: "note-id".to_string(),
             document_path: "folder/note.md".to_string(),
             file_name: "note".to_string(),
             file_ext: "md".to_string(),
@@ -654,6 +631,9 @@ mod tests {
             properties: serde_json::json!({"author": "[[alice]]"}),
             tags: vec![],
             links: vec!["[[alice]]".to_string()],
+            inlinks: vec![],
+            aliases: vec![],
+            frontmatter: serde_json::json!({}),
         };
         let formulas = BTreeMap::new();
         let ctx = EvalContext::new(&note, &formulas).with_note_lookup(lookup);
@@ -663,14 +643,18 @@ mod tests {
     #[test]
     fn eval_as_file_and_links_to() {
         let alice = NoteRecord {
+            document_id: "alice-id".to_string(),
             document_path: "people/alice.md".to_string(),
             file_name: "alice".to_string(),
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_001,
             file_size: 500,
             properties: serde_json::json!({"role": "editor"}),
-            tags: vec!["person".to_string()],
+            tags: vec!["#person".to_string()],
             links: vec!["[[note]]".to_string()],
+            inlinks: vec!["[[note]]".to_string()],
+            aliases: vec!["Alice".to_string()],
+            frontmatter: serde_json::json!({"role": "editor"}),
         };
         let mut lookup = HashMap::new();
         lookup.insert("alice".to_string(), alice);

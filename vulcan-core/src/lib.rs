@@ -5,6 +5,7 @@ pub mod config;
 pub mod doctor;
 pub mod expression;
 mod extraction;
+mod file_metadata;
 pub mod git;
 pub mod graph;
 pub mod history;
