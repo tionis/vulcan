@@ -1233,8 +1233,8 @@ Extend the expression evaluator to support Dataview's full type system and expre
 - [ ] Column aliases: `field AS "Display Name"` in TABLE/LIST projections
 - [ ] `WITHOUT ID` modifier for TABLE and LIST queries
 - [ ] Keyword-escaped field access: `row["where"]` for reserved word collision (all DQL keywords must be escapable)
-- [ ] Field name normalization: case-insensitive, spaces/punctuation → hyphens, Markdown formatting stripped
-- [ ] Unit tests: each operator, type coercion rule, field access pattern, lambda evaluation, swizzling, link indexing (including missing target)
+- [x] Field name normalization: case-insensitive, spaces/punctuation → hyphens, Markdown formatting stripped
+- [x] Unit tests: each operator, type coercion rule, field access pattern, lambda evaluation, swizzling, link indexing (including missing target)
 
 **Built-in function library (~60 functions, all auto-vectorize over arrays):**
 
