@@ -3,6 +3,7 @@ use rusqlite::Transaction;
 pub const TABLES_TO_CLEAR: &[&str] = &[
     "task_properties",
     "tasks",
+    "list_items",
     "inline_expressions",
     "dataview_blocks",
     "headings",
@@ -529,6 +530,65 @@ pub fn apply_schema_v10(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
 
         CREATE INDEX idx_inline_expressions_document_id
             ON inline_expressions(document_id);
+        ",
+    )?;
+    Ok(())
+}
+
+pub fn apply_schema_v11(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        DROP TABLE IF EXISTS task_properties;
+        DROP TABLE IF EXISTS tasks;
+        DROP TABLE IF EXISTS list_items;
+
+        CREATE TABLE list_items (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            text TEXT NOT NULL,
+            line_number INTEGER NOT NULL,
+            line_count INTEGER NOT NULL,
+            byte_offset INTEGER NOT NULL,
+            section_heading TEXT,
+            parent_item_id TEXT REFERENCES list_items(id) ON DELETE CASCADE,
+            is_task INTEGER NOT NULL,
+            block_id TEXT,
+            annotated INTEGER NOT NULL,
+            symbol TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_list_items_document_id ON list_items(document_id);
+        CREATE INDEX idx_list_items_is_task ON list_items(is_task);
+        CREATE INDEX idx_list_items_parent_item_id ON list_items(parent_item_id);
+
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            list_item_id TEXT NOT NULL REFERENCES list_items(id) ON DELETE CASCADE,
+            status_char TEXT NOT NULL,
+            text TEXT NOT NULL,
+            byte_offset INTEGER NOT NULL,
+            parent_task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+            section_heading TEXT,
+            line_number INTEGER NOT NULL
+        );
+
+        CREATE INDEX idx_tasks_document_id ON tasks(document_id);
+        CREATE INDEX idx_tasks_status_char ON tasks(status_char);
+
+        CREATE TABLE task_properties (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value_text TEXT,
+            value_number REAL,
+            value_bool INTEGER,
+            value_date TEXT,
+            value_type TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_task_properties_task_id ON task_properties(task_id);
+        CREATE INDEX idx_task_properties_key ON task_properties(key);
         ",
     )?;
     Ok(())

@@ -1194,7 +1194,14 @@ fn replace_derived_rows(
         insert_property_list_items(transaction, document_id, &properties)?;
         insert_property_diagnostics(transaction, document_id, &properties)?;
     }
-    insert_tasks(transaction, document_id, &parsed.tasks, config)?;
+    let list_item_ids = insert_list_items(transaction, document_id, &parsed.list_items)?;
+    insert_tasks(
+        transaction,
+        document_id,
+        &parsed.tasks,
+        &list_item_ids,
+        config,
+    )?;
     insert_dataview_blocks(transaction, document_id, &parsed.dataview_blocks)?;
     insert_inline_expressions(transaction, document_id, &parsed.inline_expressions)?;
     Ok(())
@@ -1658,6 +1665,7 @@ fn insert_tasks(
     transaction: &Transaction<'_>,
     document_id: &str,
     tasks: &[crate::RawTask],
+    list_item_ids: &[String],
     config: &crate::VaultConfig,
 ) -> Result<(), ScanError> {
     if tasks.is_empty() {
@@ -1673,6 +1681,7 @@ fn insert_tasks(
         INSERT INTO tasks (
             id,
             document_id,
+            list_item_id,
             status_char,
             text,
             byte_offset,
@@ -1680,7 +1689,7 @@ fn insert_tasks(
             section_heading,
             line_number
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         ",
     )?;
 
@@ -1688,6 +1697,12 @@ fn insert_tasks(
         task_statement.execute(params![
             &task_ids[index],
             document_id,
+            list_item_ids.get(task.list_item_index).ok_or_else(|| {
+                ScanError::Io(std::io::Error::other(format!(
+                    "missing list item id for task at index {}",
+                    task.list_item_index
+                )))
+            })?,
             task.status_char.to_string(),
             &task.text,
             i64::try_from(task.byte_offset).map_err(|_| ScanError::MetadataOverflow {
@@ -1749,6 +1764,71 @@ fn insert_tasks(
     }
 
     Ok(())
+}
+
+fn insert_list_items(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    list_items: &[crate::RawListItem],
+) -> Result<Vec<String>, ScanError> {
+    if list_items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let list_item_ids = list_items
+        .iter()
+        .map(|_| Ulid::new().to_string())
+        .collect::<Vec<_>>();
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO list_items (
+            id,
+            document_id,
+            text,
+            line_number,
+            line_count,
+            byte_offset,
+            section_heading,
+            parent_item_id,
+            is_task,
+            block_id,
+            annotated,
+            symbol
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        ",
+    )?;
+
+    for (index, list_item) in list_items.iter().enumerate() {
+        statement.execute(params![
+            &list_item_ids[index],
+            document_id,
+            &list_item.text,
+            i64::try_from(list_item.line_number).map_err(|_| ScanError::MetadataOverflow {
+                field: "list_items.line_number",
+                path: PathBuf::from(document_id),
+            })?,
+            i64::try_from(list_item.line_count).map_err(|_| ScanError::MetadataOverflow {
+                field: "list_items.line_count",
+                path: PathBuf::from(document_id),
+            })?,
+            i64::try_from(list_item.byte_offset).map_err(|_| ScanError::MetadataOverflow {
+                field: "list_items.byte_offset",
+                path: PathBuf::from(document_id),
+            })?,
+            list_item.section_heading.as_deref(),
+            list_item
+                .parent_item_index
+                .and_then(|parent_index| list_item_ids.get(parent_index))
+                .map(String::as_str),
+            i64::from(list_item.is_task),
+            list_item.block_id.as_deref(),
+            i64::from(list_item.annotated),
+            &list_item.symbol,
+        ])?;
+    }
+
+    Ok(list_item_ids)
 }
 
 fn insert_dataview_blocks(
@@ -1856,6 +1936,7 @@ fn clear_derived_rows(
     static CLEAR_STATEMENTS: &[&str] = &[
         "DELETE FROM task_properties WHERE task_id IN (SELECT id FROM tasks WHERE document_id = ?1)",
         "DELETE FROM tasks WHERE document_id = ?1",
+        "DELETE FROM list_items WHERE document_id = ?1",
         "DELETE FROM dataview_blocks WHERE document_id = ?1",
         "DELETE FROM inline_expressions WHERE document_id = ?1",
         "DELETE FROM headings WHERE document_id = ?1",
@@ -2372,10 +2453,59 @@ mod tests {
         let database = CacheDatabase::open(&paths).expect("database should open");
         let connection = database.connection();
 
+        assert_eq!(count_rows(connection, "list_items"), 5);
         assert_eq!(count_rows(connection, "tasks"), 3);
         assert_eq!(count_rows(connection, "task_properties"), 3);
         assert_eq!(count_rows(connection, "dataview_blocks"), 2);
         assert_eq!(count_rows(connection, "inline_expressions"), 1);
+
+        let dashboard_list_items: Vec<(String, i64, Option<String>, i64, i64, String)> = connection
+            .prepare(
+                "
+                SELECT list_items.text, list_items.is_task, list_items.block_id, list_items.annotated, list_items.line_number, list_items.symbol
+                FROM list_items
+                JOIN documents ON documents.id = list_items.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ORDER BY list_items.line_number
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect();
+        assert_eq!(dashboard_list_items.len(), 4);
+        assert_eq!(
+            dashboard_list_items[0],
+            (
+                "Plain list item [kind:: note]".to_string(),
+                0,
+                None,
+                1,
+                11,
+                "-".to_string(),
+            )
+        );
+        assert_eq!(
+            dashboard_list_items[1],
+            (
+                "Nested numbered item ^list-child".to_string(),
+                0,
+                Some("list-child".to_string()),
+                0,
+                12,
+                "1.".to_string(),
+            )
+        );
 
         let dashboard_properties: Vec<(String, String, Option<String>, Option<f64>, String)> = connection
             .prepare(
@@ -2439,6 +2569,39 @@ mod tests {
         assert!(unsupported_messages
             .iter()
             .any(|message| message.contains("DataviewJS blocks are not evaluated by Vulcan")));
+
+        let task_to_list_links: Vec<(String, String)> = connection
+            .prepare(
+                "
+                SELECT tasks.text, list_items.text
+                FROM tasks
+                JOIN documents ON documents.id = tasks.document_id
+                JOIN list_items ON list_items.id = tasks.list_item_id
+                ORDER BY documents.path, tasks.line_number
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect();
+        assert_eq!(
+            task_to_list_links,
+            vec![
+                (
+                    "Write docs [due:: 2026-04-01]".to_string(),
+                    "Write docs [due:: 2026-04-01]".to_string(),
+                ),
+                (
+                    "Ship release [owner:: [[People/Bob]]]".to_string(),
+                    "Ship release [owner:: [[People/Bob]]]".to_string(),
+                ),
+                (
+                    "Follow up [due:: 2026-04-02]".to_string(),
+                    "Follow up [due:: 2026-04-02]".to_string(),
+                ),
+            ]
+        );
 
         let search = search_vault(
             &paths,

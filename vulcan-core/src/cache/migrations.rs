@@ -78,6 +78,11 @@ impl MigrationRegistry {
                 "add dataview metadata and multi-origin property storage",
                 schema::apply_schema_v10,
             ),
+            Migration::breaking(
+                11,
+                "add list item storage and task-to-list linking",
+                schema::apply_schema_v11,
+            ),
         ])
     }
 
