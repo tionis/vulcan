@@ -430,6 +430,7 @@ impl<'a> SemanticProcessor<'a> {
         self.parsed.tags.extend(parsed.tags);
         self.parsed.aliases.extend(parsed.aliases);
         self.parsed.inline_fields.extend(parsed.inline_fields);
+        self.parsed.list_items.extend(parsed.list_items);
         self.parsed.tasks.extend(parsed.tasks);
         self.parsed.dataview_blocks.extend(parsed.dataview_blocks);
         self.parsed
@@ -447,6 +448,7 @@ impl<'a> SemanticProcessor<'a> {
             &self.semantic_blocks,
         );
         self.parsed.inline_fields = dataview.inline_fields;
+        self.parsed.list_items = dataview.list_items;
         self.parsed.tasks = dataview.tasks;
         self.parsed.dataview_blocks = dataview.dataview_blocks;
         for property_range in dataview.property_value_ranges {

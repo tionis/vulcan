@@ -1151,12 +1151,12 @@ Extend the parser pipeline to extract Dataview-style inline fields from note bod
 Extract **all** list items (not just tasks) as structured data, matching Dataview's `file.lists` and `file.tasks` metadata. Tasks are a subset of list items.
 
 **List item extraction:**
-- [ ] Detect all list items (`-`, `*`, `+`, and numbered `1.`) during the semantic pass, including non-task items
-- [ ] Schema: `list_items` table — `id`, `document_id`, `text` (full text including annotations), `line_number`, `line_count` (lines spanned), `byte_offset`, `section_heading`, `parent_item_id` (nullable, for nesting), `is_task` (boolean), `block_id` (nullable, `^blockId` syntax)
+- [x] Detect all list items (`-`, `*`, `+`, and numbered `1.`) during the semantic pass, including non-task items
+- [x] Schema: `list_items` table — `id`, `document_id`, `text` (full text including annotations), `line_number`, `line_count` (lines spanned), `byte_offset`, `section_heading`, `parent_item_id` (nullable, for nesting), `is_task` (boolean), `block_id` (nullable, `^blockId` syntax)
 - [ ] Extract tags and links within list item text and store as item-scoped metadata
-- [ ] Track `annotated` flag: true if item text contains inline field annotations
-- [ ] Index on `list_items(document_id)`, `list_items(is_task)`, `list_items(parent_item_id)`
-- [ ] Unit tests: plain list items, nested lists, mixed task and non-task items, numbered lists
+- [x] Track `annotated` flag: true if item text contains inline field annotations
+- [x] Index on `list_items(document_id)`, `list_items(is_task)`, `list_items(parent_item_id)`
+- [x] Unit tests: plain list items, nested lists, mixed task and non-task items, numbered lists
 - [ ] Integration test: vault with varied list items, verify `file.lists` returns all items
 
 **Task extraction (extends list items):**

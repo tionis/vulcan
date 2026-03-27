@@ -1,7 +1,7 @@
 use crate::parser::comment_scanner::{overlaps_comment, visible_subranges};
 use crate::parser::types::{
-    InlineFieldKind, RawDataviewBlock, RawInlineField, RawTask, RawTaskField, SemanticBlock,
-    SemanticBlockKind,
+    InlineFieldKind, RawDataviewBlock, RawInlineField, RawListItem, RawTask, RawTaskField,
+    SemanticBlock, SemanticBlockKind,
 };
 use regex::Regex;
 use std::ops::Range;
@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 #[derive(Debug, Default)]
 pub struct DataviewExtraction {
     pub inline_fields: Vec<RawInlineField>,
+    pub list_items: Vec<RawListItem>,
     pub tasks: Vec<RawTask>,
     pub dataview_blocks: Vec<RawDataviewBlock>,
     pub property_value_ranges: Vec<Range<usize>>,
@@ -48,6 +49,7 @@ pub fn extract_dataview_metadata(
             comment_regions,
             block,
             &mut extraction.inline_fields,
+            &mut extraction.list_items,
             &mut extraction.tasks,
             &mut extraction.property_value_ranges,
         );
@@ -73,11 +75,13 @@ fn scan_block(
     comment_regions: &[Range<usize>],
     block: &SemanticBlock,
     inline_fields: &mut Vec<RawInlineField>,
+    list_items: &mut Vec<RawListItem>,
     tasks: &mut Vec<RawTask>,
     property_value_ranges: &mut Vec<Range<usize>>,
 ) {
     let raw_block = &source[block.byte_offset_start..block.byte_offset_end];
     let mut local_offset = 0_usize;
+    let mut item_stack: Vec<(usize, usize)> = Vec::new();
     let mut task_stack: Vec<(usize, usize)> = Vec::new();
 
     for raw_line in raw_block.split_inclusive('\n') {
@@ -89,40 +93,68 @@ fn scan_block(
         }
         let line_number = line_number_for_offset(source, line_start);
 
-        if let Some((indent, status_char, text_start, text_end)) = parse_task_line(raw_line) {
+        if let Some(list_line) = parse_list_item_line(raw_line) {
+            while item_stack
+                .last()
+                .is_some_and(|(stack_indent, _)| *stack_indent >= list_line.indent)
+            {
+                item_stack.pop();
+            }
             while task_stack
                 .last()
-                .is_some_and(|(stack_indent, _)| *stack_indent >= indent)
+                .is_some_and(|(stack_indent, _)| *stack_indent >= list_line.indent)
             {
                 task_stack.pop();
             }
+            let parent_item_index = item_stack.last().map(|(_, item_index)| *item_index);
             let parent_task_index = task_stack.last().map(|(_, task_index)| *task_index);
             let visible_text = visible_line_text(source, comment_regions, line_start, raw_line.len());
             let trimmed_visible = visible_text
-                .get(text_start.min(visible_text.len())..text_end.min(visible_text.len()))
+                .get(
+                    list_line.text_start.min(visible_text.len())
+                        ..list_line.text_end.min(visible_text.len()),
+                )
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let mut inline_task_fields = Vec::new();
+            let mut inline_item_fields = Vec::new();
             scan_inline_field_variants(
                 raw_line,
                 line_start,
                 line_number,
                 comment_regions,
-                InlineFieldTarget::Task(&mut inline_task_fields),
+                InlineFieldTarget::Task(&mut inline_item_fields),
                 property_value_ranges,
             );
-            let task_index = tasks.len();
-            tasks.push(RawTask {
-                status_char,
-                text: trimmed_visible,
+            let item_index = list_items.len();
+            list_items.push(RawListItem {
+                symbol: list_line.symbol.clone(),
+                text: trimmed_visible.clone(),
                 byte_offset: line_start,
-                parent_task_index,
+                parent_item_index,
                 section_heading: block.heading_path.last().cloned(),
                 line_number,
-                inline_fields: inline_task_fields,
+                line_count: 1,
+                is_task: list_line.status_char.is_some(),
+                block_id: parse_list_item_block_id(&trimmed_visible),
+                annotated: !inline_item_fields.is_empty(),
             });
-            task_stack.push((indent, task_index));
+            item_stack.push((list_line.indent, item_index));
+
+            if let Some(status_char) = list_line.status_char {
+                let task_index = tasks.len();
+                tasks.push(RawTask {
+                    list_item_index: item_index,
+                    status_char,
+                    text: trimmed_visible,
+                    byte_offset: line_start,
+                    parent_task_index,
+                    section_heading: block.heading_path.last().cloned(),
+                    line_number,
+                    inline_fields: inline_item_fields,
+                });
+                task_stack.push((list_line.indent, task_index));
+            }
             continue;
         }
 
@@ -259,16 +291,37 @@ fn parse_bare_inline_field(
     ))
 }
 
-fn parse_task_line(raw_line: &str) -> Option<(usize, char, usize, usize)> {
-    let captures = task_line_regex().captures(raw_line)?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedListLine {
+    indent: usize,
+    symbol: String,
+    status_char: Option<char>,
+    text_start: usize,
+    text_end: usize,
+}
+
+fn parse_list_item_line(raw_line: &str) -> Option<ParsedListLine> {
+    let captures = list_item_line_regex().captures(raw_line)?;
     let indent = captures
         .name("indent")
         .map_or(0, |value| value.as_str().chars().count());
+    let symbol = captures.name("symbol")?.as_str().to_string();
     let status_char = captures
         .name("status")
-        .and_then(|value| value.as_str().chars().next())?;
+        .and_then(|value| value.as_str().chars().next());
     let text_match = captures.name("text")?;
-    Some((indent, status_char, text_match.start(), text_match.end()))
+    Some(ParsedListLine {
+        indent,
+        symbol,
+        status_char,
+        text_start: text_match.start(),
+        text_end: text_match.end(),
+    })
+}
+
+fn parse_list_item_block_id(text: &str) -> Option<String> {
+    let captures = list_item_block_id_regex().captures(text)?;
+    Some(captures.name("id")?.as_str().to_string())
 }
 
 fn normalize_inline_field_key(value: &str) -> String {
@@ -296,11 +349,13 @@ fn line_number_for_offset(source: &str, offset: usize) -> usize {
         .count()
 }
 
-fn task_line_regex() -> &'static Regex {
+fn list_item_line_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(r"^(?P<indent>\s*)(?:[-+*]|\d+\.)\s+\[(?P<status>.)\]\s+(?P<text>.+?)\s*$")
-            .expect("task regex should compile")
+        Regex::new(
+            r"^(?P<indent>\s*)(?P<symbol>(?:[-+*]|\d+\.))\s+(?:\[(?P<status>.)\]\s+)?(?P<text>.+?)\s*$",
+        )
+        .expect("list item regex should compile")
     })
 }
 
@@ -328,6 +383,14 @@ fn bare_inline_field_regex() -> &'static Regex {
     })
 }
 
+fn list_item_block_id_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"(?:^|\s)\^(?P<id>[A-Za-z0-9-]+)\s*$")
+            .expect("list item block id regex should compile")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,8 +410,12 @@ mod tests {
         let extraction = extract_dataview_metadata(source, &[], &[block]);
 
         assert_eq!(extraction.inline_fields.len(), 1);
+        assert_eq!(extraction.list_items.len(), 1);
+        assert!(extraction.list_items[0].is_task);
+        assert!(extraction.list_items[0].annotated);
         assert_eq!(extraction.inline_fields[0].key, "status");
         assert_eq!(extraction.tasks.len(), 1);
+        assert_eq!(extraction.tasks[0].list_item_index, 0);
         assert_eq!(extraction.tasks[0].status_char, ' ');
         assert_eq!(extraction.tasks[0].inline_fields[0].key, "due");
     }
@@ -386,10 +453,41 @@ mod tests {
 
         let extraction = extract_dataview_metadata(source, &[], &[block]);
 
+        assert_eq!(extraction.list_items.len(), 2);
+        assert_eq!(extraction.list_items[0].symbol, "-");
+        assert_eq!(extraction.list_items[1].parent_item_index, Some(0));
         assert_eq!(extraction.tasks.len(), 2);
         assert_eq!(extraction.tasks[0].status_char, '/');
         assert_eq!(extraction.tasks[1].status_char, 'x');
         assert_eq!(extraction.tasks[1].parent_task_index, Some(0));
+        assert_eq!(extraction.tasks[1].list_item_index, 1);
         assert_eq!(extraction.tasks[1].inline_fields[0].key, "due");
+    }
+
+    #[test]
+    fn detects_plain_and_numbered_list_items() {
+        let source = "- bullet item\n  1. nested numbered ^child-id\n";
+        let block = SemanticBlock {
+            block_kind: SemanticBlockKind::List,
+            text: source.to_string(),
+            byte_offset_start: 0,
+            byte_offset_end: source.len(),
+            heading_path: vec!["Lists".to_string()],
+            code_language: None,
+        };
+
+        let extraction = extract_dataview_metadata(source, &[], &[block]);
+
+        assert_eq!(extraction.list_items.len(), 2);
+        assert!(!extraction.list_items[0].is_task);
+        assert_eq!(extraction.list_items[0].symbol, "-");
+        assert_eq!(extraction.list_items[0].parent_item_index, None);
+        assert_eq!(extraction.list_items[1].symbol, "1.");
+        assert_eq!(extraction.list_items[1].parent_item_index, Some(0));
+        assert_eq!(
+            extraction.list_items[1].block_id.as_deref(),
+            Some("child-id")
+        );
+        assert!(extraction.tasks.is_empty());
     }
 }

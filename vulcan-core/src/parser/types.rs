@@ -11,6 +11,7 @@ pub struct ParsedDocument {
     pub tags: Vec<RawTag>,
     pub aliases: Vec<String>,
     pub inline_fields: Vec<RawInlineField>,
+    pub list_items: Vec<RawListItem>,
     pub tasks: Vec<RawTask>,
     pub dataview_blocks: Vec<RawDataviewBlock>,
     pub inline_expressions: Vec<RawInlineExpression>,
@@ -94,7 +95,22 @@ pub struct RawTaskField {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawListItem {
+    pub symbol: String,
+    pub text: String,
+    pub byte_offset: usize,
+    pub parent_item_index: Option<usize>,
+    pub section_heading: Option<String>,
+    pub line_number: usize,
+    pub line_count: usize,
+    pub is_task: bool,
+    pub block_id: Option<String>,
+    pub annotated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTask {
+    pub list_item_index: usize,
     pub status_char: char,
     pub text: String,
     pub byte_offset: usize,

@@ -70,7 +70,7 @@ pub use move_rewrite::{move_note, LinkChange, MoveError, MoveSummary, RewrittenF
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
     ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression,
-    RawInlineField, RawLink, RawTag, RawTask, RawTaskField,
+    RawInlineField, RawLink, RawListItem, RawTag, RawTask, RawTaskField,
 };
 pub use paths::{
     VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, LOCAL_CONFIG_FILE_NAME,
@@ -130,4 +130,4 @@ pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchR
 
 pub const PARSER_VERSION: u32 = 5;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;

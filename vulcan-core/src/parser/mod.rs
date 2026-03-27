@@ -10,7 +10,7 @@ pub mod types;
 pub use types::{
     ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument,
     RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField, RawLink,
-    RawTag, RawTask, RawTaskField,
+    RawListItem, RawTag, RawTask, RawTaskField,
 };
 
 use crate::config::VaultConfig;
@@ -32,6 +32,7 @@ pub(crate) fn parse_document_fragment(
 ) -> ParsedDocument {
     let mut parsed = parse_document_internal(source, config, false);
     parsed.inline_fields.clear();
+    parsed.list_items.clear();
     parsed.tasks.clear();
     parsed.dataview_blocks.clear();
     parsed.inline_expressions.clear();
@@ -74,6 +75,9 @@ fn shift_parsed_document_offsets(parsed: &mut ParsedDocument, base_offset: usize
         inline_field.byte_range.end += base_offset;
         inline_field.value_byte_range.start += base_offset;
         inline_field.value_byte_range.end += base_offset;
+    }
+    for list_item in &mut parsed.list_items {
+        list_item.byte_offset += base_offset;
     }
     for task in &mut parsed.tasks {
         task.byte_offset += base_offset;
