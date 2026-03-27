@@ -1013,7 +1013,7 @@ The `SearchQuery` struct in `vulcan-core/src/search.rs` is the single input cont
 - [x] Extend `SearchPlan` with `parsed_query_explanation: Vec<String>` — human-readable breakdown of the parsed query (boolean structure, operators, property filters). Populated when `explain = true`.
 - [x] Extend `SearchHit` with `matched_line: Option<usize>` — the 1-based line number of the best match within the chunk, when available (useful for `line:` and `match-case:` post-filters that already inspect individual lines).
 - [x] HTTP `/search` endpoint (`serve.rs`): add query parameters `sort`, `match_case` mapping to the new `SearchQuery` fields. All new fields serialise into the JSON response via the existing `SearchReport` derive.
-- [ ] Phase 10 daemon: when the axum-based `/search` route replaces the hand-rolled endpoint, carry forward all query parameters. The `SearchQuery` struct is `Deserialize`, so the axum handler can deserialise directly from query params with `axum::extract::Query<SearchQuery>` (or a thin wrapper).
+- Phase 10 daemon/web note: the axum-based `/search` route is not separate feature work. It reuses this already-established `SearchQuery` contract directly, so daemon and web layers inherit the Phase 9 CLI/serve search surface without redefining query parameters.
 
 #### 9.6.9 Explain and diagnostics
 
@@ -1095,6 +1095,8 @@ vulcan template insert <template> --append     # append to end (default)
 
 **Depends on:** Phase 7 complete. Independent of Phase 9 (can be developed in parallel).
 **Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
+
+Search API note: search request semantics are already defined earlier by the shared `SearchQuery` contract from Phase 9.6. Phase 10 daemon work reuses that surface; it does not introduce a second search-parameter design step.
 
 ### 10.1 Architecture decisions
 
