@@ -425,10 +425,27 @@ Inline fields should be extracted during the parsing pipeline (Stage 2 of the pa
 ### Recommended inline field handling
 
 - Extract inline fields during the semantic pass by detecting `key:: value` patterns in `Text` events, excluding content inside code blocks, math blocks, and comment regions.
-- Normalize inline field keys to match frontmatter property key normalization (lowercase, trimmed).
+- Normalize inline field keys to match frontmatter property key normalization (lowercase, trimmed). Strip Markdown formatting tokens from keys (`**bold**` → `bold`, `_italic_` → `italic`). Emoji keys require bracket syntax: `[🎅:: value]`.
 - Store inline fields in the existing `property_values` table with an `origin` column indicating extraction source. A single note may define the same property in both frontmatter and inline fields — store both, with frontmatter taking precedence for typed queries unless the user explicitly queries inline fields.
 - Inline fields that contain link syntax (`[[Target]]`) should be detected and stored as link-valued properties, consistent with existing link-valued frontmatter handling.
 - The property catalog should track inline field usage alongside frontmatter usage.
+
+### Automatic type inference on inline field values
+
+Inline field values must be automatically parsed into typed values during extraction, matching Dataview's type inference rules. Without this, comparisons like `WHERE due <= date(today)` fail because `due` would be stored as text.
+
+**Inference rules** (applied in order, first match wins):
+1. **Link:** Value matches `[[...]]` syntax → Link type
+2. **Boolean:** Value is exactly `true` or `false` (case-sensitive) → Boolean type
+3. **Date:** Value matches ISO 8601 patterns (`2026-04-01`, `2026-04-01T14:30`, `2026-04`, year-month) → Date type
+4. **Duration:** Value matches duration patterns (`3 hours`, `1d 3h 20m`, `2 years`) → Duration type
+5. **Number:** Value is a valid numeric literal (`42`, `3.14`, `-7`) → Number type
+6. **List:** Value contains comma-separated quoted strings (`"a", "b", "c"`) → List type. **Important:** unquoted comma-separated values (`a, b, c`) are treated as a single Text value, not a list.
+7. **Text:** Everything else → Text type (default)
+
+**YAML frontmatter arrays vs inline arrays:** YAML `key: [a, b, c]` and bullet-list forms produce List type. Inline field `key:: "a", "b", "c"` (quoted) produces List type, but `key:: a, b, c` (unquoted) produces Text. This asymmetry matches Dataview behavior.
+
+**Duplicate keys become lists:** If the same key appears multiple times (in frontmatter or inline fields), values are collected into a List.
 
 ### Implicit file metadata (`file.*` namespace)
 
@@ -458,6 +475,10 @@ Dataview exposes a comprehensive set of implicit metadata fields on every note, 
 | `file.starred` | Boolean | Whether the file is bookmarked (requires `.obsidian/` bookmarks data) |
 
 **Implementation:** The `file.*` namespace should be resolved lazily at query evaluation time by a `FileMetadataResolver` that reads from existing cache tables. No separate storage is needed. The resolver must handle missing data gracefully (e.g., `file.starred` returns `false` if bookmarks data is unavailable).
+
+**`file.day` resolution:** Populated if the filename matches `yyyy-mm-dd` or `yyyymmdd` patterns, OR if the note has a frontmatter `Date` field with a valid date value. Returns `null` otherwise.
+
+**`file.tags` subtag expansion:** `file.tags` breaks hierarchical tags into all ancestor levels: `#A/B/C` → `[#A, #A/B, #A/B/C]`. `file.etags` returns only the explicit tags as written. In FROM sources, `FROM #A` matches notes with `#A`, `#A/B`, `#A/B/C`, etc. (subtag inheritance).
 
 ### List item extraction and metadata
 
@@ -508,7 +529,8 @@ Tasks extend list items with additional fields, synthesized at query time:
 | `status` | Text | Character inside brackets (e.g., `" "`, `"x"`, `"/"`) |
 | `checked` | Boolean | `true` if status is non-empty (any character other than space) |
 | `completed` | Boolean | `true` if status is `"x"` (case-insensitive) |
-| `fullyCompleted` | Boolean | `true` if this task and all subtasks are completed |
+| `fullyCompleted` | Boolean | `true` if this task and all subtasks are completed (recursive check) |
+| `visual` | Text | Rendered display text (may differ from `text` when overridden in DataviewJS) |
 
 **Tasks plugin emoji shorthand:** Many vaults use the Tasks plugin's emoji syntax for date fields. These should be detected during task text parsing and stored as task-scoped properties:
 
@@ -521,6 +543,14 @@ Tasks extend list items with additional fields, synthesized at query time:
 | `scheduled` | `⏳` | `⏳2026-03-01` |
 
 Task completion state mapping: `x` = done, ` ` = todo, `/` = in-progress, `-` = cancelled. Support custom status characters via `.vulcan/config.toml`.
+
+### Nested task query semantics
+
+When a TASK query matches a parent task, its child tasks (subtasks) are included in the results even if the children do not independently match the WHERE clause. This matches Dataview's behavior where task hierarchy is preserved in output.
+
+- `fullyCompleted` checks the entire subtree recursively — a task is only `fullyCompleted` if it and every descendant task are completed.
+- `children` on a task/list item returns direct children only (not flattened).
+- Tasks inherit page-level fields (frontmatter, inline fields) from their containing note.
 
 ### Data type system
 
@@ -543,12 +573,24 @@ Dataview has a richer type system than YAML frontmatter alone. The expression ev
 
 **Duration units:** `s`/`sec`/`second`, `m`/`min`/`minute`, `h`/`hr`/`hour`, `d`/`day`, `w`/`wk`/`week`, `mo`/`month`, `yr`/`year`.
 
-**Type coercion rules:**
+**Type coercion and arithmetic rules:**
 - `Date - Date` → Duration
 - `Date + Duration` → Date
+- `Date - Duration` → Date
+- `Duration + Duration` → Duration
 - `String + Number` → String (concatenation)
-- `null` comparisons: `null <= date(today)` is true (match Dataview behavior, but consider a diagnostic)
+- `String * Number` → String (repeat)
 - Type checking via `typeof(field)` returns `"number"`, `"string"`, `"date"`, `"duration"`, `"array"`, `"object"`, `"link"`, `"boolean"`, `"function"`.
+
+**Null handling and comparison ordering:**
+- `null` is ordered before all non-null values in comparisons. `null < 0` is true, `null <= date(today)` is true.
+- `null` propagates through most arithmetic and function calls (result is `null`).
+- Use `nonnull(array)` to filter nulls from lists, `default(field, fallback)` for null coalescing.
+- In SORT, `null` values appear first in ascending order, last in descending.
+- In GROUP BY, rows with `null` group key form a separate group with `key = null`.
+- **Best practice in queries:** guard with `typeof(field) = "date"` or `field != null` before comparisons to avoid surprising null-ordering behavior.
+
+**Date timezone semantics:** `date(today)`, `date(now)`, `date(sow)`, etc. use the local timezone. `localtime(date)` converts a UTC date to local time. Vulcan should default to the system timezone and allow override via config.
 
 ### DQL expression language
 
@@ -647,9 +689,32 @@ DQL should compile to Vulcan's canonical internal query model (the same AST that
 - **FLATTEN:** Denormalizes arrays into individual rows. Each element becomes a separate result row inheriting all non-flattened fields from its parent. Multiple FLATTEN clauses compose sequentially.
 - **LIMIT:** Applied after all other data commands.
 
+### Dataview plugin settings compatibility
+
+Vaults may have customized Dataview behavior via `.obsidian/plugins/dataview/data.json`. Vulcan should read and respect these settings for seamless migration:
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `inlineQueryPrefix` | `"="` | Prefix for inline DQL expressions (e.g., `` `= expr` ``) |
+| `inlineJsQueryPrefix` | `"$="` | Prefix for inline DataviewJS expressions (e.g., `` `$= dv.current()` ``) |
+| `enableDataviewJs` | `true` | Whether DataviewJS blocks are evaluated |
+| `enableInlineDataviewJs` | `false` | Whether inline DataviewJS expressions are evaluated |
+| `taskCompletionTracking` | `false` | Auto-annotate completion date on task check |
+| `taskCompletionUseEmojiShorthand` | `false` | Use emoji format for completion annotation |
+| `taskCompletionText` | `"completion"` | Field name for completion date annotation |
+| `recursiveSubTaskCompletion` | `false` | Checking parent also checks all children |
+| `displayResultCount` | `true` | Show result count in query output headers |
+| `defaultDateFormat` | `"MMMM dd, yyyy"` | Default format for `dateformat()` |
+| `defaultDateTimeFormat` | `"h:mm a - MMMM dd, yyyy"` | Default format for datetime display |
+| `maxRecursiveRenderDepth` | `4` | Max depth for inline expression nesting |
+| `primaryColumnName` | `"File"` | Header text for the auto-generated file column in TABLE |
+| `groupColumnName` | `"Group"` | Header text for the group key column |
+
+Vulcan should check for this file during vault initialization and merge discovered settings into its runtime config, with `.vulcan/config.toml` overrides taking precedence. Settings not found in the Dataview config file fall back to Vulcan defaults.
+
 ### Inline expressions
 
-Dataview supports inline expressions prefixed with `=` that evaluate in the context of the current note:
+Dataview supports inline expressions prefixed with a configurable token (default `=`) that evaluate in the context of the current note:
 
 - **Inline queries:** `` `= this.property` `` — evaluates an expression and renders the result inline
 - **`this` context:** Within an inline expression, `this` refers to the current note's metadata (frontmatter + inline fields + `file.*` implicit metadata)
@@ -675,22 +740,48 @@ Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. Thes
 - Embed a lightweight JS runtime (candidates: [Boa](https://boajs.dev/) for pure Rust, [rquickjs](https://github.com/nickel-org/nickel.rs) / QuickJS bindings for performance). Boa is preferred for build simplicity and safety; QuickJS is an alternative if performance requires it.
 - Sandbox constraints: no filesystem access, no network access, no `eval` of external scripts, execution timeout (configurable, default 5 seconds per block), memory limit.
 - Provide a `dv` API object that proxies to Vulcan's query engine:
-  - `dv.pages(source?)` — returns page objects matching a DQL FROM source (or all pages)
-  - `dv.page(path)` — returns a single page's metadata
+
+  **Query methods:**
+  - `dv.pages(source?)` — returns DataArray of page objects matching a DQL FROM source (or all pages)
+  - `dv.page(path)` — returns a single page's metadata object
   - `dv.current()` — returns the current note's metadata (`this` equivalent)
+  - `dv.query(dql, [file], [settings])` — evaluate DQL, return `{ successful: boolean, value: result | error: string }`
+  - `dv.tryQuery(dql, [file], [settings])` — like `dv.query()` but throws on failure instead of returning error
+  - `dv.queryMarkdown(dql, [file], [settings])` — evaluate DQL, return rendered Markdown string
+  - `dv.tryQueryMarkdown(dql, [file], [settings])` — like `dv.queryMarkdown()` but throws on failure
+  - `dv.execute(dql)` — shorthand: evaluate DQL and render results directly (equivalent to `dv.tryQuery()` + render)
+
+  **Render methods:**
   - `dv.table(headers, rows)` — renders a table (CLI: columnar output; JSON: array-of-objects)
   - `dv.list(items)` — renders a list
   - `dv.taskList(tasks, groupByFile?)` — renders tasks
   - `dv.paragraph(text)` — renders text output
   - `dv.header(level, text)` — renders a heading
-  - `dv.el(element, text)` — generic element output (maps to text in CLI)
+  - `dv.el(element, text, [attrs])` — generic element output (maps to text in CLI)
   - `dv.span(text)` — inline text output
-  - `dv.execute(dql)` — evaluate a DQL string and return results programmatically
-  - `dv.io.load(path)` — read a note's content (read-only, within vault only)
+  - `dv.container` — reference to the output container (in CLI: output buffer object; in WebUI: DOM element)
+
+  **I/O methods:**
+  - `dv.io.load(path)` — read a note's content as string (read-only, within vault boundary only)
+  - `dv.io.csv(path, [originFile])` — load and parse a CSV file, return DataArray of row objects
+  - `dv.io.normalize(path, [originFile])` — resolve a vault-relative path
+
+  **View loading:**
+  - `dv.view(path, [input])` — load and execute an external JS file from the vault. `path` is relative to vault root. Optional `input` object is available to the loaded script. Associated CSS file (`<path>.css`) is loaded if present. Vault-boundary enforcement applies (cannot load from outside vault).
+
+  **Utility methods:**
   - `dv.date(input)`, `dv.duration(input)` — type constructors matching DQL
-  - `dv.compare(a, b)` — Dataview comparison semantics
-  - `dv.equal(a, b)` — Dataview equality semantics
+  - `dv.compare(a, b)` — Dataview comparison semantics (returns -1, 0, 1)
+  - `dv.equal(a, b)` — Dataview equality semantics (returns boolean)
+  - `dv.clone(value)` — deep clone a value
   - `dv.func` — namespace exposing all DQL built-in functions (e.g., `dv.func.contains()`)
+  - `dv.luxon` — expose the Luxon DateTime/Duration API (or Vulcan's equivalent date library)
+
+- **DataArray:** `dv.pages()` and similar methods return DataArray objects — array-like with chainable methods:
+  - Standard: `.where(pred)`, `.filter(pred)`, `.map(fn)`, `.flatMap(fn)`, `.sort(key, [dir])`, `.groupBy(key)`, `.unique()`, `.distinct()`, `.limit(n)`, `.slice(start, [end])`, `.concat(other)`, `.indexOf(value)`, `.find(pred)`, `.findIndex(pred)`, `.includes(value)`, `.join(sep)`, `.every(pred)`, `.some(pred)`, `.none(pred)`
+  - Dataview-specific: `.sortInPlace(key, [dir])`, `.groupIn(key)` (recursive top-down grouping), `.mutate(fn)` (in-place mutation), `.into(key)` (map to key without flattening), `.expand(fn)` (recursive expansion), `.forEach(fn)`, `.array()` (convert to plain array), `.values` (raw array access)
+  - Swizzling: `dataArray.field` auto-maps and flattens (e.g., `dv.pages().file.name` returns DataArray of filenames). Chained swizzling (`array.field.subfield`) maps through nested objects.
+
 - Page objects returned by `dv.pages()` expose the same fields as DQL queries: frontmatter, inline fields, and the full `file.*` namespace.
 - CLI surface: `vulcan dataview eval <file> [--block <n>]` evaluates DataviewJS blocks when the feature is compiled in; `vulcan dataview query-js <js-string>` evaluates a JS snippet directly.
 - Build: `cargo build --features dataviewjs` enables the feature. Default builds exclude it for minimal binary size.
