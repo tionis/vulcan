@@ -1245,7 +1245,7 @@ Extend the expression evaluator to support Dataview's full type system and expre
 - [ ] `round(n, [digits])`, `trunc(n)`, `floor(n)`, `ceil(n)`, `min(a, b, ...)`, `max(a, b, ...)`, `sum(array)`, `product(array)`, `average(array)`, `reduce(array, operand)`, `minby(array, func)`, `maxby(array, func)`
 
 *Array/list:*
-- [ ] `length(array|object)`, `sort(list)`, `reverse(list)`, `unique(array)`, `flat(array, [depth])`, `slice(array, [start, [end]])`, `nonnull(array)`, `firstvalue(array)`
+- [x] `length(array|object)`, `sort(list)`, `reverse(list)`, `unique(array)`, `flat(array, [depth])`, `slice(array, [start, [end]])`, `nonnull(array)`, `firstvalue(array)`
 
 *Predicate/iteration:*
 - [ ] `contains(obj|list|string, value)`, `icontains(...)`, `econtains(...)`, `containsword(string, value)`, `all(array, [predicate])`, `any(array, [predicate])`, `none(array, [predicate])`, `filter(array, predicate)`, `map(array, func)`, `join(array, [delimiter])`
