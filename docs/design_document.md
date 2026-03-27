@@ -110,8 +110,9 @@ Recommended logical entities:
 - `diagnostics`: unresolved links, parse errors, type mismatches, unsupported syntax.
 - `vectors`: chunk embeddings keyed by chunk identity and model identity.
 - `canvas_nodes` and `canvas_edges`: structured data from `.canvas` files (JSON Canvas format). Canvas files are a distinct document type — they are JSON, not Markdown. Text node content is chunked and indexed in FTS5; file node references create link edges in the vault graph. See §5.1 and Roadmap Phase 18.
-- `tasks`: structured task items (`- [ ]`, `- [x]`, etc.) extracted from note body text, with status, text, nesting, and section context. See §12b and Roadmap Phase 9.8.
-- `task_properties`: inline fields extracted from within task text (e.g., `[due:: 2026-04-01]`). See §12b and Roadmap Phase 9.8.
+- `list_items`: all list items (task and non-task) extracted from note body text, with text, line number, nesting, section context, and block ID. Tasks are a subset (`is_task = true`). Required for Dataview's `file.lists` metadata. See §12b and Roadmap Phase 9.8.
+- `tasks`: structured task items (`- [ ]`, `- [x]`, etc.) referencing `list_items`, with status char and task-specific computed fields (`checked`, `completed`, `fullyCompleted`). See §12b and Roadmap Phase 9.8.
+- `task_properties`: inline fields extracted from within task text (e.g., `[due:: 2026-04-01]`), plus Tasks plugin emoji shorthand fields. See §12b and Roadmap Phase 9.8.
 
 Every entity should carry enough provenance to support incremental repair: source document id, content hash, parser version, and extraction version where relevant.
 
@@ -407,7 +408,9 @@ The preferred sequence is to make note and property editing solid before attempt
 
 ## 12b. Dataview-compatible metadata and querying
 
-Many Obsidian vaults rely heavily on the Dataview community plugin for inline metadata and dynamic queries. Vulcan should support Dataview-style conventions as a first-class concern rather than treating them as opaque plugin syntax.
+Many Obsidian vaults rely heavily on the Dataview community plugin for inline metadata and dynamic queries. Vulcan should support Dataview-style conventions as a first-class concern rather than treating them as opaque plugin syntax. The goal is full Dataview compatibility: any DQL query that works in Dataview should produce equivalent results in Vulcan.
+
+**Reference material:** `references/obsidian-dataview/docs/` (full Dataview documentation), `references/datacore/` (Datacore successor plugin for forward-looking type model).
 
 ### Inline fields
 
@@ -426,6 +429,170 @@ Inline fields should be extracted during the parsing pipeline (Stage 2 of the pa
 - Store inline fields in the existing `property_values` table with an `origin` column indicating extraction source. A single note may define the same property in both frontmatter and inline fields — store both, with frontmatter taking precedence for typed queries unless the user explicitly queries inline fields.
 - Inline fields that contain link syntax (`[[Target]]`) should be detected and stored as link-valued properties, consistent with existing link-valued frontmatter handling.
 - The property catalog should track inline field usage alongside frontmatter usage.
+
+### Implicit file metadata (`file.*` namespace)
+
+Dataview exposes a comprehensive set of implicit metadata fields on every note, accessible via the `file` namespace. Vulcan must synthesize these from existing cache tables at query time rather than storing them redundantly.
+
+| Field | Type | Source |
+|-------|------|--------|
+| `file.name` | Text | `documents.filename` (without extension) |
+| `file.path` | Text | `documents.path` (full vault-relative path) |
+| `file.folder` | Text | Parent directory of `documents.path` |
+| `file.ext` | Text | File extension (typically `md`) |
+| `file.link` | Link | Synthetic link to the file |
+| `file.size` | Number | `documents.file_size` (bytes) |
+| `file.ctime` | Date+Time | File creation timestamp from filesystem |
+| `file.cday` | Date | `file.ctime` with time stripped |
+| `file.mtime` | Date+Time | `documents.modified_at` |
+| `file.mday` | Date | `file.mtime` with time stripped |
+| `file.tags` | List | All tags, broken down by level (`#A/B` → `[#A, #A/B]`) — from `tags` table |
+| `file.etags` | List | Explicit tags only (not broken down) — from `tags` table |
+| `file.inlinks` | List\<Link\> | Files linking to this file — from `links` table (reverse) |
+| `file.outlinks` | List\<Link\> | Links from this file — from `links` table |
+| `file.aliases` | List | Aliases from frontmatter — from `property_values` where `key = 'aliases'` |
+| `file.tasks` | List\<Task\> | All task items in file — from `tasks` table |
+| `file.lists` | List\<ListItem\> | All list items including tasks — from `list_items` table |
+| `file.frontmatter` | Object | Raw frontmatter key-value pairs |
+| `file.day` | Date\|null | Date extracted from filename (`yyyy-mm-dd` or `yyyymmdd` patterns), or null |
+| `file.starred` | Boolean | Whether the file is bookmarked (requires `.obsidian/` bookmarks data) |
+
+**Implementation:** The `file.*` namespace should be resolved lazily at query evaluation time by a `FileMetadataResolver` that reads from existing cache tables. No separate storage is needed. The resolver must handle missing data gracefully (e.g., `file.starred` returns `false` if bookmarks data is unavailable).
+
+### List item extraction and metadata
+
+Dataview treats all list items (not just tasks) as structured data accessible via `file.lists`. This is required for FLATTEN-based queries that iterate over list content.
+
+List items should be extracted during the semantic pass and stored in a `list_items` table:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | Text | Primary key |
+| `document_id` | Text | Foreign key to `documents` |
+| `text` | Text | Full text content including inline field annotations |
+| `line_number` | Integer | 1-based line number in source file |
+| `line_count` | Integer | Number of source lines this item spans |
+| `byte_offset` | Integer | Byte offset in source file |
+| `section_heading` | Text\|null | Nearest ancestor heading text |
+| `section_link` | Text\|null | Link to containing section |
+| `parent_item_id` | Text\|null | Foreign key to parent list item (for nesting) |
+| `is_task` | Boolean | Whether this item is a task (`- [ ]` syntax) |
+| `block_id` | Text\|null | Block ID if defined via `^blockId` syntax |
+
+Tasks are a subset of list items. The existing `tasks` table should reference `list_items` (or be merged with it) so that `file.lists` returns all items and `file.tasks` returns only those where `is_task = true`.
+
+**List item query fields** (synthesized at query time, matching Dataview):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | Text | Full text including annotations |
+| `line` | Number | Line number in file |
+| `lineCount` | Number | Lines spanned |
+| `path` | Text | Containing file path |
+| `section` | Link | Link to containing section |
+| `link` | Link | Link to closest linkable block |
+| `tags` | List | Tags within this item's text |
+| `outlinks` | List | Links within this item's text |
+| `children` | List | Child list items |
+| `parent` | Number\|null | Parent item line number |
+| `task` | Boolean | Whether this is a task |
+| `annotated` | Boolean | Whether text contains inline fields |
+| `blockId` | Text\|null | Block ID if present |
+
+### Task metadata
+
+Tasks extend list items with additional fields, synthesized at query time:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | Text | Character inside brackets (e.g., `" "`, `"x"`, `"/"`) |
+| `checked` | Boolean | `true` if status is non-empty (any character other than space) |
+| `completed` | Boolean | `true` if status is `"x"` (case-insensitive) |
+| `fullyCompleted` | Boolean | `true` if this task and all subtasks are completed |
+
+**Tasks plugin emoji shorthand:** Many vaults use the Tasks plugin's emoji syntax for date fields. These should be detected during task text parsing and stored as task-scoped properties:
+
+| Field | Emoji | Example |
+|-------|-------|---------|
+| `due` | `🗓️` | `🗓️2026-04-01` |
+| `completion` | `✅` | `✅2026-03-15` |
+| `created` | `➕` | `➕2026-01-01` |
+| `start` | `🛫` | `🛫2026-02-01` |
+| `scheduled` | `⏳` | `⏳2026-03-01` |
+
+Task completion state mapping: `x` = done, ` ` = todo, `/` = in-progress, `-` = cancelled. Support custom status characters via `.vulcan/config.toml`.
+
+### Data type system
+
+Dataview has a richer type system than YAML frontmatter alone. The expression evaluator must handle all eight types:
+
+| Type | Literal syntax | Notes |
+|------|---------------|-------|
+| **Text** | `"hello"` | Default; catch-all for unrecognized values |
+| **Number** | `6`, `3.14`, `-80` | Standard numeric |
+| **Boolean** | `true`, `false` | Case-sensitive |
+| **Date** | `date(2026-04-01)`, `date(today)` | ISO 8601; optional time and timezone |
+| **Duration** | `dur(3 hours)`, `dur(1d 3h 20m)` | Compound units supported |
+| **Link** | `[[Page]]`, `[[Page\|Display]]` | First-class type, not just text |
+| **List** | `[1, 2, 3]` | Array; duplicate keys in frontmatter become lists |
+| **Object** | `{ a: 1, b: 2 }` | Key-value map from YAML |
+
+**Date properties** are accessible via dotted access: `date.year`, `date.month`, `date.day`, `date.hour`, `date.minute`, `date.second`, `date.weekday`, `date.week`, `date.weekyear`, `date.millisecond`.
+
+**Date literals** include shortcuts: `date(today)`, `date(now)`, `date(tomorrow)`, `date(yesterday)`, `date(sow)` / `date(eow)` (start/end of week), `date(som)` / `date(eom)` (start/end of month), `date(soy)` / `date(eoy)` (start/end of year).
+
+**Duration units:** `s`/`sec`/`second`, `m`/`min`/`minute`, `h`/`hr`/`hour`, `d`/`day`, `w`/`wk`/`week`, `mo`/`month`, `yr`/`year`.
+
+**Type coercion rules:**
+- `Date - Date` → Duration
+- `Date + Duration` → Date
+- `String + Number` → String (concatenation)
+- `null` comparisons: `null <= date(today)` is true (match Dataview behavior, but consider a diagnostic)
+- Type checking via `typeof(field)` returns `"number"`, `"string"`, `"date"`, `"duration"`, `"array"`, `"object"`, `"link"`, `"boolean"`, `"function"`.
+
+### DQL expression language
+
+The DQL expression language is substantially richer than Bases filter expressions. The expression evaluator must support:
+
+**Operators:**
+- Arithmetic: `+`, `-`, `*`, `/`, `%` (work on numbers; `+` concatenates strings; `-` on dates yields duration)
+- Comparison: `=`, `!=`, `<`, `>`, `<=`, `>=` (work across types with Dataview's ordering rules)
+- Boolean: `AND`, `OR`, `!` (prefix negation)
+
+**Field access:**
+- Direct: `fieldname` (case-insensitive, spaces normalized to hyphens)
+- Dotted: `object.field` or `object["field"]`
+- Array indexing: `array[0]`, `array[expr]` (0-indexed)
+- Link indexing: `[[Note]].field` — accesses a field on the linked page (cross-note join)
+- Keyword escape: `row["where"]` — for fields that collide with reserved words
+
+**Lambda expressions:**
+- Syntax: `(arg1, arg2) => expression`
+- Used in: `filter()`, `map()`, `reduce()`, `all()`, `any()`, `none()`, `minby()`, `maxby()`
+
+**Column aliases:** `field AS "Display Name"` in TABLE/LIST projections.
+
+**WITHOUT ID:** `TABLE WITHOUT ID` / `LIST WITHOUT ID` suppresses the automatic first column (file link).
+
+### Built-in function library
+
+Vulcan must implement the full Dataview function library. Functions automatically **vectorize** over arrays: `lower(["YES", "NO"])` returns `["yes", "no"]`.
+
+**Type constructors:** `date(any)`, `date(text, format)`, `dur(any)`, `number(string)`, `string(any)`, `link(path, [display])`, `embed(link, [embed])`, `elink(url, [display])`, `typeof(any)`, `object(key, value, ...)`, `list(value1, value2, ...)`
+
+**Numeric:** `round(n, [digits])`, `trunc(n)`, `floor(n)`, `ceil(n)`, `min(a, b, ...)`, `max(a, b, ...)`, `sum(array)`, `product(array)`, `average(array)`, `reduce(array, operand)`, `minby(array, func)`, `maxby(array, func)`
+
+**Array/list:** `length(array|object)`, `sort(list)`, `reverse(list)`, `unique(array)`, `flat(array, [depth])`, `slice(array, [start, [end]])`, `nonnull(array)`, `firstvalue(array)`
+
+**Predicate/iteration:** `contains(obj|list|string, value)`, `icontains(...)`, `econtains(...)`, `containsword(string, value)`, `all(array, [predicate])`, `any(array, [predicate])`, `none(array, [predicate])`, `filter(array, predicate)`, `map(array, func)`, `join(array, [delimiter])`
+
+**String:** `lower(s)`, `upper(s)`, `startswith(s, prefix)`, `endswith(s, suffix)`, `substring(s, start, [end])`, `split(s, delimiter, [limit])`, `replace(s, pattern, replacement)`, `regextest(pattern, s)`, `regexmatch(pattern, s)`, `regexreplace(s, pattern, replacement)`, `truncate(s, length, [suffix])`, `padleft(s, length, [padding])`, `padright(s, length, [padding])`
+
+**Object:** `extract(object, key1, key2, ...)`
+
+**Date/duration:** `dateformat(date, string)`, `durationformat(duration, string)`, `striptime(date)`, `localtime(date)`
+
+**Utility:** `default(field, value)` (null coalescing, vectorizes), `ldefault(list, value)` (non-vectorizing), `choice(bool, left, right)` (ternary), `display(any)`, `hash(seed, [text], [variant])`, `currencyformat(number, [currency])`, `meta(link)` (returns link metadata: `.path`, `.display`, `.embed`, `.type`, `.subpath`)
 
 ### Dataview Query Language (DQL)
 
@@ -449,47 +616,49 @@ LIMIT <n>
 ```
 
 **FROM sources** select the initial note set:
-- `#tag` — notes with a given tag
-- `"folder"` — notes in a folder
-- `[[note]]` — notes linked from a specific note (outgoing links)
-- `[[note]]` with `-` prefix — notes that link to a specific note (incoming links / backlinks)
-- Boolean combinations: `#tag AND "folder"`, `#a OR #b`, `!#excluded`
+- `#tag` — notes with a given tag (includes subtags)
+- `"folder"` — notes in a folder (includes subfolders)
+- `"folder/File"` or `"folder/File.md"` — single specific file
+- `[[note]]` — notes linking **to** this file (incoming links / backlinks)
+- `outgoing([[note]])` — notes linked **from** this file (outgoing links)
+- `[[]]` or `[[#]]` — files linking to the current file (self-reference)
+- Boolean combinations: `#tag AND "folder"`, `#a OR #b`, `-#excluded` or `!#excluded`
+- Parenthesized grouping: `(#tag1 OR #tag2) AND "folder"`
 
-**WHERE filters** support field access, comparisons, boolean logic, and function calls. The expression language includes date arithmetic, string operations, list operations, and type coercion.
+**Data commands** are executed in the order they appear (except FROM, which must come first if present):
+
+- **WHERE** (0+): Filter rows where expression evaluates to truthy. Supports comparisons, boolean logic, function calls, type checking, and existence checks (`field` alone is truthy if present and non-null).
+- **SORT** (0+): `SORT field [ASC|DESC], field2 [ASC|DESC]`. Multi-key with tiebreakers. Default: ascending.
+- **GROUP BY** (0+): `GROUP BY field` or `GROUP BY (expr) AS name`. Produces `{ key, rows }` objects. After grouping, `rows.field` extracts a list of that field from all rows in the group.
+- **FLATTEN** (0+): `FLATTEN array_field` or `FLATTEN (expr) AS name`. Expands each array element into its own result row, inheriting other fields from the source row.
+- **LIMIT** (0+): `LIMIT n`. Cap result count.
 
 ### Recommended DQL implementation
 
 DQL should compile to Vulcan's canonical internal query model (the same AST that Bases, CLI flags, and JSON payloads target). This avoids building a parallel query engine.
 
 - **Parser:** Hand-rolled recursive descent parser for DQL syntax, producing the internal query AST. DQL is simple enough that a full parser generator is unnecessary.
-- **FROM → source resolution:** Translate FROM clauses to the existing source/filter primitives. Tag and folder sources map to SQL filters on the `tags` and `documents` tables. Link sources map to joins on the `links` table.
-- **WHERE → filter expressions:** DQL WHERE expressions are structurally similar to Bases filter expressions and should lower to the same `FilterExpression` representation. Much of the expression evaluation infrastructure from Phase 4.5 (Bases expression language) is reusable.
-- **TABLE columns / LIST expressions → projections:** DQL column expressions compile to the same projection model used by Bases formulas.
-- **TASK queries:** Require the task extraction infrastructure. Task items (`- [ ]`, `- [x]`, `- [/]`, etc.) must be parsed and stored during indexing (see inline field and task extraction below). TASK queries filter and display these items.
-- **CALENDAR queries:** Require a date-valued field per note. The CLI and WebUI rendering of calendar output is a presentation concern, not a query engine concern.
-- **GROUP BY / FLATTEN / LIMIT:** These are standard query operations that the internal query model should already support or can be extended to support.
+- **FROM → source resolution:** Translate FROM clauses to the existing source/filter primitives. Tag and folder sources map to SQL filters on the `tags` and `documents` tables. Link sources map to joins on the `links` table. `outgoing([[note]])` uses a forward join on `links`.
+- **WHERE → filter expressions:** DQL WHERE expressions are structurally similar to Bases filter expressions and should lower to the same `FilterExpression` representation. Much of the expression evaluation infrastructure from Phase 4.5 (Bases expression language) is reusable. The expression evaluator must be extended with the full DQL function library, lambda support, link indexing, and date/duration arithmetic.
+- **TABLE columns / LIST expressions → projections:** DQL column expressions compile to the same projection model used by Bases formulas. Support `AS "alias"` for column headers and `WITHOUT ID` to suppress the file link column.
+- **TASK queries:** Operate on the `list_items`/`tasks` tables rather than the `documents` table. Task-level fields (`status`, `checked`, `completed`, `fullyCompleted`) are synthesized by the query evaluator. Results are grouped by source note.
+- **CALENDAR queries:** Require a date-valued field per note. The CLI rendering shows a date-grouped list; calendar grid rendering is a WebUI concern.
+- **GROUP BY:** Produces `{ key, rows }` result objects. The evaluator must support `rows.field` access (extracts a list of that field from all grouped rows) and aggregation functions over `rows`.
+- **FLATTEN:** Denormalizes arrays into individual rows. Each element becomes a separate result row inheriting all non-flattened fields from its parent. Multiple FLATTEN clauses compose sequentially.
+- **LIMIT:** Applied after all other data commands.
 
 ### Inline expressions
 
 Dataview supports inline expressions prefixed with `=` that evaluate in the context of the current note:
 
 - **Inline queries:** `` `= this.property` `` — evaluates an expression and renders the result inline
-- **`this` context:** Within an inline expression, `this` refers to the current note's metadata (frontmatter + inline fields + file properties)
+- **`this` context:** Within an inline expression, `this` refers to the current note's metadata (frontmatter + inline fields + `file.*` implicit metadata)
 
 Inline expression evaluation is primarily a rendering concern. For Vulcan's purposes:
 
 - During indexing, detect inline expressions (backtick-delimited text starting with `=`) and store them as metadata so they can be evaluated at query or render time.
-- The expression evaluator from the Bases expression language (Phase 4.5) should handle the expression syntax with the addition of the `this` binding.
+- The expression evaluator from the Bases expression language (Phase 4.5) should handle the expression syntax with the addition of the `this` binding and the full DQL function library.
 - In CLI output and WebUI rendering, inline expressions can be evaluated and substituted or displayed as-is with a diagnostic note.
-
-### Task extraction
-
-DQL's TASK query type requires structured task data. Task extraction should be added to the parser pipeline:
-
-- Detect task list items (`- [ ]`, `- [x]`, `- [/]`, `- [-]`, and custom status characters) during the semantic pass.
-- Store tasks in a `tasks` table: `id`, `document_id`, `status_char`, `text`, `byte_offset`, `parent_task_id` (for nested tasks), `section_heading` (nearest ancestor heading).
-- Extract inline fields within task text (e.g., `- [ ] Buy groceries [due:: 2026-04-01]`).
-- Task completion state is derived from the status character: `x` = done, ` ` = todo, `/` = in-progress, `-` = cancelled. Support custom status characters via configuration.
 
 ### DataviewJS
 
@@ -772,7 +941,7 @@ Maintain a set of test vaults in the repository (e.g., `tests/fixtures/vaults/`)
 - **`broken-frontmatter/`**: Notes with malformed YAML, unclosed delimiters, and mixed indentation, testing parser resilience and diagnostic output.
 - **`move-rewrite/`**: A vault structured to test move-safe rewrites — after running a `move` operation, assert that all inbound links are rewritten correctly and no links are broken.
 - **`bases/`**: A vault with `.base` files exercising supported filter and formula constructs, plus unsupported constructs that should produce diagnostics.
-- **`dataview/`**: A vault with Dataview-style inline fields (`key:: value`, `(key:: value)`, `[key:: value]`), task items with inline field annotations, `` ```dataview `` code blocks with DQL queries, and inline expressions (`` `= this.property` ``). Tests inline field extraction, task parsing, DQL compilation, and inline expression evaluation.
+- **`dataview/`**: A vault exercising full Dataview compatibility: inline fields (all three variants), plain list items and task items (including nested items, Tasks plugin emoji shorthand), `file.*` metadata access, DQL queries (TABLE, LIST, TASK, CALENDAR with GROUP BY, FLATTEN, LIMIT, WITHOUT ID), inline expressions with `this` binding, the complete function library, link indexing (`[[Note]].field`), date/duration arithmetic, and DataviewJS blocks (detected but not evaluated). Tests inline field extraction, list/task parsing, `file.*` resolution, DQL compilation, expression evaluation, and type coercion.
 
 Integration tests should run the full indexing pipeline against these vaults and assert on the resulting database state: row counts, resolved link targets, diagnostic entries, property types, etc.
 
