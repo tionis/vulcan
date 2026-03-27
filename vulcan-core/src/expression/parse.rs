@@ -144,24 +144,32 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_primary()?;
 
         loop {
-            if self.current != Token::Dot {
-                break;
-            }
-            self.advance()?; // consume `.`
+            match self.current {
+                Token::Dot => {
+                    self.advance()?; // consume `.`
 
-            let Token::Ident(name) = self.advance()? else {
-                return Err("expected identifier after '.'".to_string());
-            };
+                    let Token::Ident(name) = self.advance()? else {
+                        return Err("expected identifier after '.'".to_string());
+                    };
 
-            if self.current == Token::LParen {
-                // Method call: expr.method(args...)
-                self.advance()?; // consume `(`
-                let args = self.parse_args()?;
-                self.expect(&Token::RParen)?;
-                expr = Expr::MethodCall(Box::new(expr), name, args);
-            } else {
-                // Field access: expr.field
-                expr = Expr::FieldAccess(Box::new(expr), name);
+                    if self.current == Token::LParen {
+                        // Method call: expr.method(args...)
+                        self.advance()?; // consume `(`
+                        let args = self.parse_args()?;
+                        self.expect(&Token::RParen)?;
+                        expr = Expr::MethodCall(Box::new(expr), name, args);
+                    } else {
+                        // Field access: expr.field
+                        expr = Expr::FieldAccess(Box::new(expr), name);
+                    }
+                }
+                Token::LBracket => {
+                    self.advance()?; // consume `[`
+                    let index = self.parse_or()?;
+                    self.expect(&Token::RBracket)?;
+                    expr = Expr::IndexAccess(Box::new(expr), Box::new(index));
+                }
+                _ => break,
             }
         }
 
@@ -450,6 +458,36 @@ mod tests {
                 )),
                 "lower".to_string(),
                 vec![],
+            )
+        );
+    }
+
+    #[test]
+    fn parse_object_index_access() {
+        assert_eq!(
+            parse(r#"note["status"]"#),
+            Expr::IndexAccess(
+                Box::new(Expr::Identifier("note".to_string())),
+                Box::new(Expr::Str("status".to_string())),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_array_index_access() {
+        assert_eq!(
+            parse("[1, 2, 3][1 + 1]"),
+            Expr::IndexAccess(
+                Box::new(Expr::Array(vec![
+                    Expr::Number(1.0),
+                    Expr::Number(2.0),
+                    Expr::Number(3.0),
+                ])),
+                Box::new(Expr::BinaryOp(
+                    Box::new(Expr::Number(1.0)),
+                    BinOp::Add,
+                    Box::new(Expr::Number(1.0)),
+                )),
             )
         );
     }
