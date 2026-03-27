@@ -149,45 +149,7 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
     }
 
     let receiver_val = evaluate(receiver, ctx)?;
-
-    // Field access on different types
-    match &receiver_val {
-        // String fields
-        Value::String(s) => {
-            if parse_wikilink(s).is_some() {
-                return Ok(resolve_link_field(ctx, s, field));
-            }
-            if field == "length" {
-                return Ok(Value::Number(s.chars().count().into()));
-            }
-            if let Some(ms) = parse_date_like_string(s) {
-                if let Some(value) = date_field_value(ms, field) {
-                    return Ok(value);
-                }
-            }
-            Ok(Value::Null)
-        }
-
-        // Array fields
-        Value::Array(arr) => match field {
-            "length" => Ok(Value::Number(arr.len().into())),
-            _ => Ok(Value::Null),
-        },
-
-        // Object field access
-        Value::Object(map) => Ok(map.get(field).cloned().unwrap_or(Value::Null)),
-
-        Value::Number(n) => {
-            if let Some(ms) = n.as_i64() {
-                if let Some(value) = date_field_value(ms, field) {
-                    return Ok(value);
-                }
-            }
-            Ok(Value::Null)
-        }
-
-        _ => Ok(Value::Null),
-    }
+    Ok(resolve_value_field(&receiver_val, field, ctx))
 }
 
 fn eval_index_access(receiver: &Expr, index: &Expr, ctx: &EvalContext) -> Result<Value, String> {
@@ -205,6 +167,7 @@ fn eval_index_access(receiver: &Expr, index: &Expr, ctx: &EvalContext) -> Result
     let index_val = evaluate(index, ctx)?;
 
     match (&receiver_val, &index_val) {
+        (Value::Array(values), Value::String(field)) => Ok(swizzle_array_field(values, field, ctx)),
         (Value::String(link), Value::String(field)) if parse_wikilink(link).is_some() => {
             Ok(resolve_link_field(ctx, link, field))
         }
@@ -225,6 +188,49 @@ fn eval_index_access(receiver: &Expr, index: &Expr, ctx: &EvalContext) -> Result
 
 fn resolve_file_field(ctx: &EvalContext, field: &str) -> Value {
     FileMetadataResolver::field(ctx.note, field)
+}
+
+fn resolve_value_field(value: &Value, field: &str, ctx: &EvalContext) -> Value {
+    match value {
+        Value::String(s) => {
+            if parse_wikilink(s).is_some() {
+                return resolve_link_field(ctx, s, field);
+            }
+            if field == "length" {
+                return Value::Number(s.chars().count().into());
+            }
+            if let Some(ms) = parse_date_like_string(s) {
+                if let Some(value) = date_field_value(ms, field) {
+                    return value;
+                }
+            }
+            Value::Null
+        }
+        Value::Array(arr) => {
+            if field == "length" {
+                Value::Number(arr.len().into())
+            } else {
+                swizzle_array_field(arr, field, ctx)
+            }
+        }
+        Value::Object(map) => map.get(field).cloned().unwrap_or(Value::Null),
+        Value::Number(n) => n
+            .as_i64()
+            .and_then(|ms| date_field_value(ms, field))
+            .unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+fn swizzle_array_field(values: &[Value], field: &str, ctx: &EvalContext) -> Value {
+    let mut result = Vec::new();
+    for value in values {
+        match resolve_value_field(value, field, ctx) {
+            Value::Array(items) => result.extend(items),
+            other => result.push(other),
+        }
+    }
+    Value::Array(result)
 }
 
 /// Convert a `NoteRecord` into the file object Value returned by `.asFile()`.
@@ -1012,6 +1018,30 @@ mod tests {
     #[test]
     fn eval_array_length() {
         assert_eq!(eval("[1, 2, 3].length"), serde_json::json!(3));
+    }
+
+    #[test]
+    fn eval_array_swizzling() {
+        assert_eq!(
+            eval(r#"[{"name": "Ada"}, {"name": "Lin"}].name"#),
+            serde_json::json!(["Ada", "Lin"])
+        );
+        assert_eq!(
+            eval(r#"[{"tags": ["a", "b"]}, {"tags": ["c"]}].tags"#),
+            serde_json::json!(["a", "b", "c"])
+        );
+        assert_eq!(
+            eval(r#"[{"user": {"name": "Ada"}}, {"user": {"name": "Lin"}}].user.name"#),
+            serde_json::json!(["Ada", "Lin"])
+        );
+        assert_eq!(
+            eval(r#"[{"name": "Ada"}, {}].name"#),
+            serde_json::json!(["Ada", null])
+        );
+        assert_eq!(
+            eval(r#"[{"name": "Ada"}, {"name": "Lin"}]["name"]"#),
+            serde_json::json!(["Ada", "Lin"])
+        );
     }
 
     #[test]
