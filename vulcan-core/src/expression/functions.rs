@@ -4,6 +4,7 @@ use crate::expression::ast::Expr;
 use crate::expression::eval::{
     as_number, evaluate, is_truthy, number_to_value, value_to_display, EvalContext,
 };
+use crate::expression::methods::call_method;
 
 #[allow(clippy::too_many_lines)]
 pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -14,6 +15,14 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "date" => func_date(args, ctx),
         "meta" => func_meta(args, ctx),
         "typeof" => func_typeof(args, ctx),
+        "length" => func_length(args, ctx),
+        "object" => func_object(args, ctx),
+        "default" => func_default(args, ctx, true),
+        "ldefault" => func_default(args, ctx, false),
+        "choice" => func_choice(args, ctx),
+        "nonnull" => func_nonnull(args, ctx),
+        "firstvalue" => func_firstvalue(args, ctx),
+        "map" | "filter" => func_array_alias(name, args, ctx),
         "number" => {
             let val = eval_arg(args, 0, ctx)?;
             let n = as_number(&val);
@@ -61,10 +70,10 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
             }
         }
         "list" => {
-            let val = eval_arg(args, 0, ctx)?;
-            match val {
-                Value::Array(_) => Ok(val),
-                _ => Ok(Value::Array(vec![val])),
+            let values = eval_all_args(args, ctx)?;
+            match values.as_slice() {
+                [Value::Array(_)] => Ok(values.into_iter().next().unwrap_or(Value::Array(vec![]))),
+                _ => Ok(Value::Array(values)),
             }
         }
         "escapeHTML" => {
@@ -151,6 +160,136 @@ fn func_typeof(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
 fn func_meta(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     Ok(link_meta_value(&value))
+}
+
+fn func_length(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let length = match value {
+        Value::Array(values) => values.len(),
+        Value::Object(map) => map.len(),
+        Value::String(text) => text.chars().count(),
+        Value::Null => 0,
+        _ => return Ok(Value::Null),
+    };
+    Ok(Value::Number(length.into()))
+}
+
+fn func_object(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    if args.len() % 2 != 0 {
+        return Err("object() requires an even number of arguments".to_string());
+    }
+
+    let mut map = serde_json::Map::new();
+    let mut index = 0;
+    while index < args.len() {
+        let key = eval_arg(args, index, ctx)?;
+        let Value::String(key) = key else {
+            return Err("object() keys must evaluate to strings".to_string());
+        };
+        map.insert(key, eval_arg(args, index + 1, ctx)?);
+        index += 2;
+    }
+    Ok(Value::Object(map))
+}
+
+fn func_default(args: &[Expr], ctx: &EvalContext, vectorize: bool) -> Result<Value, String> {
+    let value = eval_arg(args, 0, ctx)?;
+    let fallback = eval_arg(args, 1, ctx)?;
+    Ok(default_value(value, fallback, vectorize))
+}
+
+fn func_choice(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    if args.is_empty() {
+        return Ok(Value::Null);
+    }
+
+    let condition = eval_arg(args, 0, ctx)?;
+    if is_truthy(&condition) {
+        eval_arg(args, 1, ctx)
+    } else {
+        eval_arg(args, 2, ctx)
+    }
+}
+
+fn func_nonnull(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let values = eval_all_args(args, ctx)?;
+    match values.as_slice() {
+        [Value::Array(items)] => Ok(Value::Array(
+            items
+                .iter()
+                .filter(|value| !value.is_null())
+                .cloned()
+                .collect(),
+        )),
+        _ => Ok(Value::Array(
+            values
+                .into_iter()
+                .filter(|value| !value.is_null())
+                .collect(),
+        )),
+    }
+}
+
+fn func_firstvalue(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let values = eval_all_args(args, ctx)?;
+    let first = match values.as_slice() {
+        [Value::Array(items)] => items.iter().find(|value| !value.is_null()).cloned(),
+        _ => values.into_iter().find(|value| !value.is_null()),
+    };
+    Ok(first.unwrap_or(Value::Null))
+}
+
+fn func_array_alias(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let Some((receiver_expr, method_args)) = args.split_first() else {
+        return Ok(Value::Null);
+    };
+
+    let receiver = evaluate(receiver_expr, ctx)?;
+    if receiver.is_null() {
+        return Ok(Value::Null);
+    }
+    call_method(&receiver, name, method_args, ctx)
+}
+
+fn default_value(value: Value, fallback: Value, vectorize: bool) -> Value {
+    if !vectorize {
+        return if value.is_null() { fallback } else { value };
+    }
+
+    match (value, fallback) {
+        (Value::Array(values), Value::Array(fallbacks)) => Value::Array(
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    default_value(
+                        value,
+                        fallbacks.get(index).cloned().unwrap_or(Value::Null),
+                        true,
+                    )
+                })
+                .collect(),
+        ),
+        (Value::Array(values), fallback) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| default_value(value, fallback.clone(), true))
+                .collect(),
+        ),
+        (value, Value::Array(fallbacks)) => Value::Array(
+            fallbacks
+                .into_iter()
+                .map(|fallback| default_value(value.clone(), fallback, true))
+                .collect(),
+        ),
+        (value, fallback) => {
+            if value.is_null() {
+                fallback
+            } else {
+                value
+            }
+        }
+    }
 }
 
 fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, String> {
@@ -708,6 +847,26 @@ mod tests {
                 "subpath": "Next Actions",
                 "type": "header",
             })
+        );
+    }
+
+    #[test]
+    fn test_default_value_vectorizes() {
+        assert_eq!(
+            default_value(
+                serde_json::json!([1, null, null]),
+                serde_json::json!(2),
+                true
+            ),
+            serde_json::json!([1, 2, 2])
+        );
+        assert_eq!(
+            default_value(
+                serde_json::json!([null, 2]),
+                serde_json::json!([3, 4]),
+                true
+            ),
+            serde_json::json!([3, 2])
         );
     }
 
