@@ -1465,9 +1465,37 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [ ] User script functions: load `.js` files from configured scripts folder as `tp.user.<name>(args)`
 - [ ] System command user functions: execute shell commands with template variable substitution (requires explicit opt-in via config, disabled by default for security)
 - [ ] `tp.hooks.on_all_templates_executed(callback)` — post-processing hook
-- [ ] `tp.app` and `tp.obsidian` namespaces — provide Vulcan equivalents where possible; emit diagnostic for Obsidian-specific APIs that have no CLI equivalent
 
-#### 9.9.4 CLI integration
+**tp.config:**
+- [ ] `tp.config.template_file` — TFile object (or Vulcan equivalent) for the template being processed
+- [ ] `tp.config.target_file` — TFile object for the note the template is being inserted into
+- [ ] `tp.config.run_mode` — numeric run mode indicator (0=create, 1=append, 5=dynamic; map to Vulcan equivalents)
+- [ ] `tp.config.active_file` — currently active file (alias for target in CLI context)
+
+**tp.obsidian (Vulcan equivalents):**
+- [ ] `tp.obsidian.normalizePath(path)` — normalize vault-relative path (reuse Vulcan's path normalization)
+- [ ] `tp.obsidian.htmlToMarkdown(html)` — convert HTML string to Markdown (use existing or add lightweight converter)
+- [ ] `tp.obsidian.requestUrl(url)` — sandboxed HTTP request (reuse `tp.web` infrastructure, same allowlist restrictions)
+- [ ] Emit diagnostic for Obsidian-specific APIs under `tp.app` that have no CLI equivalent (e.g., `tp.app.workspace`, `tp.app.vault.adapter`)
+
+#### 9.9.4 Settings import
+
+- [ ] Read Templater settings from `.obsidian/plugins/templater-obsidian/data.json`:
+  | Setting key | Vulcan mapping |
+  |---|---|
+  | `templates_folder` | Template discovery path |
+  | `templates_pairs` | Folder-specific template assignments |
+  | `user_scripts_folder` | User script discovery path for `tp.user.*` |
+  | `enable_system_commands` | Enable/disable `tp.system` command execution |
+  | `shell_path` | Shell path for system commands |
+  | `folder_templates` | Auto-apply templates on folder-based note creation |
+  | `startup_templates` | Templates to run on vault open (map to `vulcan template run-startup`) |
+  | `trigger_on_file_creation` | Auto-template on new file creation |
+  | `syntax_highlighting` | Informational only (no CLI equivalent) |
+  | `auto_jump_to_cursor` | Informational only (no CLI equivalent) |
+- [ ] `vulcan config import templater` — import Templater settings and report mapping
+
+#### 9.9.5 CLI integration
 
 - [ ] `vulcan template` command detects Templater syntax and processes it (existing command, extended)
 - [ ] `vulcan template --engine native|templater|auto` — force template engine selection (default: auto-detect based on `<% %>` presence)
@@ -1523,7 +1551,21 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [ ] Read Tasks plugin status configuration from `.obsidian/plugins/obsidian-tasks-plugin/data.json`
 - [ ] `status.type` and `status.name` queryable in both DQL and Tasks DSL
 
-#### 9.10.5 CLI surface and evaluation
+#### 9.10.5 Settings import
+
+- [ ] Read Tasks plugin settings from `.obsidian/plugins/obsidian-tasks-plugin/data.json`:
+  | Setting key | Vulcan mapping |
+  |---|---|
+  | `statusSettings.coreStatuses` | Core status type definitions (`[ ]`, `[x]`) |
+  | `statusSettings.customStatuses` | Custom status type definitions (symbol → name → type → next) |
+  | `globalFilter` | Global filter tag — only tasks matching this tag are considered by Tasks queries |
+  | `globalQuery` | Default query prepended to all Tasks query blocks |
+  | `removeGlobalFilter` | Whether to hide the global filter tag in rendered output |
+  | `setCreatedDate` | Auto-set `➕ created` date on new tasks |
+  | `recurrenceOnCompletion` | How recurring tasks create next instance on completion |
+- [ ] `vulcan config import tasks` — import Tasks settings and report mapping
+
+#### 9.10.6 CLI surface and evaluation
 
 - [ ] `vulcan tasks query <query-string>` — evaluate a Tasks DSL query from the command line
 - [ ] `vulcan tasks eval <file> [--block <n>]` — evaluate a `` ```tasks `` block from a note
@@ -1544,18 +1586,51 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [ ] Parse board structure: headings → columns, list items under headings → cards
 - [ ] Extract card metadata: checkbox status, inline dates, tags, links, inline fields
 - [ ] Parse board configuration from YAML code block (if present): column settings, archive column, completed column
+- [ ] Configurable date and time triggers: parse date/time from card text using configurable trigger tokens (not hardcoded emoji — Kanban plugin allows `{date-trigger}` and `{time-trigger}` config, defaults `📅` and `⏰` but can be any string)
+- [ ] Linked page metadata: cards that are `[[wikilinks]]` inherit metadata from the linked note (frontmatter, tags, inline fields) — enables filtering/sorting cards by linked note properties
 - [ ] Store board structure in cache: `kanban_boards` table (or extend existing tables with board context)
 - [ ] Index on board → column → card hierarchy
 
-#### 9.11.2 CLI surface
+#### 9.11.2 Archive support
+
+- [ ] Parse archive column: Kanban plugin supports a dedicated archive section (heading `## Archive` or configured via `archive-with-date` setting)
+- [ ] `vulcan kanban archive <board> <card>` — move a card to the archive column
+- [ ] Archive-with-date: optionally prepend archive date to card text (configurable via `archive-with-date` setting)
+- [ ] `vulcan kanban show <board> --include-archive` — include archived cards in output (excluded by default)
+
+#### 9.11.3 CLI surface
 
 - [ ] `vulcan kanban list` — list all Kanban boards in the vault
 - [ ] `vulcan kanban show <board>` — display board state (columns and card counts; `--verbose` shows all cards)
 - [ ] `vulcan kanban cards <board> [--column <name>] [--status <status>]` — list cards with optional filters
 - [ ] `vulcan kanban move <board> <card> <target-column>` — move a card between columns (rewrite the `.md` file)
+- [ ] `vulcan kanban add <board> <column> <text>` — add a new card to a column
 - [ ] `--output json` on all subcommands
 
-#### 9.11.3 TUI and WebUI (future)
+#### 9.11.4 Settings import
+
+- [ ] Read Kanban settings from `.obsidian/plugins/obsidian-kanban/data.json` — 39+ config keys including:
+  | Setting key | Vulcan mapping |
+  |---|---|
+  | `date-trigger` | Date trigger token for card date parsing (default: `📅`) |
+  | `time-trigger` | Time trigger token for card time parsing (default: `⏰`) |
+  | `date-format` | Date display format |
+  | `time-format` | Time display format |
+  | `link-date-to-daily-note` | Whether date triggers create links to daily notes |
+  | `metadata-keys` | Custom metadata keys extracted from cards |
+  | `archive-with-date` | Whether to prepend date when archiving |
+  | `prepend-archive-date` | Archive date format |
+  | `new-card-insertion-method` | Where new cards are inserted (top/bottom of column) |
+  | `hide-card-count` | Display preference |
+  | `hide-tags-in-title` | Display preference |
+  | `hide-tags-display` | Display preference |
+  | `lane-width` | TUI/WebUI layout hint |
+  | `max-archive-size` | Archive size limit |
+  | `show-checkboxes` | Whether to show checkboxes on cards |
+- [ ] `vulcan config import kanban` — import Kanban settings and report mapping
+- [ ] Per-board settings override: individual boards can override global settings via their YAML code block
+
+#### 9.11.5 TUI and WebUI (future)
 
 - [ ] Browse TUI: `o` hotkey on Kanban `.md` files opens a board view with columns displayed side-by-side
 - [ ] WebUI: Kanban board rendered as interactive drag-and-drop columns (depends on Phase 13/14)
@@ -1607,9 +1682,11 @@ The assistant has access to Vulcan's query and mutation tools:
 - [ ] `vulcan assistant --file <note> <prompt>` — prompt about a specific note (note content injected as context)
 - [ ] `vulcan assistant --summarize <note>` — summarize a note
 - [ ] `vulcan assistant --ask <question>` — RAG-style question answering against the vault (semantic search → context → answer)
+- [ ] `vulcan assistant --prompt <name>` — use a named prompt file (see 9.12.6)
+- [ ] `vulcan assistant --skill <name>` — invoke a named skill (see 9.12.7)
 - [ ] `--output json` for structured output
 - [ ] `--dry-run` on write operations shows planned changes without applying
-- [ ] Conversation history stored in `.vulcan/assistant/` for multi-turn sessions
+- [ ] `--require-confirmation` — require user confirmation before tool calls that mutate the vault (default: true for write operations)
 
 #### 9.12.4 System prompt and vault awareness
 
@@ -1617,6 +1694,98 @@ The assistant has access to Vulcan's query and mutation tools:
 - [ ] Vault context injection: relevant notes retrieved via search and injected into context window
 - [ ] Context window management: truncate long note contents, prioritize recent/relevant sections
 - [ ] `vulcan assistant --context <dql>` — pre-filter vault context with a DQL query before prompting
+- [ ] `AGENTS.md` context file: if present in vault root, include as additional system context (vault-specific metadata, conventions, instructions for the assistant)
+
+#### 9.12.5 Conversation persistence (gemini-scribe format)
+
+Conversations are saved as Markdown files in a configurable folder, using Obsidian callouts for message formatting. This makes sessions browseable and searchable as regular vault notes.
+
+- [ ] Configurable session folder: `assistant.sessions_folder` in `.vulcan/config.toml` (default: `AI/Sessions/`)
+- [ ] Session file format — YAML frontmatter:
+  ```yaml
+  ---
+  session_id: <ULID>
+  type: conversation
+  title: <auto-generated or user-provided>
+  created: <ISO 8601>
+  last_active: <ISO 8601>
+  model: <model name used>
+  context_files:
+    - <paths of notes used as context>
+  enabled_tools:
+    - search
+    - read_note
+    - query
+  require_confirmation: true
+  ---
+  ```
+- [ ] Message format using Obsidian callouts:
+  - `> [!user]+ User` — user messages (collapsible, expanded by default)
+  - `> [!assistant]+ Assistant` — assistant responses
+  - `> [!metadata]- Metadata` — tool calls, context retrieval, timestamps (collapsed by default)
+  - Each message block separated by `## User` / `## Assistant` headings for readability
+- [ ] Auto-save after each exchange in `--chat` mode
+- [ ] Resume sessions: `vulcan assistant --resume <session-id-or-title>` — load conversation history from file
+- [ ] `vulcan assistant sessions` — list saved sessions (title, date, message count)
+- [ ] Session auto-titling: use LLM to generate a short title after the first exchange if none provided
+
+#### 9.12.6 Prompts system
+
+Prompts are reusable Markdown files that define pre-configured assistant behaviors, stored in a configurable prompts folder.
+
+- [ ] Configurable prompts folder: `assistant.prompts_folder` in `.vulcan/config.toml` (default: `AI/Prompts/`)
+- [ ] Prompt file format — Markdown with YAML frontmatter:
+  ```yaml
+  ---
+  name: summarize-meeting
+  description: Summarize meeting notes into action items
+  version: 1
+  override_system_prompt: false  # true = replace default system prompt; false = append
+  tags:
+    - productivity
+    - meetings
+  ---
+
+  You are a meeting notes assistant. Given a meeting note, extract:
+  1. Key decisions made
+  2. Action items with owners
+  3. Follow-up questions
+  ```
+- [ ] `vulcan assistant --prompt <name>` — load prompt by name (filename without `.md`, or `name` frontmatter field)
+- [ ] `vulcan assistant prompts` — list available prompts (name, description, tags)
+- [ ] Prompt variables: `{{context_files}}`, `{{vault_name}}`, `{{current_date}}` expanded at runtime
+- [ ] Prompts can specify `context_files` in frontmatter to auto-load specific notes as context
+
+#### 9.12.7 Skills system
+
+Skills are Markdown-defined capabilities that combine a prompt with specific tool permissions and workflows. Directory reserved for future expansion.
+
+- [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `AI/Skills/`)
+- [ ] Skill file format — Markdown with YAML frontmatter:
+  ```yaml
+  ---
+  name: daily-review
+  description: Review today's notes and create a daily summary
+  enabled_tools:
+    - search
+    - read_note
+    - create_note
+    - query
+  require_confirmation: false
+  output_file: "Reviews/{{date}}-daily-review.md"
+  ---
+
+  Search for all notes modified today. Read each one and create a summary note...
+  ```
+- [ ] `vulcan assistant --skill <name>` — invoke a skill (loads prompt + tool config + runs to completion)
+- [ ] `vulcan assistant skills` — list available skills (name, description, tools used)
+- [ ] Skills can define `output_file` to automatically save results to a vault note
+- [ ] Skills can be chained: a skill's output can reference another skill
+
+#### 9.12.8 Settings import
+
+- [ ] No direct plugin equivalent to import — this is a Vulcan-native feature
+- [ ] Migration helper: if `AGENTS.md` or prompt/skill-like files are detected in common locations (e.g., gemini-scribe folders), offer to import/symlink them into Vulcan's configured folders
 
 ### 9.13 QuickAdd-compatible automation (investigation phase)
 
@@ -1628,18 +1797,55 @@ The assistant has access to Vulcan's query and mutation tools:
 
 #### 9.13.1 Investigation tasks
 
-- [ ] Audit QuickAdd's choice types: Templates, Captures, Macros, Multis — identify which map to CLI workflows
-- [ ] Evaluate QuickAdd's format syntax: `{{DATE}}`, `{{VALUE}}`, `{{FILE_NAME}}`, `{{MACRO:<name>}}` — overlap with Templater and Vulcan's existing template variables
+- [ ] Audit QuickAdd's choice types and their CLI relevance:
+  - **Template**: Create note from template with format syntax — maps directly to `vulcan template insert`
+  - **Capture**: Append/prepend text to a note — maps to `vulcan capture`
+  - **Macro**: Chain of commands executed sequentially — maps to `vulcan macro`
+  - **Multi**: Menu of choices presented to user — maps to interactive CLI picker
+- [ ] Evaluate QuickAdd's format syntax: `{{DATE}}`, `{{VALUE}}`, `{{FILE_NAME}}`, `{{MACRO:<name>}}`, `{{VDATE:format, offset}}`, `{{SELECTED}}`, `{{LINKCURRENT}}` — overlap with Templater and Vulcan's existing template variables
+- [ ] Map QuickAdd's `CommandType` enum to Vulcan equivalents:
+  | QuickAdd CommandType | Vulcan equivalent |
+  |---|---|
+  | `Obsidian` | Vulcan CLI command invocation |
+  | `UserScript` | User script execution (reuse DataviewJS/Templater sandbox) |
+  | `Wait` | Delay/pause in macro chain |
+  | `NestedChoice` | Recursive macro/choice invocation |
+  | `EditorCommand` | Text manipulation command (subset applicable to CLI) |
+  | `AIAssistant` | Vulcan assistant invocation (9.12) |
+  | `InfiniteAIAssistant` | Multi-turn assistant session |
+  | `OpenFile` | `vulcan edit` / `$EDITOR` invocation |
+  | `Conditional` | Conditional execution based on variable/expression |
 - [ ] Assess QuickAdd macro chains: are these valuable as CLI pipelines or better served by shell scripts?
-- [ ] Read `.obsidian/plugins/quickadd/data.json` to understand configuration structure
 - [ ] Design decision: should Vulcan implement QuickAdd compatibility, a Vulcan-native automation DSL, or both?
 
 #### 9.13.2 Likely scope (pending investigation)
 
 - [ ] `vulcan capture <target-note> <text>` — quick append to a configured note (similar to `inbox` but configurable per target)
+  - [ ] Capture format syntax: support `{{DATE}}`, `{{VALUE}}`, `{{FILE_NAME}}` variable expansion
+  - [ ] Capture position: `--prepend` / `--append` / `--after-heading <heading>` / `--cursor` (editor contexts)
+  - [ ] Capture to daily/weekly/monthly note with auto-creation
 - [ ] `vulcan macro <name>` — execute a named sequence of Vulcan commands defined in `.vulcan/macros.toml`
 - [ ] Macro definition format: TOML file defining named command sequences with variable interpolation
-- [ ] Import QuickAdd configurations from `.obsidian/plugins/quickadd/data.json` where feasible
+- [ ] Variable prompt control: macros can define variables that prompt the user for input at execution time (`--var` flag for non-interactive use)
+- [ ] Conditional execution: `if` / `else` blocks in macro definitions based on variable values or file existence
+- [ ] UserScript API: user scripts (`.js` files) can access a `quickAddApi`-equivalent object:
+  - [ ] `api.inputPrompt(header, placeholder, value?)` — prompt for text input
+  - [ ] `api.suggester(items, values)` — selection picker
+  - [ ] `api.checkboxPrompt(items, defaults?)` — multi-select
+  - [ ] `api.executeChoice(name)` — invoke another macro/choice by name
+  - [ ] `api.utility.getClipboard()` / `api.utility.setClipboard(text)` — clipboard access
+
+#### 9.13.3 Settings import
+
+- [ ] Read QuickAdd settings from `.obsidian/plugins/quickadd/data.json`:
+  | Setting key | Vulcan mapping |
+  |---|---|
+  | `choices` | Array of choice definitions (Template/Capture/Macro/Multi) — convert to Vulcan macro definitions |
+  | `templateFolderPath` | Template discovery path (cross-reference with Templater settings) |
+  | `globalVariables` | Global variable definitions for format syntax expansion |
+  | `ai` | AI provider config (model, API key env, system prompt) — cross-reference with 9.12 assistant config |
+  | `migrations.migrateToMacroIDRecords` | Internal migration flag (informational only) |
+- [ ] `vulcan config import quickadd` — import QuickAdd choices as Vulcan macros where feasible, report unmappable choices
 
 ### 9.14 Plugin compatibility notes
 
