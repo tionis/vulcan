@@ -839,6 +839,51 @@ mod tests {
     fn list_function() {
         assert_eq!(eval(r#"list("value")"#), serde_json::json!(["value"]));
         assert_eq!(eval("list([1, 2])"), serde_json::json!([1, 2]));
+        assert_eq!(eval("list(1, 2, 3)"), serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn object_length_and_default_functions() {
+        assert_eq!(
+            eval(r#"object("a", 1, "b", 2)"#),
+            serde_json::json!({"a": 1, "b": 2})
+        );
+        assert_eq!(eval(r#"length("hello")"#), serde_json::json!(5));
+        assert_eq!(eval("length([1, 2, 3])"), serde_json::json!(3));
+        assert_eq!(
+            eval(r#"length(object("a", 1, "b", 2))"#),
+            serde_json::json!(2)
+        );
+        assert_eq!(eval("length(null)"), serde_json::json!(0));
+        assert_eq!(eval("default(null, 1)"), serde_json::json!(1));
+        assert_eq!(eval("default(2, 1)"), serde_json::json!(2));
+        assert_eq!(
+            eval("default(list(1, null, null), 2)"),
+            serde_json::json!([1, 2, 2])
+        );
+        assert_eq!(
+            eval("ldefault(list(1, null, null), 2)"),
+            serde_json::json!([1, null, null])
+        );
+        assert_eq!(eval("choice(true, 1, 2)"), serde_json::json!(1));
+        assert_eq!(eval("choice(false, 1, 2)"), serde_json::json!(2));
+    }
+
+    #[test]
+    fn nonnull_firstvalue_and_global_array_functions() {
+        assert_eq!(
+            eval("nonnull([null, false, 1])"),
+            serde_json::json!([false, 1])
+        );
+        assert_eq!(eval("firstvalue([null, null, 2])"), serde_json::json!(2));
+        assert_eq!(
+            eval("map([1, 2, 3], (x) => x + 2)"),
+            serde_json::json!([3, 4, 5])
+        );
+        assert_eq!(
+            eval("filter([1, 2, 3], (x) => x >= 2)"),
+            serde_json::json!([2, 3])
+        );
     }
 
     #[test]
