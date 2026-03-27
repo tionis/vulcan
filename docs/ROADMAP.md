@@ -302,6 +302,20 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 - [x] **Regex support**: regex literals `/pattern/flags` in tokenizer/parser; `.matches()` method with case-insensitive flag support
 - [x] **Link methods**: `.asFile()` (resolves wikilink string to file object via vault-wide index), `.linksTo()` (checks outbound links of the source note)
 
+#### 4.5.1 Custom Bases source types (extension point for Phase 9.15+)
+
+The built-in Bases evaluator queries vault files as its data source. Phases 9.15 (TaskNotes) and potentially other plugins require registering **custom source types** that provide non-file-based row sets to the Bases query engine.
+
+- [ ] `BasesSource` trait: `fn rows(&self, filter: &Filter) -> Result<Vec<Row>>` — pluggable data source that can produce rows for Bases evaluation
+- [ ] Built-in source: `FileSource` — queries the documents table (current behavior, extracted into the trait)
+- [ ] Custom source registration: `BasesEvaluator::register_source(name, source)` — register a named source type
+- [ ] Source type in `.base` files: `source.type` field selects the data source (default: `file`; custom sources like `tasknotes` are registered by their respective phases)
+- [ ] Source config passthrough: `source.config` is forwarded to the source implementation (e.g., `config.type: tasknotesTaskList` for TaskNotes views)
+- [ ] Custom sources participate in the same filter/sort/group/formula pipeline as file-based queries
+- [ ] Custom sources can define additional computed columns (e.g., TaskNotes urgency score, days until due)
+
+**Note:** The trait definition and `FileSource` extraction can be implemented as part of Phase 4.5. The actual custom source registrations happen in their respective phases (9.15.8 for TaskNotes).
+
 ---
 
 ## Phase 5: Vectors
@@ -2068,13 +2082,173 @@ When the daemon is running (Phase 10+), expose TaskNotes-compatible REST endpoin
 - [ ] Webhook support: configurable webhooks for task events (create, update, complete, archive, time tracked)
 - [ ] MCP (Model Context Protocol) support: expose task operations as MCP tools for AI integration (cross-reference with 9.12 AI assistant)
 
+### 9.16 Periodic notes (daily, weekly, monthly)
+
+**Goal:** First-class support for periodic notes — daily notes, weekly notes, monthly notes, and custom periodic patterns. Multiple Phase 9 plugins depend on periodic note discovery and creation (TaskNotes pomodoro storage in daily notes, Kanban date-to-daily-note linking, QuickAdd capture to daily note, Calendar plugin integration, Dataview `file.day` resolution). This phase provides the shared infrastructure.
+
+**Builds on:** Phase 1 (document indexing), Phase 9.7 (template variables for date formatting).
+**Reference material:** [Obsidian Daily Notes core plugin](https://help.obsidian.md/Plugins/Daily+notes), [Obsidian Periodic Notes community plugin](https://github.com/liamcain/obsidian-periodic-notes)
+
+#### 9.16.1 Periodic note configuration
+
+- [ ] Configuration in `.vulcan/config.toml`:
+  ```toml
+  [periodic.daily]
+  enabled = true
+  folder = "Journal/Daily"
+  format = "YYYY-MM-DD"          # date format for filename (Moment.js-compatible)
+  template = "daily"              # template name from 9.7/9.9 template system
+
+  [periodic.weekly]
+  enabled = true
+  folder = "Journal/Weekly"
+  format = "YYYY-[W]ww"
+  template = "weekly"
+  start_of_week = "monday"       # monday | sunday | saturday
+
+  [periodic.monthly]
+  enabled = true
+  folder = "Journal/Monthly"
+  format = "YYYY-MM"
+  template = "monthly"
+
+  [periodic.quarterly]
+  enabled = false
+  folder = "Journal/Quarterly"
+  format = "YYYY-[Q]Q"
+  template = "quarterly"
+
+  [periodic.yearly]
+  enabled = false
+  folder = "Journal/Yearly"
+  format = "YYYY"
+  template = "yearly"
+  ```
+- [ ] Each period type is independently configurable: folder, filename format, template, enabled flag
+- [ ] Custom period types: allow user-defined periods beyond the built-in five (e.g., `[periodic.sprint]` with custom interval)
+
+#### 9.16.2 Periodic note discovery and resolution
+
+- [ ] `resolve_periodic_note(period, date) -> Option<Path>`: given a period type and date, compute the expected filename and check if it exists
+- [ ] `resolve_daily_note(date) -> Option<Path>`: convenience alias for daily resolution
+- [ ] Reverse resolution: given a note path, determine if it's a periodic note and extract the date (parse filename against configured format)
+- [ ] `file.day` integration (Dataview 9.8.3): use periodic note configuration to resolve `file.day` — a daily note for `2026-03-27` has `file.day = date("2026-03-27")`
+- [ ] Date-to-note linking: provide a lookup function for other phases (Kanban `link-date-to-daily-note`, TaskNotes calendar integration)
+- [ ] Index periodic notes in cache: add `periodic_type` and `periodic_date` columns to documents table (nullable, populated during scan for notes matching periodic patterns)
+
+#### 9.16.3 CLI surface
+
+- [ ] `vulcan daily [date]` — open or create today's daily note (or specified date)
+  - [ ] If note exists: open in `$EDITOR`
+  - [ ] If note doesn't exist: create from template, then open
+  - [ ] `--no-edit` flag: create only, don't open
+- [ ] `vulcan weekly [date]`, `vulcan monthly [date]` — same pattern for other periods
+- [ ] `vulcan periodic <type> [date]` — generic command for any configured period type
+- [ ] `vulcan periodic list [--type daily|weekly|monthly|...]` — list periodic notes, optionally filtered by type
+- [ ] `vulcan periodic gaps [--type daily] [--from <date>] [--to <date>]` — show missing periodic notes in a date range (useful for identifying gaps in journaling)
+- [ ] `--output json` on all subcommands
+- [ ] Auto-commit if enabled
+
+#### 9.16.4 Settings import
+
+- [ ] Import from Obsidian Daily Notes core plugin: `.obsidian/daily-notes.json`
+  | Setting key | Vulcan mapping |
+  |---|---|
+  | `folder` | `periodic.daily.folder` |
+  | `format` | `periodic.daily.format` |
+  | `template` | `periodic.daily.template` |
+  | `autorun` | Informational (no CLI equivalent) |
+- [ ] Import from Periodic Notes community plugin: `.obsidian/plugins/periodic-notes/data.json`
+  | Setting key | Vulcan mapping |
+  |---|---|
+  | `daily.enabled`, `daily.folder`, `daily.format`, `daily.templatePath` | `periodic.daily.*` |
+  | `weekly.enabled`, `weekly.folder`, `weekly.format`, `weekly.templatePath` | `periodic.weekly.*` |
+  | `monthly.enabled`, `monthly.folder`, `monthly.format`, `monthly.templatePath` | `periodic.monthly.*` |
+  | `quarterly.enabled`, `quarterly.folder`, `quarterly.format`, `quarterly.templatePath` | `periodic.quarterly.*` |
+  | `yearly.enabled`, `yearly.folder`, `yearly.format`, `yearly.templatePath` | `periodic.yearly.*` |
+- [ ] `vulcan config import periodic-notes` — import periodic notes settings
+
+### 9.17 Unified plugin settings import
+
+**Goal:** A single command to discover and import settings from all supported Obsidian plugins at once, plus a status overview of what's importable.
+
+- [ ] `vulcan config import --all` — discover all supported plugin `data.json` files in `.obsidian/plugins/` and import each one, reporting results:
+  ```
+  Importing plugin settings...
+    ✓ dataview: 14 settings imported
+    ✓ templater-obsidian: 10 settings imported
+    ✓ obsidian-tasks-plugin: 7 settings imported
+    ✓ obsidian-kanban: 15 settings imported
+    ✗ quickadd: not installed
+    ✓ tasknotes: 50 settings imported
+    ✓ periodic-notes: 5 settings imported
+    ✓ daily-notes (core): 3 settings imported
+  ```
+- [ ] `vulcan config import --list` — show which plugins are detected and importable without actually importing
+- [ ] `vulcan config import --dry-run` — show what would be imported without writing config
+- [ ] Conflict resolution: when multiple plugins configure the same Vulcan setting (e.g., template folder from both Templater and QuickAdd), warn and prefer the more specific plugin
+- [ ] Import idempotency: re-running import updates existing config without duplicating entries
+- [ ] Individual plugin importers remain available: `vulcan config import dataview`, `vulcan config import templater`, etc.
+
+### Phase 9 implementation order
+
+The Phase 9 sub-phases have both sequential dependencies and parallelization opportunities. This section consolidates the dependency edges into a recommended implementation order.
+
+**Dependency graph:**
+
+```
+9.1 (edit) ─────────────────────────────┐
+9.2 (browse TUI) ← 9.1                  │
+9.3 (auto-commit) ──────────────────────│── can proceed in parallel
+9.4 (additional CLI) ───────────────────│
+9.5 (config layering) ─────────────────│
+                                        │
+9.6 (advanced search) ─────────────────│── foundation for 9.8, 9.12
+9.7 (enhanced templates) ──────────────│── foundation for 9.9
+                                        │
+9.8 (Dataview) ← 4 (Bases), 9.6        │
+  9.8.1 (inline fields + type inference)│
+  9.8.2 (list items + tasks)            │── sequential within 9.8
+  9.8.3 (file.* metadata) ← 9.16       │
+  9.8.4 (type system + expression eval) │
+  9.8.5-9.8.7 (DQL + inline)           │
+  9.8.8 (DataviewJS) ← sandbox          │── enables 9.9.3
+  9.8.9 (settings import)              │
+                                        │
+9.9  (Templater)    ← 9.7, 9.8.8       │
+9.10 (Tasks plugin) ← 9.8.2            │── can proceed in parallel
+9.11 (Kanban)       ← 9.8.2, 7.1       │   (after their prerequisites)
+9.16 (Periodic)     ← 1, 9.7           │
+                                        │
+9.12 (AI assistant) ← 5, 7.12, 9.6     │── independent of 9.9–9.11
+9.15 (TaskNotes)    ← 4, 9.8, 4.5.1    │── independent of 9.9–9.12
+                                        │
+9.13 (QuickAdd)     ← investigation     │── can start anytime
+9.14 (plugin notes) ← informational     │
+9.17 (unified import) ← all importers   │── last
+```
+
+**Recommended implementation order:**
+
+1. **Wave 1 (parallel):** 9.1–9.5 — CLI foundation. These are largely complete and independent.
+2. **Wave 2 (parallel):** 9.6 (search), 9.7 (templates) — foundation for later waves.
+3. **Wave 3 (sequential):** 9.8.1 → 9.8.2 → 9.8.3 → 9.8.4 → 9.8.5 → 9.8.6 → 9.8.7 → 9.8.8 → 9.8.9 — Dataview, the largest sub-phase. Internal ordering is sequential.
+4. **Wave 4 (parallel):** 9.9 (Templater), 9.10 (Tasks), 9.11 (Kanban), 9.16 (Periodic notes) — all have their prerequisites met after Wave 3. Can proceed in parallel.
+5. **Wave 5 (parallel):** 9.12 (AI assistant), 9.15 (TaskNotes) — independent of Wave 4. Can start as early as after Wave 3, or run in parallel with Wave 4.
+6. **Wave 6:** 9.13 (QuickAdd) — investigation phase, can start anytime but benefits from seeing 9.9 and 9.12 patterns first.
+7. **Wave 7:** 9.17 (unified import) — must come after all individual plugin importers are implemented.
+
+**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features.
+
+**Note on 9.8.3 and 9.16:** The `file.day` metadata field in 9.8.3 depends on periodic note configuration from 9.16. However, `file.day` can be stubbed initially (return null when no periodic config exists) and filled in when 9.16 lands. This avoids blocking all of 9.8 on 9.16.
+
 ---
 
 ## Phase 10: Multi-Vault Daemon
 
 **Goal:** A long-running process that serves multiple vaults over a proper REST API. The CLI can connect to it instead of opening the cache directly, eliminating per-command startup cost and enabling multi-vault workflows.
 
-**Depends on:** Phase 7 complete. Phases 9.8–9.15 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins.
+**Depends on:** Phase 7 complete. Phases 9.8–9.17 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes, Periodic Notes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins.
 **Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
 
 Search API note: search request semantics are already defined earlier by the shared `SearchQuery` contract from Phase 9.6. Phase 10 daemon work reuses that surface; it does not introduce a second search-parameter design step.
@@ -2970,9 +3144,13 @@ Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and adds the T
 Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.
 Phase 9.12 (AI assistant) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. Requires an external inference API.
 Phase 9.13 (QuickAdd) is an investigation phase — scope depends on CLI applicability findings. May be deferred or replaced by a Vulcan-native automation DSL.
-Phase 9.15 (TaskNotes) builds on Phase 4 (properties/Bases) and Phase 9.8 (Dataview metadata). It complements Phase 9.10 (Tasks plugin) — TaskNotes uses task-as-note files with rich frontmatter and Bases views, while Tasks plugin operates on inline checkboxes. Calendar sync (9.15.10) is behind a `calendar-sync` feature flag. HTTP API compatibility (9.15.12) depends on Phase 10 (daemon).
+Phase 9.15 (TaskNotes) builds on Phase 4 (properties/Bases, including 4.5.1 custom source types) and Phase 9.8 (Dataview metadata). It complements Phase 9.10 (Tasks plugin) — TaskNotes uses task-as-note files with rich frontmatter and Bases views, while Tasks plugin operates on inline checkboxes. Calendar sync (9.15.10) is behind a `calendar-sync` feature flag. HTTP API compatibility (9.15.12) depends on Phase 10 (daemon).
+Phase 9.16 (Periodic notes) builds on Phase 1 (document indexing) and Phase 9.7 (template variables). It provides shared infrastructure for `file.day` resolution (9.8.3), Kanban date linking (9.11), QuickAdd daily note capture (9.13), and TaskNotes pomodoro storage (9.15). Can start as early as Wave 2 but `file.day` can be stubbed pending its completion.
+Phase 9.17 (Unified import) must come after all individual plugin settings importers (9.8.9, 9.9.4, 9.10.5, 9.11.4, 9.13.3, 9.15.11, 9.16.4) are implemented.
+Phase 4.5.1 (Custom Bases source types) extends the Bases evaluator with pluggable data sources. The trait and `FileSource` extraction are part of Phase 4. The actual custom source registrations happen in Phase 9.15.8 (TaskNotes Bases views).
 Phase 18.8 (Excalidraw) is part of Phase 18 (Canvas) — both are visual JSON-based document types. Parsing/indexing (18.8.1–18.8.2) depends on Phase 7. WebUI rendering (18.8.3) depends on Phase 13. WebUI editing (18.8.4) depends on Phase 14.
 Phase 14.1 (Note editor) includes Advanced Tables-style table editing for the WebUI — tab navigation, column management, sorting, CSV paste, and formula support.
+See "Phase 9 implementation order" section (after 9.17) for the consolidated critical path and parallelization guide within Phase 9.
 
 ---
 
