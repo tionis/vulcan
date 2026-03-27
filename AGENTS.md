@@ -90,6 +90,20 @@ Each plugin phase includes a settings importer reading from `.obsidian/plugins/<
 - Daemon REST API response format matches CLI `--output json` format.
 - Auto-commit is always opt-in and suppressible with `--no-commit`.
 
+## Before committing
+
+**Always run before committing or submitting changes:**
+
+```sh
+cargo fmt --all                  # format all crates
+cargo clippy --workspace -- -D warnings   # lint — treat warnings as errors
+cargo test --workspace           # run all tests
+```
+
+If you changed a specific crate, at minimum run tests for that crate (`cargo test -p vulcan-core`). Run the full workspace test suite before committing.
+
+Fix any formatting, lint, or test failures before committing. Do not skip these steps — CI will catch them and the resulting back-and-forth wastes time.
+
 ## Testing
 
 - Unit tests for every module.
