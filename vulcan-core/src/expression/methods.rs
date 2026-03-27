@@ -1230,6 +1230,94 @@ mod tests {
     }
 
     #[test]
+    fn function_vectorization() {
+        assert_eq!(
+            eval(r#"replace(list("yes", "re"), "e", "a")"#),
+            serde_json::json!(["yas", "ra"])
+        );
+        assert_eq!(
+            eval(r#"replace(["a", "b", "c"], ["a", "b", "c"], "d")"#),
+            serde_json::json!(["d", "d", "d"])
+        );
+        assert_eq!(
+            eval(r#"replace(["a", "b", "c"], "a", ["d", "e", "f"])"#),
+            serde_json::json!(["d", "b", "c"])
+        );
+        assert_eq!(
+            eval(r#"replace(["a", "b", "c"], ["a", "b", "c"], ["x", "y", "z"])"#),
+            serde_json::json!(["x", "y", "z"])
+        );
+        assert_eq!(
+            eval(r#"replace(["a", "b", "c"], ["a", "b"], ["x", "y", "z"])"#),
+            serde_json::json!(["x", "y"])
+        );
+        assert_eq!(
+            eval(r#"number(["18 years", "2 months", "hmm"])"#),
+            serde_json::json!([18, 2, null])
+        );
+        assert_eq!(
+            eval(r#"dateformat([date("2022-01-05"), date("2022-01-06")], "yyyy-MM-dd")"#),
+            serde_json::json!(["2022-01-05", "2022-01-06"])
+        );
+        assert_eq!(
+            eval(r#"substring(["hello", "world"], [1, 2])"#),
+            serde_json::json!(["ello", "rld"])
+        );
+        assert_eq!(
+            eval(r#"truncate(["Hello There!", "General Kenobi!"], [8, 10])"#),
+            serde_json::json!(["Hello...", "General..."])
+        );
+        assert_eq!(
+            eval(r#"padleft(["a", "bb"], [2, 3], "!")"#),
+            serde_json::json!(["!a", "!bb"])
+        );
+        assert_eq!(
+            eval(r#"choice([true, false, true], "left", "right")"#),
+            serde_json::json!(["left", "right", "left"])
+        );
+        assert_eq!(
+            eval(r#"link(["A", "B"], ["Alpha", "Beta"])"#),
+            serde_json::json!(["[[A|Alpha]]", "[[B|Beta]]"])
+        );
+        assert_eq!(
+            eval(r#"embed(link(["A", "B"]), [true, false])"#),
+            serde_json::json!(["![[A]]", "[[B]]"])
+        );
+        assert_eq!(
+            eval(r#"elink(["https://example.com/a", "https://example.com/b"], ["A", "B"])"#),
+            serde_json::json!(["[A](https://example.com/a)", "[B](https://example.com/b)"])
+        );
+        assert_eq!(
+            eval(r#"all(regexmatch("a+", list("a", "aaaa")))"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"all(regexmatch("a+", list("a", "aaab")))"#),
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            eval(r#"any(regexmatch("a+", list("a", "aaab")))"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"all(regextest("a+", list("a", "aaaa")))"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"all(regextest("a+", list("a", "aaab")))"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"any(regextest("a+", list("a", "aaab")))"#),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            eval(r#"regexreplace(["Suite 1000", "Room 42"], "(\d+)", "<$1>")"#),
+            serde_json::json!(["Suite <1000>", "Room <42>"])
+        );
+    }
+
+    #[test]
     fn escape_html_function() {
         assert_eq!(
             eval(r#"escapeHTML("<b>hi</b>")"#),

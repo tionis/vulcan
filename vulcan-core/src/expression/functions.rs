@@ -71,19 +71,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "reduce" => func_reduce(args, ctx),
         "minby" => func_extreme_by(args, ctx, false),
         "maxby" => func_extreme_by(args, ctx, true),
-        "link" => {
-            let path = eval_arg(args, 0, ctx)?;
-            let display = if args.len() > 1 {
-                Some(value_to_display(&eval_arg(args, 1, ctx)?))
-            } else {
-                None
-            };
-            let path_str = value_to_display(&path);
-            match display {
-                Some(d) => Ok(Value::String(format!("[[{path_str}|{d}]]"))),
-                None => Ok(Value::String(format!("[[{path_str}]]"))),
-            }
-        }
+        "link" => func_link(args, ctx),
         "embed" => func_embed(args, ctx),
         "elink" => func_elink(args, ctx),
         "string" => func_string(args, ctx),
@@ -174,24 +162,24 @@ fn func_date(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     }
 
     let val = eval_arg(args, 0, ctx)?;
-    match &val {
+    vectorize_unary(val, &|value| match &value {
         Value::String(s) => {
             Ok(resolve_date_value(s, ctx).map_or(Value::Null, |ms| Value::Number(ms.into())))
         }
-        Value::Number(_) => Ok(val),
+        Value::Number(_) => Ok(value),
         _ => Ok(Value::Null),
-    }
+    })
 }
 
 fn func_duration(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let val = eval_arg(args, 0, ctx)?;
-    match &val {
+    vectorize_unary(val, &|value| match &value {
         Value::String(s) => {
             Ok(parse_duration_string(s).map_or(Value::Null, |ms| Value::Number(ms.into())))
         }
-        Value::Number(_) => Ok(val),
+        Value::Number(_) => Ok(value),
         _ => Ok(Value::Null),
-    }
+    })
 }
 
 fn func_typeof(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -257,19 +245,28 @@ fn func_extract(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
 
 fn func_round(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
-    let number = as_number(&value);
-    if value.is_null() || number.is_nan() {
-        return Ok(Value::Null);
-    }
-
     let precision_value = eval_arg(args, 1, ctx)?;
-    let precision = as_number(&precision_value);
-    if args.len() < 2 || precision_value.is_null() || precision.is_nan() || precision <= 0.0 {
-        return Ok(number_to_value(number.round()));
-    }
+    vectorize_binary(
+        value,
+        precision_value,
+        true,
+        false,
+        &|value, precision_value| {
+            let number = as_number(&value);
+            if value.is_null() || number.is_nan() {
+                return Ok(Value::Null);
+            }
 
-    let factor = 10_f64.powi(precision as i32);
-    Ok(number_to_value((number * factor).round() / factor))
+            let precision = as_number(&precision_value);
+            if args.len() < 2 || precision_value.is_null() || precision.is_nan() || precision <= 0.0
+            {
+                return Ok(number_to_value(number.round()));
+            }
+
+            let factor = 10_f64.powi(precision as i32);
+            Ok(number_to_value((number * factor).round() / factor))
+        },
+    )
 }
 
 fn func_numeric_unary(
@@ -278,19 +275,23 @@ fn func_numeric_unary(
     op: fn(f64) -> f64,
 ) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
-    let number = as_number(&value);
-    if value.is_null() || number.is_nan() {
-        return Ok(Value::Null);
-    }
-    Ok(number_to_value(op(number)))
+    vectorize_unary(value, &|value| {
+        let number = as_number(&value);
+        if value.is_null() || number.is_nan() {
+            return Ok(Value::Null);
+        }
+        Ok(number_to_value(op(number)))
+    })
 }
 
 fn func_number(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let val = eval_arg(args, 0, ctx)?;
-    Ok(match &val {
-        Value::Number(_) => val,
-        Value::String(text) => first_number_in_text(text).map_or(Value::Null, number_to_value),
-        _ => Value::Null,
+    vectorize_unary(val, &|value| {
+        Ok(match &value {
+            Value::Number(_) => value,
+            Value::String(text) => first_number_in_text(text).map_or(Value::Null, number_to_value),
+            _ => Value::Null,
+        })
     })
 }
 
@@ -306,11 +307,23 @@ fn func_choice(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     }
 
     let condition = eval_arg(args, 0, ctx)?;
-    if is_truthy(&condition) {
-        eval_arg(args, 1, ctx)
-    } else {
-        eval_arg(args, 2, ctx)
-    }
+    let left = eval_arg(args, 1, ctx)?;
+    let right = eval_arg(args, 2, ctx)?;
+    vectorize_ternary(
+        condition,
+        left,
+        right,
+        true,
+        false,
+        false,
+        &|condition, left, right| {
+            if is_truthy(&condition) {
+                Ok(left)
+            } else {
+                Ok(right)
+            }
+        },
+    )
 }
 
 fn func_display(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -339,38 +352,42 @@ fn func_hash(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
 
 fn func_currencyformat(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
-    let number = as_number(&value);
-    if value.is_null() || number.is_nan() {
-        return Ok(Value::Null);
-    }
-
     let currency = match eval_arg(args, 1, ctx)? {
         Value::String(code) => code,
         Value::Null => "USD".to_string(),
         _ => return Ok(Value::Null),
     };
-
-    Ok(Value::String(format_currency_value(number, &currency)))
+    vectorize_binary(
+        value,
+        Value::String(currency),
+        true,
+        false,
+        &|value, currency| {
+            let number = as_number(&value);
+            let Value::String(currency) = currency else {
+                return Ok(Value::Null);
+            };
+            if value.is_null() || number.is_nan() {
+                return Ok(Value::Null);
+            }
+            Ok(Value::String(format_currency_value(number, &currency)))
+        },
+    )
 }
 
 fn func_contains(args: &[Expr], ctx: &EvalContext, mode: ContainsMode) -> Result<Value, String> {
     let haystack = eval_arg(args, 0, ctx)?;
     let needle = eval_arg(args, 1, ctx)?;
-    Ok(Value::Bool(contains_value(&haystack, &needle, mode)))
+    vectorize_binary(haystack, needle, false, true, &|haystack, needle| {
+        Ok(Value::Bool(contains_value(&haystack, &needle, mode)))
+    })
 }
 
 fn func_contains_word(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let haystack = eval_arg(args, 0, ctx)?;
     let needle = eval_arg(args, 1, ctx)?;
-
-    Ok(match haystack {
-        Value::Array(values) => Value::Array(
-            values
-                .into_iter()
-                .map(|value| contains_word_value(&value, &needle))
-                .collect(),
-        ),
-        _ => contains_word_value(&haystack, &needle),
+    vectorize_binary(haystack, needle, true, true, &|haystack, needle| {
+        Ok(contains_word_value(&haystack, &needle))
     })
 }
 
@@ -389,249 +406,409 @@ fn func_string_predicate(
 ) -> Result<Value, String> {
     let haystack = eval_arg(args, 0, ctx)?;
     let needle = eval_arg(args, 1, ctx)?;
-    Ok(match (&haystack, &needle) {
-        (Value::String(haystack), Value::String(needle)) => {
-            Value::Bool(predicate(haystack, needle))
-        }
-        (Value::Null, _) | (_, Value::Null) => Value::Null,
-        _ => Value::Null,
+    vectorize_binary(haystack, needle, true, true, &|haystack, needle| {
+        Ok(match (&haystack, &needle) {
+            (Value::String(haystack), Value::String(needle)) => {
+                Value::Bool(predicate(haystack, needle))
+            }
+            (Value::Null, _) | (_, Value::Null) => Value::Null,
+            _ => Value::Null,
+        })
     })
 }
 
 fn func_substring(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
-    let Value::String(text) = value else {
-        return Ok(if value.is_null() {
-            Value::Null
-        } else {
-            Value::Null
-        });
-    };
-
-    let start = eval_nonnegative_index(args, 1, ctx)?;
-    let end = if args.len() > 2 {
-        Some(eval_nonnegative_index(args, 2, ctx)?)
+    let start = eval_arg(args, 1, ctx)?;
+    if args.len() > 2 {
+        let end = eval_arg(args, 2, ctx)?;
+        vectorize_ternary(
+            value,
+            start,
+            end,
+            true,
+            true,
+            true,
+            &|value, start, end| match value {
+                Value::String(text) => {
+                    let Some(start) = nonnegative_index_value(&start) else {
+                        return Ok(Value::Null);
+                    };
+                    let Some(end) = nonnegative_index_value(&end) else {
+                        return Ok(Value::Null);
+                    };
+                    Ok(Value::String(substring_value(&text, start, Some(end))))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            },
+        )
     } else {
-        None
-    };
-
-    Ok(Value::String(substring_value(&text, start, end)))
+        vectorize_binary(value, start, true, true, &|value, start| match value {
+            Value::String(text) => {
+                let Some(start) = nonnegative_index_value(&start) else {
+                    return Ok(Value::Null);
+                };
+                Ok(Value::String(substring_value(&text, start, None)))
+            }
+            Value::Null => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        })
+    }
 }
 
 fn func_split(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     let delimiter = eval_arg(args, 1, ctx)?;
-    let (Value::String(text), Value::String(pattern)) = (&value, &delimiter) else {
-        return Ok(if value.is_null() || delimiter.is_null() {
-            Value::Null
-        } else {
-            Value::Null
-        });
-    };
-
-    let limit = if args.len() > 2 {
-        Some(eval_nonnegative_index(args, 2, ctx)?)
+    if args.len() > 2 {
+        let limit = eval_arg(args, 2, ctx)?;
+        vectorize_ternary(
+            value,
+            delimiter,
+            limit,
+            true,
+            true,
+            true,
+            &|value, delimiter, limit| match (&value, &delimiter) {
+                (Value::String(text), Value::String(pattern)) => {
+                    let Some(limit) = nonnegative_index_value(&limit) else {
+                        return Ok(Value::Null);
+                    };
+                    Ok(Value::Array(regex_split(text, pattern, Some(limit))?))
+                }
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            },
+        )
     } else {
-        None
-    };
-
-    Ok(Value::Array(regex_split(text, pattern, limit)?))
+        vectorize_binary(value, delimiter, true, true, &|value, delimiter| match (
+            &value, &delimiter,
+        ) {
+            (Value::String(text), Value::String(pattern)) => {
+                Ok(Value::Array(regex_split(text, pattern, None)?))
+            }
+            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        })
+    }
 }
 
 fn func_replace(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     let pattern = eval_arg(args, 1, ctx)?;
     let replacement = eval_arg(args, 2, ctx)?;
-    let (Value::String(text), Value::String(pattern), Value::String(replacement)) =
-        (&value, &pattern, &replacement)
-    else {
-        return Ok(
-            if value.is_null() || pattern.is_null() || replacement.is_null() {
-                Value::Null
-            } else {
-                Value::Null
-            },
-        );
-    };
-
-    Ok(Value::String(text.replace(pattern, replacement)))
+    vectorize_ternary(
+        value,
+        pattern,
+        replacement,
+        true,
+        true,
+        true,
+        &|value, pattern, replacement| match (&value, &pattern, &replacement) {
+            (Value::String(text), Value::String(pattern), Value::String(replacement)) => {
+                Ok(Value::String(text.replace(pattern, replacement)))
+            }
+            (Value::Null, _, _) | (_, Value::Null, _) | (_, _, Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+    )
 }
 
 fn func_regextest(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let pattern = eval_arg(args, 0, ctx)?;
     let value = eval_arg(args, 1, ctx)?;
-    Ok(Value::Bool(match (&pattern, &value) {
-        (Value::String(pattern), Value::String(text)) => {
-            compile_regex(pattern, "regextest")?.is_match(text)
-        }
-        _ => false,
-    }))
+    vectorize_binary(pattern, value, true, true, &|pattern, value| {
+        Ok(Value::Bool(match (&pattern, &value) {
+            (Value::String(pattern), Value::String(text)) => {
+                compile_regex(pattern, "regextest")?.is_match(text)
+            }
+            _ => false,
+        }))
+    })
 }
 
 fn func_regexmatch(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let pattern = eval_arg(args, 0, ctx)?;
     let value = eval_arg(args, 1, ctx)?;
-    Ok(Value::Bool(match (&pattern, &value) {
-        (Value::String(pattern), Value::String(text)) => {
-            compile_regex(&anchored_pattern(pattern), "regexmatch")?.is_match(text)
-        }
-        _ => false,
-    }))
+    vectorize_binary(pattern, value, true, true, &|pattern, value| {
+        Ok(Value::Bool(match (&pattern, &value) {
+            (Value::String(pattern), Value::String(text)) => {
+                compile_regex(&anchored_pattern(pattern), "regexmatch")?.is_match(text)
+            }
+            _ => false,
+        }))
+    })
 }
 
 fn func_regexreplace(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     let pattern = eval_arg(args, 1, ctx)?;
     let replacement = eval_arg(args, 2, ctx)?;
-    let (Value::String(text), Value::String(pattern), Value::String(replacement)) =
-        (&value, &pattern, &replacement)
-    else {
-        return Ok(
-            if value.is_null() || pattern.is_null() || replacement.is_null() {
-                Value::Null
-            } else {
-                Value::Null
-            },
-        );
-    };
-
-    let regex = compile_regex(pattern, "regexreplace")?;
-    Ok(Value::String(
-        regex.replace_all(text, replacement).into_owned(),
-    ))
+    vectorize_ternary(
+        value,
+        pattern,
+        replacement,
+        true,
+        true,
+        true,
+        &|value, pattern, replacement| match (&value, &pattern, &replacement) {
+            (Value::String(text), Value::String(pattern), Value::String(replacement)) => {
+                let regex = compile_regex(pattern, "regexreplace")?;
+                Ok(Value::String(
+                    regex.replace_all(text, replacement).into_owned(),
+                ))
+            }
+            (Value::Null, _, _) | (_, Value::Null, _) | (_, _, Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+    )
 }
 
 fn func_truncate(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
-    let Value::String(text) = value else {
-        return Ok(if value.is_null() {
-            Value::Null
-        } else {
-            Value::Null
-        });
-    };
-
-    let length = eval_nonnegative_index(args, 1, ctx)?;
-    let suffix = match eval_arg(args, 2, ctx)? {
-        Value::String(suffix) => suffix,
-        Value::Null if args.len() < 3 => "...".to_string(),
-        Value::Null => return Ok(Value::Null),
-        _ => return Ok(Value::Null),
-    };
-
-    Ok(Value::String(truncate_value(&text, length, &suffix)))
+    let length = eval_arg(args, 1, ctx)?;
+    if args.len() > 2 {
+        let suffix = eval_arg(args, 2, ctx)?;
+        vectorize_ternary(
+            value,
+            length,
+            suffix,
+            true,
+            true,
+            true,
+            &|value, length, suffix| match (value, suffix) {
+                (Value::String(text), Value::String(suffix)) => {
+                    let Some(length) = nonnegative_index_value(&length) else {
+                        return Ok(Value::Null);
+                    };
+                    Ok(Value::String(truncate_value(&text, length, &suffix)))
+                }
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            },
+        )
+    } else {
+        vectorize_binary(value, length, true, true, &|value, length| match value {
+            Value::String(text) => {
+                let Some(length) = nonnegative_index_value(&length) else {
+                    return Ok(Value::Null);
+                };
+                Ok(Value::String(truncate_value(&text, length, "...")))
+            }
+            Value::Null => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        })
+    }
 }
 
 fn func_pad(args: &[Expr], ctx: &EvalContext, left: bool) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
-    let Value::String(text) = value else {
-        return Ok(if value.is_null() {
-            Value::Null
-        } else {
-            Value::Null
-        });
-    };
-
-    let target_length = eval_nonnegative_index(args, 1, ctx)?;
-    let padding = match eval_arg(args, 2, ctx)? {
-        Value::String(padding) if !padding.is_empty() => padding,
-        Value::Null if args.len() < 3 => " ".to_string(),
-        Value::Null => return Ok(Value::Null),
-        _ => return Ok(Value::Null),
-    };
-
-    Ok(Value::String(pad_string(
-        &text,
-        target_length,
-        &padding,
-        left,
-    )))
+    let target_length = eval_arg(args, 1, ctx)?;
+    if args.len() > 2 {
+        let padding = eval_arg(args, 2, ctx)?;
+        vectorize_ternary(
+            value,
+            target_length,
+            padding,
+            true,
+            true,
+            true,
+            &|value, target_length, padding| match (value, padding) {
+                (Value::String(text), Value::String(padding)) if !padding.is_empty() => {
+                    let Some(target_length) = nonnegative_index_value(&target_length) else {
+                        return Ok(Value::Null);
+                    };
+                    Ok(Value::String(pad_string(
+                        &text,
+                        target_length,
+                        &padding,
+                        left,
+                    )))
+                }
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            },
+        )
+    } else {
+        vectorize_binary(
+            value,
+            target_length,
+            true,
+            true,
+            &|value, target_length| match value {
+                Value::String(text) => {
+                    let Some(target_length) = nonnegative_index_value(&target_length) else {
+                        return Ok(Value::Null);
+                    };
+                    Ok(Value::String(pad_string(&text, target_length, " ", left)))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            },
+        )
+    }
 }
 
 fn func_dateformat(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     let format = eval_arg(args, 1, ctx)?;
-    let Value::String(format) = format else {
-        return Ok(Value::Null);
-    };
+    vectorize_binary(value, format, true, false, &|value, format| {
+        let Value::String(format) = format else {
+            return Ok(Value::Null);
+        };
 
-    match date_value_ms(&value) {
-        Some(ms) => Ok(Value::String(format_date(ms, &format))),
-        None if value.is_null() => Ok(Value::Null),
-        None => Ok(Value::Null),
-    }
+        match date_value_ms(&value) {
+            Some(ms) => Ok(Value::String(format_date(ms, &format))),
+            None if value.is_null() => Ok(Value::Null),
+            None => Ok(Value::Null),
+        }
+    })
 }
 
 fn func_durationformat(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     let format = eval_arg(args, 1, ctx)?;
-    let Value::String(format) = format else {
-        return Ok(Value::Null);
-    };
+    vectorize_binary(value, format, true, false, &|value, format| {
+        let Value::String(format) = format else {
+            return Ok(Value::Null);
+        };
 
-    match duration_value_ms(&value) {
-        Some(ms) => Ok(Value::String(format_duration(ms, &format))),
-        None if value.is_null() => Ok(Value::Null),
-        None => Ok(Value::Null),
-    }
+        match duration_value_ms(&value) {
+            Some(ms) => Ok(Value::String(format_duration(ms, &format))),
+            None if value.is_null() => Ok(Value::Null),
+            None => Ok(Value::Null),
+        }
+    })
 }
 
 fn func_striptime(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
-    Ok(match date_value_ms(&value) {
-        Some(ms) => Value::Number(start_of_day(ms).into()),
-        None if value.is_null() => Value::Null,
-        None => Value::Null,
+    vectorize_unary(value, &|value| {
+        Ok(match date_value_ms(&value) {
+            Some(ms) => Value::Number(start_of_day(ms).into()),
+            None if value.is_null() => Value::Null,
+            None => Value::Null,
+        })
     })
 }
 
 fn func_localtime(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
-    Ok(match date_value_ms(&value) {
-        Some(ms) => Value::Number(ms.into()),
-        None if value.is_null() => Value::Null,
-        None => Value::Null,
+    vectorize_unary(value, &|value| {
+        Ok(match date_value_ms(&value) {
+            Some(ms) => Value::Number(ms.into()),
+            None if value.is_null() => Value::Null,
+            None => Value::Null,
+        })
     })
 }
 
 fn func_embed(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
-    let Value::String(text) = value else {
-        return Ok(if value.is_null() {
-            Value::Null
-        } else {
-            Value::Null
-        });
-    };
+    if args.len() > 1 {
+        let should_embed = eval_arg(args, 1, ctx)?;
+        vectorize_binary(value, should_embed, true, true, &|value, should_embed| {
+            let Value::String(text) = value else {
+                return Ok(if value.is_null() {
+                    Value::Null
+                } else {
+                    Value::Null
+                });
+            };
 
-    let Some(link) = parse_wikilink(&text) else {
-        return Ok(Value::Null);
-    };
-    let should_embed = match eval_arg(args, 1, ctx)? {
-        Value::Bool(embed) => embed,
-        Value::Null => true,
-        _ => return Ok(Value::Null),
-    };
+            let Some(link) = parse_wikilink(&text) else {
+                return Ok(Value::Null);
+            };
+            let Value::Bool(should_embed) = should_embed else {
+                return Ok(if should_embed.is_null() {
+                    Value::Null
+                } else {
+                    Value::Null
+                });
+            };
 
-    Ok(Value::String(rebuild_link(&link, should_embed)))
+            Ok(Value::String(rebuild_link(&link, should_embed)))
+        })
+    } else {
+        vectorize_unary(value, &|value| {
+            let Value::String(text) = value else {
+                return Ok(if value.is_null() {
+                    Value::Null
+                } else {
+                    Value::Null
+                });
+            };
+
+            let Some(link) = parse_wikilink(&text) else {
+                return Ok(Value::Null);
+            };
+            Ok(Value::String(rebuild_link(&link, true)))
+        })
+    }
 }
 
 fn func_elink(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let url = eval_arg(args, 0, ctx)?;
-    let Value::String(url) = url else {
-        return Ok(if url.is_null() {
-            Value::Null
-        } else {
-            Value::Null
-        });
-    };
-    let display = match eval_arg(args, 1, ctx)? {
-        Value::String(display) => display,
-        Value::Null => url.clone(),
-        _ => return Ok(Value::Null),
-    };
+    if args.len() > 1 {
+        let display = eval_arg(args, 1, ctx)?;
+        vectorize_binary(url, display, true, true, &|url, display| {
+            let Value::String(url) = url else {
+                return Ok(if url.is_null() {
+                    Value::Null
+                } else {
+                    Value::Null
+                });
+            };
+            let display = match display {
+                Value::String(display) => display,
+                Value::Null => url.clone(),
+                _ => return Ok(Value::Null),
+            };
 
-    Ok(Value::String(format!("[{display}]({url})")))
+            Ok(Value::String(format!("[{display}]({url})")))
+        })
+    } else {
+        vectorize_unary(url, &|url| {
+            let Value::String(url) = url else {
+                return Ok(if url.is_null() {
+                    Value::Null
+                } else {
+                    Value::Null
+                });
+            };
+            Ok(Value::String(format!("[{url}]({url})")))
+        })
+    }
+}
+
+fn func_link(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+    let path = eval_arg(args, 0, ctx)?;
+    if args.len() > 1 {
+        let display = eval_arg(args, 1, ctx)?;
+        vectorize_binary(path, display, true, true, &|path, display| {
+            if path.is_null() {
+                return Ok(Value::Null);
+            }
+
+            let path_str = value_to_display(&path);
+            if display.is_null() {
+                Ok(Value::String(format!("[[{path_str}]]")))
+            } else {
+                Ok(Value::String(format!(
+                    "[[{path_str}|{}]]",
+                    value_to_display(&display)
+                )))
+            }
+        })
+    } else {
+        vectorize_unary(path, &|path| {
+            if path.is_null() {
+                return Ok(Value::Null);
+            }
+            let path_str = value_to_display(&path);
+            Ok(Value::String(format!("[[{path_str}]]")))
+        })
+    }
 }
 
 fn func_string(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -912,6 +1089,132 @@ fn eval_all_args(args: &[Expr], ctx: &EvalContext) -> Result<Vec<Value>, String>
     args.iter().map(|e| evaluate(e, ctx)).collect()
 }
 
+fn vectorize_unary<F>(value: Value, op: &F) -> Result<Value, String>
+where
+    F: Fn(Value) -> Result<Value, String>,
+{
+    match value {
+        Value::Array(values) => Ok(Value::Array(
+            values
+                .into_iter()
+                .map(|value| vectorize_unary(value, op))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        value => op(value),
+    }
+}
+
+fn vectorize_binary<F>(
+    left: Value,
+    right: Value,
+    vectorize_left: bool,
+    vectorize_right: bool,
+    op: &F,
+) -> Result<Value, String>
+where
+    F: Fn(Value, Value) -> Result<Value, String>,
+{
+    match (left, right) {
+        (Value::Array(left_values), Value::Array(right_values))
+            if vectorize_left && vectorize_right =>
+        {
+            let len = left_values.len().min(right_values.len());
+            Ok(Value::Array(
+                (0..len)
+                    .map(|index| {
+                        vectorize_binary(
+                            left_values[index].clone(),
+                            right_values[index].clone(),
+                            vectorize_left,
+                            vectorize_right,
+                            op,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        (Value::Array(values), right) if vectorize_left => Ok(Value::Array(
+            values
+                .into_iter()
+                .map(|value| {
+                    vectorize_binary(value, right.clone(), vectorize_left, vectorize_right, op)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        (left, Value::Array(values)) if vectorize_right => Ok(Value::Array(
+            values
+                .into_iter()
+                .map(|value| {
+                    vectorize_binary(left.clone(), value, vectorize_left, vectorize_right, op)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        (left, right) => op(left, right),
+    }
+}
+
+fn vectorize_ternary<F>(
+    first: Value,
+    second: Value,
+    third: Value,
+    vectorize_first: bool,
+    vectorize_second: bool,
+    vectorize_third: bool,
+    op: &F,
+) -> Result<Value, String>
+where
+    F: Fn(Value, Value, Value) -> Result<Value, String>,
+{
+    let first_is_array = vectorize_first && matches!(first, Value::Array(_));
+    let second_is_array = vectorize_second && matches!(second, Value::Array(_));
+    let third_is_array = vectorize_third && matches!(third, Value::Array(_));
+
+    if first_is_array || second_is_array || third_is_array {
+        let len = [
+            (&first, vectorize_first),
+            (&second, vectorize_second),
+            (&third, vectorize_third),
+        ]
+        .into_iter()
+        .filter_map(|(value, vectorize)| match (value, vectorize) {
+            (Value::Array(values), true) => Some(values.len()),
+            _ => None,
+        })
+        .min()
+        .unwrap_or(0);
+
+        return Ok(Value::Array(
+            (0..len)
+                .map(|index| {
+                    let first_value = match &first {
+                        Value::Array(values) if vectorize_first => values[index].clone(),
+                        _ => first.clone(),
+                    };
+                    let second_value = match &second {
+                        Value::Array(values) if vectorize_second => values[index].clone(),
+                        _ => second.clone(),
+                    };
+                    let third_value = match &third {
+                        Value::Array(values) if vectorize_third => values[index].clone(),
+                        _ => third.clone(),
+                    };
+                    vectorize_ternary(
+                        first_value,
+                        second_value,
+                        third_value,
+                        vectorize_first,
+                        vectorize_second,
+                        vectorize_third,
+                        op,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ));
+    }
+
+    op(first, second, third)
+}
+
 fn contains_value(haystack: &Value, needle: &Value, mode: ContainsMode) -> bool {
     match mode {
         ContainsMode::Recursive => contains_recursive(haystack, needle, false),
@@ -1103,13 +1406,13 @@ fn map_string_value(value: Value, transform: fn(&str) -> String) -> Value {
     }
 }
 
-fn eval_nonnegative_index(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<usize, String> {
-    let value = eval_arg(args, index, ctx)?;
-    let number = as_number(&value);
+fn nonnegative_index_value(value: &Value) -> Option<usize> {
+    let number = as_number(value);
     if value.is_null() || number.is_nan() {
-        return Ok(0);
+        None
+    } else {
+        Some(number.max(0.0) as usize)
     }
-    Ok(number.max(0.0) as usize)
 }
 
 fn anchored_pattern(pattern: &str) -> String {
