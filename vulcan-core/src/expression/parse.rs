@@ -200,6 +200,11 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 Ok(Expr::Str(s))
             }
+            Token::Wikilink(s) => {
+                let s = s.clone();
+                self.advance()?;
+                Ok(Expr::Str(s))
+            }
             Token::DateLiteral(s) | Token::DurationLiteral(s) => {
                 let s = s.clone();
                 self.advance()?;
@@ -488,6 +493,31 @@ mod tests {
                     BinOp::Add,
                     Box::new(Expr::Number(1.0)),
                 )),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_wikilink_field_access() {
+        assert_eq!(
+            parse("[[alice]].role"),
+            Expr::FieldAccess(
+                Box::new(Expr::Str("[[alice]]".to_string())),
+                "role".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_wikilink_meta_access() {
+        assert_eq!(
+            parse(r#"meta([[alice|Alice]])["display"]"#),
+            Expr::IndexAccess(
+                Box::new(Expr::FunctionCall(
+                    "meta".to_string(),
+                    vec![Expr::Str("[[alice|Alice]]".to_string())],
+                )),
+                Box::new(Expr::Str("display".to_string())),
             )
         );
     }

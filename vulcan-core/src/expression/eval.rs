@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::expression::ast::{BinOp, Expr, UnOp};
 use crate::expression::functions::call_function;
-use crate::expression::functions::{date_field_value, parse_date_like_string};
+use crate::expression::functions::{date_field_value, parse_date_like_string, parse_wikilink};
 use crate::expression::methods::call_method;
 use crate::file_metadata::FileMetadataResolver;
 use crate::properties::NoteRecord;
@@ -154,6 +154,9 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
     match &receiver_val {
         // String fields
         Value::String(s) => {
+            if parse_wikilink(s).is_some() {
+                return Ok(resolve_link_field(ctx, s, field));
+            }
             if field == "length" {
                 return Ok(Value::Number(s.chars().count().into()));
             }
@@ -202,6 +205,9 @@ fn eval_index_access(receiver: &Expr, index: &Expr, ctx: &EvalContext) -> Result
     let index_val = evaluate(index, ctx)?;
 
     match (&receiver_val, &index_val) {
+        (Value::String(link), Value::String(field)) if parse_wikilink(link).is_some() => {
+            Ok(resolve_link_field(ctx, link, field))
+        }
         (Value::Array(values), _) => {
             let Some(index) =
                 integer_value_ms(&index_val).and_then(|index| usize::try_from(index).ok())
@@ -230,18 +236,105 @@ pub fn note_to_file_object(note: &NoteRecord) -> Value {
 /// Parse the target filename from a wikilink string like `[[target]]` or `[[target|display]]`.
 /// Falls back to the raw string if it is not a wikilink (treating it as a plain filename).
 #[must_use]
-pub fn parse_wikilink_target(s: &str) -> &str {
-    let s = s.trim();
-    if s.starts_with("[[") && s.ends_with("]]") {
-        let inner = &s[2..s.len() - 2];
-        // Strip display text
-        let inner = inner.find('|').map_or(inner, |i| &inner[..i]);
-        // Strip heading/block anchor
-        let inner = inner.find('#').map_or(inner, |i| &inner[..i]);
-        inner.trim()
-    } else {
-        s
+pub fn parse_wikilink_target(s: &str) -> String {
+    parse_wikilink(s).map_or_else(|| s.trim().to_string(), |link| link.path)
+}
+
+pub(crate) fn resolve_note_reference<'a>(
+    lookup: &'a HashMap<String, NoteRecord>,
+    source_path: &str,
+    target: &str,
+) -> Option<&'a NoteRecord> {
+    let target = target.trim();
+    let target_no_ext = target.trim_end_matches(".md");
+    let target_basename = target_no_ext.rsplit('/').next().unwrap_or(target_no_ext);
+
+    if let Some(note) = lookup.values().find(|note| {
+        note.document_path == target || note.document_path.trim_end_matches(".md") == target_no_ext
+    }) {
+        return Some(note);
     }
+
+    if let Some(note) = lookup.get(target_no_ext) {
+        return Some(note);
+    }
+
+    let source_folder = source_path
+        .rsplit_once('/')
+        .map_or("", |(folder, _)| folder);
+
+    lookup
+        .values()
+        .filter_map(|note| {
+            let rank = if note.file_name == target_basename {
+                Some(0_usize)
+            } else if note
+                .aliases
+                .iter()
+                .any(|alias| alias == target || alias == target_basename)
+            {
+                Some(1_usize)
+            } else {
+                None
+            }?;
+            Some((
+                rank,
+                folder_distance(source_folder, &note.document_path),
+                note.document_path.as_str(),
+                note,
+            ))
+        })
+        .min_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then(left.1.cmp(&right.1))
+                .then(left.2.cmp(right.2))
+        })
+        .map(|(_, _, _, note)| note)
+}
+
+fn resolve_link_field(ctx: &EvalContext, link: &str, field: &str) -> Value {
+    let Some(link_meta) = parse_wikilink(link) else {
+        return Value::Null;
+    };
+    let Some(lookup) = ctx.note_lookup else {
+        return Value::Null;
+    };
+    let Some(note) = resolve_note_reference(lookup, &ctx.note.document_path, &link_meta.path)
+    else {
+        return Value::Null;
+    };
+
+    if field == "file" {
+        return note_to_file_object(note);
+    }
+    resolve_property_for_note(note, field)
+}
+
+fn resolve_property_for_note(note: &NoteRecord, name: &str) -> Value {
+    note.properties
+        .as_object()
+        .and_then(|props| props.get(name))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn folder_distance(source_folder: &str, note_path: &str) -> usize {
+    let note_folder = note_path.rsplit_once('/').map_or("", |(folder, _)| folder);
+    let source_parts: Vec<&str> = source_folder
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let note_parts: Vec<&str> = note_folder
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let common_prefix = source_parts
+        .iter()
+        .zip(&note_parts)
+        .take_while(|(left, right)| left == right)
+        .count();
+    source_parts.len() + note_parts.len() - (common_prefix * 2)
 }
 
 fn call_file_method(
@@ -305,11 +398,7 @@ fn call_file_method(
 }
 
 fn resolve_property(ctx: &EvalContext, name: &str) -> Value {
-    if let Some(props) = ctx.note.properties.as_object() {
-        props.get(name).cloned().unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    }
+    resolve_property_for_note(ctx.note, name)
 }
 
 fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Value {
@@ -992,6 +1081,30 @@ mod tests {
     }
 
     #[test]
+    fn eval_meta_link_fields() {
+        assert_eq!(
+            eval(r#"meta([[2021-11-01|Displayed link text]]).display"#),
+            Value::String("Displayed link text".to_string())
+        );
+        assert_eq!(
+            eval(r#"meta([[My Project#Next Actions]]).path"#),
+            Value::String("My Project".to_string())
+        );
+        assert_eq!(
+            eval(r#"meta([[My Project#^9bcbe8]]).subpath"#),
+            Value::String("9bcbe8".to_string())
+        );
+        assert_eq!(
+            eval(r#"meta(![[My Project#^9bcbe8]]).embed"#),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval(r#"meta([[My Project#Next Actions]]).type"#),
+            Value::String("header".to_string())
+        );
+    }
+
+    #[test]
     fn eval_object_literal() {
         assert_eq!(
             eval(r#"{"a": 1, "b": 2}"#),
@@ -1079,5 +1192,45 @@ mod tests {
             eval_with_lookup(r#""[[alice]]".asFile().properties.role"#, &lookup),
             Value::String("editor".to_string())
         );
+    }
+
+    #[test]
+    fn eval_link_indexing_and_alias_resolution() {
+        let alice = NoteRecord {
+            document_id: "alice-id".to_string(),
+            document_path: "people/alice.md".to_string(),
+            file_name: "alice".to_string(),
+            file_ext: "md".to_string(),
+            file_mtime: 1_700_000_001,
+            file_size: 500,
+            properties: serde_json::json!({"role": "editor", "team": "docs"}),
+            tags: vec!["#person".to_string()],
+            links: vec!["[[note]]".to_string()],
+            inlinks: vec!["[[note]]".to_string()],
+            aliases: vec!["Alice".to_string()],
+            frontmatter: serde_json::json!({"role": "editor"}),
+            list_items: vec![],
+            tasks: vec![],
+        };
+        let mut lookup = HashMap::new();
+        lookup.insert("alice".to_string(), alice);
+
+        assert_eq!(
+            eval_with_lookup("[[alice]].role", &lookup),
+            Value::String("editor".to_string())
+        );
+        assert_eq!(
+            eval_with_lookup("[[people/alice]].team", &lookup),
+            Value::String("docs".to_string())
+        );
+        assert_eq!(
+            eval_with_lookup(r#"[[Alice]]["role"]"#, &lookup),
+            Value::String("editor".to_string())
+        );
+        assert_eq!(
+            eval_with_lookup("[[alice]].file.name", &lookup),
+            Value::String("alice".to_string())
+        );
+        assert_eq!(eval_with_lookup("[[nobody]].role", &lookup), Value::Null);
     }
 }

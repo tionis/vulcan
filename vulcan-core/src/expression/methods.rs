@@ -143,30 +143,35 @@ fn string_method(s: &str, method: &str, args: &[Expr], ctx: &EvalContext) -> Res
         }
         // Link methods — available on any string that looks like a wikilink
         "asFile" => {
-            use crate::expression::eval::{note_to_file_object, parse_wikilink_target};
+            use crate::expression::eval::{
+                note_to_file_object, parse_wikilink_target, resolve_note_reference,
+            };
             let target = parse_wikilink_target(s);
             if let Some(lookup) = ctx.note_lookup {
-                if let Some(note) = lookup.get(target) {
+                if let Some(note) = resolve_note_reference(lookup, &ctx.note.document_path, &target)
+                {
                     return Ok(note_to_file_object(note));
                 }
             }
             Ok(Value::Null)
         }
         "linksTo" => {
-            use crate::expression::eval::parse_wikilink_target;
+            use crate::expression::eval::{parse_wikilink_target, resolve_note_reference};
             // `s` is the source link; arg 0 is the target file (link string or filename)
             let source_name = parse_wikilink_target(s);
             let file_arg = eval_arg(args, 0, ctx)?;
             let target_name = match &file_arg {
-                Value::String(fs) => parse_wikilink_target(fs).to_string(),
+                Value::String(fs) => parse_wikilink_target(fs),
                 _ => return Ok(Value::Bool(false)),
             };
             if let Some(lookup) = ctx.note_lookup {
-                if let Some(source_note) = lookup.get(source_name) {
+                if let Some(source_note) =
+                    resolve_note_reference(lookup, &ctx.note.document_path, &source_name)
+                {
                     let found = source_note
                         .links
                         .iter()
-                        .any(|l| parse_wikilink_target(l) == target_name.as_str());
+                        .any(|l| parse_wikilink_target(l) == target_name);
                     return Ok(Value::Bool(found));
                 }
             }
