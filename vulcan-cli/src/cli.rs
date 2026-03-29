@@ -5,7 +5,7 @@ use std::path::PathBuf;
 const ROOT_AFTER_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
-  Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest, diff
+  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, bases, suggest, diff
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
   Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template
@@ -301,6 +301,14 @@ const COMPLETIONS_COMMAND_AFTER_HELP: &str = "\
 Examples:
   vulcan completions bash > ~/.local/share/bash-completion/completions/vulcan
   vulcan completions fish > ~/.config/fish/completions/vulcan.fish";
+
+const DATAVIEW_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  inline      evaluate Dataview inline expressions from one note
+
+Examples:
+  vulcan dataview inline Dashboard
+  vulcan --output json dataview inline Projects/Alpha";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -752,6 +760,15 @@ pub enum ExportCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DataviewCommand {
+    #[command(about = "Evaluate Dataview inline expressions from one note")]
+    Inline {
+        #[arg(help = "Note path, filename, or alias containing inline expressions")]
+        file: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum AutomationCommand {
     #[command(about = "Run saved reports, checks, and repairs for non-interactive workflows")]
     Run {
@@ -952,6 +969,14 @@ pub enum Command {
         desc: bool,
         #[command(flatten)]
         export: ExportArgs,
+    },
+    #[command(
+        about = "Evaluate Dataview-compatible metadata and inline expressions",
+        after_help = DATAVIEW_COMMAND_AFTER_HELP
+    )]
+    Dataview {
+        #[command(subcommand)]
+        command: DataviewCommand,
     },
     #[command(
         about = "Evaluate and maintain Bases views",

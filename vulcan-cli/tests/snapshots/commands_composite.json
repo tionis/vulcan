@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -867,6 +867,32 @@
           }
         ],
         "subcommands": []
+      },
+      {
+        "about": "Evaluate Dataview-compatible metadata and inline expressions",
+        "after_help": "Subcommands:\n  inline      evaluate Dataview inline expressions from one note\n\nExamples:\n  vulcan dataview inline Dashboard\n  vulcan --output json dataview inline Projects/Alpha",
+        "name": "dataview",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Evaluate Dataview inline expressions from one note",
+            "name": "inline",
+            "options": [
+              {
+                "help": "Note path, filename, or alias containing inline expressions",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
       },
       {
         "about": "Evaluate and maintain Bases views",
