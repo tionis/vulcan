@@ -212,9 +212,15 @@ struct PreparedFullScanDocument {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+struct PreparedNoteContent {
+    source: String,
+    parsed: Box<ParsedDocument>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum PreparedDerivedContent {
     None,
-    Note(Box<ParsedDocument>),
+    Note(PreparedNoteContent),
     Attachment(Vec<crate::ChunkText>),
 }
 
@@ -574,9 +580,10 @@ fn prepare_derived_content(
                 None => fs::read(&file.absolute_path)?,
             };
             let source = decode_note_source(bytes, &file.absolute_path)?;
-            Ok(PreparedDerivedContent::Note(Box::new(parse_document(
-                &source, config,
-            ))))
+            Ok(PreparedDerivedContent::Note(PreparedNoteContent {
+                parsed: Box::new(parse_document(&source, config)),
+                source,
+            }))
         }
         DocumentKind::Attachment => Ok(PreparedDerivedContent::Attachment(
             extract_attachment_chunks(config, &file.absolute_path, &file.relative_path)?,
@@ -709,7 +716,9 @@ fn apply_incremental_scan(
                     item.file,
                     &content_hash,
                     match &derived {
-                        PreparedDerivedContent::Note(parsed) => parsed.raw_frontmatter.as_deref(),
+                        PreparedDerivedContent::Note(note) => {
+                            note.parsed.raw_frontmatter.as_deref()
+                        }
                         PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => {
                             None
                         }
@@ -717,14 +726,15 @@ fn apply_incremental_scan(
                     current_version,
                 )?;
                 match &derived {
-                    PreparedDerivedContent::Note(parsed) => {
+                    PreparedDerivedContent::Note(note) => {
                         replace_derived_rows(
                             transaction,
                             &id,
                             &item.file.filename,
                             is_new,
                             config,
-                            parsed,
+                            note.source.as_str(),
+                            &note.parsed,
                         )?;
                         result.requires_link_resolution = true;
                         result.requires_property_catalog_refresh = true;
@@ -976,10 +986,13 @@ fn prepare_full_scan_document(
     let content_hash = blake3::hash(&bytes).as_bytes().to_vec();
     let derived =
         match file.kind {
-            DocumentKind::Note => PreparedDerivedContent::Note(Box::new(parse_document(
-                &decode_note_source(bytes, &file.absolute_path)?,
-                config,
-            ))),
+            DocumentKind::Note => {
+                let source = decode_note_source(bytes, &file.absolute_path)?;
+                PreparedDerivedContent::Note(PreparedNoteContent {
+                    parsed: Box::new(parse_document(&source, config)),
+                    source,
+                })
+            }
             DocumentKind::Attachment => PreparedDerivedContent::Attachment(
                 extract_attachment_chunks(config, &file.absolute_path, &file.relative_path)?,
             ),
@@ -1097,20 +1110,21 @@ fn apply_prepared_full_scan_document(
         &prepared.file,
         &prepared.content_hash,
         match &prepared.derived {
-            PreparedDerivedContent::Note(parsed) => parsed.raw_frontmatter.as_deref(),
+            PreparedDerivedContent::Note(note) => note.parsed.raw_frontmatter.as_deref(),
             PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => None,
         },
         document_index_version(prepared.file.kind, config),
     )?;
     match &prepared.derived {
-        PreparedDerivedContent::Note(parsed) => {
+        PreparedDerivedContent::Note(note) => {
             replace_derived_rows(
                 transaction,
                 id,
                 &prepared.file.filename,
                 true,
                 config,
-                parsed,
+                note.source.as_str(),
+                &note.parsed,
             )?;
         }
         PreparedDerivedContent::Attachment(chunks) => {
@@ -1162,6 +1176,7 @@ fn replace_derived_rows(
     document_title: &str,
     is_new: bool,
     config: &crate::VaultConfig,
+    source: &str,
     parsed: &ParsedDocument,
 ) -> Result<(), ScanError> {
     let reusable_chunk_ids = if is_new {
@@ -1203,7 +1218,7 @@ fn replace_derived_rows(
         &list_item_ids,
         config,
     )?;
-    insert_kanban_board(transaction, document_id, parsed, config)?;
+    insert_kanban_board(transaction, document_id, parsed, source, config)?;
     insert_dataview_blocks(transaction, document_id, &parsed.dataview_blocks)?;
     insert_tasks_blocks(transaction, document_id, &parsed.tasks_blocks)?;
     insert_inline_expressions(transaction, document_id, &parsed.inline_expressions)?;
@@ -2054,9 +2069,10 @@ fn insert_kanban_board(
     transaction: &Transaction<'_>,
     document_id: &str,
     parsed: &ParsedDocument,
+    source: &str,
     config: &crate::VaultConfig,
 ) -> Result<(), ScanError> {
-    let Some(board) = crate::kanban::extract_indexed_board(parsed, config) else {
+    let Some(board) = crate::kanban::extract_indexed_board(parsed, source, config) else {
         return Ok(());
     };
 
