@@ -202,6 +202,12 @@ fn task_object(
             }
         });
 
+    if let Value::Object(note_properties) = &note.properties {
+        for (key, value) in note_properties {
+            object.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+
     let status = task.status_char.clone();
     let completed = status.eq_ignore_ascii_case("x");
     object.insert("status".to_string(), Value::String(status.clone()));
@@ -376,7 +382,7 @@ mod tests {
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_000_000,
             file_size: 1234,
-            properties: serde_json::json!({"status": "done"}),
+            properties: serde_json::json!({"status": "done", "reviewed": true}),
             tags: vec!["#project/alpha".to_string()],
             links: vec!["[[Other]]".to_string()],
             starred: false,
@@ -478,7 +484,7 @@ mod tests {
         );
         assert_eq!(
             FileMetadataResolver::field(&note, "properties"),
-            serde_json::json!({"status": "done"})
+            serde_json::json!({"status": "done", "reviewed": true})
         );
         assert_eq!(
             FileMetadataResolver::field(&note, "day"),
@@ -572,5 +578,6 @@ mod tests {
         assert_eq!(tasks[0]["completed"], Value::Bool(true));
         assert_eq!(tasks[0]["fullyCompleted"], Value::Bool(true));
         assert_eq!(tasks[0]["due"], Value::String("2026-04-18".to_string()));
+        assert_eq!(tasks[0]["reviewed"], Value::Bool(true));
     }
 }
