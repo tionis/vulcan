@@ -2,6 +2,8 @@ use crate::paths::{ensure_vulcan_dir, VaultPaths};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -536,6 +538,86 @@ pub struct ConfigLoadResult {
     pub diagnostics: Vec<ConfigDiagnostic>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConfigImportMapping {
+    pub source: String,
+    pub target: String,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConfigImportReport {
+    pub plugin: String,
+    pub source_path: PathBuf,
+    pub config_path: PathBuf,
+    pub created_config: bool,
+    pub updated: bool,
+    pub mappings: Vec<ConfigImportMapping>,
+}
+
+#[derive(Debug)]
+pub enum ConfigImportError {
+    Io(std::io::Error),
+    Json(serde_json::Error),
+    MissingSource(PathBuf),
+    TomlDeserialize(toml::de::Error),
+    TomlSerialize(toml::ser::Error),
+    InvalidConfig(String),
+}
+
+impl Display for ConfigImportError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "{error}"),
+            Self::Json(error) => write!(formatter, "{error}"),
+            Self::MissingSource(path) => write!(
+                formatter,
+                "missing Tasks plugin config at {}",
+                path.display()
+            ),
+            Self::TomlDeserialize(error) => write!(formatter, "{error}"),
+            Self::TomlSerialize(error) => write!(formatter, "{error}"),
+            Self::InvalidConfig(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ConfigImportError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Json(error) => Some(error),
+            Self::TomlDeserialize(error) => Some(error),
+            Self::TomlSerialize(error) => Some(error),
+            Self::MissingSource(_) | Self::InvalidConfig(_) => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for ConfigImportError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<serde_json::Error> for ConfigImportError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+
+impl From<toml::de::Error> for ConfigImportError {
+    fn from(error: toml::de::Error) -> Self {
+        Self::TomlDeserialize(error)
+    }
+}
+
+impl From<toml::ser::Error> for ConfigImportError {
+    fn from(error: toml::ser::Error) -> Self {
+        Self::TomlSerialize(error)
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct PartialVulcanConfig {
     scan: Option<PartialScanConfig>,
@@ -817,6 +899,42 @@ pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error>
     Ok(true)
 }
 
+pub fn import_tasks_plugin_config(
+    paths: &VaultPaths,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    let source_path = paths
+        .vault_root()
+        .join(".obsidian/plugins/obsidian-tasks-plugin/data.json");
+    if !source_path.exists() {
+        return Err(ConfigImportError::MissingSource(source_path));
+    }
+
+    let obsidian = serde_json::from_str::<ObsidianTasksConfig>(&fs::read_to_string(&source_path)?)?;
+    let imported_tasks = imported_tasks_config(obsidian);
+    let mappings = tasks_config_import_mappings(&imported_tasks)?;
+
+    ensure_vulcan_dir(paths)?;
+    let config_path = paths.config_file().to_path_buf();
+    let created_config = !config_path.exists();
+    let existing_contents = fs::read_to_string(&config_path).ok();
+    let mut config_value = load_config_value(&config_path)?;
+    write_tasks_import(&mut config_value, &imported_tasks)?;
+    let rendered = toml::to_string_pretty(&config_value)?;
+    let updated = existing_contents.as_deref() != Some(rendered.as_str());
+    if updated {
+        fs::write(&config_path, rendered)?;
+    }
+
+    Ok(ConfigImportReport {
+        plugin: "tasks".to_string(),
+        source_path,
+        config_path,
+        created_config,
+        updated,
+        mappings,
+    })
+}
+
 #[must_use]
 pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
     let mut config = VaultConfig::default();
@@ -932,6 +1050,184 @@ fn load_obsidian_tasks_config(
         .join(".obsidian/plugins/obsidian-tasks-plugin/data.json");
 
     load_json_file(&path, diagnostics)
+}
+
+fn imported_tasks_config(obsidian: ObsidianTasksConfig) -> TasksConfig {
+    let mut config = VaultConfig::default();
+    apply_obsidian_tasks_defaults(&mut config, obsidian);
+    config.tasks
+}
+
+fn tasks_config_import_mappings(
+    config: &TasksConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let status_source = "statusSettings.coreStatuses + statusSettings.customStatuses";
+    Ok(vec![
+        ConfigImportMapping {
+            source: status_source.to_string(),
+            target: "tasks.statuses.todo".to_string(),
+            value: serde_json::to_value(&config.statuses.todo)?,
+        },
+        ConfigImportMapping {
+            source: status_source.to_string(),
+            target: "tasks.statuses.completed".to_string(),
+            value: serde_json::to_value(&config.statuses.completed)?,
+        },
+        ConfigImportMapping {
+            source: status_source.to_string(),
+            target: "tasks.statuses.in_progress".to_string(),
+            value: serde_json::to_value(&config.statuses.in_progress)?,
+        },
+        ConfigImportMapping {
+            source: status_source.to_string(),
+            target: "tasks.statuses.cancelled".to_string(),
+            value: serde_json::to_value(&config.statuses.cancelled)?,
+        },
+        ConfigImportMapping {
+            source: status_source.to_string(),
+            target: "tasks.statuses.non_task".to_string(),
+            value: serde_json::to_value(&config.statuses.non_task)?,
+        },
+        ConfigImportMapping {
+            source: status_source.to_string(),
+            target: "tasks.statuses.definitions".to_string(),
+            value: serde_json::to_value(&config.statuses.definitions)?,
+        },
+        ConfigImportMapping {
+            source: "globalFilter".to_string(),
+            target: "tasks.global_filter".to_string(),
+            value: serde_json::to_value(&config.global_filter)?,
+        },
+        ConfigImportMapping {
+            source: "globalQuery".to_string(),
+            target: "tasks.global_query".to_string(),
+            value: serde_json::to_value(&config.global_query)?,
+        },
+        ConfigImportMapping {
+            source: "removeGlobalFilter".to_string(),
+            target: "tasks.remove_global_filter".to_string(),
+            value: Value::Bool(config.remove_global_filter),
+        },
+        ConfigImportMapping {
+            source: "setCreatedDate".to_string(),
+            target: "tasks.set_created_date".to_string(),
+            value: Value::Bool(config.set_created_date),
+        },
+        ConfigImportMapping {
+            source: "recurrenceOnCompletion".to_string(),
+            target: "tasks.recurrence_on_completion".to_string(),
+            value: serde_json::to_value(&config.recurrence_on_completion)?,
+        },
+    ])
+}
+
+fn load_config_value(path: &Path) -> Result<toml::Value, ConfigImportError> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+
+    let contents = fs::read_to_string(path)?;
+    if contents.trim().is_empty() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+
+    let value = toml::from_str::<toml::Value>(&contents)?;
+    if value.is_table() {
+        Ok(value)
+    } else {
+        Err(ConfigImportError::InvalidConfig(
+            "expected .vulcan/config.toml to contain a TOML table".to_string(),
+        ))
+    }
+}
+
+fn write_tasks_import(
+    config_value: &mut toml::Value,
+    tasks: &TasksConfig,
+) -> Result<(), ConfigImportError> {
+    let Some(root_table) = config_value.as_table_mut() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "expected .vulcan/config.toml to contain a TOML table".to_string(),
+        ));
+    };
+
+    let tasks_entry = root_table
+        .entry("tasks".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !tasks_entry.is_table() {
+        *tasks_entry = toml::Value::Table(toml::map::Map::new());
+    }
+    let Some(tasks_table) = tasks_entry.as_table_mut() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "expected [tasks] to be a TOML table".to_string(),
+        ));
+    };
+
+    write_optional_toml_string(tasks_table, "global_filter", tasks.global_filter.as_deref());
+    write_optional_toml_string(tasks_table, "global_query", tasks.global_query.as_deref());
+    tasks_table.insert(
+        "remove_global_filter".to_string(),
+        toml::Value::Boolean(tasks.remove_global_filter),
+    );
+    tasks_table.insert(
+        "set_created_date".to_string(),
+        toml::Value::Boolean(tasks.set_created_date),
+    );
+    write_optional_toml_string(
+        tasks_table,
+        "recurrence_on_completion",
+        tasks.recurrence_on_completion.as_deref(),
+    );
+
+    let statuses_entry = tasks_table
+        .entry("statuses".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !statuses_entry.is_table() {
+        *statuses_entry = toml::Value::Table(toml::map::Map::new());
+    }
+    let Some(statuses_table) = statuses_entry.as_table_mut() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "expected [tasks.statuses] to be a TOML table".to_string(),
+        ));
+    };
+
+    write_string_array(statuses_table, "todo", &tasks.statuses.todo);
+    write_string_array(statuses_table, "completed", &tasks.statuses.completed);
+    write_string_array(statuses_table, "in_progress", &tasks.statuses.in_progress);
+    write_string_array(statuses_table, "cancelled", &tasks.statuses.cancelled);
+    write_string_array(statuses_table, "non_task", &tasks.statuses.non_task);
+    statuses_table.insert(
+        "definitions".to_string(),
+        toml::Value::try_from(&tasks.statuses.definitions)?,
+    );
+
+    Ok(())
+}
+
+fn write_optional_toml_string(
+    table: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    match value {
+        Some(value) => {
+            table.insert(key.to_string(), toml::Value::String(value.to_string()));
+        }
+        None => {
+            table.remove(key);
+        }
+    }
+}
+
+fn write_string_array(
+    table: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    values: &[String],
+) {
+    table.insert(
+        key.to_string(),
+        toml::Value::Array(values.iter().cloned().map(toml::Value::String).collect()),
+    );
 }
 
 fn load_vulcan_overrides(
@@ -1924,5 +2220,79 @@ default_mode = "off"
             fs::read_to_string(paths.gitignore_file()).expect("gitignore should exist"),
             "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n"
         );
+    }
+
+    #[test]
+    fn import_tasks_plugin_config_preserves_existing_sections_and_is_idempotent() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-tasks-plugin"))
+            .expect("tasks plugin dir should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/obsidian-tasks-plugin/data.json"),
+            r##"{
+              "globalFilter": "#task",
+              "globalQuery": "not done",
+              "removeGlobalFilter": true,
+              "setCreatedDate": true,
+              "recurrenceOnCompletion": "next-line",
+              "statusSettings": {
+                "coreStatuses": [
+                  { "symbol": " ", "name": "Todo", "type": "TODO", "nextStatusSymbol": ">" },
+                  { "symbol": "x", "name": "Done", "type": "DONE", "nextStatusSymbol": " " }
+                ],
+                "customStatuses": [
+                  { "symbol": ">", "name": "Waiting", "type": "IN_PROGRESS", "nextStatusSymbol": "x" },
+                  { "symbol": "~", "name": "Parked", "type": "NON_TASK" }
+                ]
+              }
+            }"##,
+        )
+        .expect("tasks config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .expect("existing config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = import_tasks_plugin_config(&paths).expect("import should succeed");
+
+        assert_eq!(report.plugin, "tasks");
+        assert!(!report.created_config);
+        assert!(report.updated);
+        assert!(report
+            .mappings
+            .iter()
+            .any(|mapping| mapping.target == "tasks.global_filter"
+                && mapping.value == Value::String("#task".to_string())));
+
+        let rendered = fs::read_to_string(paths.config_file()).expect("config should exist");
+        assert!(rendered.contains("[git]"));
+        assert!(rendered.contains("auto_commit = true"));
+        assert!(rendered.contains("[tasks]"));
+        assert!(rendered.contains("global_filter = \"#task\""));
+        assert!(rendered.contains("global_query = \"not done\""));
+        assert!(rendered.contains("remove_global_filter = true"));
+        assert!(rendered.contains("set_created_date = true"));
+        assert!(rendered.contains("recurrence_on_completion = \"next-line\""));
+        assert!(rendered.contains("[tasks.statuses]"));
+        assert!(rendered.contains("[[tasks.statuses.definitions]]"));
+        assert!(rendered.contains("symbol = \">\""));
+        assert!(rendered.contains("name = \"Waiting\""));
+
+        let second_report =
+            import_tasks_plugin_config(&paths).expect("second import should succeed");
+        assert!(!second_report.updated);
+    }
+
+    #[test]
+    fn import_tasks_plugin_config_errors_when_source_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let error = import_tasks_plugin_config(&paths).expect_err("import should fail");
+        assert!(matches!(error, ConfigImportError::MissingSource(_)));
     }
 }

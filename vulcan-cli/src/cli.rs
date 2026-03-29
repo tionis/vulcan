@@ -9,7 +9,7 @@ Command Groups:
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
   Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template
-  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions
+  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions
 
 Docs:
   User guide: docs/cli.md
@@ -336,6 +336,18 @@ Examples:
   vulcan tasks next 5 --from 2026-03-29
   vulcan tasks blocked
   vulcan tasks graph";
+
+const CONFIG_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml
+
+Notes:
+  Import commands preserve unrelated config sections and overwrite the mapped target keys.
+  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.
+
+Examples:
+  vulcan config import tasks
+  vulcan --output json config import tasks";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -787,6 +799,24 @@ pub enum ExportCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ConfigImportCommand {
+    #[command(about = "Import Obsidian Tasks plugin settings")]
+    Tasks {
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ConfigCommand {
+    #[command(about = "Import compatible Obsidian plugin settings")]
+    Import {
+        #[command(subcommand)]
+        command: ConfigImportCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum DataviewCommand {
     #[command(about = "Evaluate Dataview inline expressions from one note")]
     Inline {
@@ -1087,6 +1117,14 @@ pub enum Command {
     Export {
         #[command(subcommand)]
         command: ExportCommand,
+    },
+    #[command(
+        about = "Import compatible plugin settings into .vulcan/config.toml",
+        after_help = CONFIG_COMMAND_AFTER_HELP
+    )]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
     },
     #[command(about = "Report note, link, property, and embedding changes since a baseline")]
     Changes {

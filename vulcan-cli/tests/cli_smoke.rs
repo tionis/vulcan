@@ -56,6 +56,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("template"))
             .and(predicate::str::contains("batch"))
             .and(predicate::str::contains("export"))
+            .and(predicate::str::contains("config"))
             .and(predicate::str::contains("automation"))
             .and(predicate::str::contains("describe"))
             .and(predicate::str::contains("completions"))
@@ -84,7 +85,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template",
             ))
             .and(predicate::str::contains(
-                "Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions",
+                "Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions",
             ))
             .and(predicate::str::contains("User guide: docs/cli.md"))
             .and(predicate::str::contains(
@@ -400,6 +401,32 @@ fn write_tasks_recurrence_fixture(vault_root: &Path) {
     .expect("recurring note should be written");
 }
 
+fn write_tasks_import_fixture(vault_root: &Path) {
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-tasks-plugin"))
+        .expect("tasks plugin dir should exist");
+    fs::write(
+        vault_root.join(".obsidian/plugins/obsidian-tasks-plugin/data.json"),
+        r##"{
+          "globalFilter": "#task",
+          "globalQuery": "not done",
+          "removeGlobalFilter": true,
+          "setCreatedDate": true,
+          "recurrenceOnCompletion": "next-line",
+          "statusSettings": {
+            "coreStatuses": [
+              { "symbol": " ", "name": "Todo", "type": "TODO", "nextStatusSymbol": ">" },
+              { "symbol": "x", "name": "Done", "type": "DONE", "nextStatusSymbol": " " }
+            ],
+            "customStatuses": [
+              { "symbol": ">", "name": "Waiting", "type": "IN_PROGRESS", "nextStatusSymbol": "x" },
+              { "symbol": "~", "name": "Parked", "type": "NON_TASK" }
+            ]
+          }
+        }"##,
+    )
+    .expect("tasks plugin config should be written");
+}
+
 #[test]
 fn tasks_query_json_output_evaluates_tasks_dsl() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -623,6 +650,49 @@ fn tasks_next_json_output_lists_upcoming_recurring_instances() {
         json["occurrences"][3]["task"]["recurrenceMonthDay"],
         Value::Number(15.into())
     );
+}
+
+#[test]
+fn config_import_tasks_json_output_writes_config_and_reports_mapping() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_tasks_import_fixture(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "tasks",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["plugin"], Value::String("tasks".to_string()));
+    assert_eq!(json["created_config"], Value::Bool(true));
+    assert_eq!(json["updated"], Value::Bool(true));
+    assert!(json["mappings"]
+        .as_array()
+        .is_some_and(|mappings| mappings.iter().any(|mapping| {
+            mapping["target"] == "tasks.global_filter" && mapping["value"] == "#task"
+        })));
+
+    let rendered =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(rendered.contains("[tasks]"));
+    assert!(rendered.contains("global_filter = \"#task\""));
+    assert!(rendered.contains("global_query = \"not done\""));
+    assert!(rendered.contains("remove_global_filter = true"));
+    assert!(rendered.contains("[[tasks.statuses.definitions]]"));
+    assert!(rendered.contains("name = \"Waiting\""));
 }
 
 #[test]
