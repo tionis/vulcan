@@ -1168,7 +1168,7 @@ Extract **all** list items (not just tasks) as structured data, matching Datavie
 - [ ] Task completion state mapping: `x` = done, ` ` = todo, `/` = in-progress, `-` = cancelled; configurable custom status characters via `.vulcan/config.toml`
 - [ ] Synthesize Dataview task fields at query time: `status` (char in brackets), `checked` (status is non-empty), `completed` (status is `x`), `fullyCompleted` (recursive subtree check), `visual` (rendered display text, defaults to `text`)
 - [ ] Nested task query semantics: when a TASK query matches a parent, include child tasks in results even if children don't independently match the WHERE clause. Task hierarchy is preserved in output.
-- [ ] Tasks inherit page-level fields (frontmatter, inline fields) from their containing note
+- [x] Tasks inherit page-level fields (frontmatter, inline fields) from their containing note
 - [ ] Tasks plugin emoji shorthand: detect `🗓️` (due), `✅` (completion), `➕` (created), `🛫` (start), `⏳` (scheduled) date annotations in task text and store as task properties with auto-parsed Date type
 - [ ] Tasks plugin priority levels: detect `⏫` (highest), `🔺` (high), `🔼` (medium), `🔽` (low), `⏬` (lowest) and store as `priority` task property
 - [ ] Tasks plugin recurrence notation: detect `🔁 every <pattern>` in task text and store as `recurrence` task property (parsing the RRULE pattern is deferred to §9.10)

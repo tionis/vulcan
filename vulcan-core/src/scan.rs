@@ -2828,6 +2828,18 @@ mod tests {
             Value::String("[[People/Bob]]".to_string())
         );
 
+        let alpha = note_index
+            .get("Alpha")
+            .expect("alpha note should be indexed");
+        let alpha_tasks = FileMetadataResolver::field(alpha, "tasks");
+        let alpha_tasks = alpha_tasks
+            .as_array()
+            .expect("alpha file.tasks should return an array");
+        assert_eq!(alpha_tasks.len(), 1);
+        assert_eq!(alpha_tasks[0]["status"], Value::String(" ".to_string()));
+        assert_eq!(alpha_tasks[0]["priority"], serde_json::json!(1.0));
+        assert_eq!(alpha_tasks[0]["reviewed"], Value::Bool(true));
+
         let search = search_vault(
             &paths,
             &SearchQuery {
@@ -2887,7 +2899,10 @@ mod tests {
             eval(r#"any(regextest("release", file.tasks.text))"#),
             json!(true)
         );
-        assert_eq!(eval("file.tasks.owner"), json!([null, "[[People/Bob]]"]));
+        assert_eq!(
+            eval("file.tasks.owner"),
+            json!(["[[People/Bob]]", "[[People/Bob]]"])
+        );
         assert_eq!(
             eval(r#"default(file.day, "none")"#),
             Value::String("none".to_string())
