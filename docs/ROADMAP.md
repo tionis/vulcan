@@ -1292,7 +1292,7 @@ Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's i
 - [ ] Multiple blocks per note: a note can contain multiple `` ```dataview `` blocks; `--block <n>` selects by 0-based index, default evaluates all
 - [ ] Error recovery: malformed DQL produces diagnostics, not panics
 - [ ] Unit tests: parse each clause type, boolean FROM combinations, nested WHERE expressions, lambda expressions, link indexing, `WITHOUT ID`, `AS` aliases, computed GROUP BY/FLATTEN, multiple data commands, malformed input
-- [ ] Integration test: round-trip DQL parse → AST → evaluation against a test vault
+- [x] Integration test: round-trip DQL parse → AST → evaluation against a test vault
 
 #### 9.8.6 DQL evaluation and CLI surface
 
@@ -1306,10 +1306,10 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 - [ ] CALENDAR output: JSON with date-keyed entries (human mode shows a flat date-grouped list; calendar rendering is a WebUI concern)
 - [ ] GROUP BY support: produces `{ key, rows }` objects; `rows.field` extracts list of values; aggregation functions (`sum(rows.field)`, `length(rows)`, etc.) work over grouped rows
 - [ ] FLATTEN support: list expansion into individual result rows; multiple FLATTEN clauses compose sequentially; `FLATTEN expr AS name` assigns to a new field
-- [ ] LIMIT support: cap result count (applied after all other data commands)
-- [ ] SORT with multi-key tiebreaking and correct type-aware ordering
-- [ ] `file.*` namespace fully accessible in all expressions (WHERE, TABLE columns, SORT, GROUP BY, FLATTEN)
-- [ ] Link indexing in expressions: `[[Note]].field` resolves field from the linked note's metadata
+- [x] LIMIT support: cap result count (applied after all other data commands)
+- [x] SORT with multi-key tiebreaking and correct type-aware ordering
+- [x] `file.*` namespace fully accessible in all expressions (WHERE, TABLE columns, SORT, GROUP BY, FLATTEN)
+- [x] Link indexing in expressions: `[[Note]].field` resolves field from the linked note's metadata
 - [ ] Diagnostics for unsupported DQL features surfaced in output
 - [ ] `--output json` on all subcommands
 - [ ] Empty result handling: TABLE with 0 results shows headers + result count; LIST with 0 results shows empty; TASK with 0 results shows nothing

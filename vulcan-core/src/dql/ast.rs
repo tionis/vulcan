@@ -1,6 +1,9 @@
+use serde::Serialize;
+
 use crate::expression::ast::Expr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DqlQueryType {
     Table,
     List,
