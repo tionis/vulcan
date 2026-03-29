@@ -1,7 +1,7 @@
 use crate::parser::comment_scanner::{overlaps_comment, visible_subranges};
 use crate::parser::types::{
     InlineFieldKind, LinkKind, RawDataviewBlock, RawInlineField, RawListItem, RawTask,
-    RawTaskField, SemanticBlock, SemanticBlockKind,
+    RawTaskField, RawTasksBlock, SemanticBlock, SemanticBlockKind,
 };
 use crate::VaultConfig;
 use regex::Regex;
@@ -15,6 +15,7 @@ pub struct DataviewExtraction {
     pub list_items: Vec<RawListItem>,
     pub tasks: Vec<RawTask>,
     pub dataview_blocks: Vec<RawDataviewBlock>,
+    pub tasks_blocks: Vec<RawTasksBlock>,
     pub property_value_ranges: Vec<Range<usize>>,
 }
 
@@ -25,17 +26,31 @@ pub fn extract_dataview_metadata(
 ) -> DataviewExtraction {
     let mut extraction = DataviewExtraction::default();
     let mut dataview_block_index = 0_usize;
+    let mut tasks_block_index = 0_usize;
 
     for block in semantic_blocks {
-        if let Some(language) = dataview_language(block) {
-            extraction.dataview_blocks.push(RawDataviewBlock {
-                language: language.to_string(),
-                text: block.text.clone(),
-                block_index: dataview_block_index,
-                byte_range: block.byte_offset_start..block.byte_offset_end,
-                line_number: line_number_for_offset(source, block.byte_offset_start),
-            });
-            dataview_block_index += 1;
+        if let Some(language) = query_block_language(block) {
+            match language {
+                "tasks" => {
+                    extraction.tasks_blocks.push(RawTasksBlock {
+                        text: block.text.clone(),
+                        block_index: tasks_block_index,
+                        byte_range: block.byte_offset_start..block.byte_offset_end,
+                        line_number: line_number_for_offset(source, block.byte_offset_start),
+                    });
+                    tasks_block_index += 1;
+                }
+                _ => {
+                    extraction.dataview_blocks.push(RawDataviewBlock {
+                        language: language.to_string(),
+                        text: block.text.clone(),
+                        block_index: dataview_block_index,
+                        byte_range: block.byte_offset_start..block.byte_offset_end,
+                        line_number: line_number_for_offset(source, block.byte_offset_start),
+                    });
+                    dataview_block_index += 1;
+                }
+            }
             continue;
         }
 
@@ -61,13 +76,14 @@ pub fn extract_dataview_metadata(
 }
 
 pub fn is_dataview_code_block(block: &SemanticBlock) -> bool {
-    dataview_language(block).is_some()
+    query_block_language(block).is_some()
 }
 
-fn dataview_language(block: &SemanticBlock) -> Option<&str> {
+fn query_block_language(block: &SemanticBlock) -> Option<&str> {
     match block.code_language.as_deref() {
         Some("dataview") => Some("dataview"),
         Some("dataviewjs") => Some("dataviewjs"),
+        Some("tasks") => Some("tasks"),
         _ => None,
     }
 }
@@ -498,6 +514,27 @@ mod tests {
         assert_eq!(extraction.dataview_blocks.len(), 1);
         assert_eq!(extraction.dataview_blocks[0].language, "dataview");
         assert_eq!(extraction.dataview_blocks[0].text, source);
+        assert!(extraction.tasks_blocks.is_empty());
+    }
+
+    #[test]
+    fn detects_tasks_code_blocks() {
+        let source = "not done\npath includes Projects\n";
+        let block = SemanticBlock {
+            block_kind: SemanticBlockKind::CodeBlock,
+            text: source.to_string(),
+            byte_offset_start: 0,
+            byte_offset_end: source.len(),
+            heading_path: Vec::new(),
+            code_language: Some("tasks".to_string()),
+        };
+
+        let extraction = extract_dataview_metadata(source, &[], &[block]);
+
+        assert!(extraction.dataview_blocks.is_empty());
+        assert_eq!(extraction.tasks_blocks.len(), 1);
+        assert_eq!(extraction.tasks_blocks[0].text, source);
+        assert_eq!(extraction.tasks_blocks[0].block_index, 0);
     }
 
     #[test]

@@ -10,7 +10,7 @@ pub mod types;
 pub use types::{
     ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument,
     RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField, RawLink,
-    RawListItem, RawTag, RawTask, RawTaskField,
+    RawListItem, RawTag, RawTask, RawTaskField, RawTasksBlock,
 };
 
 use crate::config::VaultConfig;
@@ -35,6 +35,7 @@ pub(crate) fn parse_document_fragment(
     parsed.list_items.clear();
     parsed.tasks.clear();
     parsed.dataview_blocks.clear();
+    parsed.tasks_blocks.clear();
     parsed.inline_expressions.clear();
     shift_parsed_document_offsets(&mut parsed, base_offset);
     parsed
@@ -89,6 +90,10 @@ fn shift_parsed_document_offsets(parsed: &mut ParsedDocument, base_offset: usize
         }
     }
     for block in &mut parsed.dataview_blocks {
+        block.byte_range.start += base_offset;
+        block.byte_range.end += base_offset;
+    }
+    for block in &mut parsed.tasks_blocks {
         block.byte_range.start += base_offset;
         block.byte_range.end += base_offset;
     }
@@ -493,6 +498,7 @@ mod tests {
         assert_eq!(parsed.dataview_blocks.len(), 2);
         assert_eq!(parsed.dataview_blocks[0].language, "dataview");
         assert_eq!(parsed.dataview_blocks[1].language, "dataviewjs");
+        assert_eq!(parsed.tasks_blocks.len(), 0);
         assert!(parsed.diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("require the `dataviewjs` feature flag")));
@@ -508,6 +514,31 @@ mod tests {
             .chunk_texts
             .iter()
             .all(|chunk| !chunk.content.contains("dv.table")));
+    }
+
+    #[test]
+    fn parses_tasks_query_blocks_as_metadata() {
+        let parsed = parse_document(
+            concat!(
+                "```tasks\n",
+                "not done\n",
+                "path includes Projects\n",
+                "```\n",
+            ),
+            &VaultConfig::default(),
+        );
+
+        assert!(parsed.dataview_blocks.is_empty());
+        assert_eq!(parsed.tasks_blocks.len(), 1);
+        assert_eq!(parsed.tasks_blocks[0].block_index, 0);
+        assert_eq!(
+            parsed.tasks_blocks[0].text,
+            "not done\npath includes Projects"
+        );
+        assert!(parsed
+            .chunk_texts
+            .iter()
+            .all(|chunk| !chunk.content.contains("path includes Projects")));
     }
 
     #[test]
