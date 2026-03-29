@@ -1344,7 +1344,7 @@ Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript
 - [x] Unit test: dataviewjs block detected and diagnosed without feature flag
 
 **JS runtime integration (behind `dataviewjs` feature):**
-- [ ] Add `dataviewjs` feature flag to `vulcan-core/Cargo.toml` and `vulcan-cli/Cargo.toml`
+- [x] Add `dataviewjs` feature flag to `vulcan-core/Cargo.toml` and `vulcan-cli/Cargo.toml`
 - [ ] Embed JS runtime: Boa (pure Rust, preferred for build simplicity) or rquickjs/QuickJS bindings (alternative if performance requires it)
 - [ ] Sandbox constraints: no filesystem access, no network access, no `eval` of external scripts
 - [ ] Execution timeout: configurable via `.vulcan/config.toml` (default 5 seconds per block)
