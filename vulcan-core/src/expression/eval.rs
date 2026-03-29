@@ -154,8 +154,41 @@ fn eval_field_access(receiver: &Expr, field: &str, ctx: &EvalContext) -> Result<
         }
     }
 
+    if let Some(value) = resolve_task_status_metadata_field(receiver, field, ctx)? {
+        return Ok(value);
+    }
+
     let receiver_val = evaluate(receiver, ctx)?;
     Ok(resolve_value_field(&receiver_val, field, ctx))
+}
+
+fn resolve_task_status_metadata_field(
+    receiver: &Expr,
+    field: &str,
+    ctx: &EvalContext,
+) -> Result<Option<Value>, String> {
+    let Expr::FieldAccess(base, status_field) = receiver else {
+        return Ok(None);
+    };
+    if normalize_field_name(status_field) != "status" {
+        return Ok(None);
+    }
+
+    let field_key = match normalize_field_name(field).as_str() {
+        "symbol" => "status",
+        "name" => "statusName",
+        "type" => "statusType",
+        "next" | "nextsymbol" | "nextstatussymbol" => "statusNext",
+        _ => return Ok(None),
+    };
+
+    Ok(Some(match evaluate(base, ctx)? {
+        Value::Object(object) => normalized_object_field(&object, field_key)
+            .cloned()
+            .unwrap_or(Value::Null),
+        Value::Array(values) => swizzle_array_field(&values, field_key, ctx),
+        _ => Value::Null,
+    }))
 }
 
 fn eval_index_access(receiver: &Expr, index: &Expr, ctx: &EvalContext) -> Result<Value, String> {
@@ -855,6 +888,7 @@ fn now_millis() -> i64 {
 mod tests {
     use super::*;
     use crate::expression::parse::Parser;
+    use serde_json::json;
 
     fn eval(input: &str) -> Value {
         eval_with_now(input, 1_776_482_700_000)
@@ -953,6 +987,29 @@ mod tests {
         assert_eq!(eval("status"), Value::String("done".to_string()));
         assert_eq!(eval("count"), serde_json::json!(42));
         assert_eq!(eval("nonexistent"), Value::Null);
+    }
+
+    #[test]
+    fn eval_task_status_metadata_access() {
+        let status_object =
+            r#"{"status":"x","statusName":"Done","statusType":"DONE","statusNext":" "}"#;
+        assert_eq!(
+            eval(&format!("{status_object}.status.symbol")),
+            Value::String("x".to_string())
+        );
+        assert_eq!(
+            eval(&format!("{status_object}.status.name")),
+            Value::String("Done".to_string())
+        );
+        assert_eq!(
+            eval(&format!("{status_object}.status.type")),
+            Value::String("DONE".to_string())
+        );
+        assert_eq!(
+            eval(&format!("{status_object}.status.nextSymbol")),
+            Value::String(" ".to_string())
+        );
+        assert_eq!(eval(&format!("{status_object}.status.length")), json!(1));
     }
 
     #[test]
