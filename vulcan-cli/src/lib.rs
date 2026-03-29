@@ -21,7 +21,6 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use serve::{serve_forever, ServeOptions};
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -30,35 +29,34 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
-use vulcan_core::expression::eval::{evaluate, EvalContext};
-use vulcan_core::expression::parse::Parser as ExpressionParser;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::load_note_index;
 use vulcan_core::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace,
     bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
-    drop_vector_model, evaluate_base_file, execute_query_report, export_static_search_index,
-    git_status, index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
-    link_mentions, list_checkpoints, list_saved_reports, list_vector_models, load_saved_report,
-    load_vault_config, merge_tags, move_note, parse_document, query_backlinks, query_change_report,
-    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
-    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
-    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
-    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, repair_vectors_with_progress, resolve_note_reference, save_saved_report,
-    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
-    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
-    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport,
-    BulkMutationReport, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport,
-    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery,
-    ClusterReport, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DuplicateSuggestionsReport, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorReport,
-    RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
-    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    drop_vector_model, evaluate_base_file, evaluate_note_inline_expressions, execute_query_report,
+    export_static_search_index, git_status, index_vectors_with_progress, initialize_vault,
+    inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints, list_saved_reports,
+    list_vector_models, load_saved_report, load_vault_config, merge_tags, move_note,
+    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
+    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
+    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
+    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
+    resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
+    suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache, watch_vault,
+    AutoScanMode, BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec,
+    BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport, EvaluatedInlineExpression,
+    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary,
+    NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
+    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorReport, RelatedNoteHit,
+    RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
     SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
     SearchReport, SearchSort, StoredModelInfo, TemplatesConfig, VaultPaths, VectorDuplicatePair,
     VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
@@ -548,17 +546,9 @@ struct DiffReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-struct DataviewInlineExpressionReport {
-    expression: String,
-    value: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
 struct DataviewInlineReport {
     file: String,
-    results: Vec<DataviewInlineExpressionReport>,
+    results: Vec<EvaluatedInlineExpression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1086,41 +1076,12 @@ fn run_dataview_inline_command(
     file: &str,
 ) -> Result<DataviewInlineReport, CliError> {
     let resolved = resolve_note_reference(paths, file).map_err(CliError::operation)?;
-    let absolute_path = paths.vault_root().join(&resolved.path);
-    let source = fs::read_to_string(&absolute_path).map_err(CliError::operation)?;
-    let config = load_vault_config(paths).config;
-    let parsed = parse_document(&source, &config);
     let note_index = load_note_index(paths).map_err(CliError::operation)?;
     let note = note_index
         .values()
         .find(|note| note.document_path == resolved.path)
         .ok_or_else(|| CliError::operation(format!("note is not indexed: {}", resolved.path)))?;
-    let formulas = BTreeMap::new();
-    let results = parsed
-        .inline_expressions
-        .into_iter()
-        .map(|inline| {
-            let expression = inline.expression;
-            let (value, error) = match ExpressionParser::new(&expression) {
-                Ok(parser) => match parser.parse() {
-                    Ok(expr) => {
-                        let ctx = EvalContext::new(note, &formulas).with_note_lookup(&note_index);
-                        match evaluate(&expr, &ctx) {
-                            Ok(value) => (value, None),
-                            Err(error) => (Value::Null, Some(error)),
-                        }
-                    }
-                    Err(error) => (Value::Null, Some(error.to_string())),
-                },
-                Err(error) => (Value::Null, Some(error.to_string())),
-            };
-            DataviewInlineExpressionReport {
-                expression,
-                value,
-                error,
-            }
-        })
-        .collect();
+    let results = evaluate_note_inline_expressions(note, &note_index);
 
     Ok(DataviewInlineReport {
         file: resolved.path,
@@ -4207,6 +4168,7 @@ fn query_report_rows(report: &QueryReport, notes: &[NoteRecord]) -> Vec<Value> {
                 "file_ext": note.file_ext,
                 "file_mtime": note.file_mtime,
                 "properties": note.properties,
+                "inline_expressions": note.inline_expressions,
                 "query": query_value,
             })
         })
@@ -6224,6 +6186,7 @@ fn note_rows(report: &NotesReport, notes: &[NoteRecord]) -> Vec<Value> {
                 "file_ext": note.file_ext,
                 "file_mtime": note.file_mtime,
                 "properties": note.properties,
+                "inline_expressions": note.inline_expressions,
             })
         })
         .collect()

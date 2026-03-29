@@ -79,9 +79,9 @@ pub use paths::{
     REPORTS_DIR_NAME, VULCAN_DIR_NAME,
 };
 pub use properties::{
-    extract_indexed_properties, query_notes, IndexedProperties, IndexedPropertyListItem,
-    IndexedPropertyValue, NoteQuery, NoteRecord, NotesReport, PropertyError,
-    PropertyTypeDiagnostic,
+    evaluate_note_inline_expressions, extract_indexed_properties, query_notes,
+    EvaluatedInlineExpression, IndexedProperties, IndexedPropertyListItem, IndexedPropertyValue,
+    NoteQuery, NoteRecord, NotesReport, PropertyError, PropertyTypeDiagnostic,
 };
 pub use query::{
     execute_query, execute_query_dsl, execute_query_json, execute_query_report, QueryAst,
