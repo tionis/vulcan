@@ -1628,8 +1628,8 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [x] `vulcan kanban show <board>` — display board state (columns and card counts; `--verbose` shows all cards)
 - [x] `vulcan kanban cards <board> [--column <name>] [--status <status>]` — list cards with optional filters
 - [x] `vulcan kanban move <board> <card> <target-column>` — move a card between columns (rewrite the `.md` file)
-- [ ] `vulcan kanban add <board> <column> <text>` — add a new card to a column
-- [ ] `--output json` on all subcommands
+- [x] `vulcan kanban add <board> <column> <text>` — add a new card to a column
+- [x] `--output json` on all subcommands
 
 #### 9.11.4 Settings import
 
