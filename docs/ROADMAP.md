@@ -1407,7 +1407,7 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 - [x] Merge into runtime config with `.vulcan/config.toml` overrides taking precedence
 - [x] Settings not found in the Dataview config fall back to Vulcan defaults
 - [x] Unit test: parse sample `data.json`, verify settings merge and precedence
-- [ ] Integration test: vault with custom Dataview settings, verify inline prefix and display settings are respected
+- [x] Integration test: vault with custom Dataview settings, verify inline prefix and display settings are respected
 
 #### 9.8.10 Cross-cutting integration
 
