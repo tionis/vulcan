@@ -121,7 +121,10 @@ pub use suggestions::{
     DuplicateSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
     SuggestionError,
 };
-pub use tasks::{load_tasks_blocks, TasksBlockRecord, TasksError};
+pub use tasks::{
+    load_tasks_blocks, parse_tasks_query, TasksBlockRecord, TasksDateField, TasksDateRelation,
+    TasksError, TasksFilter, TasksQuery, TasksQueryCommand, TasksTextField,
+};
 pub use vector::{
     cluster_vectors, drop_vector_model, index_vectors, index_vectors_with_progress,
     inspect_vector_queue, list_vector_models, query_related_notes, query_vector_neighbors,

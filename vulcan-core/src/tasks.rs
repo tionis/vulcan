@@ -1,3 +1,6 @@
+mod ast;
+mod parse;
+
 use std::fmt::{Display, Formatter};
 
 use serde::Serialize;
@@ -5,6 +8,11 @@ use serde::Serialize;
 use crate::cache::CacheDatabase;
 use crate::paths::VaultPaths;
 use crate::resolve_note_reference;
+
+pub use ast::{
+    TasksDateField, TasksDateRelation, TasksFilter, TasksQuery, TasksQueryCommand, TasksTextField,
+};
+pub use parse::parse_tasks_query;
 
 #[derive(Debug)]
 pub enum TasksError {
