@@ -620,6 +620,7 @@ mod tests {
             properties: serde_json::json!({"status": "done", "items": [1, 2, 3, 2]}),
             tags: vec![],
             links: vec![],
+            starred: false,
             inlinks: vec![],
             aliases: vec![],
             frontmatter: serde_json::json!({}),

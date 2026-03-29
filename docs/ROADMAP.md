@@ -1201,7 +1201,7 @@ Implement the full `file.*` implicit metadata namespace that Dataview exposes on
 - [x] `file.lists` — all list items including tasks (from `list_items` table, returns list item objects)
 - [x] `file.frontmatter` — raw frontmatter as object (from `property_values` where `origin = 'frontmatter'`)
 - [x] `file.day` — date extracted from filename (`yyyy-mm-dd` or `yyyymmdd` patterns), null if no date pattern
-- [ ] `file.starred` — bookmarked status (from `.obsidian/` bookmarks data if available, false otherwise)
+- [x] `file.starred` — bookmarked status (from `.obsidian/` bookmarks data if available, false otherwise)
 - [x] `file.day` resolution: populated from filename date pattern (`yyyy-mm-dd`, `yyyymmdd`) OR from a frontmatter `Date` field; null otherwise
 - [ ] Subtag inheritance in FROM sources: `FROM #A` matches notes with `#A`, `#A/B`, `#A/B/C`, etc.
 - [x] Unit tests: each `file.*` field resolves correctly from cache data
