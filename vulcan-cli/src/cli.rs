@@ -356,11 +356,13 @@ Subcommands:
   list        list indexed Kanban boards
   show        display one board by column
   cards       list cards from one board with optional filters
+  archive     move one card into the archive column
 
 Notes:
   `kanban show` defaults to column counts; add `--verbose` to include cards.
   `kanban show --include-archive` adds the parsed archive section back into the output.
   `kanban cards --status` matches a task status character, status name, or status type.
+  `kanban archive` rewrites the board note, supports `--dry-run`, and honors auto-commit unless `--no-commit` is set.
 
 Examples:
   vulcan kanban list
@@ -368,6 +370,7 @@ Examples:
   vulcan kanban show Board --verbose
   vulcan kanban show Board --include-archive
   vulcan kanban cards Board --column Todo
+  vulcan kanban archive Board build-release
   vulcan --output json kanban cards Board --status IN_PROGRESS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -922,6 +925,17 @@ pub enum KanbanCommand {
             help = "Restrict cards to one task status character, name, or type"
         )]
         status: Option<String>,
+    },
+    #[command(about = "Move one Kanban card into the archive column")]
+    Archive {
+        #[arg(help = "Board path, filename, or alias")]
+        board: String,
+        #[arg(help = "Card id, block id, line number, or exact card text")]
+        card: String,
+        #[arg(long, help = "Preview the archive operation without writing the board")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
 }
 

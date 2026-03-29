@@ -1057,7 +1057,7 @@
       },
       {
         "about": "Inspect indexed Kanban boards and cards",
-        "after_help": "Subcommands:\n  list        list indexed Kanban boards\n  show        display one board by column\n  cards       list cards from one board with optional filters\n\nNotes:\n  `kanban show` defaults to column counts; add `--verbose` to include cards.\n  `kanban show --include-archive` adds the parsed archive section back into the output.\n  `kanban cards --status` matches a task status character, status name, or status type.\n\nExamples:\n  vulcan kanban list\n  vulcan kanban show Board\n  vulcan kanban show Board --verbose\n  vulcan kanban show Board --include-archive\n  vulcan kanban cards Board --column Todo\n  vulcan --output json kanban cards Board --status IN_PROGRESS",
+        "after_help": "Subcommands:\n  list        list indexed Kanban boards\n  show        display one board by column\n  cards       list cards from one board with optional filters\n  archive     move one card into the archive column\n\nNotes:\n  `kanban show` defaults to column counts; add `--verbose` to include cards.\n  `kanban show --include-archive` adds the parsed archive section back into the output.\n  `kanban cards --status` matches a task status character, status name, or status type.\n  `kanban archive` rewrites the board note, supports `--dry-run`, and honors auto-commit unless `--no-commit` is set.\n\nExamples:\n  vulcan kanban list\n  vulcan kanban show Board\n  vulcan kanban show Board --verbose\n  vulcan kanban show Board --include-archive\n  vulcan kanban cards Board --column Todo\n  vulcan kanban archive Board build-release\n  vulcan --output json kanban cards Board --status IN_PROGRESS",
         "name": "kanban",
         "options": [],
         "subcommands": [
@@ -1148,6 +1148,63 @@
                 "short": null,
                 "value_names": [
                   "STATUS"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Move one Kanban card into the archive column",
+            "name": "archive",
+            "options": [
+              {
+                "help": "Board path, filename, or alias",
+                "id": "board",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "BOARD"
+                ]
+              },
+              {
+                "help": "Card id, block id, line number, or exact card text",
+                "id": "card",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "CARD"
+                ]
+              },
+              {
+                "help": "Preview the archive operation without writing the board",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
                 ]
               }
             ],

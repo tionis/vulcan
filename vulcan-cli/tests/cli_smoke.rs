@@ -1059,6 +1059,115 @@ fn kanban_cards_json_output_filters_by_column_and_status() {
 }
 
 #[test]
+fn kanban_archive_json_output_moves_cards_into_archive() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_kanban_archive_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "archive",
+            "Board",
+            "Build release",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["path"], Value::String("Board.md".to_string()));
+    assert_eq!(json["source_column"], Value::String("Todo".to_string()));
+    assert_eq!(json["archive_column"], Value::String("Archive".to_string()));
+    assert_eq!(
+        json["card_text"],
+        Value::String("Build release".to_string())
+    );
+    assert_eq!(json["created_archive_column"], Value::Bool(false));
+    assert_eq!(json["dry_run"], Value::Bool(false));
+    assert_eq!(json["rescanned"], Value::Bool(true));
+
+    let source = fs::read_to_string(vault_root.join("Board.md")).expect("board should be readable");
+    assert!(!source.contains("## Todo\n\n- Build release\n"));
+    assert!(source.contains("## Archive\n\n- Old card\n- Build release\n"));
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "show",
+            "Board",
+            "--include-archive",
+        ])
+        .assert()
+        .success();
+    let board = parse_stdout_json(&show_assert);
+
+    assert_eq!(board["columns"].as_array().map(Vec::len), Some(3));
+    assert_eq!(
+        board["columns"][0]["cards"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        board["columns"][2]["cards"].as_array().map(Vec::len),
+        Some(2)
+    );
+}
+
+#[test]
+fn kanban_archive_dry_run_json_output_leaves_board_unchanged() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_kanban_archive_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let original =
+        fs::read_to_string(vault_root.join("Board.md")).expect("board should be readable");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "archive",
+            "Board",
+            "Build release",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["dry_run"], Value::Bool(true));
+    assert_eq!(json["rescanned"], Value::Bool(false));
+
+    let after = fs::read_to_string(vault_root.join("Board.md")).expect("board should be readable");
+    assert_eq!(after, original);
+}
+
+#[test]
 fn dataview_query_human_output_respects_display_result_count_setting() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

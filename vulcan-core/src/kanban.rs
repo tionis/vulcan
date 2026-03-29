@@ -1,25 +1,30 @@
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write as _};
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::cache::CacheDatabase;
+use crate::expression::functions::format_date;
 use crate::extract_indexed_properties;
 use crate::parse_document;
 use crate::paths::VaultPaths;
 use crate::resolve_note_reference;
-use crate::{ParsedDocument, VaultConfig};
+use crate::{scan_vault, ParsedDocument, ScanMode, VaultConfig};
 
 const KANBAN_FRONTMATTER_KEY: &str = "kanban-plugin";
 const DATE_TRIGGER_KEY: &str = "date-trigger";
 const TIME_TRIGGER_KEY: &str = "time-trigger";
 const METADATA_KEYS_KEY: &str = "metadata-keys";
 const ARCHIVE_WITH_DATE_KEY: &str = "archive-with-date";
+const APPEND_ARCHIVE_DATE_KEY: &str = "append-archive-date";
+const ARCHIVE_DATE_FORMAT_KEY: &str = "archive-date-format";
 const NEW_CARD_INSERTION_METHOD_KEY: &str = "new-card-insertion-method";
 const SETTINGS_FOOTER_MARKER: &str = "%% kanban:settings";
+const DEFAULT_ARCHIVE_COLUMN_NAME: &str = "Archive";
 
 #[derive(Debug)]
 pub enum KanbanError {
@@ -113,6 +118,23 @@ pub struct KanbanTaskStatus {
     pub completed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct KanbanArchiveReport {
+    pub path: String,
+    pub title: String,
+    pub source_column: String,
+    pub archive_column: String,
+    pub card_id: String,
+    pub card_text: String,
+    pub archived_text: String,
+    pub line_number: i64,
+    pub dry_run: bool,
+    pub created_archive_column: bool,
+    pub archive_with_date_applied: bool,
+    pub rescanned: bool,
+}
+
 #[derive(Debug, Clone)]
 struct BoardRow {
     document_id: String,
@@ -148,6 +170,21 @@ struct ColumnLayout {
     max_items: Option<usize>,
     completes_cards: bool,
     archived: bool,
+}
+
+#[derive(Debug, Clone)]
+struct BoardColumnState {
+    heading: HeadingRow,
+    next_offset: i64,
+    layout: ColumnLayout,
+    cards: Vec<KanbanCardRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct ArchiveBehavior {
+    with_date: bool,
+    append_after_title: bool,
+    date_format: String,
 }
 
 #[must_use]
@@ -222,6 +259,124 @@ pub fn load_kanban_board(
         time_trigger: board_row.time_trigger,
         settings: board_row.settings,
         columns,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn archive_kanban_card(
+    paths: &VaultPaths,
+    board: &str,
+    card: &str,
+    dry_run: bool,
+) -> Result<KanbanArchiveReport, KanbanError> {
+    let resolved = resolve_note_reference(paths, board)
+        .map_err(|error| KanbanError::Message(error.to_string()))?;
+    let database =
+        CacheDatabase::open(paths).map_err(|error| KanbanError::Message(error.to_string()))?;
+    let connection = database.connection();
+    let config = crate::load_vault_config(paths).config;
+    let Some(board_row) = load_board_row(connection, resolved.id.as_str())? else {
+        return Err(KanbanError::Message(format!(
+            "{} is not an indexed Kanban board",
+            resolved.path
+        )));
+    };
+
+    let source_path = paths.vault_root().join(&board_row.path);
+    let source = fs::read_to_string(&source_path).map_err(|error| {
+        KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
+    })?;
+    let column_states = load_board_column_states(paths, connection, &board_row, &config, true)?;
+    let (source_column_index, card_index) = resolve_card_match(&column_states, card)?;
+    let source_column = &column_states[source_column_index];
+    if source_column.layout.archived {
+        return Err(KanbanError::Message(format!(
+            "card {} is already archived in {}",
+            card, source_column.layout.name
+        )));
+    }
+    let card_record = &source_column.cards[card_index];
+
+    let parsed = parse_document(&source, &config);
+    let card_line_number = usize::try_from(card_record.line_number).ok();
+    let Some((raw_item_index, _raw_item)) = parsed.list_items.iter().enumerate().find(|item| {
+        item.1.parent_item_index.is_none() && Some(item.1.line_number) == card_line_number
+    }) else {
+        return Err(KanbanError::Message(format!(
+            "failed to locate card at line {} in {}",
+            card_record.line_number, board_row.path
+        )));
+    };
+
+    let line_starts = line_start_offsets(&source);
+    let footer_start = footer_settings_start_offset(&source, &line_starts);
+    let source_column_end = usize::try_from(source_column.next_offset)
+        .ok()
+        .map_or(source.len(), |offset| offset.min(source.len()));
+    let card_range = byte_range_for_list_item_subtree(
+        &parsed.list_items,
+        raw_item_index,
+        source_column_end.min(footer_start.unwrap_or(source.len())),
+        source.len(),
+    )?;
+    let behavior = archive_behavior(board_row.settings.as_object(), &config);
+    let archived_block = archive_card_block(&source[card_range.clone()], &behavior);
+    let archived_text = card_record_archived_text(card_record, &archived_block);
+
+    let updated = if let Some(index) = column_states.iter().position(|state| state.layout.archived)
+    {
+        let state = &column_states[index];
+        let archive_insertion = archive_insertion_offset(state, footer_start, &source);
+        apply_text_edits(
+            &source,
+            &[
+                (archive_insertion..archive_insertion, archived_block.clone()),
+                (card_range.clone(), String::new()),
+            ],
+        )
+    } else {
+        let archive_start = footer_start.unwrap_or(source.len());
+        let archive_section = build_archive_section(
+            archived_block.as_str(),
+            source_column.heading.level,
+            &source[..archive_start],
+        );
+        apply_text_edits(
+            &source,
+            &[
+                (archive_start..archive_start, archive_section),
+                (card_range.clone(), String::new()),
+            ],
+        )
+    };
+
+    if !dry_run {
+        fs::write(&source_path, updated).map_err(|error| {
+            KanbanError::Message(format!("failed to write {}: {error}", board_row.path))
+        })?;
+        scan_vault(paths, ScanMode::Incremental)
+            .map_err(|error| KanbanError::Message(error.to_string()))?;
+    }
+
+    Ok(KanbanArchiveReport {
+        path: board_row.path.clone(),
+        title: board_title(&board_row.path),
+        source_column: source_column.layout.name.clone(),
+        archive_column: column_states
+            .iter()
+            .find(|state| state.layout.archived)
+            .map_or_else(
+                || DEFAULT_ARCHIVE_COLUMN_NAME.to_string(),
+                |state| state.layout.name.clone(),
+            ),
+        card_id: card_record.id.clone(),
+        card_text: card_record.text.clone(),
+        archived_text,
+        line_number: card_record.line_number,
+        dry_run,
+        created_archive_column: !column_states.iter().any(|state| state.layout.archived),
+        archive_with_date_applied: behavior.with_date,
+        rescanned: !dry_run,
     })
 }
 
@@ -309,6 +464,25 @@ fn load_board_columns(
     config: &VaultConfig,
     include_archive: bool,
 ) -> Result<Vec<KanbanColumnRecord>, KanbanError> {
+    let states = load_board_column_states(paths, connection, board, config, include_archive)?;
+    Ok(states
+        .into_iter()
+        .map(|state| KanbanColumnRecord {
+            name: state.layout.name,
+            level: state.heading.level,
+            card_count: state.cards.len(),
+            cards: state.cards,
+        })
+        .collect())
+}
+
+fn load_board_column_states(
+    paths: &VaultPaths,
+    connection: &rusqlite::Connection,
+    board: &BoardRow,
+    config: &VaultConfig,
+    include_archive: bool,
+) -> Result<Vec<BoardColumnState>, KanbanError> {
     let headings = load_board_headings(connection, board.document_id.as_str())?;
     let Some(column_level) = headings.iter().map(|heading| heading.level).min() else {
         return Ok(Vec::new());
@@ -332,14 +506,289 @@ fn load_board_columns(
         if layout.archived && !include_archive {
             continue;
         }
-        columns.push(KanbanColumnRecord {
-            name: layout.name,
-            level: heading.level,
-            card_count: cards.len(),
+        columns.push(BoardColumnState {
+            heading: heading.clone(),
+            next_offset,
+            layout,
             cards,
         });
     }
     Ok(columns)
+}
+
+fn resolve_card_match(
+    columns: &[BoardColumnState],
+    identifier: &str,
+) -> Result<(usize, usize), KanbanError> {
+    let mut exact_matches = Vec::new();
+    let mut text_matches = Vec::new();
+
+    for (column_index, column) in columns.iter().enumerate() {
+        for (card_index, card) in column.cards.iter().enumerate() {
+            let line_match = card.line_number.to_string() == identifier;
+            let id_match = card.id == identifier;
+            let block_match = card.block_id.as_deref() == Some(identifier);
+            if id_match || block_match || line_match {
+                exact_matches.push((column_index, card_index));
+                continue;
+            }
+            if card.text == identifier || card.text.eq_ignore_ascii_case(identifier) {
+                text_matches.push((column_index, card_index));
+            }
+        }
+    }
+
+    let matches = if exact_matches.is_empty() {
+        text_matches
+    } else {
+        exact_matches
+    };
+
+    match matches.as_slice() {
+        [(column_index, card_index)] => Ok((*column_index, *card_index)),
+        [] => Err(KanbanError::Message(format!(
+            "no Kanban card matched {identifier}"
+        ))),
+        _ => {
+            let matches = matches
+                .into_iter()
+                .map(|(column_index, card_index)| {
+                    let column = &columns[column_index];
+                    let card = &column.cards[card_index];
+                    format!("{}:{}: {}", column.layout.name, card.line_number, card.text)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(KanbanError::Message(format!(
+                "card {identifier} matched multiple entries: {matches}"
+            )))
+        }
+    }
+}
+
+fn archive_behavior(
+    settings: Option<&Map<String, Value>>,
+    config: &VaultConfig,
+) -> ArchiveBehavior {
+    ArchiveBehavior {
+        with_date: settings
+            .and_then(|settings| bool_setting(settings, ARCHIVE_WITH_DATE_KEY))
+            .unwrap_or(config.kanban.archive_with_date),
+        append_after_title: settings
+            .and_then(|settings| bool_setting(settings, APPEND_ARCHIVE_DATE_KEY))
+            .unwrap_or(config.kanban.append_archive_date),
+        date_format: settings
+            .and_then(|settings| string_setting(settings, ARCHIVE_DATE_FORMAT_KEY))
+            .unwrap_or_else(|| config.kanban.archive_date_format.clone()),
+    }
+}
+
+fn archive_card_block(block_text: &str, behavior: &ArchiveBehavior) -> String {
+    if !behavior.with_date {
+        return block_text.to_string();
+    }
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX);
+    let timestamp = format_date(now_ms, behavior.date_format.as_str());
+
+    if let Some(line_break) = block_text.find('\n') {
+        format!(
+            "{}{}",
+            archive_card_line(
+                &block_text[..line_break],
+                timestamp.as_str(),
+                behavior.append_after_title
+            ),
+            &block_text[line_break..]
+        )
+    } else {
+        archive_card_line(block_text, timestamp.as_str(), behavior.append_after_title)
+    }
+}
+
+fn archive_card_line(line: &str, timestamp: &str, append_after_title: bool) -> String {
+    let Some((prefix, content)) = split_list_item_prefix(line) else {
+        return line.to_string();
+    };
+    let (content, block_suffix) = split_block_id_suffix(content);
+    let content = content.trim_end();
+
+    let updated_content = if content.is_empty() {
+        timestamp.to_string()
+    } else if append_after_title {
+        format!("{content} {timestamp}")
+    } else {
+        format!("{timestamp} {content}")
+    };
+
+    format!("{prefix}{updated_content}{block_suffix}")
+}
+
+fn split_list_item_prefix(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    let indent_len = line.len().saturating_sub(trimmed.len());
+
+    if let Some(rest) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+    {
+        if let Some(task_end) = rest.strip_prefix('[').and_then(|rest| rest.find("] ")) {
+            let prefix_end = indent_len + 2 + task_end + 3;
+            return Some((&line[..prefix_end], &line[prefix_end..]));
+        }
+        let prefix_end = indent_len + 2;
+        return Some((&line[..prefix_end], &line[prefix_end..]));
+    }
+
+    let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 && trimmed[digits..].starts_with(". ") {
+        let prefix_end = indent_len + digits + 2;
+        return Some((&line[..prefix_end], &line[prefix_end..]));
+    }
+
+    None
+}
+
+fn split_block_id_suffix(content: &str) -> (&str, &str) {
+    let Some(index) = content.rfind(" ^") else {
+        return (content, "");
+    };
+    let suffix = &content[(index + 2)..];
+    if suffix
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        (&content[..index], &content[index..])
+    } else {
+        (content, "")
+    }
+}
+
+fn archive_insertion_offset(
+    column: &BoardColumnState,
+    footer_start: Option<usize>,
+    source: &str,
+) -> usize {
+    let next_offset = usize::try_from(column.next_offset)
+        .ok()
+        .map_or(source.len(), |offset| offset.min(source.len()));
+    footer_start.map_or(next_offset, |footer_start| next_offset.min(footer_start))
+}
+
+fn build_archive_section(card_block: &str, heading_level: u8, prefix: &str) -> String {
+    let mut section = String::new();
+    if !prefix.is_empty() && !prefix.ends_with('\n') {
+        section.push('\n');
+    }
+    if !prefix.is_empty() && !prefix.ends_with("\n\n") {
+        section.push('\n');
+    }
+    section.push_str("***\n\n");
+    let _ = writeln!(
+        section,
+        "{} {}",
+        "#".repeat(usize::from(heading_level)),
+        DEFAULT_ARCHIVE_COLUMN_NAME
+    );
+    section.push('\n');
+    section.push_str(card_block.trim_end_matches('\n'));
+    section.push('\n');
+    section.push('\n');
+    section
+}
+
+fn card_record_archived_text(card: &KanbanCardRecord, archived_block: &str) -> String {
+    let line = archived_block
+        .lines()
+        .next()
+        .unwrap_or(card.text.as_str())
+        .trim();
+    if let Some((_, content)) = split_list_item_prefix(line) {
+        split_block_id_suffix(content).0.trim().to_string()
+    } else {
+        line.to_string()
+    }
+}
+
+fn line_start_offsets(source: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (index, ch) in source.char_indices() {
+        if ch == '\n' {
+            starts.push(index + 1);
+        }
+    }
+    starts
+}
+
+fn byte_range_for_list_item_subtree(
+    list_items: &[crate::RawListItem],
+    item_index: usize,
+    section_end: usize,
+    source_len: usize,
+) -> Result<std::ops::Range<usize>, KanbanError> {
+    let Some(item) = list_items.get(item_index) else {
+        return Err(KanbanError::Message(format!(
+            "failed to resolve list item {item_index} for card mutation"
+        )));
+    };
+
+    let start = item.byte_offset.min(source_len);
+    let mut end = section_end.min(source_len);
+    for (candidate_index, candidate) in list_items.iter().enumerate().skip(item_index + 1) {
+        if !is_descendant_item(list_items, item_index, candidate_index) {
+            end = candidate.byte_offset.min(end);
+            break;
+        }
+    }
+    Ok(start..end)
+}
+
+fn is_descendant_item(
+    list_items: &[crate::RawListItem],
+    ancestor_index: usize,
+    candidate_index: usize,
+) -> bool {
+    let mut current = list_items
+        .get(candidate_index)
+        .and_then(|item| item.parent_item_index);
+    while let Some(parent_index) = current {
+        if parent_index == ancestor_index {
+            return true;
+        }
+        current = list_items
+            .get(parent_index)
+            .and_then(|item| item.parent_item_index);
+    }
+    false
+}
+
+fn footer_settings_start_offset(source: &str, line_starts: &[usize]) -> Option<usize> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let end = last_non_empty_line(&lines)?;
+    if lines[end].trim() != "%%" {
+        return None;
+    }
+
+    let start = (0..end)
+        .rev()
+        .find(|index| lines[*index].trim() == SETTINGS_FOOTER_MARKER)?;
+    line_starts.get(start).copied()
+}
+
+fn apply_text_edits(source: &str, edits: &[(std::ops::Range<usize>, String)]) -> String {
+    let mut updated = source.to_string();
+    let mut ordered = edits.to_vec();
+    ordered.sort_by(|left, right| right.0.start.cmp(&left.0.start));
+    for (range, replacement) in ordered {
+        updated.replace_range(range, replacement.as_str());
+    }
+    updated
 }
 
 fn load_board_headings(
@@ -622,6 +1071,8 @@ fn frontmatter_settings(frontmatter: Option<&serde_yaml::Value>) -> Option<Map<S
         TIME_TRIGGER_KEY,
         METADATA_KEYS_KEY,
         ARCHIVE_WITH_DATE_KEY,
+        APPEND_ARCHIVE_DATE_KEY,
+        ARCHIVE_DATE_FORMAT_KEY,
         NEW_CARD_INSERTION_METHOD_KEY,
     ] {
         let value = mapping
@@ -674,6 +1125,10 @@ fn string_setting(settings: &Map<String, Value>, key: &str) -> Option<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(ToString::to_string)
+}
+
+fn bool_setting(settings: &Map<String, Value>, key: &str) -> Option<bool> {
+    settings.get(key).and_then(Value::as_bool)
 }
 
 fn normalize_board_format(value: &str) -> String {
@@ -1026,5 +1481,117 @@ mod tests {
             vec!["Todo", "Done", "Archive"]
         );
         assert_eq!(with_archive.columns[2].card_count, 1);
+    }
+
+    #[test]
+    fn archive_card_line_keeps_block_ids_when_rewriting_titles() {
+        assert_eq!(
+            archive_card_line("- Ship release ^ship-release", "2026-03-29 09:00", false),
+            "- 2026-03-29 09:00 Ship release ^ship-release"
+        );
+        assert_eq!(
+            archive_card_line("- [/] Ship release ^ship-release", "2026-03-29 09:00", true),
+            "- [/] Ship release 2026-03-29 09:00 ^ship-release"
+        );
+    }
+
+    #[test]
+    fn archive_kanban_card_moves_cards_into_existing_archive_section() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "---\n\n",
+                "## Todo\n\n",
+                "- Build release ^build-release\n",
+                "  - Confirm notes\n\n",
+                "## Done\n\n",
+                "- Shipped\n\n",
+                "***\n\n",
+                "## Archive\n\n",
+                "- Old card\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report =
+            archive_kanban_card(&paths, "Board", "build-release", false).expect("archive works");
+        assert_eq!(report.source_column, "Todo");
+        assert_eq!(report.archive_column, "Archive");
+        assert_eq!(report.card_text, "Build release ^build-release");
+        assert_eq!(report.archived_text, "Build release");
+        assert!(!report.created_archive_column);
+        assert!(!report.archive_with_date_applied);
+        assert!(report.rescanned);
+
+        let source =
+            fs::read_to_string(vault_root.join("Board.md")).expect("board should remain readable");
+        assert!(!source.contains("- Build release ^build-release\n  - Confirm notes\n\n## Done"));
+        assert!(source.contains("## Archive\n\n- Old card"));
+
+        let board = load_kanban_board(&paths, "Board", true).expect("board should load");
+        assert_eq!(board.columns[0].card_count, 0);
+        assert_eq!(board.columns[2].card_count, 2);
+        assert!(board.columns[2].cards[1].text.starts_with("Build release"));
+        assert_eq!(
+            board.columns[2].cards[1].block_id.as_deref(),
+            Some("build-release")
+        );
+    }
+
+    #[test]
+    fn archive_kanban_card_creates_archive_section_before_footer_settings() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "---\n\n",
+                "## Todo\n\n",
+                "- Build release\n\n",
+                "## Done\n\n",
+                "- Shipped\n\n",
+                "%% kanban:settings\n",
+                "```\n",
+                "{\"kanban-plugin\":\"board\"}\n",
+                "```\n",
+                "%%\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report =
+            archive_kanban_card(&paths, "Board", "Build release", false).expect("archive works");
+        assert!(report.created_archive_column);
+        assert_eq!(report.archive_column, "Archive");
+
+        let source =
+            fs::read_to_string(vault_root.join("Board.md")).expect("board should remain readable");
+        assert!(source.contains("***\n\n## Archive\n\n- Build release\n\n%% kanban:settings"));
+
+        let board = load_kanban_board(&paths, "Board", true).expect("board should load");
+        assert_eq!(
+            board
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Todo", "Done", "Archive"]
+        );
+        assert_eq!(board.columns[2].card_count, 1);
+        assert_eq!(board.columns[2].cards[0].text, "Build release");
     }
 }
