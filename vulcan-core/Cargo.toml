@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+dataviewjs = []
+
 [dependencies]
 aho-corasick = "1"
 blake3.workspace = true
