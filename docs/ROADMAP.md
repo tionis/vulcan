@@ -1321,7 +1321,7 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 
 Support Dataview inline expressions (`` `= expr` ``) for note rendering and query contexts.
 
-- [ ] Detect inline expressions (backtick-delimited text starting with configurable prefix, default `=`) during the semantic pass; store as inline expression metadata
+- [x] Detect inline expressions (backtick-delimited text starting with configurable prefix, default `=`) during the semantic pass; store as inline expression metadata
 - [ ] Configurable inline query prefix from Dataview settings (`inlineQueryPrefix`, default `"="`); also detect inline DataviewJS prefix (`inlineJsQueryPrefix`, default `"$="`) when `dataviewjs` feature is enabled
 - [ ] `this` binding: within an inline expression, `this` resolves to the current note's full metadata (frontmatter + inline fields + `file.*` implicit metadata)
 - [ ] Reuse the extended expression evaluator (9.8.4) with the `this` context binding and full function library
@@ -1337,11 +1337,11 @@ Support Dataview inline expressions (`` `= expr` ``) for note rendering and quer
 Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript runtime. Gated behind a `dataviewjs` Cargo feature flag — default builds detect and diagnose these blocks without a JS dependency.
 
 **Detection and fallback (always available):**
-- [ ] Detect `dataviewjs` code blocks during parsing
-- [ ] Store as block metadata with `language = "dataviewjs"`
-- [ ] When feature is not compiled in: emit diagnostic "DataviewJS blocks require the `dataviewjs` feature flag"
-- [ ] Exclude from FTS indexing (code, not content)
-- [ ] Unit test: dataviewjs block detected and diagnosed without feature flag
+- [x] Detect `dataviewjs` code blocks during parsing
+- [x] Store as block metadata with `language = "dataviewjs"`
+- [x] When feature is not compiled in: emit diagnostic "DataviewJS blocks require the `dataviewjs` feature flag"
+- [x] Exclude from FTS indexing (code, not content)
+- [x] Unit test: dataviewjs block detected and diagnosed without feature flag
 
 **JS runtime integration (behind `dataviewjs` feature):**
 - [ ] Add `dataviewjs` feature flag to `vulcan-core/Cargo.toml` and `vulcan-cli/Cargo.toml`
