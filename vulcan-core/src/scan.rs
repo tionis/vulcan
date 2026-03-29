@@ -1203,6 +1203,7 @@ fn replace_derived_rows(
         config,
     )?;
     insert_dataview_blocks(transaction, document_id, &parsed.dataview_blocks)?;
+    insert_tasks_blocks(transaction, document_id, &parsed.tasks_blocks)?;
     insert_inline_expressions(transaction, document_id, &parsed.inline_expressions)?;
     Ok(())
 }
@@ -1984,6 +1985,55 @@ fn insert_dataview_blocks(
     Ok(())
 }
 
+fn insert_tasks_blocks(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    blocks: &[crate::RawTasksBlock],
+) -> Result<(), ScanError> {
+    if blocks.is_empty() {
+        return Ok(());
+    }
+
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO tasks_blocks (
+            id,
+            document_id,
+            block_index,
+            byte_offset_start,
+            byte_offset_end,
+            line_number,
+            raw_text
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ",
+    )?;
+    for block in blocks {
+        statement.execute(params![
+            Ulid::new().to_string(),
+            document_id,
+            i64::try_from(block.block_index).map_err(|_| ScanError::MetadataOverflow {
+                field: "tasks_blocks.block_index",
+                path: PathBuf::from(document_id),
+            })?,
+            i64::try_from(block.byte_range.start).map_err(|_| ScanError::MetadataOverflow {
+                field: "tasks_blocks.byte_offset_start",
+                path: PathBuf::from(document_id),
+            })?,
+            i64::try_from(block.byte_range.end).map_err(|_| ScanError::MetadataOverflow {
+                field: "tasks_blocks.byte_offset_end",
+                path: PathBuf::from(document_id),
+            })?,
+            i64::try_from(block.line_number).map_err(|_| ScanError::MetadataOverflow {
+                field: "tasks_blocks.line_number",
+                path: PathBuf::from(document_id),
+            })?,
+            &block.text,
+        ])?;
+    }
+    Ok(())
+}
+
 fn insert_inline_expressions(
     transaction: &Transaction<'_>,
     document_id: &str,
@@ -2040,6 +2090,7 @@ fn clear_derived_rows(
         "DELETE FROM tasks WHERE document_id = ?1",
         "DELETE FROM list_items WHERE document_id = ?1",
         "DELETE FROM dataview_blocks WHERE document_id = ?1",
+        "DELETE FROM tasks_blocks WHERE document_id = ?1",
         "DELETE FROM inline_expressions WHERE document_id = ?1",
         "DELETE FROM headings WHERE document_id = ?1",
         "DELETE FROM block_refs WHERE document_id = ?1",
@@ -2564,6 +2615,7 @@ mod tests {
         assert_eq!(count_rows(connection, "tasks"), 4);
         assert_eq!(count_rows(connection, "task_properties"), 12);
         assert_eq!(count_rows(connection, "dataview_blocks"), 2);
+        assert_eq!(count_rows(connection, "tasks_blocks"), 0);
         assert_eq!(count_rows(connection, "inline_expressions"), 1);
         let dataview_blocks: Vec<(String, i64, String)> = connection
             .prepare(
@@ -2995,6 +3047,56 @@ mod tests {
         )
         .expect("search should succeed");
         assert!(search.hits.is_empty());
+    }
+
+    #[test]
+    fn scan_persists_tasks_query_blocks() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Tasks.md"),
+            concat!(
+                "```tasks\n",
+                "not done\n",
+                "sort by due reverse\n",
+                "```\n\n",
+                "```tasks\n",
+                "done\n",
+                "limit 5\n",
+                "```\n"
+            ),
+        )
+        .expect("note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let connection = database.connection();
+
+        assert_eq!(count_rows(connection, "tasks_blocks"), 2);
+        let tasks_blocks: Vec<(i64, i64, String)> = connection
+            .prepare(
+                "
+                SELECT tasks_blocks.block_index, tasks_blocks.line_number, tasks_blocks.raw_text
+                FROM tasks_blocks
+                JOIN documents ON documents.id = tasks_blocks.document_id
+                WHERE documents.path = 'Tasks.md'
+                ORDER BY tasks_blocks.block_index
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows should collect");
+        assert_eq!(
+            tasks_blocks,
+            vec![
+                (0, 1, "not done\nsort by due reverse".to_string()),
+                (1, 6, "done\nlimit 5".to_string()),
+            ]
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub mod saved_queries;
 pub mod scan;
 pub mod search;
 pub mod suggestions;
+pub mod tasks;
 pub mod vector;
 pub mod watch;
 pub mod write_lock;
@@ -120,6 +121,7 @@ pub use suggestions::{
     DuplicateSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
     SuggestionError,
 };
+pub use tasks::{load_tasks_blocks, TasksBlockRecord, TasksError};
 pub use vector::{
     cluster_vectors, drop_vector_model, index_vectors, index_vectors_with_progress,
     inspect_vector_queue, list_vector_models, query_related_notes, query_vector_neighbors,
@@ -136,4 +138,4 @@ pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchR
 
 pub const PARSER_VERSION: u32 = 5;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;

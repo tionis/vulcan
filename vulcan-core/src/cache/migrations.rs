@@ -88,6 +88,7 @@ impl MigrationRegistry {
                 "persist list item tags and outlinks",
                 schema::apply_schema_v12,
             ),
+            Migration::new(13, "persist tasks query blocks", schema::apply_schema_v13),
         ])
     }
 
