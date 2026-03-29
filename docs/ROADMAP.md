@@ -1611,7 +1611,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [x] Extract card metadata: checkbox status, inline dates, tags, links, inline fields
 - [x] Parse board configuration from footer settings code block/comment (if present): column settings, archive column, completed column
 - [x] Configurable date and time triggers: parse date/time from card text using configurable trigger tokens (not hardcoded emoji — Kanban plugin allows `{date-trigger}` and `{time-trigger}` config, defaults `📅` and `⏰` but can be any string)
-- [ ] Linked page metadata: cards that are `[[wikilinks]]` inherit metadata from the linked note (frontmatter, tags, inline fields) — enables filtering/sorting cards by linked note properties
+- [x] Linked page metadata: cards that are `[[wikilinks]]` inherit metadata from the linked note (frontmatter, tags, inline fields) — enables filtering/sorting cards by linked note properties
 - [x] Store board structure in cache: `kanban_boards` table (or extend existing tables with board context)
 - [x] Index on board → column → card hierarchy
 

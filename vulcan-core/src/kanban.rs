@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Write as _};
 use std::fs;
 use std::path::Path;
@@ -8,10 +9,14 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::cache::CacheDatabase;
+use crate::expression::eval::resolve_note_reference as resolve_linked_note_reference;
 use crate::expression::functions::format_date;
+use crate::expression::functions::parse_wikilink;
 use crate::extract_indexed_properties;
+use crate::file_metadata::FileMetadataResolver;
 use crate::parse_document;
 use crate::paths::VaultPaths;
+use crate::properties::{load_note_index, NoteRecord};
 use crate::resolve_note_reference;
 use crate::{scan_vault, ParsedDocument, ScanMode, VaultConfig};
 
@@ -105,6 +110,7 @@ pub struct KanbanCardRecord {
     pub date: Option<String>,
     pub time: Option<String>,
     pub inline_fields: Value,
+    pub metadata: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<KanbanTaskStatus>,
 }
@@ -243,7 +249,7 @@ pub fn list_kanban_boards(paths: &VaultPaths) -> Result<Vec<KanbanBoardSummary>,
     boards
         .into_iter()
         .map(|board| {
-            let columns = load_board_columns(paths, connection, &board, &config, false)?;
+            let columns = load_board_columns(paths, connection, &board, &config, false, None)?;
             Ok(KanbanBoardSummary {
                 title: board_title(&board.path),
                 path: board.path,
@@ -272,7 +278,16 @@ pub fn load_kanban_board(
             resolved.path
         )));
     };
-    let columns = load_board_columns(paths, connection, &board_row, &config, include_archive)?;
+    let note_lookup =
+        load_note_index(paths).map_err(|error| KanbanError::Message(error.to_string()))?;
+    let columns = load_board_columns(
+        paths,
+        connection,
+        &board_row,
+        &config,
+        include_archive,
+        Some(&note_lookup),
+    )?;
 
     Ok(KanbanBoardRecord {
         title: board_title(&board_row.path),
@@ -309,7 +324,8 @@ pub fn archive_kanban_card(
     let source = fs::read_to_string(&source_path).map_err(|error| {
         KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
     })?;
-    let column_states = load_board_column_states(paths, connection, &board_row, &config, true)?;
+    let column_states =
+        load_board_column_states(paths, connection, &board_row, &config, true, None)?;
     let (source_column_index, card_index) = resolve_card_match(&column_states, card)?;
     let source_column = &column_states[source_column_index];
     if source_column.layout.archived {
@@ -428,7 +444,8 @@ pub fn move_kanban_card(
     let source = fs::read_to_string(&source_path).map_err(|error| {
         KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
     })?;
-    let column_states = load_board_column_states(paths, connection, &board_row, &config, true)?;
+    let column_states =
+        load_board_column_states(paths, connection, &board_row, &config, true, None)?;
     let (source_column_index, card_index) = resolve_card_match(&column_states, card)?;
     let target_column_index = resolve_column_match(&column_states, target_column)?;
     if source_column_index == target_column_index {
@@ -531,7 +548,8 @@ pub fn add_kanban_card(
     let source = fs::read_to_string(&source_path).map_err(|error| {
         KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
     })?;
-    let column_states = load_board_column_states(paths, connection, &board_row, &config, true)?;
+    let column_states =
+        load_board_column_states(paths, connection, &board_row, &config, true, None)?;
     let target_column_index = resolve_column_match(&column_states, column)?;
     let target_column = &column_states[target_column_index];
     if target_column.layout.archived {
@@ -656,8 +674,16 @@ fn load_board_columns(
     board: &BoardRow,
     config: &VaultConfig,
     include_archive: bool,
+    note_lookup: Option<&HashMap<String, NoteRecord>>,
 ) -> Result<Vec<KanbanColumnRecord>, KanbanError> {
-    let states = load_board_column_states(paths, connection, board, config, include_archive)?;
+    let states = load_board_column_states(
+        paths,
+        connection,
+        board,
+        config,
+        include_archive,
+        note_lookup,
+    )?;
     Ok(states
         .into_iter()
         .map(|state| KanbanColumnRecord {
@@ -675,6 +701,7 @@ fn load_board_column_states(
     board: &BoardRow,
     config: &VaultConfig,
     include_archive: bool,
+    note_lookup: Option<&HashMap<String, NoteRecord>>,
 ) -> Result<Vec<BoardColumnState>, KanbanError> {
     let headings = load_board_headings(connection, board.document_id.as_str())?;
     let Some(column_level) = headings.iter().map(|heading| heading.level).min() else {
@@ -691,7 +718,8 @@ fn load_board_column_states(
         let next_offset = top_level_headings
             .get(index + 1)
             .map_or(i64::MAX, |candidate| candidate.byte_offset);
-        let cards = load_column_cards(connection, board, config, heading, next_offset)?;
+        let cards =
+            load_column_cards(connection, board, config, heading, next_offset, note_lookup)?;
         let layout = layouts
             .get(index)
             .cloned()
@@ -995,8 +1023,7 @@ fn build_new_card_block(column: &BoardColumnState, text: &str) -> String {
     let symbol = column
         .cards
         .first()
-        .map(|card| card.symbol.as_str())
-        .unwrap_or("-");
+        .map_or("-", |card| card.symbol.as_str());
     format!("{symbol} {text}\n")
 }
 
@@ -1106,6 +1133,7 @@ fn load_column_cards(
     config: &VaultConfig,
     heading: &HeadingRow,
     next_offset: i64,
+    note_lookup: Option<&HashMap<String, NoteRecord>>,
 ) -> Result<Vec<KanbanCardRecord>, KanbanError> {
     let mut statement = connection.prepare(
         "SELECT list_items.id,
@@ -1162,6 +1190,13 @@ fn load_column_cards(
             board.date_trigger.as_str(),
             board.time_trigger.as_str(),
         );
+        let inline_fields = inline_fields_from_card_text(row.text.as_str(), config)?;
+        let metadata = merged_card_metadata(
+            board.path.as_str(),
+            row.text.as_str(),
+            &inline_fields,
+            note_lookup,
+        );
         cards.push(KanbanCardRecord {
             id: row.id,
             text: row.text.clone(),
@@ -1172,7 +1207,8 @@ fn load_column_cards(
             outlinks: row.outlinks,
             date,
             time,
-            inline_fields: Value::Object(inline_fields_from_card_text(row.text.as_str(), config)?),
+            inline_fields: Value::Object(inline_fields),
+            metadata,
             task: row.task,
         });
     }
@@ -1192,6 +1228,45 @@ fn inline_fields_from_card_text(
         Value::Object(object) => Ok(object),
         _ => Ok(Map::new()),
     }
+}
+
+fn merged_card_metadata(
+    board_path: &str,
+    card_text: &str,
+    inline_fields: &Map<String, Value>,
+    note_lookup: Option<&HashMap<String, NoteRecord>>,
+) -> Value {
+    let mut metadata = note_lookup
+        .and_then(|note_lookup| linked_page_metadata(note_lookup, board_path, card_text))
+        .unwrap_or_default();
+    for (key, value) in inline_fields {
+        metadata.insert(key.clone(), value.clone());
+    }
+    Value::Object(metadata)
+}
+
+fn linked_page_metadata(
+    note_lookup: &HashMap<String, NoteRecord>,
+    board_path: &str,
+    card_text: &str,
+) -> Option<Map<String, Value>> {
+    let link = parse_wikilink(card_text.trim())?;
+    let note = resolve_linked_note_reference(note_lookup, board_path, &link.path)?;
+
+    let mut object = note
+        .properties
+        .as_object()
+        .cloned()
+        .unwrap_or_else(Map::new);
+    let mut file = Map::new();
+    for field in [
+        "path", "name", "basename", "ext", "folder", "link", "size", "ctime", "cday", "mtime",
+        "mday", "tags", "etags", "inlinks", "outlinks", "aliases", "day", "starred",
+    ] {
+        file.insert(field.to_string(), FileMetadataResolver::field(note, field));
+    }
+    object.insert("file".to_string(), Value::Object(file));
+    Some(object)
 }
 
 fn kanban_task_status(
@@ -1617,6 +1692,61 @@ mod tests {
                 .and_then(Value::as_str),
             Some("Ops")
         );
+    }
+
+    #[test]
+    fn load_kanban_board_inherits_metadata_from_wikilink_cards() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+        fs::write(
+            vault_root.join("Projects/Alpha.md"),
+            concat!(
+                "---\n",
+                "status: active\n",
+                "owner: Ops\n",
+                "tags:\n",
+                "  - client\n",
+                "---\n\n",
+                "# Alpha\n",
+            ),
+        )
+        .expect("linked note should exist");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "---\n\n",
+                "## Todo\n\n",
+                "- [[Projects/Alpha]]\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let board = load_kanban_board(&paths, "Board", false).expect("board should load");
+        let card = &board.columns[0].cards[0];
+        assert_eq!(card.text, "[[Projects/Alpha]]");
+        assert_eq!(card.inline_fields, Value::Object(Map::new()));
+        assert_eq!(
+            card.metadata.get("status").and_then(Value::as_str),
+            Some("active")
+        );
+        assert_eq!(
+            card.metadata.get("owner").and_then(Value::as_str),
+            Some("Ops")
+        );
+        assert_eq!(
+            card.metadata["file"]["path"],
+            Value::String("Projects/Alpha.md".to_string())
+        );
+        assert!(card.metadata["file"]["tags"]
+            .as_array()
+            .is_some_and(|tags| tags.contains(&Value::String("client".to_string()))));
     }
 
     #[test]

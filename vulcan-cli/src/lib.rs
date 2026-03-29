@@ -651,6 +651,7 @@ struct KanbanCardListItem {
     date: Option<String>,
     time: Option<String>,
     inline_fields: Value,
+    metadata: Value,
     task: Option<KanbanTaskStatus>,
 }
 
@@ -1700,6 +1701,7 @@ fn run_kanban_cards_command(
                 date: card.date.clone(),
                 time: card.time.clone(),
                 inline_fields: card.inline_fields.clone(),
+                metadata: card.metadata.clone(),
                 task: card.task.clone(),
             });
         }
@@ -7722,6 +7724,7 @@ fn kanban_card_rows(report: &KanbanCardsReport, cards: &[KanbanCardListItem]) ->
                 "date": card.date,
                 "time": card.time,
                 "inline_fields": card.inline_fields,
+                "metadata": card.metadata,
                 "task": card.task,
                 "task_status_char": card.task.as_ref().map(|task| task.status_char.clone()),
                 "task_status_name": card.task.as_ref().map(|task| task.status_name.clone()),

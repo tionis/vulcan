@@ -965,6 +965,72 @@ fn kanban_show_json_output_returns_columns_and_verbose_cards() {
 }
 
 #[test]
+fn kanban_show_json_output_inherits_linked_page_metadata_for_wikilink_cards() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+    fs::write(
+        vault_root.join("Projects/Alpha.md"),
+        concat!(
+            "---\n",
+            "status: active\n",
+            "owner: Ops\n",
+            "tags:\n",
+            "  - client\n",
+            "---\n\n",
+            "# Alpha\n",
+        ),
+    )
+    .expect("linked note should be written");
+    fs::write(
+        vault_root.join("Board.md"),
+        concat!(
+            "---\n",
+            "kanban-plugin: board\n",
+            "---\n\n",
+            "## Todo\n\n",
+            "- [[Projects/Alpha]]\n",
+        ),
+    )
+    .expect("board should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "show",
+            "Board",
+            "--verbose",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(
+        json["columns"][0]["cards"][0]["metadata"]["status"],
+        Value::String("active".to_string())
+    );
+    assert_eq!(
+        json["columns"][0]["cards"][0]["metadata"]["owner"],
+        Value::String("Ops".to_string())
+    );
+    assert_eq!(
+        json["columns"][0]["cards"][0]["metadata"]["file"]["path"],
+        Value::String("Projects/Alpha.md".to_string())
+    );
+    assert!(json["columns"][0]["cards"][0]["metadata"]["file"]["tags"]
+        .as_array()
+        .is_some_and(|tags| tags.contains(&Value::String("client".to_string()))));
+}
+
+#[test]
 fn kanban_show_json_output_includes_archive_when_requested() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
