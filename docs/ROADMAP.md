@@ -1323,13 +1323,13 @@ Support Dataview inline expressions (`` `= expr` ``) for note rendering and quer
 
 - [x] Detect inline expressions (backtick-delimited text starting with configurable prefix, default `=`) during the semantic pass; store as inline expression metadata
 - [ ] Configurable inline query prefix from Dataview settings (`inlineQueryPrefix`, default `"="`); also detect inline DataviewJS prefix (`inlineJsQueryPrefix`, default `"$="`) when `dataviewjs` feature is enabled
-- [ ] `this` binding: within an inline expression, `this` resolves to the current note's full metadata (frontmatter + inline fields + `file.*` implicit metadata)
-- [ ] Reuse the extended expression evaluator (9.8.4) with the `this` context binding and full function library
+- [x] `this` binding: within an inline expression, `this` resolves to the current note's full metadata (frontmatter + inline fields + `file.*` implicit metadata)
+- [x] Reuse the extended expression evaluator (9.8.4) with the `this` context binding and full function library
 - [ ] Known limitation: inline expressions store the expression text, not the evaluated result — other notes cannot query the result of an inline expression (this matches Dataview behavior)
 - [ ] `vulcan dataview inline <file>` — evaluate all inline expressions in a note, output results alongside source expressions
 - [ ] In `--output json` mode, include evaluated inline expression results in note metadata
 - [ ] Diagnostics for expressions that fail to evaluate (type errors, missing fields)
-- [ ] Unit tests: `this.property` access, `this.file.name`, nested field access, function calls, missing field handling
+- [x] Unit tests: `this.property` access, `this.file.name`, nested field access, function calls, missing field handling
 - [ ] Integration test: note with inline expressions, verify evaluation results
 
 #### 9.8.8 DataviewJS evaluation (compile-time feature flag)
