@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use std::fs;
 use std::path::Path;
 
 use rusqlite::OptionalExtension;
@@ -141,6 +142,14 @@ struct CardRow {
     task: Option<KanbanTaskStatus>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ColumnLayout {
+    name: String,
+    max_items: Option<usize>,
+    completes_cards: bool,
+    archived: bool,
+}
+
 #[must_use]
 pub(crate) fn extract_indexed_board(
     parsed: &ParsedDocument,
@@ -174,7 +183,7 @@ pub fn list_kanban_boards(paths: &VaultPaths) -> Result<Vec<KanbanBoardSummary>,
     boards
         .into_iter()
         .map(|board| {
-            let columns = load_board_columns(connection, &board, &config)?;
+            let columns = load_board_columns(paths, connection, &board, &config)?;
             Ok(KanbanBoardSummary {
                 title: board_title(&board.path),
                 path: board.path,
@@ -202,7 +211,7 @@ pub fn load_kanban_board(
             resolved.path
         )));
     };
-    let columns = load_board_columns(connection, &board_row, &config)?;
+    let columns = load_board_columns(paths, connection, &board_row, &config)?;
 
     Ok(KanbanBoardRecord {
         title: board_title(&board_row.path),
@@ -293,6 +302,7 @@ fn load_board_row(
 }
 
 fn load_board_columns(
+    paths: &VaultPaths,
     connection: &rusqlite::Connection,
     board: &BoardRow,
     config: &VaultConfig,
@@ -305,6 +315,7 @@ fn load_board_columns(
         .into_iter()
         .filter(|heading| heading.level == column_level)
         .collect::<Vec<_>>();
+    let layouts = load_column_layouts(paths, &board.path, &top_level_headings);
 
     let mut columns = Vec::with_capacity(top_level_headings.len());
     for (index, heading) in top_level_headings.iter().enumerate() {
@@ -312,8 +323,15 @@ fn load_board_columns(
             .get(index + 1)
             .map_or(i64::MAX, |candidate| candidate.byte_offset);
         let cards = load_column_cards(connection, board, config, heading, next_offset)?;
+        let layout = layouts
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| default_column_layout(heading.text.as_str()));
+        if layout.archived {
+            continue;
+        }
         columns.push(KanbanColumnRecord {
-            name: heading.text.clone(),
+            name: layout.name,
             level: heading.level,
             card_count: cards.len(),
             cards,
@@ -460,6 +478,125 @@ fn board_title(path: &str) -> String {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .map_or_else(|| path.to_string(), ToString::to_string)
+}
+
+fn load_column_layouts(
+    paths: &VaultPaths,
+    board_path: &str,
+    headings: &[HeadingRow],
+) -> Vec<ColumnLayout> {
+    let Ok(source) = fs::read_to_string(paths.vault_root().join(board_path)) else {
+        return headings
+            .iter()
+            .map(|heading| default_column_layout(heading.text.as_str()))
+            .collect();
+    };
+
+    headings
+        .iter()
+        .enumerate()
+        .map(|(index, heading)| {
+            let next_offset = headings.get(index + 1).map_or(source.len(), |candidate| {
+                clamp_offset(candidate.byte_offset, &source)
+            });
+            column_layout_from_section(&source, heading, next_offset)
+        })
+        .collect()
+}
+
+fn column_layout_from_section(
+    source: &str,
+    heading: &HeadingRow,
+    next_offset: usize,
+) -> ColumnLayout {
+    let mut layout = default_column_layout(heading.text.as_str());
+    let heading_offset = clamp_offset(heading.byte_offset, source);
+    layout.archived =
+        previous_non_empty_line(source, heading_offset).is_some_and(|line| line == "***");
+    layout.completes_cards = section_has_complete_marker(source, heading_offset, next_offset);
+    layout
+}
+
+fn default_column_layout(text: &str) -> ColumnLayout {
+    let (name, max_items) = parse_column_heading(text);
+    ColumnLayout {
+        name,
+        max_items,
+        completes_cards: false,
+        archived: false,
+    }
+}
+
+fn parse_column_heading(text: &str) -> (String, Option<usize>) {
+    let Some((prefix, suffix)) = text.rsplit_once('(') else {
+        return (text.to_string(), None);
+    };
+    let count = suffix.trim_end();
+    let Some(count) = count.strip_suffix(')') else {
+        return (text.to_string(), None);
+    };
+    let Ok(max_items) = count.trim().parse::<usize>() else {
+        return (text.to_string(), None);
+    };
+
+    (prefix.trim_end().to_string(), Some(max_items))
+}
+
+fn clamp_offset(offset: i64, source: &str) -> usize {
+    usize::try_from(offset)
+        .ok()
+        .map_or(source.len(), |offset| offset.min(source.len()))
+}
+
+fn previous_non_empty_line(source: &str, offset: usize) -> Option<&str> {
+    source[..offset]
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+}
+
+fn section_has_complete_marker(source: &str, heading_offset: usize, next_offset: usize) -> bool {
+    let section_start = source[heading_offset..next_offset]
+        .find('\n')
+        .map_or(next_offset, |relative| heading_offset + relative + 1);
+    let mut marker_found = false;
+
+    for line in source[section_start..next_offset].lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if is_list_item_line(trimmed) {
+            return marker_found;
+        }
+        if is_complete_marker_line(trimmed) {
+            marker_found = true;
+        }
+    }
+
+    marker_found
+}
+
+fn is_list_item_line(line: &str) -> bool {
+    line.starts_with("- ")
+        || line.starts_with("* ")
+        || line.starts_with("+ ")
+        || is_numbered_list_item(line)
+}
+
+fn is_numbered_list_item(line: &str) -> bool {
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    digits > 0 && line[digits..].starts_with(". ")
+}
+
+fn is_complete_marker_line(line: &str) -> bool {
+    normalize_wrapped_marker(line) == "Complete"
+}
+
+fn normalize_wrapped_marker(line: &str) -> String {
+    line.trim_matches(|ch: char| ch == '*' || ch == '_' || ch.is_whitespace())
+        .to_string()
 }
 
 fn merged_board_settings(
@@ -771,5 +908,109 @@ mod tests {
         assert_eq!(board.date_trigger, "DUE");
         assert_eq!(board.time_trigger, "AT");
         assert_eq!(board.columns.len(), 1);
+    }
+
+    #[test]
+    fn parses_column_layouts_from_markdown_sections() {
+        let source = concat!(
+            "## Todo (2)\n\n",
+            "- Build release\n\n",
+            "## Done\n\n",
+            "**Complete**\n\n",
+            "- Shipped\n\n",
+            "***\n\n",
+            "## Archive\n\n",
+            "- Old card\n",
+        );
+        let parsed = parse_document(source, &VaultConfig::default());
+        let headings = parsed
+            .headings
+            .iter()
+            .map(|heading| HeadingRow {
+                level: heading.level,
+                text: heading.text.clone(),
+                byte_offset: i64::try_from(heading.byte_offset).expect("offset should fit in i64"),
+            })
+            .collect::<Vec<_>>();
+
+        let layouts = headings
+            .iter()
+            .enumerate()
+            .map(|(index, heading)| {
+                let next_offset = headings.get(index + 1).map_or(source.len(), |candidate| {
+                    clamp_offset(candidate.byte_offset, source)
+                });
+                column_layout_from_section(source, heading, next_offset)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            layouts,
+            vec![
+                ColumnLayout {
+                    name: "Todo".to_string(),
+                    max_items: Some(2),
+                    completes_cards: false,
+                    archived: false,
+                },
+                ColumnLayout {
+                    name: "Done".to_string(),
+                    max_items: None,
+                    completes_cards: true,
+                    archived: false,
+                },
+                ColumnLayout {
+                    name: "Archive".to_string(),
+                    max_items: None,
+                    completes_cards: false,
+                    archived: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn load_kanban_board_excludes_archive_sections_from_default_columns() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "---\n\n",
+                "## Todo (2)\n\n",
+                "- Build release\n",
+                "- [/] Waiting on review\n\n",
+                "## Done\n\n",
+                "**Complete**\n\n",
+                "- [x] Shipped\n\n",
+                "***\n\n",
+                "## Archive\n\n",
+                "- Old card\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let boards = list_kanban_boards(&paths).expect("boards should list");
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].column_count, 2);
+        assert_eq!(boards[0].card_count, 3);
+
+        let board = load_kanban_board(&paths, "Board").expect("board should load");
+        assert_eq!(
+            board
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Todo", "Done"]
+        );
+        assert_eq!(board.columns[0].card_count, 2);
+        assert_eq!(board.columns[1].card_count, 1);
     }
 }

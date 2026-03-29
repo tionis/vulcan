@@ -1609,7 +1609,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [x] Detect Kanban board files: presence of `kanban-plugin` key in frontmatter or footer settings code block/comment
 - [x] Parse board structure: headings → columns, list items under headings → cards
 - [x] Extract card metadata: checkbox status, inline dates, tags, links, inline fields
-- [ ] Parse board configuration from footer settings code block/comment (if present): column settings, archive column, completed column
+- [x] Parse board configuration from footer settings code block/comment (if present): column settings, archive column, completed column
 - [x] Configurable date and time triggers: parse date/time from card text using configurable trigger tokens (not hardcoded emoji — Kanban plugin allows `{date-trigger}` and `{time-trigger}` config, defaults `📅` and `⏰` but can be any string)
 - [ ] Linked page metadata: cards that are `[[wikilinks]]` inherit metadata from the linked note (frontmatter, tags, inline fields) — enables filtering/sorting cards by linked note properties
 - [x] Store board structure in cache: `kanban_boards` table (or extend existing tables with board context)
@@ -1617,7 +1617,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 
 #### 9.11.2 Archive support
 
-- [ ] Parse archive column: Kanban plugin supports a dedicated archive section (heading `## Archive` or configured via `archive-with-date` setting)
+- [x] Parse archive column: Kanban plugin supports a dedicated archive section (heading `## Archive` or configured via `archive-with-date` setting)
 - [ ] `vulcan kanban archive <board> <card>` — move a card to the archive column
 - [ ] Archive-with-date: optionally prepend archive date to card text (configurable via `archive-with-date` setting)
 - [ ] `vulcan kanban show <board> --include-archive` — include archived cards in output (excluded by default)
