@@ -10,7 +10,7 @@ pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command,
     DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GraphCommand, OutputFormat,
     RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg, SuggestCommand,
-    TemplateSubcommand, VectorQueueCommand, VectorsCommand,
+    TasksCommand, TemplateSubcommand, VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -21,6 +21,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use serve::{serve_forever, ServeOptions};
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -29,21 +30,24 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
+use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
+use vulcan_core::expression::parse_expression;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::load_note_index;
 use vulcan_core::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace,
     bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
     drop_vector_model, evaluate_base_file, evaluate_dql, evaluate_note_inline_expressions,
-    execute_query_report, export_static_search_index, git_status, index_vectors_with_progress,
-    initialize_vault, inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints,
-    list_saved_reports, list_vector_models, load_dataview_blocks, load_saved_report,
-    load_vault_config, merge_tags, move_note, query_backlinks, query_change_report,
-    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
-    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
-    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
-    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, repair_vectors_with_progress, resolve_note_reference, save_saved_report,
+    evaluate_tasks_query, execute_query_report, export_static_search_index, git_status,
+    index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
+    link_mentions, list_checkpoints, list_saved_reports, list_vector_models, load_dataview_blocks,
+    load_saved_report, load_tasks_blocks, load_vault_config, merge_tags, move_note,
+    parse_tasks_query, query_backlinks, query_change_report, query_graph_analytics,
+    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
+    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
+    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
+    repair_vectors_with_progress, resolve_note_reference, save_saved_report,
     scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
     vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
     BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport,
@@ -59,7 +63,7 @@ use vulcan_core::{
     RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
     SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
     ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
-    TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
+    TasksQueryResult, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
     VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
     VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
     VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
@@ -568,6 +572,23 @@ struct DataviewBlockReport {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TasksEvalReport {
+    file: String,
+    blocks: Vec<TasksBlockEvalReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TasksBlockEvalReport {
+    block_index: usize,
+    line_number: i64,
+    source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_source: Option<String>,
+    result: Option<TasksQueryResult>,
+    error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct InboxReport {
     path: String,
@@ -833,6 +854,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Links { .. }
         | Command::Query { .. }
         | Command::Dataview { .. }
+        | Command::Tasks { .. }
         | Command::Update { .. }
         | Command::Unset { .. }
         | Command::Notes { .. }
@@ -1149,6 +1171,241 @@ fn run_dataview_eval_command(
         file,
         blocks: reports,
     })
+}
+
+fn run_tasks_query_command(paths: &VaultPaths, source: &str) -> Result<TasksQueryResult, CliError> {
+    let config = load_vault_config(paths).config.tasks;
+    let effective_source = tasks_query_source(&config, source, false);
+    let mut result = evaluate_tasks_query(paths, &effective_source).map_err(CliError::operation)?;
+    strip_global_filter_from_output(&mut result, &config);
+    Ok(result)
+}
+
+fn run_tasks_eval_command(
+    paths: &VaultPaths,
+    file: &str,
+    block: Option<usize>,
+) -> Result<TasksEvalReport, CliError> {
+    let config = load_vault_config(paths).config.tasks;
+    let blocks = load_tasks_blocks(paths, file, block).map_err(CliError::operation)?;
+    let file = blocks
+        .first()
+        .map(|block| block.file.clone())
+        .unwrap_or_else(|| file.to_string());
+    let mut reports = Vec::with_capacity(blocks.len());
+
+    for block in blocks {
+        let effective_source = tasks_query_source(&config, &block.source, true);
+        let effective_source_override =
+            (effective_source != block.source).then(|| effective_source.clone());
+        let (mut result, error) = match evaluate_tasks_query(paths, &effective_source) {
+            Ok(result) => (Some(result), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        if let Some(result) = result.as_mut() {
+            strip_global_filter_from_output(result, &config);
+        }
+
+        reports.push(TasksBlockEvalReport {
+            block_index: block.block_index,
+            line_number: block.line_number,
+            source: block.source,
+            effective_source: effective_source_override,
+            result,
+            error,
+        });
+    }
+
+    Ok(TasksEvalReport {
+        file,
+        blocks: reports,
+    })
+}
+
+fn run_tasks_list_command(
+    paths: &VaultPaths,
+    filter: Option<&str>,
+) -> Result<TasksQueryResult, CliError> {
+    let config = load_vault_config(paths).config.tasks;
+    let Some(filter) = filter.map(str::trim).filter(|filter| !filter.is_empty()) else {
+        return run_tasks_query_command(paths, "");
+    };
+
+    match parse_tasks_query(filter) {
+        Ok(_) => run_tasks_query_command(paths, filter),
+        Err(tasks_error) => run_tasks_list_dql_filter(paths, filter, tasks_error, &config),
+    }
+}
+
+fn run_tasks_list_dql_filter(
+    paths: &VaultPaths,
+    filter: &str,
+    tasks_error: String,
+    config: &vulcan_core::config::TasksConfig,
+) -> Result<TasksQueryResult, CliError> {
+    let expression_source = tasks_dql_filter_expression(config, filter);
+    let expression = parse_expression(&expression_source).map_err(|expression_error| {
+        CliError::operation(format!(
+            "failed to parse filter as Tasks DSL ({tasks_error}); failed to parse as Dataview expression ({expression_error})"
+        ))
+    })?;
+
+    let base_source = tasks_query_source(config, "", false);
+    let base_result = evaluate_tasks_query(paths, &base_source).map_err(CliError::operation)?;
+    let note_index = load_note_index(paths).map_err(CliError::operation)?;
+    let note_by_path = note_index
+        .values()
+        .map(|note| (note.document_path.as_str(), note))
+        .collect::<HashMap<_, _>>();
+    let formulas = BTreeMap::new();
+    let mut tasks = Vec::new();
+
+    for task in base_result.tasks {
+        let Some(path) = task.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(note) = note_by_path.get(path) else {
+            continue;
+        };
+        let Value::Object(task_fields) = task.clone() else {
+            continue;
+        };
+
+        let mut scoped_note = (*note).clone();
+        scoped_note.properties = Value::Object(task_fields);
+        let context = EvalContext::new(&scoped_note, &formulas).with_note_lookup(&note_index);
+        let value = evaluate_expression(&expression, &context).map_err(|error| {
+            CliError::operation(format!(
+                "failed to evaluate Dataview expression for {path}: {error}"
+            ))
+        })?;
+        if is_truthy(&value) {
+            tasks.push(task);
+        }
+    }
+
+    let mut result = TasksQueryResult {
+        result_count: tasks.len(),
+        tasks,
+        groups: Vec::new(),
+        hidden_fields: Vec::new(),
+        shown_fields: Vec::new(),
+        short_mode: false,
+        plan: None,
+    };
+    strip_global_filter_from_output(&mut result, config);
+    Ok(result)
+}
+
+fn tasks_query_source(
+    config: &vulcan_core::config::TasksConfig,
+    source: &str,
+    include_global_query: bool,
+) -> String {
+    let mut sections = Vec::new();
+    if let Some(tag) = config
+        .global_filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+    {
+        sections.push(format!("tag includes {tag}"));
+    }
+    if include_global_query {
+        if let Some(query) = config
+            .global_query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+        {
+            sections.push(query.to_string());
+        }
+    }
+    if !source.trim().is_empty() {
+        sections.push(source.trim().to_string());
+    }
+    sections.join("\n")
+}
+
+fn tasks_dql_filter_expression(config: &vulcan_core::config::TasksConfig, filter: &str) -> String {
+    let mut clauses = Vec::new();
+    if let Some(tag) = config
+        .global_filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+    {
+        let quoted = serde_json::to_string(tag).expect("task filter tag should serialize");
+        clauses.push(format!("contains(tags, {quoted})"));
+    }
+    clauses.push(format!("({})", filter.trim()));
+    clauses.join(" && ")
+}
+
+fn strip_global_filter_from_output(
+    result: &mut TasksQueryResult,
+    config: &vulcan_core::config::TasksConfig,
+) {
+    if !config.remove_global_filter {
+        return;
+    }
+    let Some(global_filter) = config
+        .global_filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+    else {
+        return;
+    };
+
+    let normalized = normalize_tag_name(global_filter);
+    for task in &mut result.tasks {
+        strip_task_global_filter(task, global_filter, &normalized);
+    }
+    for group in &mut result.groups {
+        for task in &mut group.tasks {
+            strip_task_global_filter(task, global_filter, &normalized);
+        }
+    }
+}
+
+fn strip_task_global_filter(task: &mut Value, raw_tag: &str, normalized_tag: &str) {
+    let Some(object) = task.as_object_mut() else {
+        return;
+    };
+
+    if let Some(Value::Array(tags)) = object.get_mut("tags") {
+        tags.retain(|tag| {
+            tag.as_str()
+                .map(|tag| normalize_tag_name(tag) != normalized_tag)
+                .unwrap_or(true)
+        });
+    }
+
+    for field in ["text", "visual"] {
+        if let Some(Value::String(text)) = object.get_mut(field) {
+            *text = strip_tag_from_text(text, raw_tag, normalized_tag);
+        }
+    }
+
+    if let Some(Value::Array(children)) = object.get_mut("children") {
+        for child in children {
+            strip_task_global_filter(child, raw_tag, normalized_tag);
+        }
+    }
+}
+
+fn strip_tag_from_text(text: &str, raw_tag: &str, normalized_tag: &str) -> String {
+    text.split_whitespace()
+        .filter(|token| {
+            !token.eq_ignore_ascii_case(raw_tag) && normalize_tag_name(token) != normalized_tag
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_tag_name(tag: &str) -> String {
+    tag.trim().trim_start_matches('#').to_ascii_lowercase()
 }
 
 type ChangeKindStatus = vulcan_core::ChangeStatus;
@@ -3326,6 +3583,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         .dataview
                         .display_result_count,
                 )
+            }
+        },
+        Command::Tasks { ref command } => match command {
+            TasksCommand::Query { query } => {
+                let result = run_tasks_query_command(&paths, query)?;
+                print_tasks_query_result(cli.output, &result)
+            }
+            TasksCommand::Eval { file, block } => {
+                let report = run_tasks_eval_command(&paths, file, *block)?;
+                print_tasks_eval_report(cli.output, &report)
+            }
+            TasksCommand::List { filter } => {
+                let result = run_tasks_list_command(&paths, filter.as_deref())?;
+                print_tasks_query_result(cli.output, &result)
             }
         },
         Command::Search {
@@ -5707,6 +5978,95 @@ fn print_dql_query_result(
     }
 }
 
+fn print_tasks_query_result(
+    output: OutputFormat,
+    result: &TasksQueryResult,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            print_tasks_query_result_human(result)?;
+            Ok(())
+        }
+        OutputFormat::Json => print_json(result),
+    }
+}
+
+fn print_tasks_eval_report(output: OutputFormat, report: &TasksEvalReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.blocks.is_empty() {
+                println!("No Tasks blocks in {}", report.file);
+                return Ok(());
+            }
+
+            println!("Tasks blocks for {}", report.file);
+            for (index, block) in report.blocks.iter().enumerate() {
+                if index > 0 {
+                    println!();
+                }
+                println!("Block {} (line {})", block.block_index, block.line_number);
+                if let Some(error) = &block.error {
+                    println!("error: {error}");
+                    continue;
+                }
+                if let Some(result) = &block.result {
+                    print_tasks_query_result_human(result)?;
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_tasks_query_result_human(result: &TasksQueryResult) -> Result<(), CliError> {
+    if let Some(plan) = &result.plan {
+        println!(
+            "Plan:\n{}",
+            serde_json::to_string_pretty(plan).map_err(CliError::operation)?
+        );
+        if result.tasks.is_empty() {
+            return Ok(());
+        }
+        println!();
+    } else if result.tasks.is_empty() {
+        println!("No tasks matched.");
+        return Ok(());
+    }
+
+    if result.groups.is_empty() {
+        print_tasks_by_file_human(&result.tasks);
+    } else {
+        for (index, group) in result.groups.iter().enumerate() {
+            if index > 0 {
+                println!();
+            }
+            println!("{}", render_human_value(&group.key));
+            print_tasks_by_file_human(&group.tasks);
+        }
+    }
+    println!("{} task(s)", result.result_count);
+    Ok(())
+}
+
+fn print_tasks_by_file_human(tasks: &[Value]) {
+    let mut current_file: Option<&str> = None;
+    for task in tasks {
+        let path = task
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>");
+        if current_file != Some(path) {
+            current_file = Some(path);
+            println!("{path}");
+        }
+
+        let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
+        let text = task.get("text").and_then(Value::as_str).unwrap_or_default();
+        println!("- [{status}] {text}");
+    }
+}
+
 fn print_dql_query_result_human(result: &DqlQueryResult, show_result_count: bool) {
     match result.query_type {
         vulcan_core::dql::DqlQueryType::Table => print_dql_table_human(result, show_result_count),
@@ -7389,6 +7749,52 @@ mod tests {
                 command: DataviewCommand::Eval {
                     file: "Dashboard".to_string(),
                     block: Some(1),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_query_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "query", "not done"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Query {
+                    query: "not done".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_eval_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "eval", "Dashboard", "--block", "1"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Eval {
+                    file: "Dashboard".to_string(),
+                    block: Some(1),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_list_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "list", "--filter", "completed"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::List {
+                    filter: Some("completed".to_string()),
                 },
             }
         );

@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -934,6 +934,79 @@
                 "short": null,
                 "value_names": [
                   "BLOCK"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Evaluate and list Tasks plugin queries against indexed tasks",
+        "after_help": "Subcommands:\n  query       evaluate a Tasks plugin query string directly\n  eval        evaluate indexed ```tasks``` blocks from one note\n  list        list indexed tasks, optionally filtered\n\nNotes:\n  `tasks query` uses the Tasks DSL.\n  `tasks list --filter` accepts either the Tasks DSL or a Dataview expression.\n  Vault task defaults under [tasks] in .vulcan/config.toml apply to Tasks queries.\n\nExamples:\n  vulcan tasks query 'not done'\n  vulcan tasks eval Dashboard --block 0\n  vulcan tasks list\n  vulcan tasks list --filter 'completed and file.name = \"Alpha\"'",
+        "name": "tasks",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Evaluate a Tasks plugin query string",
+            "name": "query",
+            "options": [
+              {
+                "help": "Quoted Tasks query string",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Evaluate indexed Tasks code blocks from one note",
+            "name": "eval",
+            "options": [
+              {
+                "help": "Note path, filename, or alias containing Tasks blocks",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "0-based Tasks block index to evaluate",
+                "id": "block",
+                "long": "block",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BLOCK"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List indexed tasks with an optional filter",
+            "name": "list",
+            "options": [
+              {
+                "help": "Optional Tasks DSL query or Dataview expression filter",
+                "id": "filter",
+                "long": "filter",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILTER"
                 ]
               }
             ],
