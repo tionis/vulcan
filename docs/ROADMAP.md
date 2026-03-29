@@ -1562,11 +1562,11 @@ These require the sandboxed JS runtime and are only available when `--features d
 
 #### 9.10.3 Task dependencies
 
-- [ ] Parse dependency annotations: `🆔 <id>` (task identifier), `⛔ <id>` (blocked by)
-- [ ] Build task dependency graph from `tasks` and `task_properties` tables
-- [ ] `is blocked` / `is not blocked` filter: a task is blocked if any of its `⛔` dependencies are not completed
-- [ ] `vulcan tasks blocked` — list all blocked tasks with their blocking dependencies
-- [ ] `vulcan tasks graph` — show task dependency graph (reuse graph analysis infrastructure)
+- [x] Parse dependency annotations: `🆔 <id>` (task identifier), `⛔ <id>` (blocked by)
+- [x] Build task dependency graph from `tasks` and `task_properties` tables
+- [x] `is blocked` / `is not blocked` filter: a task is blocked if any of its `⛔` dependencies are not completed
+- [x] `vulcan tasks blocked` — list all blocked tasks with their blocking dependencies
+- [x] `vulcan tasks graph` — show task dependency graph (reuse graph analysis infrastructure)
 
 #### 9.10.4 Custom status types
 
