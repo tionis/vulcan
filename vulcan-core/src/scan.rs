@@ -1761,9 +1761,105 @@ fn insert_tasks(
                 value.value_type,
             ])?;
         }
+
+        for (key, value_text) in extract_task_text_properties(&task.text) {
+            let expected_type = config
+                .property_types
+                .get(&key)
+                .map(String::as_str)
+                .map(crate::properties::canonical_property_type);
+            let value = indexed_inline_property_value(
+                &key,
+                &value_text,
+                crate::parser::types::InlineFieldKind::Bare,
+                config,
+                expected_type,
+            );
+            property_statement.execute(params![
+                Ulid::new().to_string(),
+                task_id,
+                &key,
+                value.value_text.as_deref(),
+                value.value_number,
+                value.value_bool.map(i64::from),
+                value.value_date.as_deref(),
+                value.value_type,
+            ])?;
+        }
     }
 
     Ok(())
+}
+
+fn extract_task_text_properties(text: &str) -> Vec<(String, String)> {
+    let mut properties = Vec::new();
+
+    for (key, markers) in [
+        ("due", &["🗓️", "🗓"][..]),
+        ("completion", &["✅"][..]),
+        ("created", &["➕"][..]),
+        ("start", &["🛫"][..]),
+        ("scheduled", &["⏳"][..]),
+    ] {
+        if let Some(value) = extract_task_marker_token(text, markers) {
+            properties.push((key.to_string(), value));
+        }
+    }
+
+    for (marker, value) in [
+        ("⏫", "highest"),
+        ("🔺", "high"),
+        ("🔼", "medium"),
+        ("🔽", "low"),
+        ("⏬", "lowest"),
+    ] {
+        if text.contains(marker) {
+            properties.push(("priority".to_string(), value.to_string()));
+            break;
+        }
+    }
+
+    if let Some(value) = extract_task_marker_segment(text, "🔁") {
+        properties.push(("recurrence".to_string(), value));
+    }
+    if let Some(value) = extract_task_marker_token(text, &["⛔"]) {
+        properties.push(("blocked-by".to_string(), value));
+    }
+    if let Some(value) = extract_task_marker_token(text, &["🆔"]) {
+        properties.push(("id".to_string(), value));
+    }
+
+    properties
+}
+
+fn extract_task_marker_token(text: &str, markers: &[&str]) -> Option<String> {
+    markers.iter().find_map(|marker| {
+        text.find(marker).and_then(|index| {
+            text[index + marker.len()..]
+                .trim_start()
+                .split_whitespace()
+                .next()
+                .map(str::to_string)
+        })
+    })
+}
+
+fn extract_task_marker_segment(text: &str, marker: &str) -> Option<String> {
+    let index = text.find(marker)?;
+    let remainder = text[index + marker.len()..].trim_start();
+    let end = task_annotation_markers()
+        .iter()
+        .filter_map(|candidate| remainder.find(candidate))
+        .min()
+        .unwrap_or(remainder.len());
+    let value = remainder[..end].trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn task_annotation_markers() -> &'static [&'static str] {
+    &[
+        "🗓️", "🗓", "✅", "➕", "🛫", "⏳", "⏫", "🔺", "🔼", "🔽", "⏬", "🔁", "⛔", "🆔",
+    ]
 }
 
 fn insert_list_items(
@@ -2464,9 +2560,9 @@ mod tests {
         let database = CacheDatabase::open(&paths).expect("database should open");
         let connection = database.connection();
 
-        assert_eq!(count_rows(connection, "list_items"), 5);
-        assert_eq!(count_rows(connection, "tasks"), 3);
-        assert_eq!(count_rows(connection, "task_properties"), 3);
+        assert_eq!(count_rows(connection, "list_items"), 6);
+        assert_eq!(count_rows(connection, "tasks"), 4);
+        assert_eq!(count_rows(connection, "task_properties"), 12);
         assert_eq!(count_rows(connection, "dataview_blocks"), 2);
         assert_eq!(count_rows(connection, "inline_expressions"), 1);
         let dataview_blocks: Vec<(String, i64, String)> = connection
@@ -2774,6 +2870,10 @@ mod tests {
                     "Follow up [due:: 2026-04-02]".to_string(),
                     "Follow up [due:: 2026-04-02]".to_string(),
                 ),
+                (
+                    "Prepare backlog 🗓\u{fe0f} 2026-04-03 ✅ 2026-04-04 ➕ 2026-04-01 🛫 2026-04-02 ⏳ 2026-04-05 🔺 🔁 every week ⛔ ALPHA-1 🆔 BETA-1".to_string(),
+                    "Prepare backlog 🗓\u{fe0f} 2026-04-03 ✅ 2026-04-04 ➕ 2026-04-01 🛫 2026-04-02 ⏳ 2026-04-05 🔺 🔁 every week ⛔ ALPHA-1 🆔 BETA-1".to_string(),
+                ),
             ]
         );
 
@@ -2839,6 +2939,44 @@ mod tests {
         assert_eq!(alpha_tasks[0]["status"], Value::String(" ".to_string()));
         assert_eq!(alpha_tasks[0]["priority"], serde_json::json!(1.0));
         assert_eq!(alpha_tasks[0]["reviewed"], Value::Bool(true));
+
+        let beta = note_index.get("Beta").expect("beta note should be indexed");
+        let beta_tasks = FileMetadataResolver::field(beta, "tasks");
+        let beta_tasks = beta_tasks
+            .as_array()
+            .expect("beta file.tasks should return an array");
+        assert_eq!(beta_tasks.len(), 1);
+        assert_eq!(beta_tasks[0]["status"], Value::String("/".to_string()));
+        assert_eq!(
+            beta_tasks[0]["due"],
+            Value::String("2026-04-03".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["completion"],
+            Value::String("2026-04-04".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["created"],
+            Value::String("2026-04-01".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["start"],
+            Value::String("2026-04-02".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["scheduled"],
+            Value::String("2026-04-05".to_string())
+        );
+        assert_eq!(beta_tasks[0]["priority"], Value::String("high".to_string()));
+        assert_eq!(
+            beta_tasks[0]["recurrence"],
+            Value::String("every week".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["blocked-by"],
+            Value::String("ALPHA-1".to_string())
+        );
+        assert_eq!(beta_tasks[0]["id"], Value::String("BETA-1".to_string()));
 
         let search = search_vault(
             &paths,
@@ -2916,6 +3054,28 @@ mod tests {
             Value::String("Alpha".to_string())
         );
         assert_eq!(eval(r#"[[Bob]].role"#), Value::String("editor".to_string()));
+    }
+
+    #[test]
+    fn extracts_tasks_plugin_text_annotations() {
+        let properties = extract_task_text_properties(
+            "Prepare backlog 🗓️ 2026-04-03 ✅ 2026-04-04 ➕ 2026-04-01 🛫 2026-04-02 ⏳ 2026-04-05 🔺 🔁 every week ⛔ ALPHA-1 🆔 BETA-1",
+        );
+
+        assert_eq!(
+            properties,
+            vec![
+                ("due".to_string(), "2026-04-03".to_string()),
+                ("completion".to_string(), "2026-04-04".to_string()),
+                ("created".to_string(), "2026-04-01".to_string()),
+                ("start".to_string(), "2026-04-02".to_string()),
+                ("scheduled".to_string(), "2026-04-05".to_string()),
+                ("priority".to_string(), "high".to_string()),
+                ("recurrence".to_string(), "every week".to_string()),
+                ("blocked-by".to_string(), "ALPHA-1".to_string()),
+                ("id".to_string(), "BETA-1".to_string()),
+            ]
+        );
     }
 
     #[test]

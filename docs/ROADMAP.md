@@ -1169,10 +1169,10 @@ Extract **all** list items (not just tasks) as structured data, matching Datavie
 - [ ] Synthesize Dataview task fields at query time: `status` (char in brackets), `checked` (status is non-empty), `completed` (status is `x`), `fullyCompleted` (recursive subtree check), `visual` (rendered display text, defaults to `text`)
 - [ ] Nested task query semantics: when a TASK query matches a parent, include child tasks in results even if children don't independently match the WHERE clause. Task hierarchy is preserved in output.
 - [x] Tasks inherit page-level fields (frontmatter, inline fields) from their containing note
-- [ ] Tasks plugin emoji shorthand: detect `🗓️` (due), `✅` (completion), `➕` (created), `🛫` (start), `⏳` (scheduled) date annotations in task text and store as task properties with auto-parsed Date type
-- [ ] Tasks plugin priority levels: detect `⏫` (highest), `🔺` (high), `🔼` (medium), `🔽` (low), `⏬` (lowest) and store as `priority` task property
-- [ ] Tasks plugin recurrence notation: detect `🔁 every <pattern>` in task text and store as `recurrence` task property (parsing the RRULE pattern is deferred to §9.10)
-- [ ] Tasks plugin dependency notation: detect `⛔ <id>` (blocked by) and `🆔 <id>` (task ID) and store as task properties (dependency resolution deferred to §9.10)
+- [x] Tasks plugin emoji shorthand: detect `🗓️` (due), `✅` (completion), `➕` (created), `🛫` (start), `⏳` (scheduled) date annotations in task text and store as task properties with auto-parsed Date type
+- [x] Tasks plugin priority levels: detect `⏫` (highest), `🔺` (high), `🔼` (medium), `🔽` (low), `⏬` (lowest) and store as `priority` task property
+- [x] Tasks plugin recurrence notation: detect `🔁 every <pattern>` in task text and store as `recurrence` task property (parsing the RRULE pattern is deferred to §9.10)
+- [x] Tasks plugin dependency notation: detect `⛔ <id>` (blocked by) and `🆔 <id>` (task ID) and store as task properties (dependency resolution deferred to §9.10)
 - [x] Unit tests: basic tasks, nested tasks, tasks with inline fields, custom status characters
 - [ ] Unit tests: `fullyCompleted` recursive check, nested task inclusion semantics, emoji shorthand date parsing, priority levels
 - [x] Integration test: vault with varied task items, verify task extraction and property association
