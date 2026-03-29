@@ -16,8 +16,10 @@ impl FileMetadataResolver {
             "folder" => Value::String(folder_for_path(&note.document_path)),
             "link" => Value::String(synthetic_file_link(&note.document_path, &note.file_ext)),
             "size" => Value::Number(note.file_size.into()),
-            "mtime" | "ctime" => Value::Number(note.file_mtime.into()),
-            "mday" | "cday" => Value::String(day_string_for_timestamp(note.file_mtime)),
+            "mtime" => Value::Number(note.file_mtime.into()),
+            "ctime" => Value::Number(note.file_ctime.into()),
+            "mday" => Value::String(day_string_for_timestamp(note.file_mtime)),
+            "cday" => Value::String(day_string_for_timestamp(note.file_ctime)),
             "tags" => json_string_array(expand_explicit_tags(&note.tags)),
             "etags" => json_string_array(note.tags.clone()),
             "outlinks" | "links" => json_string_array(note.links.clone()),
@@ -380,6 +382,7 @@ mod tests {
             file_name: "2026-04-18-note".to_string(),
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_000_000,
+            file_ctime: 1_600_000_000_000,
             file_size: 1234,
             properties: serde_json::json!({"status": "done", "reviewed": true}),
             tags: vec!["#project/alpha".to_string()],
@@ -443,7 +446,7 @@ mod tests {
         );
         assert_eq!(
             FileMetadataResolver::field(&note, "ctime"),
-            serde_json::json!(1_700_000_000_000_i64)
+            serde_json::json!(1_600_000_000_000_i64)
         );
         assert_eq!(
             FileMetadataResolver::field(&note, "mday"),
@@ -451,7 +454,7 @@ mod tests {
         );
         assert_eq!(
             FileMetadataResolver::field(&note, "cday"),
-            Value::String("2023-11-14".to_string())
+            Value::String("2020-09-13".to_string())
         );
         assert_eq!(
             FileMetadataResolver::field(&note, "tags"),

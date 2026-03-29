@@ -868,6 +868,7 @@ mod tests {
             file_name: "note".to_string(),
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_000,
+            file_ctime: 1_600_000_000,
             file_size: 1234,
             properties: serde_json::json!({
                 "status": "done",
@@ -983,7 +984,9 @@ mod tests {
         );
         assert_eq!(eval("file.size"), serde_json::json!(1234));
         assert_eq!(eval("file.mtime"), serde_json::json!(1_700_000_000));
+        assert_eq!(eval("file.ctime"), serde_json::json!(1_600_000_000));
         assert_eq!(eval("file.mday"), Value::String("1970-01-20".to_string()));
+        assert_eq!(eval("file.cday"), Value::String("1970-01-19".to_string()));
         assert_eq!(eval("file.mtime.year"), serde_json::json!(1970));
         assert_eq!(eval("file.mtime.month"), serde_json::json!(1));
         assert_eq!(eval("file.mtime.weekday"), serde_json::json!(2));
@@ -1202,6 +1205,7 @@ mod tests {
             file_name: "test".to_string(),
             file_ext: "md".to_string(),
             file_mtime: 0,
+            file_ctime: 0,
             file_size: 0,
             properties: serde_json::json!({}),
             tags: vec![],
@@ -1308,6 +1312,7 @@ mod tests {
             file_name: "note".to_string(),
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_000,
+            file_ctime: 1_700_000_000,
             file_size: 1234,
             properties: serde_json::json!({"author": "[[alice]]"}),
             tags: vec![],
@@ -1332,6 +1337,7 @@ mod tests {
             file_name: "alice".to_string(),
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_001,
+            file_ctime: 1_700_000_001,
             file_size: 500,
             properties: serde_json::json!({"role": "editor"}),
             tags: vec!["#person".to_string()],
@@ -1392,6 +1398,7 @@ mod tests {
             file_name: "alice".to_string(),
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_001,
+            file_ctime: 1_700_000_001,
             file_size: 500,
             properties: serde_json::json!({"role": "editor", "team": "docs", "Display Name": "Alice A."}),
             tags: vec!["#person".to_string()],

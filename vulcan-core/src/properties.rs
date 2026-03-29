@@ -16,6 +16,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROPERTY_NAMESPACE_FRONTMATTER: &str = "frontmatter";
 const PROPERTY_NAMESPACE_INLINE: &str = "inline";
@@ -149,6 +150,8 @@ pub struct NoteRecord {
     pub file_name: String,
     pub file_ext: String,
     pub file_mtime: i64,
+    #[serde(skip)]
+    pub file_ctime: i64,
     pub file_size: i64,
     pub properties: Value,
     pub tags: Vec<String>,
@@ -450,6 +453,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
+    let vault_root = paths.vault_root().to_path_buf();
     let config = crate::load_vault_config(paths).config;
 
     let (sql_filters, expression_filters) = partition_note_query_filters(&query.filters)?;
@@ -484,6 +488,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         |row| -> Result<(String, NoteRecord), rusqlite::Error> {
             let doc_id: String = row.get(0)?;
             let document_path: String = row.get(1)?;
+            let file_mtime: i64 = row.get(4)?;
             let canonical_json: String = row.get(6)?;
             let raw_yaml: String = row.get(7)?;
             let properties = serde_json::from_str::<Value>(&canonical_json).map_err(|error| {
@@ -500,7 +505,8 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
                     document_path: document_path.clone(),
                     file_name: row.get(2)?,
                     file_ext: row.get(3)?,
-                    file_mtime: row.get(4)?,
+                    file_mtime,
+                    file_ctime: file_ctime_for_document(&vault_root, &document_path, file_mtime),
                     file_size: row.get(5)?,
                     properties,
                     tags: Vec::new(),
@@ -575,6 +581,7 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
+    let vault_root = paths.vault_root().to_path_buf();
     let config = crate::load_vault_config(paths).config;
     let mut stmt = connection.prepare(
         "SELECT d.id, d.path, d.filename, d.extension, d.file_mtime, d.file_size, \
@@ -608,6 +615,7 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
                 file_name,
                 file_ext,
                 file_mtime,
+                file_ctime: file_ctime_for_document(&vault_root, &path, file_mtime),
                 file_size,
                 properties,
                 tags: vec![],
@@ -640,6 +648,19 @@ fn load_bookmarked_paths(vault_root: &Path) -> HashSet<String> {
         return HashSet::new();
     };
     bookmarked_paths_from_value(&bookmarks)
+}
+
+fn file_ctime_for_document(vault_root: &Path, document_path: &str, fallback_mtime: i64) -> i64 {
+    fs::metadata(vault_root.join(document_path))
+        .ok()
+        .and_then(|metadata| metadata.created().ok().or_else(|| metadata.modified().ok()))
+        .and_then(system_time_to_millis)
+        .unwrap_or(fallback_mtime)
+}
+
+fn system_time_to_millis(time: SystemTime) -> Option<i64> {
+    let duration = time.duration_since(UNIX_EPOCH).ok()?;
+    i64::try_from(duration.as_millis()).ok()
 }
 
 fn bookmarked_paths_from_value(bookmarks: &Value) -> HashSet<String> {
@@ -2009,6 +2030,19 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn file_ctime_uses_filesystem_metadata_and_missing_files_fall_back_to_mtime() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::write(vault_root.join("Note.md"), "# Note\n").expect("note should be written");
+
+        let existing = file_ctime_for_document(vault_root, "Note.md", -1);
+        let missing = file_ctime_for_document(vault_root, "Missing.md", 123);
+
+        assert_ne!(existing, -1);
+        assert_eq!(missing, 123);
+    }
 
     #[test]
     fn extracts_property_rows_with_coercion_and_diagnostics() {

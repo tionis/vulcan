@@ -1190,7 +1190,7 @@ Implement the full `file.*` implicit metadata namespace that Dataview exposes on
 - [x] `file.ext` — file extension (derived from `file.path`)
 - [x] `file.link` — synthetic link to the file
 - [x] `file.size` — file size in bytes (from `documents` or filesystem)
-- [ ] `file.ctime` / `file.cday` — creation timestamp / date (filesystem or `documents`)
+- [x] `file.ctime` / `file.cday` — creation timestamp / date (filesystem or `documents`)
 - [x] `file.mtime` / `file.mday` — modification timestamp / date (from `documents.modified_at`)
 - [x] `file.tags` — all tags broken down by level: `#A/B/C` → `[#A, #A/B, #A/B/C]` (subtag expansion, from `tags` table)
 - [x] `file.etags` — explicit tags only, not broken down: `[#A/B/C]` (from `tags` table)

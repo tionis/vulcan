@@ -616,6 +616,7 @@ mod tests {
             file_name: "note".to_string(),
             file_ext: "md".to_string(),
             file_mtime: 1_700_000_000,
+            file_ctime: 1_700_000_000,
             file_size: 1234,
             properties: serde_json::json!({"status": "done", "items": [1, 2, 3, 2]}),
             tags: vec![],
