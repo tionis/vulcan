@@ -132,4 +132,4 @@ pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchR
 
 pub const PARSER_VERSION: u32 = 5;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;

@@ -16,7 +16,7 @@ reviewed:: false
 [owner:: [[People/Bob]]]
 
 ## Lists
-- Plain list item [kind:: note]
+- Plain list item [[Projects/Alpha]] #project/list [kind:: note]
   1. Nested numbered item ^list-child
 
 ## Tasks

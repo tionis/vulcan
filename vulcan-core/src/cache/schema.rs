@@ -594,6 +594,16 @@ pub fn apply_schema_v11(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
     Ok(())
 }
 
+pub fn apply_schema_v12(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        ALTER TABLE list_items ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE list_items ADD COLUMN outlinks_json TEXT NOT NULL DEFAULT '[]';
+        ",
+    )?;
+    Ok(())
+}
+
 pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     // Drop all namespaced vector tables and the legacy table.
     let vector_tables: Vec<String> = {

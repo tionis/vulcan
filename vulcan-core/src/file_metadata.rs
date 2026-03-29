@@ -1,7 +1,5 @@
 use crate::expression::functions::date_components;
-use crate::parser::parse_document;
 use crate::properties::{NoteListItemRecord, NoteRecord, NoteTaskRecord};
-use crate::VaultConfig;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -109,7 +107,6 @@ fn list_item_object(
     by_id: &HashMap<&str, &NoteListItemRecord>,
     children_by_parent: &HashMap<&str, Vec<&NoteListItemRecord>>,
 ) -> Value {
-    let (tags, outlinks) = parsed_list_metadata(&item.text);
     let parent = item
         .parent_item_id
         .as_deref()
@@ -146,8 +143,11 @@ fn list_item_object(
         "link".to_string(),
         Value::String(list_item_link(note, item)),
     );
-    object.insert("tags".to_string(), json_string_array(tags));
-    object.insert("outlinks".to_string(), json_string_array(outlinks));
+    object.insert("tags".to_string(), json_string_array(item.tags.clone()));
+    object.insert(
+        "outlinks".to_string(),
+        json_string_array(item.outlinks.clone()),
+    );
     object.insert("children".to_string(), Value::Array(children));
     object.insert("parent".to_string(), parent);
     object.insert("task".to_string(), Value::Bool(item.is_task));
@@ -246,31 +246,6 @@ fn task_fully_completed(
                 .is_some_and(|task| task_fully_completed(task, task_by_id, task_children))
         })
     })
-}
-
-fn parsed_list_metadata(text: &str) -> (Vec<String>, Vec<String>) {
-    let parsed = parse_document(text, &VaultConfig::default());
-    let mut tags = Vec::new();
-    let mut seen_tags = HashSet::new();
-    for tag in parsed.tags {
-        let tag_text = format!("#{}", tag.tag_text);
-        if seen_tags.insert(tag_text.clone()) {
-            tags.push(tag_text);
-        }
-    }
-
-    let mut outlinks = Vec::new();
-    let mut seen_links = HashSet::new();
-    for link in parsed.links {
-        if link.link_kind == crate::LinkKind::External {
-            continue;
-        }
-        if seen_links.insert(link.raw_text.clone()) {
-            outlinks.push(link.raw_text);
-        }
-    }
-
-    (tags, outlinks)
 }
 
 fn list_item_link(note: &NoteRecord, item: &NoteListItemRecord) -> String {
@@ -533,6 +508,8 @@ mod tests {
             NoteListItemRecord {
                 id: "list-1".to_string(),
                 text: "Parent item [kind:: note]".to_string(),
+                tags: vec![],
+                outlinks: vec![],
                 line_number: 10,
                 line_count: 1,
                 byte_offset: 100,
@@ -546,6 +523,8 @@ mod tests {
             NoteListItemRecord {
                 id: "list-2".to_string(),
                 text: "Nested task [[Other]] #project ^child".to_string(),
+                tags: vec!["#project".to_string()],
+                outlinks: vec!["[[Other]]".to_string()],
                 line_number: 11,
                 line_count: 1,
                 byte_offset: 120,

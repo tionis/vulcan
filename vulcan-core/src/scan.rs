@@ -1785,6 +1785,8 @@ fn insert_list_items(
             id,
             document_id,
             text,
+            tags_json,
+            outlinks_json,
             line_number,
             line_count,
             byte_offset,
@@ -1795,7 +1797,7 @@ fn insert_list_items(
             annotated,
             symbol
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
         ",
     )?;
 
@@ -1804,6 +1806,10 @@ fn insert_list_items(
             &list_item_ids[index],
             document_id,
             &list_item.text,
+            serde_json::to_string(&list_item.tags)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            serde_json::to_string(&list_item.outlinks)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
             i64::try_from(list_item.line_number).map_err(|_| ScanError::MetadataOverflow {
                 field: "list_items.line_number",
                 path: PathBuf::from(document_id),
@@ -2510,10 +2516,19 @@ mod tests {
             .expect("rows should collect");
         assert_eq!(inline_expressions, vec!["this.status".to_string()]);
 
-        let dashboard_list_items: Vec<(String, i64, Option<String>, i64, i64, String)> = connection
+        let dashboard_list_items: Vec<(
+            String,
+            i64,
+            Option<String>,
+            i64,
+            i64,
+            String,
+            String,
+            String,
+        )> = connection
             .prepare(
                 "
-                SELECT list_items.text, list_items.is_task, list_items.block_id, list_items.annotated, list_items.line_number, list_items.symbol
+                SELECT list_items.text, list_items.is_task, list_items.block_id, list_items.annotated, list_items.line_number, list_items.symbol, list_items.tags_json, list_items.outlinks_json
                 FROM list_items
                 JOIN documents ON documents.id = list_items.document_id
                 WHERE documents.path = 'Dashboard.md'
@@ -2529,6 +2544,8 @@ mod tests {
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
                 ))
             })
             .expect("query should succeed")
@@ -2538,12 +2555,14 @@ mod tests {
         assert_eq!(
             dashboard_list_items[0],
             (
-                "Plain list item [kind:: note]".to_string(),
+                "Plain list item [[Projects/Alpha]] #project/list [kind:: note]".to_string(),
                 0,
                 None,
                 1,
                 19,
                 "-".to_string(),
+                "[\"#project/list\"]".to_string(),
+                "[\"[[Projects/Alpha]]\"]".to_string(),
             )
         );
         assert_eq!(
@@ -2555,6 +2574,8 @@ mod tests {
                 0,
                 20,
                 "1.".to_string(),
+                "[]".to_string(),
+                "[]".to_string(),
             )
         );
 
@@ -2768,6 +2789,14 @@ mod tests {
         assert_eq!(dashboard_lists[0]["line"], Value::Number(19.into()));
         assert_eq!(dashboard_lists[0]["annotated"], Value::Bool(true));
         assert_eq!(dashboard_lists[0]["task"], Value::Bool(false));
+        assert_eq!(
+            dashboard_lists[0]["tags"],
+            serde_json::json!(["#project/list"])
+        );
+        assert_eq!(
+            dashboard_lists[0]["outlinks"],
+            serde_json::json!(["[[Projects/Alpha]]"])
+        );
         assert_eq!(
             dashboard_lists[0]["children"][0]["line"],
             Value::Number(20.into())

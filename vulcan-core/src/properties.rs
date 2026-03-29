@@ -6,6 +6,7 @@ use crate::file_metadata::synthetic_file_link;
 use crate::parser::{parse_document, types::InlineFieldKind};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
 use rusqlite::params_from_iter;
+use rusqlite::types::Type as SqlType;
 use rusqlite::types::Value as SqlValue;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -170,6 +171,8 @@ pub struct NoteRecord {
 pub struct NoteListItemRecord {
     pub id: String,
     pub text: String,
+    pub tags: Vec<String>,
+    pub outlinks: Vec<String>,
     pub line_number: i64,
     pub line_count: i64,
     pub byte_offset: i64,
@@ -746,31 +749,65 @@ fn hydrate_note_records(
 
     let mut list_item_map: HashMap<String, Vec<NoteListItemRecord>> = HashMap::new();
     let list_item_sql = format!(
-        "SELECT id, document_id, text, line_number, line_count, byte_offset, section_heading, \
-         parent_item_id, is_task, block_id, annotated, symbol \
+        "SELECT id, document_id, text, tags_json, outlinks_json, line_number, line_count, \
+         byte_offset, section_heading, parent_item_id, is_task, block_id, annotated, symbol \
          FROM list_items WHERE document_id IN ({placeholders})"
     );
     let mut list_item_stmt = connection.prepare(&list_item_sql)?;
     let list_item_rows = list_item_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
         Ok((
             row.get::<_, String>(1)?,
-            NoteListItemRecord {
-                id: row.get(0)?,
-                text: row.get(2)?,
-                line_number: row.get(3)?,
-                line_count: row.get(4)?,
-                byte_offset: row.get(5)?,
-                section_heading: row.get(6)?,
-                parent_item_id: row.get(7)?,
-                is_task: row.get::<_, i64>(8)? != 0,
-                block_id: row.get(9)?,
-                annotated: row.get::<_, i64>(10)? != 0,
-                symbol: row.get(11)?,
-            },
+            (
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, i64>(10)? != 0,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, i64>(12)? != 0,
+                row.get::<_, String>(13)?,
+            ),
         ))
     })?;
     for list_item_row in list_item_rows {
-        let (doc_id, list_item) = list_item_row?;
+        let (
+            doc_id,
+            (
+                id,
+                text,
+                tags_json,
+                outlinks_json,
+                line_number,
+                line_count,
+                byte_offset,
+                section_heading,
+                parent_item_id,
+                is_task,
+                block_id,
+                annotated,
+                symbol,
+            ),
+        ) = list_item_row?;
+        let list_item = NoteListItemRecord {
+            id,
+            text,
+            tags: parse_json_string_array(&tags_json)?,
+            outlinks: parse_json_string_array(&outlinks_json)?,
+            line_number,
+            line_count,
+            byte_offset,
+            section_heading,
+            parent_item_id,
+            is_task,
+            block_id,
+            annotated,
+            symbol,
+        };
         list_item_map.entry(doc_id).or_default().push(list_item);
     }
 
@@ -880,6 +917,12 @@ fn hydrate_note_records(
     }
 
     Ok(())
+}
+
+fn parse_json_string_array(value: &str) -> Result<Vec<String>, rusqlite::Error> {
+    serde_json::from_str(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(value.len(), SqlType::Text, Box::new(error))
+    })
 }
 
 fn typed_property_json_value(

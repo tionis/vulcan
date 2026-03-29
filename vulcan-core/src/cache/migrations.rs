@@ -83,6 +83,11 @@ impl MigrationRegistry {
                 "add list item storage and task-to-list linking",
                 schema::apply_schema_v11,
             ),
+            Migration::new(
+                12,
+                "persist list item tags and outlinks",
+                schema::apply_schema_v12,
+            ),
         ])
     }
 
