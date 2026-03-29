@@ -19,7 +19,7 @@ pub use eval::{
     evaluate_parsed_tasks_query, evaluate_tasks_query, TasksQueryGroup, TasksQueryResult,
 };
 pub use parse::parse_tasks_query;
-pub(crate) use recurrence::inject_task_recurrence_fields;
+pub(crate) use recurrence::{inject_task_recurrence_fields, task_recurrence_properties};
 pub use recurrence::{
     parse_recurrence_text, parse_task_recurrence, task_recurrence_anchor,
     task_upcoming_occurrences, TaskRecurrence,

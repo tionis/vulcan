@@ -69,32 +69,36 @@ pub fn task_upcoming_occurrences(
     recurrence_occurrences(&recurrence, anchor_ms, from_ms, limit)
 }
 
-pub(crate) fn inject_task_recurrence_fields(task: &mut Map<String, Value>) {
+pub(crate) fn task_recurrence_properties(task: &Map<String, Value>) -> Vec<(String, Value)> {
     let Some(recurrence) = parse_task_recurrence(task) else {
-        return;
+        return Vec::new();
     };
 
-    task.entry("recurrence".to_string())
-        .or_insert_with(|| Value::String(recurrence.raw.clone()));
-    task.insert(
-        "recurrenceRaw".to_string(),
-        Value::String(recurrence.raw.clone()),
-    );
-    task.insert(
-        "recurrenceRule".to_string(),
-        Value::String(recurrence.rule.clone()),
-    );
-    task.insert(
-        "recurrenceFrequency".to_string(),
-        Value::String(recurrence.frequency.clone()),
-    );
-    task.insert(
-        "recurrenceInterval".to_string(),
-        Value::Number(u64::from(recurrence.interval).into()),
-    );
+    let mut properties = vec![
+        (
+            "recurrence".to_string(),
+            Value::String(recurrence.raw.clone()),
+        ),
+        (
+            "recurrenceRaw".to_string(),
+            Value::String(recurrence.raw.clone()),
+        ),
+        (
+            "recurrenceRule".to_string(),
+            Value::String(recurrence.rule.clone()),
+        ),
+        (
+            "recurrenceFrequency".to_string(),
+            Value::String(recurrence.frequency.clone()),
+        ),
+        (
+            "recurrenceInterval".to_string(),
+            Value::Number(u64::from(recurrence.interval).into()),
+        ),
+    ];
 
     if !recurrence.weekdays.is_empty() {
-        task.insert(
+        properties.push((
             "recurrenceWeekdays".to_string(),
             Value::Array(
                 recurrence
@@ -104,31 +108,43 @@ pub(crate) fn inject_task_recurrence_fields(task: &mut Map<String, Value>) {
                     .map(Value::String)
                     .collect(),
             ),
-        );
+        ));
     }
     if let Some(month_day) = recurrence.month_day {
-        task.insert(
+        properties.push((
             "recurrenceMonthDay".to_string(),
             Value::Number(u64::from(month_day).into()),
-        );
+        ));
     }
     if let Some(month) = recurrence.month {
-        task.insert(
+        properties.push((
             "recurrenceMonth".to_string(),
             Value::Number(u64::from(month).into()),
-        );
+        ));
     }
     if let Some(count) = recurrence.count {
-        task.insert(
+        properties.push((
             "recurrenceCount".to_string(),
             Value::Number(u64::from(count).into()),
-        );
+        ));
     }
     if let Some(until) = &recurrence.until {
-        task.insert("recurrenceUntil".to_string(), Value::String(until.clone()));
+        properties.push(("recurrenceUntil".to_string(), Value::String(until.clone())));
     }
     if let Some(anchor) = task_recurrence_anchor(task) {
-        task.insert("recurrenceAnchor".to_string(), Value::String(anchor));
+        properties.push(("recurrenceAnchor".to_string(), Value::String(anchor)));
+    }
+
+    properties
+}
+
+pub(crate) fn inject_task_recurrence_fields(task: &mut Map<String, Value>) {
+    for (key, value) in task_recurrence_properties(task) {
+        if key == "recurrence" {
+            task.entry(key).or_insert(value);
+        } else {
+            task.insert(key, value);
+        }
     }
 }
 
@@ -674,6 +690,47 @@ mod tests {
         assert_eq!(
             task_upcoming_occurrences(&rrule_task, ms("2026-03-29"), 5),
             vec!["2026-04-09".to_string(), "2026-04-23".to_string()]
+        );
+    }
+
+    #[test]
+    fn builds_normalized_recurrence_properties() {
+        let recurring_task = task(&[
+            ("scheduled", Value::String("2026-03-27".to_string())),
+            ("recurrence", Value::String("every weekday".to_string())),
+        ]);
+
+        let properties = task_recurrence_properties(&recurring_task)
+            .into_iter()
+            .collect::<Map<_, _>>();
+
+        assert_eq!(
+            properties.get("recurrenceRule"),
+            Some(&Value::String(
+                "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR".to_string()
+            ))
+        );
+        assert_eq!(
+            properties.get("recurrenceFrequency"),
+            Some(&Value::String("weekly".to_string()))
+        );
+        assert_eq!(
+            properties.get("recurrenceInterval"),
+            Some(&Value::Number(1.into()))
+        );
+        assert_eq!(
+            properties.get("recurrenceWeekdays"),
+            Some(&serde_json::json!([
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday"
+            ]))
+        );
+        assert_eq!(
+            properties.get("recurrenceAnchor"),
+            Some(&Value::String("2026-03-27".to_string()))
         );
     }
 }

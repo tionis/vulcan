@@ -2988,6 +2988,62 @@ completed = ["x", "v"]
         assert_eq!(tasks[1]["completed"], Value::Bool(false));
     }
 
+    #[test]
+    fn load_note_index_persists_derived_task_recurrence_properties() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join("Tasks.md"),
+            "- [ ] Review sprint ⏳ 2026-03-27 🔁 every weekday\n",
+        )
+        .expect("note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let note_index = load_note_index(&paths).expect("note index should load");
+        let note = note_index.get("Tasks").expect("task note should exist");
+        let task = note.tasks.first().expect("task should exist");
+
+        assert_eq!(
+            task.properties.get("recurrence"),
+            Some(&Value::String("every weekday".to_string()))
+        );
+        assert_eq!(
+            task.properties.get("recurrenceRaw"),
+            Some(&Value::String("every weekday".to_string()))
+        );
+        assert_eq!(
+            task.properties.get("recurrenceRule"),
+            Some(&Value::String(
+                "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR".to_string()
+            ))
+        );
+        assert_eq!(
+            task.properties.get("recurrenceFrequency"),
+            Some(&Value::String("weekly".to_string()))
+        );
+        assert_eq!(
+            task.properties.get("recurrenceInterval"),
+            Some(&serde_json::json!(1.0))
+        );
+        assert_eq!(
+            task.properties.get("recurrenceWeekdays"),
+            Some(&serde_json::json!([
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday"
+            ]))
+        );
+        assert_eq!(
+            task.properties.get("recurrenceAnchor"),
+            Some(&Value::String("2026-03-27".to_string()))
+        );
+    }
+
     fn copy_fixture_vault(name: &str, destination: &Path) {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/vaults")
