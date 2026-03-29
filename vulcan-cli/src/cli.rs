@@ -5,7 +5,7 @@ use std::path::PathBuf;
 const ROOT_AFTER_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
-  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, bases, suggest, diff
+  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
   Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template
@@ -348,6 +348,23 @@ Notes:
 Examples:
   vulcan config import tasks
   vulcan --output json config import tasks";
+
+const KANBAN_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  list        list indexed Kanban boards
+  show        display one board by column
+  cards       list cards from one board with optional filters
+
+Notes:
+  `kanban show` defaults to column counts; add `--verbose` to include cards.
+  `kanban cards --status` matches a task status character, status name, or status type.
+
+Examples:
+  vulcan kanban list
+  vulcan kanban show Board
+  vulcan kanban show Board --verbose
+  vulcan kanban cards Board --column Todo
+  vulcan --output json kanban cards Board --status IN_PROGRESS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -873,6 +890,31 @@ pub enum TasksCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum KanbanCommand {
+    #[command(about = "List indexed Kanban boards")]
+    List,
+    #[command(about = "Display one Kanban board by column")]
+    Show {
+        #[arg(help = "Board path, filename, or alias")]
+        board: String,
+        #[arg(long, help = "Include card details in the output")]
+        verbose: bool,
+    },
+    #[command(about = "List cards from one Kanban board")]
+    Cards {
+        #[arg(help = "Board path, filename, or alias")]
+        board: String,
+        #[arg(long, help = "Restrict cards to one column title")]
+        column: Option<String>,
+        #[arg(
+            long,
+            help = "Restrict cards to one task status character, name, or type"
+        )]
+        status: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum AutomationCommand {
     #[command(about = "Run saved reports, checks, and repairs for non-interactive workflows")]
     Run {
@@ -1089,6 +1131,14 @@ pub enum Command {
     Tasks {
         #[command(subcommand)]
         command: TasksCommand,
+    },
+    #[command(
+        about = "Inspect indexed Kanban boards and cards",
+        after_help = KANBAN_COMMAND_AFTER_HELP
+    )]
+    Kanban {
+        #[command(subcommand)]
+        command: KanbanCommand,
     },
     #[command(
         about = "Evaluate and maintain Bases views",

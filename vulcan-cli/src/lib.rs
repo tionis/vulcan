@@ -9,8 +9,9 @@ mod serve;
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
     ConfigImportCommand, DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GraphCommand,
-    OutputFormat, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
-    SuggestCommand, TasksCommand, TemplateSubcommand, VectorQueueCommand, VectorsCommand,
+    KanbanCommand, OutputFormat, RefreshMode, RepairCommand, SavedCommand, SearchMode,
+    SearchSortArg, SuggestCommand, TasksCommand, TemplateSubcommand, VectorQueueCommand,
+    VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -41,34 +42,36 @@ use vulcan_core::{
     drop_vector_model, evaluate_base_file, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, export_static_search_index, git_status,
     import_tasks_plugin_config, index_vectors_with_progress, initialize_vault, inspect_cache,
-    inspect_vector_queue, link_mentions, list_checkpoints, list_saved_reports, list_vector_models,
-    load_dataview_blocks, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
-    move_note, parse_tasks_query, query_backlinks, query_change_report, query_graph_analytics,
-    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
-    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
-    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
-    repair_vectors_with_progress, resolve_note_reference, save_saved_report,
-    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
-    task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport,
-    BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    EvaluatedInlineExpression, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorReport,
-    RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
-    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, TasksQueryResult, TemplatesConfig, VaultPaths,
-    VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
-    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
+    inspect_vector_queue, link_mentions, list_checkpoints, list_kanban_boards, list_saved_reports,
+    list_vector_models, load_dataview_blocks, load_kanban_board, load_saved_report,
+    load_tasks_blocks, load_vault_config, merge_tags, move_note, parse_tasks_query,
+    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
+    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
+    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
+    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
+    resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
+    suggest_duplicates, suggest_mentions, task_upcoming_occurrences, vector_duplicates,
+    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BaseViewGroupBy,
+    BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, EvaluatedInlineExpression, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, InitSummary, KanbanBoardRecord,
+    KanbanBoardSummary, KanbanTaskStatus, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery, RebuildReport,
+    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksQueryResult,
+    TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
+    VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 
 #[derive(Debug)]
@@ -621,6 +624,34 @@ struct TasksGraphReport {
     edges: Vec<TaskDependencyEdge>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct KanbanCardsReport {
+    board_path: String,
+    board_title: String,
+    column_filter: Option<String>,
+    status_filter: Option<String>,
+    result_count: usize,
+    cards: Vec<KanbanCardListItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct KanbanCardListItem {
+    board_path: String,
+    board_title: String,
+    column: String,
+    id: String,
+    text: String,
+    line_number: i64,
+    block_id: Option<String>,
+    symbol: String,
+    tags: Vec<String>,
+    outlinks: Vec<String>,
+    date: Option<String>,
+    time: Option<String>,
+    inline_fields: Value,
+    task: Option<KanbanTaskStatus>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct TaskDependencyNode {
     key: String,
@@ -909,6 +940,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Query { .. }
         | Command::Dataview { .. }
         | Command::Tasks { .. }
+        | Command::Kanban { .. }
         | Command::Update { .. }
         | Command::Unset { .. }
         | Command::Notes { .. }
@@ -1629,6 +1661,85 @@ fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, CliE
     });
 
     Ok(TasksGraphReport { nodes, edges })
+}
+
+fn run_kanban_cards_command(
+    paths: &VaultPaths,
+    board: &str,
+    column: Option<&str>,
+    status: Option<&str>,
+) -> Result<KanbanCardsReport, CliError> {
+    let board = load_kanban_board(paths, board).map_err(CliError::operation)?;
+    let column_filter = normalize_optional_filter(column);
+    let status_filter = normalize_optional_filter(status);
+    let mut cards = Vec::new();
+
+    for column_record in &board.columns {
+        if !kanban_column_matches(column_record.name.as_str(), column_filter.as_deref()) {
+            continue;
+        }
+
+        for card in &column_record.cards {
+            if !kanban_status_matches(card.task.as_ref(), status_filter.as_deref()) {
+                continue;
+            }
+
+            cards.push(KanbanCardListItem {
+                board_path: board.path.clone(),
+                board_title: board.title.clone(),
+                column: column_record.name.clone(),
+                id: card.id.clone(),
+                text: card.text.clone(),
+                line_number: card.line_number,
+                block_id: card.block_id.clone(),
+                symbol: card.symbol.clone(),
+                tags: card.tags.clone(),
+                outlinks: card.outlinks.clone(),
+                date: card.date.clone(),
+                time: card.time.clone(),
+                inline_fields: card.inline_fields.clone(),
+                task: card.task.clone(),
+            });
+        }
+    }
+
+    Ok(KanbanCardsReport {
+        board_path: board.path,
+        board_title: board.title,
+        column_filter,
+        status_filter,
+        result_count: cards.len(),
+        cards,
+    })
+}
+
+fn normalize_optional_filter(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn kanban_column_matches(name: &str, filter: Option<&str>) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+
+    name == filter || name.eq_ignore_ascii_case(filter)
+}
+
+fn kanban_status_matches(task: Option<&KanbanTaskStatus>, filter: Option<&str>) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    let Some(task) = task else {
+        return false;
+    };
+
+    task.status_char == filter
+        || task.status_char.eq_ignore_ascii_case(filter)
+        || task.status_name.eq_ignore_ascii_case(filter)
+        || task.status_type.eq_ignore_ascii_case(filter)
 }
 
 fn task_dependency_key(task: &Value) -> Option<String> {
@@ -3855,6 +3966,37 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             TasksCommand::Graph => {
                 let report = build_tasks_graph_report(&paths)?;
                 print_tasks_graph_report(cli.output, &report)
+            }
+        },
+        Command::Kanban { ref command } => match command {
+            KanbanCommand::List => {
+                let boards = list_kanban_boards(&paths).map_err(CliError::operation)?;
+                print_kanban_board_list(
+                    cli.output,
+                    &boards,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
+            }
+            KanbanCommand::Show { board, verbose } => {
+                let report = load_kanban_board(&paths, board).map_err(CliError::operation)?;
+                print_kanban_board_report(cli.output, &report, *verbose)
+            }
+            KanbanCommand::Cards {
+                board,
+                column,
+                status,
+            } => {
+                let report =
+                    run_kanban_cards_command(&paths, board, column.as_deref(), status.as_deref())?;
+                print_kanban_cards_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
             }
         },
         Command::Search {
@@ -6486,6 +6628,126 @@ fn print_tasks_graph_report(
     }
 }
 
+fn print_kanban_board_list(
+    output: OutputFormat,
+    boards: &[KanbanBoardSummary],
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let visible_boards = paginated_items(boards, list_controls);
+    let rows = kanban_board_rows(visible_boards);
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Kanban boards"));
+            }
+            if visible_boards.is_empty() {
+                println!("No indexed Kanban boards.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for board in visible_boards {
+                    println!(
+                        "- {} ({}) [{}] {} column(s), {} card(s)",
+                        board.title, board.path, board.format, board.column_count, board.card_count
+                    );
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
+    }
+}
+
+fn print_kanban_board_report(
+    output: OutputFormat,
+    report: &KanbanBoardRecord,
+    verbose: bool,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            let card_count = report
+                .columns
+                .iter()
+                .map(|column| column.card_count)
+                .sum::<usize>();
+            println!("{} ({})", report.title, report.path);
+            println!("Format: {}", report.format);
+            println!("Columns: {}", report.columns.len());
+            println!("Cards: {card_count}");
+            println!("Date trigger: {}", report.date_trigger);
+            println!("Time trigger: {}", report.time_trigger);
+            if report.columns.is_empty() {
+                println!("No columns.");
+                return Ok(());
+            }
+
+            for column in &report.columns {
+                println!();
+                println!("{} ({})", column.name, column.card_count);
+                if !verbose {
+                    continue;
+                }
+                for card in &column.cards {
+                    print_kanban_card_summary(card);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_kanban_cards_report(
+    output: OutputFormat,
+    report: &KanbanCardsReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    let visible_cards = paginated_items(&report.cards, list_controls);
+    let rows = kanban_card_rows(report, visible_cards);
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human => {
+            if stdout_is_tty {
+                println!(
+                    "{} {}",
+                    palette.cyan("Kanban cards for"),
+                    palette.bold(&report.board_title)
+                );
+            }
+            if visible_cards.is_empty() {
+                println!("No matching Kanban cards.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+                return Ok(());
+            }
+
+            let mut current_column: Option<&str> = None;
+            for card in visible_cards {
+                if current_column != Some(card.column.as_str()) {
+                    current_column = Some(card.column.as_str());
+                    println!("{}", card.column);
+                }
+                print_kanban_card_list_item(card);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
+    }
+}
+
 fn print_tasks_query_result_human(result: &TasksQueryResult) -> Result<(), CliError> {
     if let Some(plan) = &result.plan {
         println!(
@@ -7237,6 +7499,52 @@ fn note_rows(report: &NotesReport, notes: &[NoteRecord]) -> Vec<Value> {
         .collect()
 }
 
+fn kanban_board_rows(boards: &[KanbanBoardSummary]) -> Vec<Value> {
+    boards
+        .iter()
+        .map(|board| {
+            serde_json::json!({
+                "path": board.path,
+                "title": board.title,
+                "format": board.format,
+                "column_count": board.column_count,
+                "card_count": board.card_count,
+            })
+        })
+        .collect()
+}
+
+fn kanban_card_rows(report: &KanbanCardsReport, cards: &[KanbanCardListItem]) -> Vec<Value> {
+    cards
+        .iter()
+        .map(|card| {
+            serde_json::json!({
+                "board_path": report.board_path,
+                "board_title": report.board_title,
+                "column_filter": report.column_filter,
+                "status_filter": report.status_filter,
+                "column": card.column,
+                "card_id": card.id,
+                "text": card.text,
+                "line_number": card.line_number,
+                "block_id": card.block_id,
+                "symbol": card.symbol,
+                "tags": card.tags,
+                "outlinks": card.outlinks,
+                "date": card.date,
+                "time": card.time,
+                "inline_fields": card.inline_fields,
+                "task": card.task,
+                "task_status_char": card.task.as_ref().map(|task| task.status_char.clone()),
+                "task_status_name": card.task.as_ref().map(|task| task.status_name.clone()),
+                "task_status_type": card.task.as_ref().map(|task| task.status_type.clone()),
+                "task_checked": card.task.as_ref().map(|task| task.checked),
+                "task_completed": card.task.as_ref().map(|task| task.completed),
+            })
+        })
+        .collect()
+}
+
 fn bases_rows(report: &BasesEvalReport) -> Vec<Value> {
     report
         .views
@@ -7699,6 +8007,52 @@ fn render_search_hit_explain(explain: &vulcan_core::SearchHitExplain) -> String 
 
 fn print_note(note: &NoteRecord) {
     println!("- {}", note.document_path);
+}
+
+fn print_kanban_card_summary(card: &vulcan_core::KanbanCardRecord) {
+    let mut details = vec![format!("line {}", card.line_number)];
+    if let Some(date) = card.date.as_deref() {
+        details.push(format!("date {date}"));
+    }
+    if let Some(time) = card.time.as_deref() {
+        details.push(format!("time {time}"));
+    }
+    if !card.tags.is_empty() {
+        details.push(format!("tags {}", card.tags.join(", ")));
+    }
+    if !card.outlinks.is_empty() {
+        details.push(format!("links {}", card.outlinks.join(", ")));
+    }
+    if let Some(task) = card.task.as_ref() {
+        println!(
+            "- [{}] {} ({})",
+            task.status_char,
+            card.text,
+            details.join(", ")
+        );
+    } else {
+        println!("- {} ({})", card.text, details.join(", "));
+    }
+}
+
+fn print_kanban_card_list_item(card: &KanbanCardListItem) {
+    let mut details = vec![format!("line {}", card.line_number)];
+    if let Some(date) = card.date.as_deref() {
+        details.push(format!("date {date}"));
+    }
+    if let Some(time) = card.time.as_deref() {
+        details.push(format!("time {time}"));
+    }
+    if let Some(task) = card.task.as_ref() {
+        println!(
+            "- [{}] {} ({})",
+            task.status_char,
+            card.text,
+            details.join(", ")
+        );
+    } else {
+        println!("- {} ({})", card.text, details.join(", "));
+    }
 }
 
 fn print_bases_human(
@@ -8303,6 +8657,60 @@ mod tests {
             cli.command,
             Command::Tasks {
                 command: TasksCommand::Graph,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_kanban_list_command() {
+        let cli = Cli::try_parse_from(["vulcan", "kanban", "list"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Kanban {
+                command: KanbanCommand::List,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_kanban_show_command() {
+        let cli = Cli::try_parse_from(["vulcan", "kanban", "show", "Board", "--verbose"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Kanban {
+                command: KanbanCommand::Show {
+                    board: "Board".to_string(),
+                    verbose: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_kanban_cards_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "kanban",
+            "cards",
+            "Board",
+            "--column",
+            "Todo",
+            "--status",
+            "IN_PROGRESS",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Kanban {
+                command: KanbanCommand::Cards {
+                    board: "Board".to_string(),
+                    column: Some("Todo".to_string()),
+                    status: Some("IN_PROGRESS".to_string()),
+                },
             }
         );
     }
@@ -9526,6 +9934,10 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "serve"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "kanban"));
         assert!(report
             .commands
             .iter()

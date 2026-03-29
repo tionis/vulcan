@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -1051,6 +1051,92 @@
             "about": "Show the task dependency graph",
             "name": "graph",
             "options": [],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Inspect indexed Kanban boards and cards",
+        "after_help": "Subcommands:\n  list        list indexed Kanban boards\n  show        display one board by column\n  cards       list cards from one board with optional filters\n\nNotes:\n  `kanban show` defaults to column counts; add `--verbose` to include cards.\n  `kanban cards --status` matches a task status character, status name, or status type.\n\nExamples:\n  vulcan kanban list\n  vulcan kanban show Board\n  vulcan kanban show Board --verbose\n  vulcan kanban cards Board --column Todo\n  vulcan --output json kanban cards Board --status IN_PROGRESS",
+        "name": "kanban",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "List indexed Kanban boards",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Display one Kanban board by column",
+            "name": "show",
+            "options": [
+              {
+                "help": "Board path, filename, or alias",
+                "id": "board",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "BOARD"
+                ]
+              },
+              {
+                "help": "Include card details in the output",
+                "id": "verbose",
+                "long": "verbose",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "VERBOSE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List cards from one Kanban board",
+            "name": "cards",
+            "options": [
+              {
+                "help": "Board path, filename, or alias",
+                "id": "board",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "BOARD"
+                ]
+              },
+              {
+                "help": "Restrict cards to one column title",
+                "id": "column",
+                "long": "column",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COLUMN"
+                ]
+              },
+              {
+                "help": "Restrict cards to one task status character, name, or type",
+                "id": "status",
+                "long": "status",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "STATUS"
+                ]
+              }
+            ],
             "subcommands": []
           }
         ]
