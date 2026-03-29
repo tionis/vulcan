@@ -5,7 +5,7 @@ use std::path::PathBuf;
 const ROOT_AFTER_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
-  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, bases, suggest, diff
+  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, bases, suggest, diff
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
   Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template
@@ -313,6 +313,23 @@ Examples:
   vulcan --output json dataview inline Projects/Alpha
   vulcan dataview query 'TABLE status FROM \"Projects\"'
   vulcan dataview eval Dashboard --block 0";
+
+const TASKS_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  query       evaluate a Tasks plugin query string directly
+  eval        evaluate indexed ```tasks``` blocks from one note
+  list        list indexed tasks, optionally filtered
+
+Notes:
+  `tasks query` uses the Tasks DSL.
+  `tasks list --filter` accepts either the Tasks DSL or a Dataview expression.
+  Vault task defaults under [tasks] in .vulcan/config.toml apply to Tasks queries.
+
+Examples:
+  vulcan tasks query 'not done'
+  vulcan tasks eval Dashboard --block 0
+  vulcan tasks list
+  vulcan tasks list --filter 'completed and file.name = \"Alpha\"'";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -785,6 +802,27 @@ pub enum DataviewCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum TasksCommand {
+    #[command(about = "Evaluate a Tasks plugin query string")]
+    Query {
+        #[arg(help = "Quoted Tasks query string")]
+        query: String,
+    },
+    #[command(about = "Evaluate indexed Tasks code blocks from one note")]
+    Eval {
+        #[arg(help = "Note path, filename, or alias containing Tasks blocks")]
+        file: String,
+        #[arg(long, help = "0-based Tasks block index to evaluate")]
+        block: Option<usize>,
+    },
+    #[command(about = "List indexed tasks with an optional filter")]
+    List {
+        #[arg(long, help = "Optional Tasks DSL query or Dataview expression filter")]
+        filter: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum AutomationCommand {
     #[command(about = "Run saved reports, checks, and repairs for non-interactive workflows")]
     Run {
@@ -993,6 +1031,14 @@ pub enum Command {
     Dataview {
         #[command(subcommand)]
         command: DataviewCommand,
+    },
+    #[command(
+        about = "Evaluate and list Tasks plugin queries against indexed tasks",
+        after_help = TASKS_COMMAND_AFTER_HELP
+    )]
+    Tasks {
+        #[command(subcommand)]
+        command: TasksCommand,
     },
     #[command(
         about = "Evaluate and maintain Bases views",

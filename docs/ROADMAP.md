@@ -1591,11 +1591,11 @@ These require the sandboxed JS runtime and are only available when `--features d
 
 #### 9.10.6 CLI surface and evaluation
 
-- [ ] `vulcan tasks query <query-string>` — evaluate a Tasks DSL query from the command line
-- [ ] `vulcan tasks eval <file> [--block <n>]` — evaluate a `` ```tasks `` block from a note
-- [ ] `vulcan tasks list [--filter <expr>]` — list tasks with optional DQL or Tasks DSL filter
-- [ ] `--output json` on all subcommands
-- [ ] Integration tests: Tasks DSL queries against test vault with known results
+- [x] `vulcan tasks query <query-string>` — evaluate a Tasks DSL query from the command line
+- [x] `vulcan tasks eval <file> [--block <n>]` — evaluate a `` ```tasks `` block from a note
+- [x] `vulcan tasks list [--filter <expr>]` — list tasks with optional DQL or Tasks DSL filter
+- [x] `--output json` on all subcommands
+- [x] Integration tests: Tasks DSL queries against test vault with known results
 
 ### 9.11 Kanban board support
 

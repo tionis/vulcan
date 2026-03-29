@@ -29,6 +29,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("graph"))
             .and(predicate::str::contains("notes"))
             .and(predicate::str::contains("dataview"))
+            .and(predicate::str::contains("tasks"))
             .and(predicate::str::contains("browse"))
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("suggest"))
@@ -71,7 +72,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Indexing: init, scan, rebuild, repair, watch, serve",
             ))
             .and(predicate::str::contains(
-                "Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, bases, suggest, diff",
+                "Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, bases, suggest, diff",
             ))
             .and(predicate::str::contains(
                 "Semantic: vectors, cluster, related",
@@ -326,6 +327,195 @@ fn dataview_eval_human_output_keeps_empty_table_headers() {
 
     assert!(stdout.contains("File | status | priority"));
     assert!(stdout.contains("0 result(s)"));
+}
+
+fn write_tasks_cli_fixture(vault_root: &Path) {
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[tasks]\nglobal_filter = \"#task\"\nglobal_query = \"not done\"\nremove_global_filter = true\n",
+    )
+    .expect("config should be written");
+    fs::write(
+        vault_root.join("Tasks.md"),
+        concat!(
+            "# Sprint\n\n",
+            "- [ ] Write docs #task\n",
+            "- [x] Ship release #task\n",
+            "- [x] Archive misc #misc\n",
+            "- [ ] Plan backlog #task\n",
+        ),
+    )
+    .expect("tasks note should be written");
+    fs::write(
+        vault_root.join("Dashboard.md"),
+        concat!(
+            "```tasks\n",
+            "done\n",
+            "```\n\n",
+            "```tasks\n",
+            "path includes Tasks\n",
+            "```\n",
+        ),
+    )
+    .expect("dashboard note should be written");
+}
+
+#[test]
+fn tasks_query_json_output_evaluates_tasks_dsl() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_tasks_cli_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "query",
+            "done",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["result_count"], Value::Number(1.into()));
+    assert_eq!(json["tasks"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        json["tasks"][0]["text"],
+        Value::String("Ship release".to_string())
+    );
+    assert_eq!(json["tasks"][0]["tags"], Value::Array(Vec::new()));
+}
+
+#[test]
+fn tasks_eval_json_output_evaluates_selected_block_with_defaults() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_tasks_cli_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "eval",
+            "Dashboard",
+            "--block",
+            "1",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["file"], Value::String("Dashboard.md".to_string()));
+    assert_eq!(json["blocks"].as_array().map(Vec::len), Some(1));
+    assert_eq!(json["blocks"][0]["block_index"], Value::Number(1.into()));
+    assert_eq!(
+        json["blocks"][0]["source"],
+        Value::String("path includes Tasks".to_string())
+    );
+    assert_eq!(
+        json["blocks"][0]["effective_source"],
+        Value::String("tag includes #task\nnot done\npath includes Tasks".to_string())
+    );
+    assert_eq!(
+        json["blocks"][0]["result"]["result_count"],
+        Value::Number(2.into())
+    );
+    assert_eq!(
+        json["blocks"][0]["result"]["tasks"][0]["text"],
+        Value::String("Write docs".to_string())
+    );
+    assert_eq!(
+        json["blocks"][0]["result"]["tasks"][1]["text"],
+        Value::String("Plan backlog".to_string())
+    );
+}
+
+#[test]
+fn tasks_list_json_output_accepts_tasks_dsl_filters() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_tasks_cli_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--filter",
+            "not done",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["result_count"], Value::Number(2.into()));
+    assert_eq!(json["tasks"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        json["tasks"][0]["text"],
+        Value::String("Write docs".to_string())
+    );
+    assert_eq!(
+        json["tasks"][1]["text"],
+        Value::String("Plan backlog".to_string())
+    );
+}
+
+#[test]
+fn tasks_list_json_output_accepts_dataview_expression_filters() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_tasks_cli_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--filter",
+            "completed",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["result_count"], Value::Number(1.into()));
+    assert_eq!(
+        json["tasks"][0]["text"],
+        Value::String("Ship release".to_string())
+    );
 }
 
 #[test]
@@ -3457,6 +3647,11 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .expect("commands should be an array")
         .iter()
         .any(|command| command["name"] == "browse"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .any(|command| command["name"] == "tasks"));
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")
