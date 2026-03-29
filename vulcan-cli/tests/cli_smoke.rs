@@ -381,6 +381,25 @@ fn write_tasks_dependency_fixture(vault_root: &Path) {
     .expect("dependency note should be written");
 }
 
+fn write_tasks_recurrence_fixture(vault_root: &Path) {
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[tasks]\nglobal_filter = \"#task\"\nremove_global_filter = true\n",
+    )
+    .expect("config should be written");
+    fs::write(
+        vault_root.join("Recurring.md"),
+        concat!(
+            "- [ ] Review sprint #task ⏳ 2026-03-30 🔁 every 2 weeks\n",
+            "- [ ] Close books #task ⏳ 2026-02-15 [repeat:: every month on the 15th]\n",
+            "- [ ] Publish notes #task ⏳ 2026-03-26 [repeat:: RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TH]\n",
+            "- [ ] Ignore misc #misc ⏳ 2026-03-30 🔁 every 2 weeks\n",
+        ),
+    )
+    .expect("recurring note should be written");
+}
+
 #[test]
 fn tasks_query_json_output_evaluates_tasks_dsl() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -535,6 +554,74 @@ fn tasks_list_json_output_accepts_dataview_expression_filters() {
     assert_eq!(
         json["tasks"][0]["text"],
         Value::String("Ship release".to_string())
+    );
+}
+
+#[test]
+fn tasks_next_json_output_lists_upcoming_recurring_instances() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_tasks_recurrence_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "next",
+            "4",
+            "--from",
+            "2026-03-29",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(
+        json["reference_date"],
+        Value::String("2026-03-29".to_string())
+    );
+    assert_eq!(json["result_count"], Value::Number(4.into()));
+    assert_eq!(json["occurrences"].as_array().map(Vec::len), Some(4));
+    assert_eq!(
+        json["occurrences"][0]["date"],
+        Value::String("2026-03-30".to_string())
+    );
+    assert_eq!(
+        json["occurrences"][0]["task"]["recurrenceRule"],
+        Value::String("FREQ=WEEKLY;INTERVAL=2".to_string())
+    );
+    assert_eq!(
+        json["occurrences"][1]["date"],
+        Value::String("2026-04-09".to_string())
+    );
+    assert_eq!(
+        json["occurrences"][1]["task"]["recurrenceRule"],
+        Value::String("FREQ=WEEKLY;INTERVAL=2;BYDAY=TH".to_string())
+    );
+    assert_eq!(
+        json["occurrences"][2]["date"],
+        Value::String("2026-04-13".to_string())
+    );
+    assert_eq!(json["occurrences"][2]["sequence"], Value::Number(2.into()));
+    assert_eq!(
+        json["occurrences"][3]["date"],
+        Value::String("2026-04-15".to_string())
+    );
+    assert_eq!(
+        json["occurrences"][3]["task"]["recurrence"],
+        Value::String("every month on the 15th".to_string())
+    );
+    assert_eq!(
+        json["occurrences"][3]["task"]["recurrenceMonthDay"],
+        Value::Number(15.into())
     );
 }
 

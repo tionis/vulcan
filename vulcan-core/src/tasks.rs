@@ -1,6 +1,7 @@
 mod ast;
 mod eval;
 mod parse;
+mod recurrence;
 
 use std::fmt::{Display, Formatter};
 
@@ -18,6 +19,11 @@ pub use eval::{
     evaluate_parsed_tasks_query, evaluate_tasks_query, TasksQueryGroup, TasksQueryResult,
 };
 pub use parse::parse_tasks_query;
+pub(crate) use recurrence::inject_task_recurrence_fields;
+pub use recurrence::{
+    parse_recurrence_text, parse_task_recurrence, task_recurrence_anchor,
+    task_upcoming_occurrences, TaskRecurrence,
+};
 
 #[derive(Debug)]
 pub enum TasksError {

@@ -943,7 +943,7 @@
       },
       {
         "about": "Evaluate and list Tasks plugin queries against indexed tasks",
-        "after_help": "Subcommands:\n  query       evaluate a Tasks plugin query string directly\n  eval        evaluate indexed ```tasks``` blocks from one note\n  list        list indexed tasks, optionally filtered\n  blocked     list currently blocked tasks with their blockers\n  graph       show the task dependency graph\n\nNotes:\n  `tasks query` uses the Tasks DSL.\n  `tasks list --filter` accepts either the Tasks DSL or a Dataview expression.\n  Vault task defaults under [tasks] in .vulcan/config.toml apply to Tasks queries.\n\nExamples:\n  vulcan tasks query 'not done'\n  vulcan tasks eval Dashboard --block 0\n  vulcan tasks list\n  vulcan tasks list --filter 'completed && file.name = \"Alpha\"'\n  vulcan tasks blocked\n  vulcan tasks graph",
+        "after_help": "Subcommands:\n  query       evaluate a Tasks plugin query string directly\n  eval        evaluate indexed ```tasks``` blocks from one note\n  list        list indexed tasks, optionally filtered\n  next        show upcoming recurring task instances\n  blocked     list currently blocked tasks with their blockers\n  graph       show the task dependency graph\n\nNotes:\n  `tasks query` uses the Tasks DSL.\n  `tasks list --filter` accepts either the Tasks DSL or a Dataview expression.\n  Vault task defaults under [tasks] in .vulcan/config.toml apply to Tasks queries.\n\nExamples:\n  vulcan tasks query 'not done'\n  vulcan tasks eval Dashboard --block 0\n  vulcan tasks list\n  vulcan tasks list --filter 'completed && file.name = \"Alpha\"'\n  vulcan tasks next 5 --from 2026-03-29\n  vulcan tasks blocked\n  vulcan tasks graph",
         "name": "tasks",
         "options": [],
         "subcommands": [
@@ -1007,6 +1007,35 @@
                 "short": null,
                 "value_names": [
                   "FILTER"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Show upcoming recurring task instances",
+            "name": "next",
+            "options": [
+              {
+                "help": "Maximum number of upcoming task instances to return",
+                "id": "count",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "COUNT"
+                ]
+              },
+              {
+                "help": "Reference date for recurrence expansion (defaults to today)",
+                "id": "from",
+                "long": "from",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM"
                 ]
               }
             ],
