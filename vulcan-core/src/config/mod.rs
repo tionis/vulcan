@@ -55,6 +55,12 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # timestamp = true
 # heading = "## Inbox"
 
+# [tasks.statuses]
+# todo = [" "]
+# completed = ["x", "X"]
+# in_progress = ["/"]
+# cancelled = ["-"]
+
 # [templates]
 # date_format = "YYYY-MM-DD"
 # time_format = "HH:mm"
@@ -244,6 +250,58 @@ impl Default for TemplatesConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskCompletionState {
+    pub checked: bool,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskStatusesConfig {
+    #[serde(default = "default_todo_task_statuses")]
+    pub todo: Vec<String>,
+    #[serde(default = "default_completed_task_statuses")]
+    pub completed: Vec<String>,
+    #[serde(default = "default_in_progress_task_statuses")]
+    pub in_progress: Vec<String>,
+    #[serde(default = "default_cancelled_task_statuses")]
+    pub cancelled: Vec<String>,
+}
+
+impl Default for TaskStatusesConfig {
+    fn default() -> Self {
+        Self {
+            todo: default_todo_task_statuses(),
+            completed: default_completed_task_statuses(),
+            in_progress: default_in_progress_task_statuses(),
+            cancelled: default_cancelled_task_statuses(),
+        }
+    }
+}
+
+impl TaskStatusesConfig {
+    #[must_use]
+    pub fn completion_state(&self, status_char: &str) -> TaskCompletionState {
+        let is_todo = Self::matches_status(status_char, &self.todo);
+        let is_completed = Self::matches_status(status_char, &self.completed);
+
+        TaskCompletionState {
+            checked: !status_char.is_empty() && !is_todo,
+            completed: is_completed,
+        }
+    }
+
+    fn matches_status(status_char: &str, candidates: &[String]) -> bool {
+        candidates.iter().any(|candidate| candidate == status_char)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TasksConfig {
+    #[serde(default)]
+    pub statuses: TaskStatusesConfig,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanConfig {
     pub default_mode: AutoScanMode,
@@ -272,6 +330,7 @@ pub struct VaultConfig {
     pub extraction: Option<AttachmentExtractionConfig>,
     pub git: GitConfig,
     pub inbox: InboxConfig,
+    pub tasks: TasksConfig,
     pub templates: TemplatesConfig,
 }
 
@@ -289,6 +348,7 @@ impl Default for VaultConfig {
             extraction: None,
             git: GitConfig::default(),
             inbox: InboxConfig::default(),
+            tasks: TasksConfig::default(),
             templates: TemplatesConfig::default(),
         }
     }
@@ -315,6 +375,7 @@ struct PartialVulcanConfig {
     extraction: Option<AttachmentExtractionConfig>,
     git: Option<PartialGitConfig>,
     inbox: Option<PartialInboxConfig>,
+    tasks: Option<PartialTasksConfig>,
     templates: Option<PartialTemplatesConfig>,
 }
 
@@ -362,6 +423,19 @@ struct PartialTemplatesConfig {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct PartialTasksConfig {
+    statuses: Option<PartialTaskStatusesConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialTaskStatusesConfig {
+    todo: Option<Vec<String>>,
+    completed: Option<Vec<String>>,
+    in_progress: Option<Vec<String>>,
+    cancelled: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct ObsidianAppConfig {
     #[serde(rename = "useMarkdownLinks")]
     use_markdown_links: Option<bool>,
@@ -400,6 +474,22 @@ fn default_attachment_extraction_extensions() -> Vec<String> {
     .into_iter()
     .map(ToOwned::to_owned)
     .collect()
+}
+
+fn default_todo_task_statuses() -> Vec<String> {
+    vec![" ".to_string()]
+}
+
+fn default_completed_task_statuses() -> Vec<String> {
+    vec!["x".to_string(), "X".to_string()]
+}
+
+fn default_in_progress_task_statuses() -> Vec<String> {
+    vec!["/".to_string()]
+}
+
+fn default_cancelled_task_statuses() -> Vec<String> {
+    vec!["-".to_string()]
 }
 
 pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error> {
@@ -667,6 +757,23 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
     }
 
+    if let Some(tasks) = overrides.tasks {
+        if let Some(statuses) = tasks.statuses {
+            if let Some(todo) = statuses.todo {
+                config.tasks.statuses.todo = todo;
+            }
+            if let Some(completed) = statuses.completed {
+                config.tasks.statuses.completed = completed;
+            }
+            if let Some(in_progress) = statuses.in_progress {
+                config.tasks.statuses.in_progress = in_progress;
+            }
+            if let Some(cancelled) = statuses.cancelled {
+                config.tasks.statuses.cancelled = cancelled;
+            }
+        }
+    }
+
     if let Some(templates) = overrides.templates {
         if let Some(date_format) = templates.date_format {
             config.templates.date_format = date_format;
@@ -825,6 +932,12 @@ format = "* {datetime} {text}"
 timestamp = false
 heading = "## Notes"
 
+[tasks.statuses]
+todo = [" ", "!"]
+completed = ["x", "v"]
+in_progress = ["/", ">"]
+cancelled = ["-"]
+
 [templates]
 date_format = "DD/MM/YYYY"
 time_format = "HH:mm:ss"
@@ -883,6 +996,22 @@ time_format = "HH:mm:ss"
         assert_eq!(loaded.config.inbox.format, "* {datetime} {text}");
         assert!(!loaded.config.inbox.timestamp);
         assert_eq!(loaded.config.inbox.heading.as_deref(), Some("## Notes"));
+        assert_eq!(
+            loaded.config.tasks.statuses.todo,
+            vec![" ".to_string(), "!".to_string()]
+        );
+        assert_eq!(
+            loaded.config.tasks.statuses.completed,
+            vec!["x".to_string(), "v".to_string()]
+        );
+        assert_eq!(
+            loaded.config.tasks.statuses.in_progress,
+            vec!["/".to_string(), ">".to_string()]
+        );
+        assert_eq!(
+            loaded.config.tasks.statuses.cancelled,
+            vec!["-".to_string()]
+        );
         assert_eq!(loaded.config.templates.date_format, "DD/MM/YYYY");
         assert_eq!(loaded.config.templates.time_format, "HH:mm:ss");
     }
@@ -925,6 +1054,9 @@ auto_commit = false
 [inbox]
 path = "Inbox.md"
 
+[tasks.statuses]
+completed = ["x"]
+
 [templates]
 date_format = "YYYY-MM-DD"
 "###,
@@ -945,6 +1077,9 @@ auto_commit = true
 [inbox]
 path = "Device/Inbox.md"
 
+[tasks.statuses]
+completed = ["x", "X", "v"]
+
 [templates]
 date_format = "DD.MM.YYYY"
 time_format = "HH:mm:ss"
@@ -960,8 +1095,59 @@ time_format = "HH:mm:ss"
         assert_eq!(loaded.config.chunking.target_size, 2_048);
         assert!(loaded.config.git.auto_commit);
         assert_eq!(loaded.config.inbox.path, "Device/Inbox.md");
+        assert_eq!(
+            loaded.config.tasks.statuses.completed,
+            vec!["x".to_string(), "X".to_string(), "v".to_string()]
+        );
         assert_eq!(loaded.config.templates.date_format, "DD.MM.YYYY");
         assert_eq!(loaded.config.templates.time_format, "HH:mm:ss");
+    }
+
+    #[test]
+    fn task_status_defaults_and_completion_mapping_are_configurable() {
+        let defaults = TaskStatusesConfig::default();
+        assert_eq!(
+            defaults.completion_state(" "),
+            TaskCompletionState {
+                checked: false,
+                completed: false,
+            }
+        );
+        assert_eq!(
+            defaults.completion_state("x"),
+            TaskCompletionState {
+                checked: true,
+                completed: true,
+            }
+        );
+        assert_eq!(
+            defaults.completion_state("/"),
+            TaskCompletionState {
+                checked: true,
+                completed: false,
+            }
+        );
+
+        let custom = TaskStatusesConfig {
+            todo: vec![" ".to_string(), "!".to_string()],
+            completed: vec!["x".to_string(), "v".to_string()],
+            in_progress: vec!["/".to_string()],
+            cancelled: vec!["-".to_string()],
+        };
+        assert_eq!(
+            custom.completion_state("!"),
+            TaskCompletionState {
+                checked: false,
+                completed: false,
+            }
+        );
+        assert_eq!(
+            custom.completion_state("v"),
+            TaskCompletionState {
+                checked: true,
+                completed: true,
+            }
+        );
     }
 
     #[test]

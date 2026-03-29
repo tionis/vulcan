@@ -189,6 +189,8 @@ pub struct NoteTaskRecord {
     pub id: String,
     pub list_item_id: String,
     pub status_char: String,
+    pub checked: bool,
+    pub completed: bool,
     pub text: String,
     pub byte_offset: i64,
     pub parent_task_id: Option<String>,
@@ -448,6 +450,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
+    let config = crate::load_vault_config(paths).config;
 
     let (sql_filters, expression_filters) = partition_note_query_filters(&query.filters)?;
 
@@ -514,7 +517,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     )?;
     let mut doc_ids_and_notes: Vec<(String, NoteRecord)> = rows.collect::<Result<Vec<_>, _>>()?;
 
-    hydrate_note_records(connection, &mut doc_ids_and_notes)?;
+    hydrate_note_records(connection, &config, &mut doc_ids_and_notes)?;
 
     let mut notes: Vec<NoteRecord> = doc_ids_and_notes
         .into_iter()
@@ -572,6 +575,7 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
+    let config = crate::load_vault_config(paths).config;
     let mut stmt = connection.prepare(
         "SELECT d.id, d.path, d.filename, d.extension, d.file_mtime, d.file_size, \
          COALESCE(p.canonical_json, '{}'), COALESCE(p.raw_yaml, '') \
@@ -618,7 +622,7 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
         ));
     }
 
-    hydrate_note_records(connection, &mut doc_ids_and_notes)?;
+    hydrate_note_records(connection, &config, &mut doc_ids_and_notes)?;
 
     let mut map = HashMap::new();
     for (_, note) in doc_ids_and_notes {
@@ -671,6 +675,7 @@ fn collect_bookmarked_paths(value: &Value, paths: &mut HashSet<String>) {
 
 fn hydrate_note_records(
     connection: &rusqlite::Connection,
+    config: &VaultConfig,
     doc_ids_and_notes: &mut Vec<(String, NoteRecord)>,
 ) -> Result<(), rusqlite::Error> {
     if doc_ids_and_notes.is_empty() {
@@ -820,12 +825,16 @@ fn hydrate_note_records(
     );
     let mut task_stmt = connection.prepare(&task_sql)?;
     let task_rows = task_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+        let status_char: String = row.get(3)?;
+        let completion_state = config.tasks.statuses.completion_state(&status_char);
         Ok((
             row.get::<_, String>(1)?,
             NoteTaskRecord {
                 id: row.get(0)?,
                 list_item_id: row.get(2)?,
-                status_char: row.get(3)?,
+                status_char,
+                checked: completion_state.checked,
+                completed: completion_state.completed,
                 text: row.get(4)?,
                 byte_offset: row.get(5)?,
                 parent_task_id: row.get(6)?,
@@ -2643,6 +2652,43 @@ mod tests {
             dashboard.properties["reviewed"],
             Value::Array(vec![Value::Bool(true), Value::Bool(false)])
         );
+    }
+
+    #[test]
+    fn load_note_index_applies_custom_task_status_config() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join("Tasks.md"),
+            "- [!] Important todo\n- [v] Custom done\n",
+        )
+        .expect("note should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[tasks.statuses]
+todo = [" ", "!"]
+completed = ["x", "v"]
+"#,
+        )
+        .expect("config should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let note_index = load_note_index(&paths).expect("note index should load");
+        let note = note_index.get("Tasks").expect("task note should exist");
+        let tasks = FileMetadataResolver::field(note, "tasks");
+        let tasks = tasks.as_array().expect("tasks should be an array");
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["status"], Value::String("!".to_string()));
+        assert_eq!(tasks[0]["checked"], Value::Bool(false));
+        assert_eq!(tasks[0]["completed"], Value::Bool(false));
+        assert_eq!(tasks[1]["status"], Value::String("v".to_string()));
+        assert_eq!(tasks[1]["checked"], Value::Bool(true));
+        assert_eq!(tasks[1]["completed"], Value::Bool(true));
+        assert_eq!(tasks[1]["fullyCompleted"], Value::Bool(true));
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {
