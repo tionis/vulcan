@@ -18,6 +18,7 @@ const TIME_TRIGGER_KEY: &str = "time-trigger";
 const METADATA_KEYS_KEY: &str = "metadata-keys";
 const ARCHIVE_WITH_DATE_KEY: &str = "archive-with-date";
 const NEW_CARD_INSERTION_METHOD_KEY: &str = "new-card-insertion-method";
+const SETTINGS_FOOTER_MARKER: &str = "%% kanban:settings";
 
 #[derive(Debug)]
 pub enum KanbanError {
@@ -143,9 +144,10 @@ struct CardRow {
 #[must_use]
 pub(crate) fn extract_indexed_board(
     parsed: &ParsedDocument,
+    source: &str,
     config: &VaultConfig,
 ) -> Option<IndexedKanbanBoard> {
-    let settings = frontmatter_settings(parsed.frontmatter.as_ref())?;
+    let settings = merged_board_settings(parsed.frontmatter.as_ref(), source)?;
     let format = settings
         .get(KANBAN_FRONTMATTER_KEY)
         .and_then(Value::as_str)
@@ -460,6 +462,18 @@ fn board_title(path: &str) -> String {
         .map_or_else(|| path.to_string(), ToString::to_string)
 }
 
+fn merged_board_settings(
+    frontmatter: Option<&serde_yaml::Value>,
+    source: &str,
+) -> Option<Map<String, Value>> {
+    let mut settings = footer_settings(source).unwrap_or_default();
+    if let Some(frontmatter_settings) = frontmatter_settings(frontmatter) {
+        settings.extend(frontmatter_settings);
+    }
+
+    (!settings.is_empty()).then_some(settings)
+}
+
 fn frontmatter_settings(frontmatter: Option<&serde_yaml::Value>) -> Option<Map<String, Value>> {
     let mapping = frontmatter?.as_mapping()?;
     let mut settings = Map::new();
@@ -479,9 +493,41 @@ fn frontmatter_settings(frontmatter: Option<&serde_yaml::Value>) -> Option<Map<S
         }
     }
 
-    settings
-        .contains_key(KANBAN_FRONTMATTER_KEY)
-        .then_some(settings)
+    (!settings.is_empty()).then_some(settings)
+}
+
+fn footer_settings(source: &str) -> Option<Map<String, Value>> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let end = last_non_empty_line(&lines)?;
+    if lines[end].trim() != "%%" {
+        return None;
+    }
+
+    let start = (0..end)
+        .rev()
+        .find(|index| lines[*index].trim() == SETTINGS_FOOTER_MARKER)?;
+    let opening_fence = ((start + 1)..end).find(|index| !lines[*index].trim().is_empty())?;
+    if lines[opening_fence].trim() != "```" {
+        return None;
+    }
+
+    let closing_fence = ((opening_fence + 1)..end)
+        .rev()
+        .find(|index| !lines[*index].trim().is_empty())?;
+    if lines[closing_fence].trim() != "```" || closing_fence <= opening_fence {
+        return None;
+    }
+
+    match serde_json::from_str::<Value>(&lines[(opening_fence + 1)..closing_fence].join("\n"))
+        .ok()?
+    {
+        Value::Object(settings) => Some(settings),
+        _ => None,
+    }
+}
+
+fn last_non_empty_line(lines: &[&str]) -> Option<usize> {
+    lines.iter().rposition(|line| !line.trim().is_empty())
 }
 
 fn string_setting(settings: &Map<String, Value>, key: &str) -> Option<String> {
@@ -571,13 +617,37 @@ mod tests {
 
     #[test]
     fn extracts_indexed_kanban_board_from_frontmatter_settings() {
-        let parsed = parse_document(
-            "---\nkanban-plugin: board\ndate-trigger: DUE\ntime-trigger: AT\n---\n\n## Todo\n\n- Card\n",
-            &VaultConfig::default(),
-        );
+        let source =
+            "---\nkanban-plugin: board\ndate-trigger: DUE\ntime-trigger: AT\n---\n\n## Todo\n\n- Card\n";
+        let parsed = parse_document(source, &VaultConfig::default());
 
-        let board =
-            extract_indexed_board(&parsed, &VaultConfig::default()).expect("board should parse");
+        let board = extract_indexed_board(&parsed, source, &VaultConfig::default())
+            .expect("board should parse");
+
+        assert_eq!(board.format, "board");
+        assert_eq!(board.date_trigger, "DUE");
+        assert_eq!(board.time_trigger, "AT");
+        assert_eq!(
+            board.settings.get("kanban-plugin").and_then(Value::as_str),
+            Some("board")
+        );
+    }
+
+    #[test]
+    fn extracts_indexed_kanban_board_from_footer_settings_comment() {
+        let source = concat!(
+            "## Todo\n\n",
+            "- Card\n\n",
+            "%% kanban:settings\n",
+            "```\n",
+            "{\"kanban-plugin\":\"board\",\"date-trigger\":\"DUE\",\"time-trigger\":\"AT\"}\n",
+            "```\n",
+            "%%\n",
+        );
+        let parsed = parse_document(source, &VaultConfig::default());
+
+        let board = extract_indexed_board(&parsed, source, &VaultConfig::default())
+            .expect("board should parse");
 
         assert_eq!(board.format, "board");
         assert_eq!(board.date_trigger, "DUE");
@@ -669,5 +739,37 @@ mod tests {
                 .and_then(Value::as_str),
             Some("Ops")
         );
+    }
+
+    #[test]
+    fn scan_indexes_footer_only_kanban_boards() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "## Todo\n\n",
+                "- Card\n\n",
+                "%% kanban:settings\n",
+                "```\n",
+                "{\"kanban-plugin\":\"board\",\"date-trigger\":\"DUE\",\"time-trigger\":\"AT\"}\n",
+                "```\n",
+                "%%\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let boards = list_kanban_boards(&paths).expect("boards should list");
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].path, "Board.md");
+
+        let board = load_kanban_board(&paths, "Board").expect("board should load");
+        assert_eq!(board.date_trigger, "DUE");
+        assert_eq!(board.time_trigger, "AT");
+        assert_eq!(board.columns.len(), 1);
     }
 }
