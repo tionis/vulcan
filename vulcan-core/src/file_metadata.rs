@@ -429,12 +429,48 @@ mod tests {
         let note = note_record();
 
         assert_eq!(
+            FileMetadataResolver::field(&note, "path"),
+            Value::String("projects/2026-04-18-note.md".to_string())
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "name"),
+            Value::String("2026-04-18-note".to_string())
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "basename"),
+            Value::String("2026-04-18-note".to_string())
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "ext"),
+            Value::String("md".to_string())
+        );
+        assert_eq!(
             FileMetadataResolver::field(&note, "folder"),
             Value::String("projects".to_string())
         );
         assert_eq!(
             FileMetadataResolver::field(&note, "link"),
             Value::String("[[projects/2026-04-18-note]]".to_string())
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "size"),
+            serde_json::json!(1234)
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "mtime"),
+            serde_json::json!(1_700_000_000_000_i64)
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "ctime"),
+            serde_json::json!(1_700_000_000_000_i64)
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "mday"),
+            Value::String("2023-11-14".to_string())
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "cday"),
+            Value::String("2023-11-14".to_string())
         );
         assert_eq!(
             FileMetadataResolver::field(&note, "tags"),
@@ -445,6 +481,14 @@ mod tests {
             serde_json::json!(["#project/alpha"])
         );
         assert_eq!(
+            FileMetadataResolver::field(&note, "outlinks"),
+            serde_json::json!(["[[Other]]"])
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "links"),
+            serde_json::json!(["[[Other]]"])
+        );
+        assert_eq!(
             FileMetadataResolver::field(&note, "inlinks"),
             serde_json::json!(["[[Home]]"])
         );
@@ -453,8 +497,20 @@ mod tests {
             serde_json::json!(["Sprint Note"])
         );
         assert_eq!(
+            FileMetadataResolver::field(&note, "frontmatter"),
+            serde_json::json!({"Date": "2026-04-18"})
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "properties"),
+            serde_json::json!({"status": "done"})
+        );
+        assert_eq!(
             FileMetadataResolver::field(&note, "day"),
             Value::String("2026-04-18".to_string())
+        );
+        assert_eq!(
+            FileMetadataResolver::field(&note, "starred"),
+            Value::Bool(false)
         );
     }
 

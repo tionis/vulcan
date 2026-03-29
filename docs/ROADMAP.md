@@ -1204,7 +1204,7 @@ Implement the full `file.*` implicit metadata namespace that Dataview exposes on
 - [ ] `file.starred` — bookmarked status (from `.obsidian/` bookmarks data if available, false otherwise)
 - [x] `file.day` resolution: populated from filename date pattern (`yyyy-mm-dd`, `yyyymmdd`) OR from a frontmatter `Date` field; null otherwise
 - [ ] Subtag inheritance in FROM sources: `FROM #A` matches notes with `#A`, `#A/B`, `#A/B/C`, etc.
-- [ ] Unit tests: each `file.*` field resolves correctly from cache data
+- [x] Unit tests: each `file.*` field resolves correctly from cache data
 - [ ] Integration test: DQL queries using `file.*` fields produce expected results
 
 #### 9.8.4 Data type system and expression evaluator
