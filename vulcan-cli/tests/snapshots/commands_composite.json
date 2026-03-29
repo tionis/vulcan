@@ -870,7 +870,7 @@
       },
       {
         "about": "Evaluate Dataview-compatible metadata and inline expressions",
-        "after_help": "Subcommands:\n  inline      evaluate Dataview inline expressions from one note\n\nExamples:\n  vulcan dataview inline Dashboard\n  vulcan --output json dataview inline Projects/Alpha",
+        "after_help": "Subcommands:\n  inline      evaluate Dataview inline expressions from one note\n  query       evaluate a DQL query string directly\n  eval        evaluate indexed ```dataview``` blocks from one note\n\nExamples:\n  vulcan dataview inline Dashboard\n  vulcan --output json dataview inline Projects/Alpha\n  vulcan dataview query 'TABLE status FROM \"Projects\"'\n  vulcan dataview eval Dashboard --block 0",
         "name": "dataview",
         "options": [],
         "subcommands": [
@@ -887,6 +887,53 @@
                 "short": null,
                 "value_names": [
                   "FILE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Evaluate a Dataview DQL query string",
+            "name": "query",
+            "options": [
+              {
+                "help": "Quoted DQL query string",
+                "id": "dql",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "DQL"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Evaluate indexed Dataview code blocks from one note",
+            "name": "eval",
+            "options": [
+              {
+                "help": "Note path, filename, or alias containing Dataview blocks",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "0-based Dataview block index to evaluate",
+                "id": "block",
+                "long": "block",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BLOCK"
                 ]
               }
             ],

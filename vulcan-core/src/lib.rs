@@ -43,7 +43,10 @@ pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,
     DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
 };
-pub use dql::{evaluate_dql, evaluate_parsed_dql, DqlEvalError, DqlQueryResult};
+pub use dql::{
+    evaluate_dql, evaluate_parsed_dql, load_dataview_blocks, DataviewBlockRecord, DqlEvalError,
+    DqlQueryResult,
+};
 pub use git::{
     auto_commit, git_log, git_status, is_git_repo, AutoCommitReport, GitError, GitLogEntry,
     GitStatusReport,

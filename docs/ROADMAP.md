@@ -1289,7 +1289,7 @@ Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's i
 - [x] Data commands executed in source order (except FROM which is always first); multiple WHERE, SORT, FLATTEN, GROUP BY clauses allowed and composed sequentially
 - [x] Computed GROUP BY: `GROUP BY (expr) AS name` with arbitrary expression
 - [x] Computed FLATTEN: `FLATTEN (expr) AS name` assigns flattened result to a new field; if expression returns non-array, treat as single-element array
-- [ ] Multiple blocks per note: a note can contain multiple `` ```dataview `` blocks; `--block <n>` selects by 0-based index, default evaluates all
+- [x] Multiple blocks per note: a note can contain multiple `` ```dataview `` blocks; `--block <n>` selects by 0-based index, default evaluates all
 - [ ] Error recovery: malformed DQL produces diagnostics, not panics
 - [ ] Unit tests: parse each clause type, boolean FROM combinations, nested WHERE expressions, lambda expressions, link indexing, `WITHOUT ID`, `AS` aliases, computed GROUP BY/FLATTEN, multiple data commands, malformed input
 - [x] Integration test: round-trip DQL parse → AST → evaluation against a test vault
@@ -1298,8 +1298,8 @@ Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's i
 
 Execute parsed DQL queries against the cache and expose results via CLI.
 
-- [ ] `vulcan dataview eval <file> [--block <n>]` — evaluate a DQL code block from a specific note (by block index or the first/only block)
-- [ ] `vulcan dataview query <dql-string>` — evaluate a DQL query string directly from the command line
+- [x] `vulcan dataview eval <file> [--block <n>]` — evaluate a DQL code block from a specific note (by block index or the first/only block)
+- [x] `vulcan dataview query <dql-string>` — evaluate a DQL query string directly from the command line
 - [ ] TABLE output: columnar table in human mode, array-of-objects in `--output json`; `WITHOUT ID` suppresses file link column
 - [ ] LIST output: note list with optional expression values; `WITHOUT ID` shows only the expression value
 - [ ] TASK output: task items grouped by source note, with status, text, `visual`, and all task metadata fields (`checked`, `completed`, `fullyCompleted`); nested task inclusion semantics (children included when parent matches)
@@ -1311,7 +1311,7 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 - [x] `file.*` namespace fully accessible in all expressions (WHERE, TABLE columns, SORT, GROUP BY, FLATTEN)
 - [x] Link indexing in expressions: `[[Note]].field` resolves field from the linked note's metadata
 - [ ] Diagnostics for unsupported DQL features surfaced in output
-- [ ] `--output json` on all subcommands
+- [x] `--output json` on all subcommands
 - [ ] Empty result handling: TABLE with 0 results shows headers + result count; LIST with 0 results shows empty; TASK with 0 results shows nothing
 - [ ] Result count display: configurable via Dataview settings (`displayResultCount`); show count in TABLE/TASK headers by default
 - [ ] Configurable column names: `primaryColumnName` (default `"File"`), `groupColumnName` (default `"Group"`) from Dataview settings
