@@ -1219,7 +1219,7 @@ Extend the expression evaluator to support Dataview's full type system and expre
 - [x] Link as first-class type with metadata access via `meta(link)`: `.path`, `.display`, `.embed`, `.type`, `.subpath`
 - [x] Type coercion: Date - Date → Duration, Date ± Duration → Date, Duration + Duration → Duration, String + Number → String (concatenation), String * Number → String (repeat)
 - [x] Null ordering: `null` is less than all non-null values; `null` first in ascending sort, last in descending; `null` propagates through most arithmetic/function calls
-- [ ] GROUP BY null handling: rows with `null` group key form a separate group with `key = null`
+- [x] GROUP BY null handling: rows with `null` group key form a separate group with `key = null`
 - [ ] Date timezone semantics: `date(today)`, `date(now)`, etc. use system local timezone; `localtime(date)` converts UTC to local; timezone override configurable via `.vulcan/config.toml`
 - [x] `typeof(value)` introspection returning type name strings
 
@@ -1304,8 +1304,8 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 - [ ] LIST output: note list with optional expression values; `WITHOUT ID` shows only the expression value
 - [ ] TASK output: task items grouped by source note, with status, text, `visual`, and all task metadata fields (`checked`, `completed`, `fullyCompleted`); nested task inclusion semantics (children included when parent matches)
 - [ ] CALENDAR output: JSON with date-keyed entries (human mode shows a flat date-grouped list; calendar rendering is a WebUI concern)
-- [ ] GROUP BY support: produces `{ key, rows }` objects; `rows.field` extracts list of values; aggregation functions (`sum(rows.field)`, `length(rows)`, etc.) work over grouped rows
-- [ ] FLATTEN support: list expansion into individual result rows; multiple FLATTEN clauses compose sequentially; `FLATTEN expr AS name` assigns to a new field
+- [x] GROUP BY support: produces `{ key, rows }` objects; `rows.field` extracts list of values; aggregation functions (`sum(rows.field)`, `length(rows)`, etc.) work over grouped rows
+- [x] FLATTEN support: list expansion into individual result rows; multiple FLATTEN clauses compose sequentially; `FLATTEN expr AS name` assigns to a new field
 - [x] LIMIT support: cap result count (applied after all other data commands)
 - [x] SORT with multi-key tiebreaking and correct type-aware ordering
 - [x] `file.*` namespace fully accessible in all expressions (WHERE, TABLE columns, SORT, GROUP BY, FLATTEN)
@@ -1314,7 +1314,7 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 - [x] `--output json` on all subcommands
 - [ ] Empty result handling: TABLE with 0 results shows headers + result count; LIST with 0 results shows empty; TASK with 0 results shows nothing
 - [ ] Result count display: configurable via Dataview settings (`displayResultCount`); show count in TABLE/TASK headers by default
-- [ ] Configurable column names: `primaryColumnName` (default `"File"`), `groupColumnName` (default `"Group"`) from Dataview settings
+- [x] Configurable column names: `primaryColumnName` (default `"File"`), `groupColumnName` (default `"Group"`) from Dataview settings
 - [ ] Integration tests: TABLE, LIST, TASK, CALENDAR queries; GROUP BY with aggregation and null keys; FLATTEN with nested arrays and non-array expressions; multi-clause queries; `WITHOUT ID`; link indexing; empty results; all against test vault with known results
 
 #### 9.8.7 Inline expression evaluation
