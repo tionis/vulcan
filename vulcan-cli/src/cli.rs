@@ -319,6 +319,8 @@ Subcommands:
   query       evaluate a Tasks plugin query string directly
   eval        evaluate indexed ```tasks``` blocks from one note
   list        list indexed tasks, optionally filtered
+  blocked     list currently blocked tasks with their blockers
+  graph       show the task dependency graph
 
 Notes:
   `tasks query` uses the Tasks DSL.
@@ -329,7 +331,9 @@ Examples:
   vulcan tasks query 'not done'
   vulcan tasks eval Dashboard --block 0
   vulcan tasks list
-  vulcan tasks list --filter 'completed and file.name = \"Alpha\"'";
+  vulcan tasks list --filter 'completed && file.name = \"Alpha\"'
+  vulcan tasks blocked
+  vulcan tasks graph";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -820,6 +824,10 @@ pub enum TasksCommand {
         #[arg(long, help = "Optional Tasks DSL query or Dataview expression filter")]
         filter: Option<String>,
     },
+    #[command(about = "List currently blocked tasks with their blocking dependencies")]
+    Blocked,
+    #[command(about = "Show the task dependency graph")]
+    Graph,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

@@ -589,6 +589,45 @@ struct TasksBlockEvalReport {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TasksBlockedReport {
+    tasks: Vec<TasksBlockedItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TasksBlockedItem {
+    task: Value,
+    blockers: Vec<TaskDependencyEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TasksGraphReport {
+    nodes: Vec<TaskDependencyNode>,
+    edges: Vec<TaskDependencyEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskDependencyNode {
+    key: String,
+    id: Option<String>,
+    path: String,
+    line: i64,
+    text: String,
+    completed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskDependencyEdge {
+    blocked_key: String,
+    blocker_id: String,
+    resolved: bool,
+    blocker_key: Option<String>,
+    blocker_path: Option<String>,
+    blocker_line: Option<i64>,
+    blocker_text: Option<String>,
+    blocker_completed: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct InboxReport {
     path: String,
@@ -1406,6 +1445,136 @@ fn strip_tag_from_text(text: &str, raw_tag: &str, normalized_tag: &str) -> Strin
 
 fn normalize_tag_name(tag: &str) -> String {
     tag.trim().trim_start_matches('#').to_ascii_lowercase()
+}
+
+fn run_tasks_blocked_command(paths: &VaultPaths) -> Result<TasksBlockedReport, CliError> {
+    let graph = build_tasks_graph_report(paths)?;
+    let task_result = run_tasks_query_command(paths, "")?;
+    let tasks_by_key = task_result
+        .tasks
+        .into_iter()
+        .filter_map(|task| task_dependency_key(&task).map(|key| (key, task)))
+        .collect::<HashMap<_, _>>();
+
+    let mut blockers_by_task = HashMap::<String, Vec<TaskDependencyEdge>>::new();
+    for edge in graph.edges {
+        if !edge.resolved || edge.blocker_completed != Some(true) {
+            blockers_by_task
+                .entry(edge.blocked_key.clone())
+                .or_default()
+                .push(edge);
+        }
+    }
+
+    let mut tasks = blockers_by_task
+        .into_iter()
+        .filter_map(|(key, blockers)| {
+            tasks_by_key
+                .get(&key)
+                .cloned()
+                .map(|task| TasksBlockedItem { task, blockers })
+        })
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| task_sort_key(&left.task).cmp(&task_sort_key(&right.task)));
+
+    Ok(TasksBlockedReport { tasks })
+}
+
+fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, CliError> {
+    let result = run_tasks_query_command(paths, "")?;
+    let mut tasks = result
+        .tasks
+        .into_iter()
+        .filter_map(|task| {
+            let key = task_dependency_key(&task)?;
+            Some((key, task))
+        })
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| task_sort_key(&left.1).cmp(&task_sort_key(&right.1)));
+
+    let mut node_by_id = HashMap::<String, TaskDependencyNode>::new();
+    let mut nodes = Vec::with_capacity(tasks.len());
+    for (key, task) in &tasks {
+        let node = TaskDependencyNode {
+            key: key.clone(),
+            id: task
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .filter(|id| !id.trim().is_empty()),
+            path: task
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            line: task.get("line").and_then(Value::as_i64).unwrap_or_default(),
+            text: task
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            completed: task
+                .get("completed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        if let Some(id) = node.id.clone() {
+            node_by_id.entry(id).or_insert_with(|| node.clone());
+        }
+        nodes.push(node);
+    }
+
+    let mut edges = tasks
+        .iter()
+        .filter_map(|(key, task)| {
+            let blocker_id = task
+                .get("blocked-by")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())?;
+            let blocker = node_by_id.get(blocker_id);
+            Some(TaskDependencyEdge {
+                blocked_key: key.clone(),
+                blocker_id: blocker_id.to_string(),
+                resolved: blocker.is_some(),
+                blocker_key: blocker.map(|node| node.key.clone()),
+                blocker_path: blocker.map(|node| node.path.clone()),
+                blocker_line: blocker.map(|node| node.line),
+                blocker_text: blocker.map(|node| node.text.clone()),
+                blocker_completed: blocker.map(|node| node.completed),
+            })
+        })
+        .collect::<Vec<_>>();
+    edges.sort_by(|left, right| {
+        left.blocked_key
+            .cmp(&right.blocked_key)
+            .then_with(|| left.blocker_id.cmp(&right.blocker_id))
+    });
+
+    Ok(TasksGraphReport { nodes, edges })
+}
+
+fn task_dependency_key(task: &Value) -> Option<String> {
+    let path = task.get("path").and_then(Value::as_str)?;
+    let line = task.get("line").and_then(Value::as_i64).unwrap_or_default();
+    Some(
+        task.get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("{path}:{line}")),
+    )
+}
+
+fn task_sort_key(task: &Value) -> (String, i64) {
+    (
+        task.get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        task.get("line").and_then(Value::as_i64).unwrap_or_default(),
+    )
 }
 
 type ChangeKindStatus = vulcan_core::ChangeStatus;
@@ -3597,6 +3766,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             TasksCommand::List { filter } => {
                 let result = run_tasks_list_command(&paths, filter.as_deref())?;
                 print_tasks_query_result(cli.output, &result)
+            }
+            TasksCommand::Blocked => {
+                let report = run_tasks_blocked_command(&paths)?;
+                print_tasks_blocked_report(cli.output, &report)
+            }
+            TasksCommand::Graph => {
+                let report = build_tasks_graph_report(&paths)?;
+                print_tasks_graph_report(cli.output, &report)
             }
         },
         Command::Search {
@@ -6019,6 +6196,89 @@ fn print_tasks_eval_report(output: OutputFormat, report: &TasksEvalReport) -> Re
     }
 }
 
+fn print_tasks_blocked_report(
+    output: OutputFormat,
+    report: &TasksBlockedReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.tasks.is_empty() {
+                println!("No blocked tasks.");
+                return Ok(());
+            }
+
+            for blocked in &report.tasks {
+                let status = blocked
+                    .task
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or(" ");
+                let path = blocked
+                    .task
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<unknown>");
+                let text = blocked
+                    .task
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                println!("{path}");
+                println!("- [{status}] {text}");
+                for blocker in &blocked.blockers {
+                    if blocker.resolved {
+                        println!(
+                            "  blocked by {} ({}, line {}) [{}]",
+                            blocker.blocker_id,
+                            blocker.blocker_path.as_deref().unwrap_or("<unknown>"),
+                            blocker.blocker_line.unwrap_or_default(),
+                            if blocker.blocker_completed == Some(true) {
+                                "done"
+                            } else {
+                                "open"
+                            }
+                        );
+                    } else {
+                        println!("  blocked by {} [unresolved]", blocker.blocker_id);
+                    }
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_tasks_graph_report(
+    output: OutputFormat,
+    report: &TasksGraphReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Tasks: {}", report.nodes.len());
+            println!("Dependencies: {}", report.edges.len());
+            if report.edges.is_empty() {
+                return Ok(());
+            }
+            for edge in &report.edges {
+                if edge.resolved {
+                    println!(
+                        "- {} -> {} ({}, line {})",
+                        edge.blocked_key,
+                        edge.blocker_id,
+                        edge.blocker_path.as_deref().unwrap_or("<unknown>"),
+                        edge.blocker_line.unwrap_or_default()
+                    );
+                } else {
+                    println!("- {} -> {} [unresolved]", edge.blocked_key, edge.blocker_id);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_tasks_query_result_human(result: &TasksQueryResult) -> Result<(), CliError> {
     if let Some(plan) = &result.plan {
         println!(
@@ -7796,6 +8056,30 @@ mod tests {
                 command: TasksCommand::List {
                     filter: Some("completed".to_string()),
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_blocked_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "blocked"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Blocked,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_graph_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "graph"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Graph,
             }
         );
     }
