@@ -60,6 +60,13 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # completed = ["x", "X"]
 # in_progress = ["/"]
 # cancelled = ["-"]
+# non_task = []
+#
+# [[tasks.statuses.definitions]]
+# symbol = "!"
+# name = "Important"
+# type = "TODO"
+# next_symbol = "x"
 
 # [dataview]
 # inline_query_prefix = "="
@@ -273,6 +280,25 @@ pub struct TaskCompletionState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskStatusDefinition {
+    pub symbol: String,
+    pub name: String,
+    #[serde(rename = "type", alias = "statusType")]
+    pub status_type: String,
+    #[serde(default, alias = "nextStatusSymbol")]
+    pub next_symbol: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskStatusState {
+    pub checked: bool,
+    pub completed: bool,
+    pub name: String,
+    pub status_type: String,
+    pub next_symbol: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskStatusesConfig {
     #[serde(default = "default_todo_task_statuses")]
     pub todo: Vec<String>,
@@ -282,6 +308,10 @@ pub struct TaskStatusesConfig {
     pub in_progress: Vec<String>,
     #[serde(default = "default_cancelled_task_statuses")]
     pub cancelled: Vec<String>,
+    #[serde(default = "default_non_task_statuses")]
+    pub non_task: Vec<String>,
+    #[serde(default)]
+    pub definitions: Vec<TaskStatusDefinition>,
 }
 
 impl Default for TaskStatusesConfig {
@@ -291,24 +321,77 @@ impl Default for TaskStatusesConfig {
             completed: default_completed_task_statuses(),
             in_progress: default_in_progress_task_statuses(),
             cancelled: default_cancelled_task_statuses(),
+            non_task: default_non_task_statuses(),
+            definitions: Vec::new(),
         }
     }
 }
 
 impl TaskStatusesConfig {
     #[must_use]
+    pub fn status_state(&self, status_char: &str) -> TaskStatusState {
+        let definition = self
+            .definition(status_char)
+            .cloned()
+            .unwrap_or_else(|| self.fallback_definition(status_char));
+        let status_type = normalize_task_status_type(&definition.status_type);
+
+        TaskStatusState {
+            checked: !status_char.is_empty() && status_type != "TODO",
+            completed: status_type == "DONE",
+            name: if definition.name.trim().is_empty() {
+                default_task_status_name(&status_type)
+            } else {
+                definition.name
+            },
+            status_type,
+            next_symbol: definition.next_symbol,
+        }
+    }
+
+    #[must_use]
     pub fn completion_state(&self, status_char: &str) -> TaskCompletionState {
-        let is_todo = Self::matches_status(status_char, &self.todo);
-        let is_completed = Self::matches_status(status_char, &self.completed);
+        let state = self.status_state(status_char);
 
         TaskCompletionState {
-            checked: !status_char.is_empty() && !is_todo,
-            completed: is_completed,
+            checked: state.checked,
+            completed: state.completed,
         }
+    }
+
+    fn definition(&self, status_char: &str) -> Option<&TaskStatusDefinition> {
+        self.definitions
+            .iter()
+            .find(|definition| definition.symbol == status_char)
     }
 
     fn matches_status(status_char: &str, candidates: &[String]) -> bool {
         candidates.iter().any(|candidate| candidate == status_char)
+    }
+
+    fn fallback_definition(&self, status_char: &str) -> TaskStatusDefinition {
+        let status_type = if Self::matches_status(status_char, &self.todo) {
+            "TODO"
+        } else if Self::matches_status(status_char, &self.completed) {
+            "DONE"
+        } else if Self::matches_status(status_char, &self.in_progress) {
+            "IN_PROGRESS"
+        } else if Self::matches_status(status_char, &self.cancelled) {
+            "CANCELLED"
+        } else if Self::matches_status(status_char, &self.non_task) {
+            "NON_TASK"
+        } else if status_char.is_empty() {
+            "TODO"
+        } else {
+            "UNKNOWN"
+        };
+
+        TaskStatusDefinition {
+            symbol: status_char.to_string(),
+            name: default_task_status_name(status_type),
+            status_type: status_type.to_string(),
+            next_symbol: None,
+        }
     }
 }
 
@@ -506,6 +589,8 @@ struct PartialTaskStatusesConfig {
     completed: Option<Vec<String>>,
     in_progress: Option<Vec<String>>,
     cancelled: Option<Vec<String>>,
+    non_task: Option<Vec<String>>,
+    definitions: Option<Vec<TaskStatusDefinition>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -585,6 +670,20 @@ struct ObsidianDataviewConfig {
     group_column_name: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianTasksConfig {
+    #[serde(rename = "statusSettings")]
+    status_settings: Option<ObsidianTasksStatusSettings>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianTasksStatusSettings {
+    #[serde(rename = "coreStatuses", default)]
+    core_statuses: Vec<TaskStatusDefinition>,
+    #[serde(rename = "customStatuses", default)]
+    custom_statuses: Vec<TaskStatusDefinition>,
+}
+
 #[must_use]
 pub fn default_config_template() -> &'static str {
     DEFAULT_CONFIG_TEMPLATE
@@ -613,6 +712,10 @@ fn default_in_progress_task_statuses() -> Vec<String> {
 
 fn default_cancelled_task_statuses() -> Vec<String> {
     vec!["-".to_string()]
+}
+
+fn default_non_task_statuses() -> Vec<String> {
+    Vec::new()
 }
 
 fn default_dataview_inline_query_prefix() -> String {
@@ -699,6 +802,10 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
         apply_obsidian_dataview_defaults(&mut config, obsidian_dataview);
     }
 
+    if let Some(obsidian_tasks) = load_obsidian_tasks_config(paths, &mut diagnostics) {
+        apply_obsidian_tasks_defaults(&mut config, obsidian_tasks);
+    }
+
     config.property_types = load_obsidian_property_types(paths, &mut diagnostics);
 
     if let Some(vulcan_config) =
@@ -780,6 +887,17 @@ fn load_obsidian_dataview_config(
     let path = paths
         .vault_root()
         .join(".obsidian/plugins/dataview/data.json");
+
+    load_json_file(&path, diagnostics)
+}
+
+fn load_obsidian_tasks_config(
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<ObsidianTasksConfig> {
+    let path = paths
+        .vault_root()
+        .join(".obsidian/plugins/obsidian-tasks-plugin/data.json");
 
     load_json_file(&path, diagnostics)
 }
@@ -924,6 +1042,20 @@ fn apply_obsidian_dataview_defaults(config: &mut VaultConfig, obsidian: Obsidian
     }
 }
 
+fn apply_obsidian_tasks_defaults(config: &mut VaultConfig, obsidian: ObsidianTasksConfig) {
+    let Some(status_settings) = obsidian.status_settings else {
+        return;
+    };
+
+    let mut definitions = status_settings.core_statuses;
+    definitions.extend(status_settings.custom_statuses);
+    if definitions.is_empty() {
+        return;
+    }
+
+    apply_task_status_definitions(&mut config.tasks.statuses, definitions);
+}
+
 fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConfig) {
     if let Some(scan) = overrides.scan {
         if let Some(default_mode) = scan.default_mode {
@@ -998,6 +1130,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
 
     if let Some(tasks) = overrides.tasks {
         if let Some(statuses) = tasks.statuses {
+            if let Some(definitions) = statuses.definitions {
+                apply_task_status_definitions(&mut config.tasks.statuses, definitions);
+            }
             if let Some(todo) = statuses.todo {
                 config.tasks.statuses.todo = todo;
             }
@@ -1009,6 +1144,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             }
             if let Some(cancelled) = statuses.cancelled {
                 config.tasks.statuses.cancelled = cancelled;
+            }
+            if let Some(non_task) = statuses.non_task {
+                config.tasks.statuses.non_task = non_task;
             }
         }
     }
@@ -1078,6 +1216,58 @@ fn normalize_attachment_folder(path: &str) -> PathBuf {
 
 fn normalize_template_folder(path: &str) -> PathBuf {
     PathBuf::from(path.trim_matches('/'))
+}
+
+fn apply_task_status_definitions(
+    config: &mut TaskStatusesConfig,
+    definitions: Vec<TaskStatusDefinition>,
+) {
+    config.todo = status_symbols_for_type(&definitions, "TODO");
+    config.completed = status_symbols_for_type(&definitions, "DONE");
+    config.in_progress = status_symbols_for_type(&definitions, "IN_PROGRESS");
+    config.cancelled = status_symbols_for_type(&definitions, "CANCELLED");
+    config.non_task = status_symbols_for_type(&definitions, "NON_TASK");
+    config.definitions = definitions;
+}
+
+fn status_symbols_for_type(definitions: &[TaskStatusDefinition], status_type: &str) -> Vec<String> {
+    definitions
+        .iter()
+        .filter(|definition| normalize_task_status_type(&definition.status_type) == status_type)
+        .map(|definition| definition.symbol.clone())
+        .collect()
+}
+
+fn normalize_task_status_type(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut last_was_separator = false;
+
+    for ch in value.trim().chars() {
+        if ch.is_alphanumeric() {
+            normalized.extend(ch.to_uppercase());
+            last_was_separator = false;
+        } else if !normalized.is_empty() && !last_was_separator {
+            normalized.push('_');
+            last_was_separator = true;
+        }
+    }
+
+    if normalized.is_empty() {
+        "UNKNOWN".to_string()
+    } else {
+        normalized.trim_matches('_').to_string()
+    }
+}
+
+fn default_task_status_name(status_type: &str) -> String {
+    match status_type {
+        "TODO" => "Todo".to_string(),
+        "DONE" => "Done".to_string(),
+        "IN_PROGRESS" => "In Progress".to_string(),
+        "CANCELLED" => "Cancelled".to_string(),
+        "NON_TASK" => "Non-task".to_string(),
+        _ => "Unknown".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -1351,6 +1541,7 @@ time_format = "HH:mm:ss"
             loaded.config.tasks.statuses.cancelled,
             vec!["-".to_string()]
         );
+        assert!(loaded.config.tasks.statuses.non_task.is_empty());
         assert_eq!(loaded.config.dataview.inline_query_prefix, "inline:");
         assert_eq!(loaded.config.dataview.inline_js_query_prefix, "$inline:");
         assert!(!loaded.config.dataview.enable_dataview_js);
@@ -1489,6 +1680,8 @@ time_format = "HH:mm:ss"
             completed: vec!["x".to_string(), "v".to_string()],
             in_progress: vec!["/".to_string()],
             cancelled: vec!["-".to_string()],
+            non_task: vec!["~".to_string()],
+            definitions: Vec::new(),
         };
         assert_eq!(
             custom.completion_state("!"),
@@ -1504,6 +1697,85 @@ time_format = "HH:mm:ss"
                 completed: true,
             }
         );
+        assert_eq!(custom.status_state("~").status_type, "NON_TASK");
+        assert_eq!(custom.status_state("?").name, "Unknown");
+    }
+
+    #[test]
+    fn tasks_plugin_status_settings_seed_named_status_definitions() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-tasks-plugin"))
+            .expect("tasks plugin dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/obsidian-tasks-plugin/data.json"),
+            r#"{
+              "statusSettings": {
+                "coreStatuses": [
+                  { "symbol": " ", "name": "Todo", "type": "TODO", "nextStatusSymbol": ">" },
+                  { "symbol": "x", "name": "Done", "type": "DONE", "nextStatusSymbol": " " }
+                ],
+                "customStatuses": [
+                  { "symbol": ">", "name": "Waiting", "type": "IN_PROGRESS", "nextStatusSymbol": "x" },
+                  { "symbol": "~", "name": "Parked", "type": "NON_TASK" }
+                ]
+              }
+            }"#,
+        )
+        .expect("tasks config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(
+            loaded.config.tasks.statuses.in_progress,
+            vec![">".to_string()]
+        );
+        assert_eq!(loaded.config.tasks.statuses.non_task, vec!["~".to_string()]);
+        assert_eq!(loaded.config.tasks.statuses.definitions.len(), 4);
+        assert_eq!(
+            loaded.config.tasks.statuses.status_state(">").name,
+            "Waiting".to_string()
+        );
+        assert_eq!(
+            loaded.config.tasks.statuses.status_state(">").status_type,
+            "IN_PROGRESS".to_string()
+        );
+        assert_eq!(
+            loaded.config.tasks.statuses.status_state(">").next_symbol,
+            Some("x".to_string())
+        );
+    }
+
+    #[test]
+    fn vulcan_task_status_definitions_support_names_and_next_symbols() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r###"[tasks.statuses]
+todo = [" "]
+completed = ["x"]
+
+[[tasks.statuses.definitions]]
+symbol = "!"
+name = "Important"
+type = "TODO"
+next_symbol = "x"
+"###,
+        )
+        .expect("config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        let state = loaded.config.tasks.statuses.status_state("!");
+        assert_eq!(state.name, "Important");
+        assert_eq!(state.status_type, "TODO");
+        assert_eq!(state.next_symbol, Some("x".to_string()));
+        assert!(!state.checked);
+        assert!(!state.completed);
     }
 
     #[test]

@@ -212,6 +212,17 @@ fn task_object(
 
     let status = task.status_char.clone();
     object.insert("status".to_string(), Value::String(status.clone()));
+    object.insert(
+        "statusName".to_string(),
+        Value::String(task.status_name.clone()),
+    );
+    object.insert(
+        "statusType".to_string(),
+        Value::String(task.status_type.clone()),
+    );
+    if let Some(next_symbol) = &task.status_next_symbol {
+        object.insert("statusNext".to_string(), Value::String(next_symbol.clone()));
+    }
     object.insert("checked".to_string(), Value::Bool(task.checked));
     object.insert("completed".to_string(), Value::Bool(task.completed));
     object.insert(
@@ -550,6 +561,9 @@ mod tests {
             id: "task-1".to_string(),
             list_item_id: "list-2".to_string(),
             status_char: "x".to_string(),
+            status_name: "Done".to_string(),
+            status_type: "DONE".to_string(),
+            status_next_symbol: Some(" ".to_string()),
             checked: true,
             completed: true,
             text: "Nested task [[Other]] #project ^child".to_string(),
@@ -580,6 +594,9 @@ mod tests {
         let tasks = tasks.as_array().expect("tasks should be an array");
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["status"], Value::String("x".to_string()));
+        assert_eq!(tasks[0]["statusName"], Value::String("Done".to_string()));
+        assert_eq!(tasks[0]["statusType"], Value::String("DONE".to_string()));
+        assert_eq!(tasks[0]["statusNext"], Value::String(" ".to_string()));
         assert_eq!(tasks[0]["checked"], Value::Bool(true));
         assert_eq!(tasks[0]["completed"], Value::Bool(true));
         assert_eq!(tasks[0]["fullyCompleted"], Value::Bool(true));
@@ -628,6 +645,9 @@ mod tests {
                 id: "task-parent".to_string(),
                 list_item_id: "list-parent".to_string(),
                 status_char: "v".to_string(),
+                status_name: "Done".to_string(),
+                status_type: "DONE".to_string(),
+                status_next_symbol: None,
                 checked: true,
                 completed: true,
                 text: "Parent task".to_string(),
@@ -641,6 +661,9 @@ mod tests {
                 id: "task-child".to_string(),
                 list_item_id: "list-child".to_string(),
                 status_char: "v".to_string(),
+                status_name: "Done".to_string(),
+                status_type: "DONE".to_string(),
+                status_next_symbol: None,
                 checked: true,
                 completed: true,
                 text: "Child task".to_string(),

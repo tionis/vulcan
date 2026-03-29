@@ -2912,6 +2912,10 @@ mod tests {
             .expect("file.tasks should return an array");
         assert_eq!(dashboard_tasks.len(), 2);
         assert_eq!(dashboard_tasks[0]["status"], Value::String(" ".to_string()));
+        assert_eq!(
+            dashboard_tasks[0]["statusType"],
+            Value::String("TODO".to_string())
+        );
         assert_eq!(dashboard_tasks[0]["checked"], Value::Bool(false));
         assert_eq!(dashboard_tasks[0]["completed"], Value::Bool(false));
         assert_eq!(dashboard_tasks[0]["fullyCompleted"], Value::Bool(false));
@@ -2947,6 +2951,10 @@ mod tests {
             .expect("beta file.tasks should return an array");
         assert_eq!(beta_tasks.len(), 1);
         assert_eq!(beta_tasks[0]["status"], Value::String("/".to_string()));
+        assert_eq!(
+            beta_tasks[0]["statusType"],
+            Value::String("IN_PROGRESS".to_string())
+        );
         assert_eq!(
             beta_tasks[0]["due"],
             Value::String("2026-04-03".to_string())
@@ -3041,6 +3049,7 @@ mod tests {
             eval("file.tasks.owner"),
             json!(["[[People/Bob]]", "[[People/Bob]]"])
         );
+        assert_eq!(eval("file.tasks.statusType"), json!(["TODO", "DONE"]));
         assert_eq!(
             eval(r#"default(file.day, "none")"#),
             Value::String("none".to_string())
