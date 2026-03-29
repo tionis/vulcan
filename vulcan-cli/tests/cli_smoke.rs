@@ -406,6 +406,61 @@ fn dataview_query_human_output_omits_empty_list_and_task_messages() {
 }
 
 #[test]
+fn dataview_plugin_display_settings_affect_human_output() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
+        .expect("plugin dir should exist");
+    fs::write(
+        vault_root.join(".obsidian/plugins/dataview/data.json"),
+        r#"{
+          "displayResultCount": false,
+          "primaryColumnName": "Document",
+          "groupColumnName": "Bucket"
+        }"#,
+    )
+    .expect("plugin settings should be written");
+    run_scan(&vault_root);
+
+    let table_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "dataview",
+            "query",
+            r#"TABLE status FROM "Projects" SORT file.name ASC"#,
+        ])
+        .assert()
+        .success();
+    let table_stdout = String::from_utf8(table_assert.get_output().stdout.clone())
+        .expect("stdout should be valid utf-8");
+    assert!(table_stdout.contains("Document | status"));
+    assert!(!table_stdout.contains("result(s)"));
+
+    let grouped_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "dataview",
+            "query",
+            r#"TABLE length(rows) AS count FROM "Projects" GROUP BY status SORT key ASC"#,
+        ])
+        .assert()
+        .success();
+    let grouped_stdout = String::from_utf8(grouped_assert.get_output().stdout.clone())
+        .expect("stdout should be valid utf-8");
+    assert!(grouped_stdout.contains("Bucket | count"));
+    assert!(!grouped_stdout.contains("result(s)"));
+}
+
+#[test]
 fn notes_json_output_includes_evaluated_inline_expressions() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
