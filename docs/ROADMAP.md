@@ -1538,18 +1538,18 @@ These require the sandboxed JS runtime and are only available when `--features d
 #### 9.10.1 Tasks query language parser
 
 - [x] Detect `` ```tasks `` fenced code blocks during parsing; store raw query text as block metadata
-- [ ] Tasks DSL parser: line-based filter language (each line is a filter or instruction)
-  - [ ] Status filters: `not done`, `done`, `status.name includes <text>`, `status.type is <type>`
-  - [ ] Date filters: `due before <date>`, `due after <date>`, `due on <date>`, `has due date`, `no due date` — and same for `created`, `start`, `scheduled`, `done` dates
-  - [ ] Property filters: `description includes <text>`, `path includes <text>`, `heading includes <text>`, `tag includes <tag>`, `priority is <level>`
-  - [ ] Recurrence filters: `is recurring`, `is not recurring`
-  - [ ] Dependency filters: `is blocked`, `is not blocked`, `has id`
-  - [ ] Boolean composition: `(filter1) AND (filter2)`, `(filter1) OR (filter2)`, `NOT (filter)`
-  - [ ] Sort instructions: `sort by <field> [reverse]`
-  - [ ] Group instructions: `group by <field> [reverse]`
-  - [ ] Limit: `limit <n>`, `limit groups <n>`
-  - [ ] Display options: `hide <field>`, `show <field>`, `short mode`
-  - [ ] Explain: `explain` — output the parsed query plan
+- [x] Tasks DSL parser: line-based filter language (each line is a filter or instruction)
+  - [x] Status filters: `not done`, `done`, `status.name includes <text>`, `status.type is <type>`
+  - [x] Date filters: `due before <date>`, `due after <date>`, `due on <date>`, `has due date`, `no due date` — and same for `created`, `start`, `scheduled`, `done` dates
+  - [x] Property filters: `description includes <text>`, `path includes <text>`, `heading includes <text>`, `tag includes <tag>`, `priority is <level>`
+  - [x] Recurrence filters: `is recurring`, `is not recurring`
+  - [x] Dependency filters: `is blocked`, `is not blocked`, `has id`
+  - [x] Boolean composition: `(filter1) AND (filter2)`, `(filter1) OR (filter2)`, `NOT (filter)`
+  - [x] Sort instructions: `sort by <field> [reverse]`
+  - [x] Group instructions: `group by <field> [reverse]`
+  - [x] Limit: `limit <n>`, `limit groups <n>`
+  - [x] Display options: `hide <field>`, `show <field>`, `short mode`
+  - [x] Explain: `explain` — output the parsed query plan
 
 #### 9.10.2 Recurring task support
 
