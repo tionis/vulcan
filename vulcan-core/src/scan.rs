@@ -2463,6 +2463,52 @@ mod tests {
         assert_eq!(count_rows(connection, "task_properties"), 3);
         assert_eq!(count_rows(connection, "dataview_blocks"), 2);
         assert_eq!(count_rows(connection, "inline_expressions"), 1);
+        let dataview_blocks: Vec<(String, i64, String)> = connection
+            .prepare(
+                "
+                SELECT dataview_blocks.language, dataview_blocks.block_index, dataview_blocks.raw_text
+                FROM dataview_blocks
+                JOIN documents ON documents.id = dataview_blocks.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ORDER BY dataview_blocks.block_index
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows should collect");
+        assert_eq!(
+            dataview_blocks,
+            vec![
+                (
+                    "dataview".to_string(),
+                    0,
+                    "TABLE status, priority\nFROM #project\nWHERE reviewed = true\nSORT file.name ASC"
+                        .to_string(),
+                ),
+                (
+                    "dataviewjs".to_string(),
+                    1,
+                    "dv.table([\"Status\"], [[this.status]])".to_string(),
+                ),
+            ]
+        );
+        let inline_expressions: Vec<String> = connection
+            .prepare(
+                "
+                SELECT inline_expressions.expression
+                FROM inline_expressions
+                JOIN documents ON documents.id = inline_expressions.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows should collect");
+        assert_eq!(inline_expressions, vec!["this.status".to_string()]);
 
         let dashboard_list_items: Vec<(String, i64, Option<String>, i64, i64, String)> = connection
             .prepare(
@@ -2675,7 +2721,7 @@ mod tests {
             .collect();
         assert!(unsupported_messages
             .iter()
-            .any(|message| message.contains("DataviewJS blocks are not evaluated by Vulcan")));
+            .any(|message| message.contains("require the `dataviewjs` feature flag")));
 
         let task_to_list_links: Vec<(String, String)> = connection
             .prepare(

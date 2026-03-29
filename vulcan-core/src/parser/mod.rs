@@ -489,11 +489,13 @@ mod tests {
         assert_eq!(parsed.tasks.len(), 1);
         assert_eq!(parsed.tasks[0].inline_fields[0].key, "due");
         assert_eq!(parsed.inline_expressions.len(), 1);
+        assert_eq!(parsed.inline_expressions[0].expression, "this.status");
         assert_eq!(parsed.dataview_blocks.len(), 2);
-        assert!(parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("DataviewJS blocks")));
+        assert_eq!(parsed.dataview_blocks[0].language, "dataview");
+        assert_eq!(parsed.dataview_blocks[1].language, "dataviewjs");
+        assert!(parsed.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("require the `dataviewjs` feature flag")));
         assert!(parsed
             .chunk_texts
             .iter()
@@ -502,6 +504,10 @@ mod tests {
             .chunk_texts
             .iter()
             .all(|chunk| !chunk.content.contains("this.status")));
+        assert!(parsed
+            .chunk_texts
+            .iter()
+            .all(|chunk| !chunk.content.contains("dv.table")));
     }
 
     #[test]
