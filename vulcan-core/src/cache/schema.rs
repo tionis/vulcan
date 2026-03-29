@@ -1,6 +1,7 @@
 use rusqlite::Transaction;
 
 pub const TABLES_TO_CLEAR: &[&str] = &[
+    "kanban_boards",
     "task_properties",
     "tasks",
     "list_items",
@@ -620,6 +621,24 @@ pub fn apply_schema_v13(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
 
         CREATE INDEX IF NOT EXISTS idx_tasks_blocks_document_id
             ON tasks_blocks(document_id);
+        ",
+    )?;
+    Ok(())
+}
+
+pub fn apply_schema_v14(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS kanban_boards (
+            document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+            format TEXT NOT NULL,
+            settings_json TEXT NOT NULL,
+            date_trigger TEXT NOT NULL,
+            time_trigger TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_kanban_boards_format
+            ON kanban_boards(format);
         ",
     )?;
     Ok(())

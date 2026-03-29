@@ -419,6 +419,44 @@ pub struct TasksConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KanbanConfig {
+    #[serde(default = "default_kanban_date_trigger")]
+    pub date_trigger: String,
+    #[serde(default = "default_kanban_time_trigger")]
+    pub time_trigger: String,
+    #[serde(default)]
+    pub metadata_keys: Vec<String>,
+    #[serde(default)]
+    pub archive_with_date: bool,
+    #[serde(default = "default_kanban_new_card_insertion_method")]
+    pub new_card_insertion_method: String,
+}
+
+impl Default for KanbanConfig {
+    fn default() -> Self {
+        Self {
+            date_trigger: default_kanban_date_trigger(),
+            time_trigger: default_kanban_time_trigger(),
+            metadata_keys: Vec::new(),
+            archive_with_date: false,
+            new_card_insertion_method: default_kanban_new_card_insertion_method(),
+        }
+    }
+}
+
+fn default_kanban_date_trigger() -> String {
+    "@".to_string()
+}
+
+fn default_kanban_time_trigger() -> String {
+    "@@".to_string()
+}
+
+fn default_kanban_new_card_insertion_method() -> String {
+    "append".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataviewConfig {
     #[serde(default = "default_dataview_inline_query_prefix")]
     pub inline_query_prefix: String,
@@ -501,6 +539,7 @@ pub struct VaultConfig {
     pub git: GitConfig,
     pub inbox: InboxConfig,
     pub tasks: TasksConfig,
+    pub kanban: KanbanConfig,
     pub dataview: DataviewConfig,
     pub templates: TemplatesConfig,
 }
@@ -520,6 +559,7 @@ impl Default for VaultConfig {
             git: GitConfig::default(),
             inbox: InboxConfig::default(),
             tasks: TasksConfig::default(),
+            kanban: KanbanConfig::default(),
             dataview: DataviewConfig::default(),
             templates: TemplatesConfig::default(),
         }
@@ -628,6 +668,7 @@ struct PartialVulcanConfig {
     git: Option<PartialGitConfig>,
     inbox: Option<PartialInboxConfig>,
     tasks: Option<PartialTasksConfig>,
+    kanban: Option<PartialKanbanConfig>,
     dataview: Option<PartialDataviewConfig>,
     templates: Option<PartialTemplatesConfig>,
 }
@@ -683,6 +724,15 @@ struct PartialTasksConfig {
     remove_global_filter: Option<bool>,
     set_created_date: Option<bool>,
     recurrence_on_completion: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialKanbanConfig {
+    date_trigger: Option<String>,
+    time_trigger: Option<String>,
+    metadata_keys: Option<Vec<String>>,
+    archive_with_date: Option<bool>,
+    new_card_insertion_method: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1505,6 +1555,24 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             if let Some(non_task) = statuses.non_task {
                 config.tasks.statuses.non_task = non_task;
             }
+        }
+    }
+
+    if let Some(kanban) = overrides.kanban {
+        if let Some(date_trigger) = kanban.date_trigger {
+            config.kanban.date_trigger = date_trigger;
+        }
+        if let Some(time_trigger) = kanban.time_trigger {
+            config.kanban.time_trigger = time_trigger;
+        }
+        if let Some(metadata_keys) = kanban.metadata_keys {
+            config.kanban.metadata_keys = metadata_keys;
+        }
+        if let Some(archive_with_date) = kanban.archive_with_date {
+            config.kanban.archive_with_date = archive_with_date;
+        }
+        if let Some(new_card_insertion_method) = kanban.new_card_insertion_method {
+            config.kanban.new_card_insertion_method = new_card_insertion_method;
         }
     }
 
