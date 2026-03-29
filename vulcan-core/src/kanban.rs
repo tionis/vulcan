@@ -135,6 +135,19 @@ pub struct KanbanArchiveReport {
     pub rescanned: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KanbanMoveReport {
+    pub path: String,
+    pub title: String,
+    pub source_column: String,
+    pub target_column: String,
+    pub card_id: String,
+    pub card_text: String,
+    pub line_number: i64,
+    pub dry_run: bool,
+    pub rescanned: bool,
+}
+
 #[derive(Debug, Clone)]
 struct BoardRow {
     document_id: String,
@@ -380,6 +393,110 @@ pub fn archive_kanban_card(
     })
 }
 
+#[allow(clippy::too_many_lines)]
+pub fn move_kanban_card(
+    paths: &VaultPaths,
+    board: &str,
+    card: &str,
+    target_column: &str,
+    dry_run: bool,
+) -> Result<KanbanMoveReport, KanbanError> {
+    let resolved = resolve_note_reference(paths, board)
+        .map_err(|error| KanbanError::Message(error.to_string()))?;
+    let database =
+        CacheDatabase::open(paths).map_err(|error| KanbanError::Message(error.to_string()))?;
+    let connection = database.connection();
+    let config = crate::load_vault_config(paths).config;
+    let Some(board_row) = load_board_row(connection, resolved.id.as_str())? else {
+        return Err(KanbanError::Message(format!(
+            "{} is not an indexed Kanban board",
+            resolved.path
+        )));
+    };
+
+    let source_path = paths.vault_root().join(&board_row.path);
+    let source = fs::read_to_string(&source_path).map_err(|error| {
+        KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
+    })?;
+    let column_states = load_board_column_states(paths, connection, &board_row, &config, true)?;
+    let (source_column_index, card_index) = resolve_card_match(&column_states, card)?;
+    let target_column_index = resolve_column_match(&column_states, target_column)?;
+    if source_column_index == target_column_index {
+        return Err(KanbanError::Message(format!(
+            "card {card} is already in {}",
+            column_states[source_column_index].layout.name
+        )));
+    }
+
+    let source_column = &column_states[source_column_index];
+    let target_column_state = &column_states[target_column_index];
+    if target_column_state.layout.archived {
+        return Err(KanbanError::Message(format!(
+            "{} is the archive column; use the archive command instead",
+            target_column_state.layout.name
+        )));
+    }
+    let card_record = &source_column.cards[card_index];
+
+    let parsed = parse_document(&source, &config);
+    let card_line_number = usize::try_from(card_record.line_number).ok();
+    let Some((raw_item_index, _raw_item)) = parsed.list_items.iter().enumerate().find(|item| {
+        item.1.parent_item_index.is_none() && Some(item.1.line_number) == card_line_number
+    }) else {
+        return Err(KanbanError::Message(format!(
+            "failed to locate card at line {} in {}",
+            card_record.line_number, board_row.path
+        )));
+    };
+
+    let line_starts = line_start_offsets(&source);
+    let footer_start = footer_settings_start_offset(&source, &line_starts);
+    let source_column_end = usize::try_from(source_column.next_offset)
+        .ok()
+        .map_or(source.len(), |offset| offset.min(source.len()));
+    let card_range = byte_range_for_list_item_subtree(
+        &parsed.list_items,
+        raw_item_index,
+        source_column_end.min(footer_start.unwrap_or(source.len())),
+        source.len(),
+    )?;
+    let moved_block = normalize_card_block(&source[card_range.clone()]);
+    let insertion_method = card_insertion_method(board_row.settings.as_object(), &config);
+    let target_insertion = column_card_insertion_offset(
+        target_column_state,
+        footer_start,
+        &source,
+        insertion_method.as_str(),
+    );
+    let updated = apply_text_edits(
+        &source,
+        &[
+            (target_insertion..target_insertion, moved_block),
+            (card_range, String::new()),
+        ],
+    );
+
+    if !dry_run {
+        fs::write(&source_path, updated).map_err(|error| {
+            KanbanError::Message(format!("failed to write {}: {error}", board_row.path))
+        })?;
+        scan_vault(paths, ScanMode::Incremental)
+            .map_err(|error| KanbanError::Message(error.to_string()))?;
+    }
+
+    Ok(KanbanMoveReport {
+        path: board_row.path.clone(),
+        title: board_title(&board_row.path),
+        source_column: source_column.layout.name.clone(),
+        target_column: target_column_state.layout.name.clone(),
+        card_id: card_record.id.clone(),
+        card_text: card_record.text.clone(),
+        line_number: card_record.line_number,
+        dry_run,
+        rescanned: !dry_run,
+    })
+}
+
 fn load_board_rows(connection: &rusqlite::Connection) -> Result<Vec<BoardRow>, KanbanError> {
     let mut statement = connection.prepare(
         "SELECT kanban_boards.document_id,
@@ -566,6 +683,36 @@ fn resolve_card_match(
     }
 }
 
+fn resolve_column_match(
+    columns: &[BoardColumnState],
+    identifier: &str,
+) -> Result<usize, KanbanError> {
+    let matches = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| {
+            column.layout.name == identifier || column.layout.name.eq_ignore_ascii_case(identifier)
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(KanbanError::Message(format!(
+            "no Kanban column matched {identifier}"
+        ))),
+        _ => Err(KanbanError::Message(format!(
+            "column {identifier} matched multiple entries"
+        ))),
+    }
+}
+
+fn card_insertion_method(settings: Option<&Map<String, Value>>, config: &VaultConfig) -> String {
+    settings
+        .and_then(|settings| string_setting(settings, NEW_CARD_INSERTION_METHOD_KEY))
+        .unwrap_or_else(|| config.kanban.new_card_insertion_method.clone())
+}
+
 fn archive_behavior(
     settings: Option<&Map<String, Value>>,
     config: &VaultConfig,
@@ -681,6 +828,49 @@ fn archive_insertion_offset(
     footer_start.map_or(next_offset, |footer_start| next_offset.min(footer_start))
 }
 
+fn column_card_insertion_offset(
+    column: &BoardColumnState,
+    footer_start: Option<usize>,
+    source: &str,
+    insertion_method: &str,
+) -> usize {
+    let section_end = archive_insertion_offset(column, footer_start, source);
+    if insertion_method.eq_ignore_ascii_case("prepend")
+        || insertion_method.eq_ignore_ascii_case("prepend-compact")
+    {
+        first_card_offset_in_section(column, section_end, source).unwrap_or(section_end)
+    } else {
+        section_end
+    }
+}
+
+fn first_card_offset_in_section(
+    column: &BoardColumnState,
+    section_end: usize,
+    source: &str,
+) -> Option<usize> {
+    let heading_offset = clamp_offset(column.heading.byte_offset, source);
+    let mut cursor = source[heading_offset..section_end]
+        .find('\n')
+        .map_or(section_end, |relative| heading_offset + relative + 1);
+
+    while cursor < section_end {
+        let line_end = source[cursor..section_end]
+            .find('\n')
+            .map_or(section_end, |relative| cursor + relative + 1);
+        let trimmed = source[cursor..line_end]
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .trim();
+        if !trimmed.is_empty() && is_list_item_line(trimmed) {
+            return Some(cursor);
+        }
+        cursor = line_end;
+    }
+
+    None
+}
+
 fn build_archive_section(card_block: &str, heading_level: u8, prefix: &str) -> String {
     let mut section = String::new();
     if !prefix.is_empty() && !prefix.ends_with('\n') {
@@ -713,6 +903,15 @@ fn card_record_archived_text(card: &KanbanCardRecord, archived_block: &str) -> S
         split_block_id_suffix(content).0.trim().to_string()
     } else {
         line.to_string()
+    }
+}
+
+fn normalize_card_block(block_text: &str) -> String {
+    let trimmed = block_text.trim_matches('\n');
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed}\n")
     }
 }
 
@@ -1593,5 +1792,81 @@ mod tests {
         );
         assert_eq!(board.columns[2].card_count, 1);
         assert_eq!(board.columns[2].cards[0].text, "Build release");
+    }
+
+    #[test]
+    fn move_kanban_card_moves_cards_between_columns() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "---\n\n",
+                "## Todo\n\n",
+                "- Build release ^build-release\n",
+                "  - Confirm notes\n\n",
+                "## Doing\n\n",
+                "- Review QA\n\n",
+                "## Done\n\n",
+                "- Shipped\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report =
+            move_kanban_card(&paths, "Board", "build-release", "Done", false).expect("move works");
+        assert_eq!(report.source_column, "Todo");
+        assert_eq!(report.target_column, "Done");
+        assert_eq!(report.card_text, "Build release ^build-release");
+        assert!(report.rescanned);
+
+        let board = load_kanban_board(&paths, "Board", false).expect("board should load");
+        assert_eq!(board.columns[0].card_count, 0);
+        assert_eq!(board.columns[1].card_count, 1);
+        assert_eq!(board.columns[2].card_count, 2);
+        assert_eq!(board.columns[2].cards[0].text, "Shipped");
+        assert!(board.columns[2].cards[1].text.starts_with("Build release"));
+        assert_eq!(
+            board.columns[2].cards[1].block_id.as_deref(),
+            Some("build-release")
+        );
+    }
+
+    #[test]
+    fn move_kanban_card_respects_prepend_insertion_mode() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "new-card-insertion-method: prepend\n",
+                "---\n\n",
+                "## Todo\n\n",
+                "- Build release\n\n",
+                "## Done\n\n",
+                "- Shipped\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        move_kanban_card(&paths, "Board", "Build release", "Done", false).expect("move works");
+
+        let board = load_kanban_board(&paths, "Board", false).expect("board should load");
+        assert_eq!(board.columns[0].card_count, 0);
+        assert_eq!(board.columns[1].card_count, 2);
+        assert_eq!(board.columns[1].cards[0].text, "Build release");
+        assert_eq!(board.columns[1].cards[1].text, "Shipped");
     }
 }

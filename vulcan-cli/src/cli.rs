@@ -357,12 +357,14 @@ Subcommands:
   show        display one board by column
   cards       list cards from one board with optional filters
   archive     move one card into the archive column
+  move        move one card between active columns
 
 Notes:
   `kanban show` defaults to column counts; add `--verbose` to include cards.
   `kanban show --include-archive` adds the parsed archive section back into the output.
   `kanban cards --status` matches a task status character, status name, or status type.
   `kanban archive` rewrites the board note, supports `--dry-run`, and honors auto-commit unless `--no-commit` is set.
+  `kanban move` rewrites the board note and respects `new_card_insertion_method` for the target column.
 
 Examples:
   vulcan kanban list
@@ -371,6 +373,7 @@ Examples:
   vulcan kanban show Board --include-archive
   vulcan kanban cards Board --column Todo
   vulcan kanban archive Board build-release
+  vulcan kanban move Board build-release Done
   vulcan --output json kanban cards Board --status IN_PROGRESS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -933,6 +936,19 @@ pub enum KanbanCommand {
         #[arg(help = "Card id, block id, line number, or exact card text")]
         card: String,
         #[arg(long, help = "Preview the archive operation without writing the board")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Move one Kanban card between active columns")]
+    Move {
+        #[arg(help = "Board path, filename, or alias")]
+        board: String,
+        #[arg(help = "Card id, block id, line number, or exact card text")]
+        card: String,
+        #[arg(help = "Destination column title")]
+        target_column: String,
+        #[arg(long, help = "Preview the move without writing the board")]
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,

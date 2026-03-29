@@ -45,30 +45,31 @@ use vulcan_core::{
     import_tasks_plugin_config, index_vectors_with_progress, initialize_vault, inspect_cache,
     inspect_vector_queue, link_mentions, list_checkpoints, list_kanban_boards, list_saved_reports,
     list_vector_models, load_dataview_blocks, load_kanban_board, load_saved_report,
-    load_tasks_blocks, load_vault_config, merge_tags, move_note, parse_tasks_query,
-    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
-    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
-    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
-    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
-    resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
-    suggest_duplicates, suggest_mentions, task_upcoming_occurrences, vector_duplicates,
-    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BaseViewGroupBy,
-    BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, InitSummary, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanTaskStatus, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
-    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery,
-    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
-    TasksQueryResult, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
+    load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card, move_note,
+    parse_tasks_query, query_backlinks, query_change_report, query_graph_analytics,
+    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
+    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
+    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
+    repair_vectors_with_progress, resolve_note_reference, save_saved_report,
+    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
+    task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport,
+    BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    EvaluatedInlineExpression, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, InitSummary, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
+    KanbanMoveReport, KanbanTaskStatus, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery, RebuildReport,
+    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksQueryResult,
+    TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
     VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
     VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
     VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
@@ -1721,6 +1722,16 @@ fn run_kanban_archive_command(
     dry_run: bool,
 ) -> Result<KanbanArchiveReport, CliError> {
     archive_kanban_card(paths, board, card, dry_run).map_err(CliError::operation)
+}
+
+fn run_kanban_move_command(
+    paths: &VaultPaths,
+    board: &str,
+    card: &str,
+    target_column: &str,
+    dry_run: bool,
+) -> Result<KanbanMoveReport, CliError> {
+    move_kanban_card(paths, board, card, target_column, dry_run).map_err(CliError::operation)
 }
 
 fn normalize_optional_filter(value: Option<&str>) -> Option<String> {
@@ -4033,6 +4044,23 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
                 print_kanban_archive_report(cli.output, &report)
             }
+            KanbanCommand::Move {
+                board,
+                card,
+                target_column,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_kanban_move_command(&paths, board, card, target_column, *dry_run)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "kanban-move", &kanban_move_changed_files(&report))
+                        .map_err(CliError::operation)?;
+                }
+                print_kanban_move_report(cli.output, &report)
+            }
         },
         Command::Search {
             ref query,
@@ -5849,6 +5877,10 @@ fn kanban_archive_changed_files(report: &KanbanArchiveReport) -> Vec<String> {
     vec![report.path.clone()]
 }
 
+fn kanban_move_changed_files(report: &KanbanMoveReport) -> Vec<String> {
+    vec![report.path.clone()]
+}
+
 fn print_edit_report(output: OutputFormat, report: &EditReport) {
     match output {
         OutputFormat::Human => {
@@ -6828,6 +6860,30 @@ fn print_kanban_archive_report(
             if report.archive_with_date_applied {
                 println!("Archived text: {}", report.archived_text);
             }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_kanban_move_report(
+    output: OutputFormat,
+    report: &KanbanMoveReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!(
+                    "Dry run: move {} from {} to {} in {}",
+                    report.card_id, report.source_column, report.target_column, report.path
+                );
+            } else {
+                println!(
+                    "Moved {} from {} to {} in {}",
+                    report.card_id, report.source_column, report.target_column, report.path
+                );
+            }
+            println!("Card: {}", report.card_text);
             Ok(())
         }
         OutputFormat::Json => print_json(report),
@@ -8828,6 +8884,34 @@ mod tests {
                 command: KanbanCommand::Archive {
                     board: "Board".to_string(),
                     card: "build-release".to_string(),
+                    dry_run: true,
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_kanban_move_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "kanban",
+            "move",
+            "Board",
+            "build-release",
+            "Done",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Kanban {
+                command: KanbanCommand::Move {
+                    board: "Board".to_string(),
+                    card: "build-release".to_string(),
+                    target_column: "Done".to_string(),
                     dry_run: true,
                     no_commit: true,
                 },

@@ -1627,7 +1627,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [x] `vulcan kanban list` — list all Kanban boards in the vault
 - [x] `vulcan kanban show <board>` — display board state (columns and card counts; `--verbose` shows all cards)
 - [x] `vulcan kanban cards <board> [--column <name>] [--status <status>]` — list cards with optional filters
-- [ ] `vulcan kanban move <board> <card> <target-column>` — move a card between columns (rewrite the `.md` file)
+- [x] `vulcan kanban move <board> <card> <target-column>` — move a card between columns (rewrite the `.md` file)
 - [ ] `vulcan kanban add <board> <column> <text>` — add a new card to a column
 - [ ] `--output json` on all subcommands
 
