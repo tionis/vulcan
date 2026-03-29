@@ -28,6 +28,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("backlinks"))
             .and(predicate::str::contains("graph"))
             .and(predicate::str::contains("notes"))
+            .and(predicate::str::contains("dataview"))
             .and(predicate::str::contains("browse"))
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("suggest"))
@@ -70,7 +71,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Indexing: init, scan, rebuild, repair, watch, serve",
             ))
             .and(predicate::str::contains(
-                "Graph and Query: links, backlinks, graph, search, notes, browse, query, bases, suggest, diff",
+                "Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, bases, suggest, diff",
             ))
             .and(predicate::str::contains(
                 "Semantic: vectors, cluster, related",
@@ -92,7 +93,81 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains(
                 "Override automatic cache refresh with --refresh <off|blocking|background>",
             )),
+        );
+}
+
+#[test]
+fn dataview_inline_json_output_evaluates_expressions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "dataview",
+            "inline",
+            "Dashboard",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["file"], Value::String("Dashboard.md".to_string()));
+    assert_eq!(json["results"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        json["results"][0]["expression"],
+        Value::String("this.status".to_string())
     );
+    assert_eq!(
+        json["results"][0]["value"],
+        Value::String("draft".to_string())
+    );
+    assert_eq!(json["results"][0]["error"], Value::Null);
+}
+
+#[test]
+fn dataview_inline_json_output_reports_expression_errors() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    fs::write(vault_root.join("Broken.md"), "`= (`\n").expect("note should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "dataview",
+            "inline",
+            "Broken",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["file"], Value::String("Broken.md".to_string()));
+    assert_eq!(json["results"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        json["results"][0]["expression"],
+        Value::String("(".to_string())
+    );
+    assert_eq!(json["results"][0]["value"], Value::Null);
+    assert!(json["results"][0]["error"]
+        .as_str()
+        .is_some_and(|error| !error.is_empty()));
 }
 
 #[test]

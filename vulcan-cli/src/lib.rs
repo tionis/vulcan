@@ -7,10 +7,10 @@ mod note_picker;
 mod serve;
 
 pub use cli::{
-    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ExportArgs,
-    ExportCommand, ExportFormat, GraphCommand, OutputFormat, RefreshMode, RepairCommand,
-    SavedCommand, SearchMode, SearchSortArg, SuggestCommand, TemplateSubcommand,
-    VectorQueueCommand, VectorsCommand,
+    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command,
+    DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GraphCommand, OutputFormat,
+    RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg, SuggestCommand,
+    TemplateSubcommand, VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -21,6 +21,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use serve::{serve_forever, ServeOptions};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -29,14 +30,17 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
+use vulcan_core::expression::eval::{evaluate, EvalContext};
+use vulcan_core::expression::parse::Parser as ExpressionParser;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+use vulcan_core::properties::load_note_index;
 use vulcan_core::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace,
     bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
     drop_vector_model, evaluate_base_file, execute_query_report, export_static_search_index,
     git_status, index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
     link_mentions, list_checkpoints, list_saved_reports, list_vector_models, load_saved_report,
-    load_vault_config, merge_tags, move_note, query_backlinks, query_change_report,
+    load_vault_config, merge_tags, move_note, parse_document, query_backlinks, query_change_report,
     query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
     query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
     query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
@@ -543,6 +547,20 @@ struct DiffReport {
     diff: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct DataviewInlineExpressionReport {
+    expression: String,
+    value: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct DataviewInlineReport {
+    file: String,
+    results: Vec<DataviewInlineExpressionReport>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct InboxReport {
     path: String,
@@ -807,6 +825,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::RenameBlockRef { .. }
         | Command::Links { .. }
         | Command::Query { .. }
+        | Command::Dataview { .. }
         | Command::Update { .. }
         | Command::Unset { .. }
         | Command::Notes { .. }
@@ -1059,6 +1078,53 @@ fn diff_report_from_change_anchor(
         status,
         changed_kinds,
         diff: None,
+    })
+}
+
+fn run_dataview_inline_command(
+    paths: &VaultPaths,
+    file: &str,
+) -> Result<DataviewInlineReport, CliError> {
+    let resolved = resolve_note_reference(paths, file).map_err(CliError::operation)?;
+    let absolute_path = paths.vault_root().join(&resolved.path);
+    let source = fs::read_to_string(&absolute_path).map_err(CliError::operation)?;
+    let config = load_vault_config(paths).config;
+    let parsed = parse_document(&source, &config);
+    let note_index = load_note_index(paths).map_err(CliError::operation)?;
+    let note = note_index
+        .values()
+        .find(|note| note.document_path == resolved.path)
+        .ok_or_else(|| CliError::operation(format!("note is not indexed: {}", resolved.path)))?;
+    let formulas = BTreeMap::new();
+    let results = parsed
+        .inline_expressions
+        .into_iter()
+        .map(|inline| {
+            let expression = inline.expression;
+            let (value, error) = match ExpressionParser::new(&expression) {
+                Ok(parser) => match parser.parse() {
+                    Ok(expr) => {
+                        let ctx = EvalContext::new(note, &formulas).with_note_lookup(&note_index);
+                        match evaluate(&expr, &ctx) {
+                            Ok(value) => (value, None),
+                            Err(error) => (Value::Null, Some(error)),
+                        }
+                    }
+                    Err(error) => (Value::Null, Some(error.to_string())),
+                },
+                Err(error) => (Value::Null, Some(error.to_string())),
+            };
+            DataviewInlineExpressionReport {
+                expression,
+                value,
+                error,
+            }
+        })
+        .collect();
+
+    Ok(DataviewInlineReport {
+        file: resolved.path,
+        results,
     })
 }
 
@@ -3211,6 +3277,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             Ok(())
         }
+        Command::Dataview { ref command } => match command {
+            DataviewCommand::Inline { file } => {
+                let report = run_dataview_inline_command(&paths, file)?;
+                print_dataview_inline_report(cli.output, &report)
+            }
+        },
         Command::Search {
             ref query,
             ref filters,
@@ -5512,6 +5584,41 @@ fn print_diff_report(output: OutputFormat, report: &DiffReport) -> Result<(), Cl
     }
 }
 
+fn print_dataview_inline_report(
+    output: OutputFormat,
+    report: &DataviewInlineReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.results.is_empty() {
+                println!("No inline expressions in {}", report.file);
+                return Ok(());
+            }
+            println!("Dataview inline expressions for {}", report.file);
+            for result in &report.results {
+                if let Some(error) = &result.error {
+                    println!("- {} => error: {}", result.expression, error);
+                } else {
+                    println!(
+                        "- {} => {}",
+                        result.expression,
+                        render_dataview_inline_value(&result.value)
+                    );
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn render_dataview_inline_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        _ => serde_json::to_string(value).expect("inline result should serialize"),
+    }
+}
+
 fn print_inbox_report(output: OutputFormat, report: &InboxReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
@@ -7061,6 +7168,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_dataview_inline_command() {
+        let cli = Cli::try_parse_from(["vulcan", "dataview", "inline", "Dashboard"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Dataview {
+                command: DataviewCommand::Inline {
+                    file: "Dashboard".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
     fn edit_new_auto_commit_creates_git_commit() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         init_git_repo(temp_dir.path());
@@ -8277,6 +8399,10 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "graph"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "dataview"));
         assert!(report
             .commands
             .iter()
