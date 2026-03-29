@@ -300,6 +300,112 @@ fn dataview_eval_json_output_defaults_to_all_indexed_blocks() {
 }
 
 #[test]
+fn dataview_eval_human_output_keeps_empty_table_headers() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "dataview",
+            "eval",
+            "Dashboard",
+            "--block",
+            "0",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone())
+        .expect("stdout should be valid utf-8");
+
+    assert!(stdout.contains("File | status | priority"));
+    assert!(stdout.contains("0 result(s)"));
+}
+
+#[test]
+fn dataview_query_human_output_respects_display_result_count_setting() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[dataview]\ndisplay_result_count = false\n",
+    )
+    .expect("config should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "dataview",
+            "query",
+            r#"TABLE status FROM "Projects" SORT file.name ASC"#,
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone())
+        .expect("stdout should be valid utf-8");
+
+    assert!(stdout.contains("File | status"));
+    assert!(stdout.contains("[[Projects/Alpha]] | active"));
+    assert!(stdout.contains("[[Projects/Beta]] | backlog"));
+    assert!(!stdout.contains("result(s)"));
+}
+
+#[test]
+fn dataview_query_human_output_omits_empty_list_and_task_messages() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let empty_list = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "dataview",
+            "query",
+            r#"LIST FROM "Projects" WHERE priority > 99"#,
+        ])
+        .assert()
+        .success();
+    let empty_list_stdout = String::from_utf8(empty_list.get_output().stdout.clone())
+        .expect("stdout should be valid utf-8");
+    assert_eq!(empty_list_stdout, "");
+
+    let empty_task = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "dataview",
+            "query",
+            r#"TASK FROM "Projects" WHERE file.name = "Alpha" AND completed"#,
+        ])
+        .assert()
+        .success();
+    let empty_task_stdout = String::from_utf8(empty_task.get_output().stdout.clone())
+        .expect("stdout should be valid utf-8");
+    assert_eq!(empty_task_stdout, "");
+}
+
+#[test]
 fn notes_json_output_includes_evaluated_inline_expressions() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -1312,7 +1312,7 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 - [x] Link indexing in expressions: `[[Note]].field` resolves field from the linked note's metadata
 - [ ] Diagnostics for unsupported DQL features surfaced in output
 - [x] `--output json` on all subcommands
-- [ ] Empty result handling: TABLE with 0 results shows headers + result count; LIST with 0 results shows empty; TASK with 0 results shows nothing
+- [x] Empty result handling: TABLE with 0 results shows headers + result count; LIST with 0 results shows empty; TASK with 0 results shows nothing
 - [ ] Result count display: configurable via Dataview settings (`displayResultCount`); show count in TABLE/TASK headers by default
 - [x] Configurable column names: `primaryColumnName` (default `"File"`), `groupColumnName` (default `"Group"`) from Dataview settings
 - [ ] Integration tests: TABLE, LIST, TASK, CALENDAR queries; GROUP BY with aggregation and null keys; FLATTEN with nested arrays and non-array expressions; multi-clause queries; `WITHOUT ID`; link indexing; empty results; all against test vault with known results
