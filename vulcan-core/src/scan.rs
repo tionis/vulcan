@@ -3311,6 +3311,48 @@ mod tests {
     }
 
     #[test]
+    fn dataview_plugin_settings_control_inline_expression_prefixes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
+            .expect("dataview plugin dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/dataview/data.json"),
+            r#"{
+              "inlineQueryPrefix": "dv:"
+            }"#,
+        )
+        .expect("dataview settings should be written");
+        fs::write(
+            vault_root.join("Dashboard.md"),
+            "status:: draft\n`dv: this.status`\n`= this.other`\n",
+        )
+        .expect("note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let expressions: Vec<String> = database
+            .connection()
+            .prepare(
+                "
+                SELECT inline_expressions.expression
+                FROM inline_expressions
+                JOIN documents ON documents.id = inline_expressions.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ORDER BY inline_expressions.byte_offset_start
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows should collect");
+
+        assert_eq!(expressions, vec!["this.status".to_string()]);
+    }
+
+    #[test]
     fn broken_frontmatter_vault_emits_parse_diagnostics() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");

@@ -511,6 +511,17 @@ mod tests {
     }
 
     #[test]
+    fn inline_expression_prefix_comes_from_dataview_config() {
+        let mut config = VaultConfig::default();
+        config.dataview.inline_query_prefix = "dv:".to_string();
+
+        let parsed = parse_document("`dv: this.status`\n`= this.other`\n", &config);
+
+        assert_eq!(parsed.inline_expressions.len(), 1);
+        assert_eq!(parsed.inline_expressions[0].expression, "this.status");
+    }
+
+    #[test]
     fn config_defaults_remain_sane() {
         let config = VaultConfig::default();
 

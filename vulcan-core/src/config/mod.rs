@@ -61,6 +61,22 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # in_progress = ["/"]
 # cancelled = ["-"]
 
+# [dataview]
+# inline_query_prefix = "="
+# inline_js_query_prefix = "$="
+# enable_dataview_js = true
+# enable_inline_dataview_js = false
+# task_completion_tracking = false
+# task_completion_use_emoji_shorthand = false
+# task_completion_text = "completion"
+# recursive_subtask_completion = false
+# display_result_count = true
+# default_date_format = "MMMM dd, yyyy"
+# default_datetime_format = "h:mm a - MMMM dd, yyyy"
+# max_recursive_render_depth = 4
+# primary_column_name = "File"
+# group_column_name = "Group"
+
 # [templates]
 # date_format = "YYYY-MM-DD"
 # time_format = "HH:mm"
@@ -303,6 +319,60 @@ pub struct TasksConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataviewConfig {
+    #[serde(default = "default_dataview_inline_query_prefix")]
+    pub inline_query_prefix: String,
+    #[serde(default = "default_dataview_inline_js_query_prefix")]
+    pub inline_js_query_prefix: String,
+    #[serde(default = "default_dataview_enable_dataview_js")]
+    pub enable_dataview_js: bool,
+    #[serde(default = "default_dataview_enable_inline_dataview_js")]
+    pub enable_inline_dataview_js: bool,
+    #[serde(default = "default_dataview_task_completion_tracking")]
+    pub task_completion_tracking: bool,
+    #[serde(default = "default_dataview_task_completion_use_emoji_shorthand")]
+    pub task_completion_use_emoji_shorthand: bool,
+    #[serde(default = "default_dataview_task_completion_text")]
+    pub task_completion_text: String,
+    #[serde(default = "default_dataview_recursive_subtask_completion")]
+    pub recursive_subtask_completion: bool,
+    #[serde(default = "default_dataview_display_result_count")]
+    pub display_result_count: bool,
+    #[serde(default = "default_dataview_default_date_format")]
+    pub default_date_format: String,
+    #[serde(default = "default_dataview_default_datetime_format")]
+    pub default_datetime_format: String,
+    #[serde(default = "default_dataview_max_recursive_render_depth")]
+    pub max_recursive_render_depth: usize,
+    #[serde(default = "default_dataview_primary_column_name")]
+    pub primary_column_name: String,
+    #[serde(default = "default_dataview_group_column_name")]
+    pub group_column_name: String,
+}
+
+impl Default for DataviewConfig {
+    fn default() -> Self {
+        Self {
+            inline_query_prefix: default_dataview_inline_query_prefix(),
+            inline_js_query_prefix: default_dataview_inline_js_query_prefix(),
+            enable_dataview_js: default_dataview_enable_dataview_js(),
+            enable_inline_dataview_js: default_dataview_enable_inline_dataview_js(),
+            task_completion_tracking: default_dataview_task_completion_tracking(),
+            task_completion_use_emoji_shorthand:
+                default_dataview_task_completion_use_emoji_shorthand(),
+            task_completion_text: default_dataview_task_completion_text(),
+            recursive_subtask_completion: default_dataview_recursive_subtask_completion(),
+            display_result_count: default_dataview_display_result_count(),
+            default_date_format: default_dataview_default_date_format(),
+            default_datetime_format: default_dataview_default_datetime_format(),
+            max_recursive_render_depth: default_dataview_max_recursive_render_depth(),
+            primary_column_name: default_dataview_primary_column_name(),
+            group_column_name: default_dataview_group_column_name(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanConfig {
     pub default_mode: AutoScanMode,
     pub browse_mode: AutoScanMode,
@@ -331,6 +401,7 @@ pub struct VaultConfig {
     pub git: GitConfig,
     pub inbox: InboxConfig,
     pub tasks: TasksConfig,
+    pub dataview: DataviewConfig,
     pub templates: TemplatesConfig,
 }
 
@@ -349,6 +420,7 @@ impl Default for VaultConfig {
             git: GitConfig::default(),
             inbox: InboxConfig::default(),
             tasks: TasksConfig::default(),
+            dataview: DataviewConfig::default(),
             templates: TemplatesConfig::default(),
         }
     }
@@ -376,6 +448,7 @@ struct PartialVulcanConfig {
     git: Option<PartialGitConfig>,
     inbox: Option<PartialInboxConfig>,
     tasks: Option<PartialTasksConfig>,
+    dataview: Option<PartialDataviewConfig>,
     templates: Option<PartialTemplatesConfig>,
 }
 
@@ -436,6 +509,24 @@ struct PartialTaskStatusesConfig {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct PartialDataviewConfig {
+    inline_query_prefix: Option<String>,
+    inline_js_query_prefix: Option<String>,
+    enable_dataview_js: Option<bool>,
+    enable_inline_dataview_js: Option<bool>,
+    task_completion_tracking: Option<bool>,
+    task_completion_use_emoji_shorthand: Option<bool>,
+    task_completion_text: Option<String>,
+    recursive_subtask_completion: Option<bool>,
+    display_result_count: Option<bool>,
+    default_date_format: Option<String>,
+    default_datetime_format: Option<String>,
+    max_recursive_render_depth: Option<usize>,
+    primary_column_name: Option<String>,
+    group_column_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct ObsidianAppConfig {
     #[serde(rename = "useMarkdownLinks")]
     use_markdown_links: Option<bool>,
@@ -460,6 +551,38 @@ struct ObsidianTemplatesConfig {
         alias = "templateFolderPath"
     )]
     folder: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianDataviewConfig {
+    #[serde(rename = "inlineQueryPrefix")]
+    inline_query_prefix: Option<String>,
+    #[serde(rename = "inlineJsQueryPrefix")]
+    inline_js_query_prefix: Option<String>,
+    #[serde(rename = "enableDataviewJs")]
+    enable_dataview_js: Option<bool>,
+    #[serde(rename = "enableInlineDataviewJs")]
+    enable_inline_dataview_js: Option<bool>,
+    #[serde(rename = "taskCompletionTracking")]
+    task_completion_tracking: Option<bool>,
+    #[serde(rename = "taskCompletionUseEmojiShorthand")]
+    task_completion_use_emoji_shorthand: Option<bool>,
+    #[serde(rename = "taskCompletionText")]
+    task_completion_text: Option<String>,
+    #[serde(rename = "recursiveSubTaskCompletion")]
+    recursive_subtask_completion: Option<bool>,
+    #[serde(rename = "displayResultCount", alias = "showResultCount")]
+    display_result_count: Option<bool>,
+    #[serde(rename = "defaultDateFormat")]
+    default_date_format: Option<String>,
+    #[serde(rename = "defaultDateTimeFormat")]
+    default_datetime_format: Option<String>,
+    #[serde(rename = "maxRecursiveRenderDepth")]
+    max_recursive_render_depth: Option<usize>,
+    #[serde(rename = "primaryColumnName", alias = "tableIdColumnName")]
+    primary_column_name: Option<String>,
+    #[serde(rename = "groupColumnName", alias = "tableGroupColumnName")]
+    group_column_name: Option<String>,
 }
 
 #[must_use]
@@ -492,6 +615,62 @@ fn default_cancelled_task_statuses() -> Vec<String> {
     vec!["-".to_string()]
 }
 
+fn default_dataview_inline_query_prefix() -> String {
+    "=".to_string()
+}
+
+fn default_dataview_inline_js_query_prefix() -> String {
+    "$=".to_string()
+}
+
+fn default_dataview_enable_dataview_js() -> bool {
+    true
+}
+
+fn default_dataview_enable_inline_dataview_js() -> bool {
+    false
+}
+
+fn default_dataview_task_completion_tracking() -> bool {
+    false
+}
+
+fn default_dataview_task_completion_use_emoji_shorthand() -> bool {
+    false
+}
+
+fn default_dataview_task_completion_text() -> String {
+    "completion".to_string()
+}
+
+fn default_dataview_recursive_subtask_completion() -> bool {
+    false
+}
+
+fn default_dataview_display_result_count() -> bool {
+    true
+}
+
+fn default_dataview_default_date_format() -> String {
+    "MMMM dd, yyyy".to_string()
+}
+
+fn default_dataview_default_datetime_format() -> String {
+    "h:mm a - MMMM dd, yyyy".to_string()
+}
+
+fn default_dataview_max_recursive_render_depth() -> usize {
+    4
+}
+
+fn default_dataview_primary_column_name() -> String {
+    "File".to_string()
+}
+
+fn default_dataview_group_column_name() -> String {
+    "Group".to_string()
+}
+
 pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error> {
     ensure_vulcan_dir(paths)?;
 
@@ -514,6 +693,10 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
 
     if let Some(obsidian_templates) = load_obsidian_templates_config(paths, &mut diagnostics) {
         apply_obsidian_template_defaults(&mut config, obsidian_templates);
+    }
+
+    if let Some(obsidian_dataview) = load_obsidian_dataview_config(paths, &mut diagnostics) {
+        apply_obsidian_dataview_defaults(&mut config, obsidian_dataview);
     }
 
     config.property_types = load_obsidian_property_types(paths, &mut diagnostics);
@@ -586,6 +769,17 @@ fn load_obsidian_templates_config(
     diagnostics: &mut Vec<ConfigDiagnostic>,
 ) -> Option<ObsidianTemplatesConfig> {
     let path = paths.vault_root().join(".obsidian/templates.json");
+
+    load_json_file(&path, diagnostics)
+}
+
+fn load_obsidian_dataview_config(
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<ObsidianDataviewConfig> {
+    let path = paths
+        .vault_root()
+        .join(".obsidian/plugins/dataview/data.json");
 
     load_json_file(&path, diagnostics)
 }
@@ -685,6 +879,51 @@ fn apply_obsidian_template_defaults(config: &mut VaultConfig, obsidian: Obsidian
     }
 }
 
+fn apply_obsidian_dataview_defaults(config: &mut VaultConfig, obsidian: ObsidianDataviewConfig) {
+    if let Some(prefix) = obsidian.inline_query_prefix {
+        config.dataview.inline_query_prefix = prefix;
+    }
+    if let Some(prefix) = obsidian.inline_js_query_prefix {
+        config.dataview.inline_js_query_prefix = prefix;
+    }
+    if let Some(enabled) = obsidian.enable_dataview_js {
+        config.dataview.enable_dataview_js = enabled;
+    }
+    if let Some(enabled) = obsidian.enable_inline_dataview_js {
+        config.dataview.enable_inline_dataview_js = enabled;
+    }
+    if let Some(tracking) = obsidian.task_completion_tracking {
+        config.dataview.task_completion_tracking = tracking;
+    }
+    if let Some(use_emoji_shorthand) = obsidian.task_completion_use_emoji_shorthand {
+        config.dataview.task_completion_use_emoji_shorthand = use_emoji_shorthand;
+    }
+    if let Some(text) = obsidian.task_completion_text {
+        config.dataview.task_completion_text = text;
+    }
+    if let Some(recursive) = obsidian.recursive_subtask_completion {
+        config.dataview.recursive_subtask_completion = recursive;
+    }
+    if let Some(display_result_count) = obsidian.display_result_count {
+        config.dataview.display_result_count = display_result_count;
+    }
+    if let Some(format) = obsidian.default_date_format {
+        config.dataview.default_date_format = format;
+    }
+    if let Some(format) = obsidian.default_datetime_format {
+        config.dataview.default_datetime_format = format;
+    }
+    if let Some(depth) = obsidian.max_recursive_render_depth {
+        config.dataview.max_recursive_render_depth = depth;
+    }
+    if let Some(name) = obsidian.primary_column_name {
+        config.dataview.primary_column_name = name;
+    }
+    if let Some(name) = obsidian.group_column_name {
+        config.dataview.group_column_name = name;
+    }
+}
+
 fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConfig) {
     if let Some(scan) = overrides.scan {
         if let Some(default_mode) = scan.default_mode {
@@ -774,6 +1013,51 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
     }
 
+    if let Some(dataview) = overrides.dataview {
+        if let Some(prefix) = dataview.inline_query_prefix {
+            config.dataview.inline_query_prefix = prefix;
+        }
+        if let Some(prefix) = dataview.inline_js_query_prefix {
+            config.dataview.inline_js_query_prefix = prefix;
+        }
+        if let Some(enabled) = dataview.enable_dataview_js {
+            config.dataview.enable_dataview_js = enabled;
+        }
+        if let Some(enabled) = dataview.enable_inline_dataview_js {
+            config.dataview.enable_inline_dataview_js = enabled;
+        }
+        if let Some(tracking) = dataview.task_completion_tracking {
+            config.dataview.task_completion_tracking = tracking;
+        }
+        if let Some(use_emoji_shorthand) = dataview.task_completion_use_emoji_shorthand {
+            config.dataview.task_completion_use_emoji_shorthand = use_emoji_shorthand;
+        }
+        if let Some(text) = dataview.task_completion_text {
+            config.dataview.task_completion_text = text;
+        }
+        if let Some(recursive) = dataview.recursive_subtask_completion {
+            config.dataview.recursive_subtask_completion = recursive;
+        }
+        if let Some(display_result_count) = dataview.display_result_count {
+            config.dataview.display_result_count = display_result_count;
+        }
+        if let Some(format) = dataview.default_date_format {
+            config.dataview.default_date_format = format;
+        }
+        if let Some(format) = dataview.default_datetime_format {
+            config.dataview.default_datetime_format = format;
+        }
+        if let Some(depth) = dataview.max_recursive_render_depth {
+            config.dataview.max_recursive_render_depth = depth;
+        }
+        if let Some(name) = dataview.primary_column_name {
+            config.dataview.primary_column_name = name;
+        }
+        if let Some(name) = dataview.group_column_name {
+            config.dataview.group_column_name = name;
+        }
+    }
+
     if let Some(templates) = overrides.templates {
         if let Some(date_format) = templates.date_format {
             config.templates.date_format = date_format;
@@ -845,6 +1129,28 @@ mod tests {
             }"#,
         )
         .expect("templates config should be written");
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
+            .expect("dataview plugin dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/dataview/data.json"),
+            r#"{
+              "inlineQueryPrefix": "dv:",
+              "inlineJsQueryPrefix": "$dv:",
+              "enableDataviewJs": false,
+              "enableInlineDataviewJs": true,
+              "taskCompletionTracking": true,
+              "taskCompletionUseEmojiShorthand": true,
+              "taskCompletionText": "done-on",
+              "recursiveSubTaskCompletion": true,
+              "showResultCount": false,
+              "defaultDateFormat": "yyyy-MM-dd",
+              "defaultDateTimeFormat": "yyyy-MM-dd HH:mm",
+              "maxRecursiveRenderDepth": 7,
+              "tableIdColumnName": "Document",
+              "tableGroupColumnName": "Bucket"
+            }"#,
+        )
+        .expect("dataview config should be written");
         let paths = VaultPaths::new(vault_root);
 
         let loaded = load_vault_config(&paths);
@@ -870,6 +1176,23 @@ mod tests {
             loaded.config.property_types.get("priority"),
             Some(&"number".to_string())
         );
+        assert_eq!(loaded.config.dataview.inline_query_prefix, "dv:");
+        assert_eq!(loaded.config.dataview.inline_js_query_prefix, "$dv:");
+        assert!(!loaded.config.dataview.enable_dataview_js);
+        assert!(loaded.config.dataview.enable_inline_dataview_js);
+        assert!(loaded.config.dataview.task_completion_tracking);
+        assert!(loaded.config.dataview.task_completion_use_emoji_shorthand);
+        assert_eq!(loaded.config.dataview.task_completion_text, "done-on");
+        assert!(loaded.config.dataview.recursive_subtask_completion);
+        assert!(!loaded.config.dataview.display_result_count);
+        assert_eq!(loaded.config.dataview.default_date_format, "yyyy-MM-dd");
+        assert_eq!(
+            loaded.config.dataview.default_datetime_format,
+            "yyyy-MM-dd HH:mm"
+        );
+        assert_eq!(loaded.config.dataview.max_recursive_render_depth, 7);
+        assert_eq!(loaded.config.dataview.primary_column_name, "Document");
+        assert_eq!(loaded.config.dataview.group_column_name, "Bucket");
     }
 
     #[test]
@@ -937,6 +1260,22 @@ todo = [" ", "!"]
 completed = ["x", "v"]
 in_progress = ["/", ">"]
 cancelled = ["-"]
+
+[dataview]
+inline_query_prefix = "inline:"
+inline_js_query_prefix = "$inline:"
+enable_dataview_js = false
+enable_inline_dataview_js = true
+task_completion_tracking = true
+task_completion_use_emoji_shorthand = true
+task_completion_text = "done-on"
+recursive_subtask_completion = true
+display_result_count = false
+default_date_format = "yyyy-MM-dd"
+default_datetime_format = "yyyy-MM-dd HH:mm"
+max_recursive_render_depth = 8
+primary_column_name = "Document"
+group_column_name = "Bucket"
 
 [templates]
 date_format = "DD/MM/YYYY"
@@ -1012,6 +1351,23 @@ time_format = "HH:mm:ss"
             loaded.config.tasks.statuses.cancelled,
             vec!["-".to_string()]
         );
+        assert_eq!(loaded.config.dataview.inline_query_prefix, "inline:");
+        assert_eq!(loaded.config.dataview.inline_js_query_prefix, "$inline:");
+        assert!(!loaded.config.dataview.enable_dataview_js);
+        assert!(loaded.config.dataview.enable_inline_dataview_js);
+        assert!(loaded.config.dataview.task_completion_tracking);
+        assert!(loaded.config.dataview.task_completion_use_emoji_shorthand);
+        assert_eq!(loaded.config.dataview.task_completion_text, "done-on");
+        assert!(loaded.config.dataview.recursive_subtask_completion);
+        assert!(!loaded.config.dataview.display_result_count);
+        assert_eq!(loaded.config.dataview.default_date_format, "yyyy-MM-dd");
+        assert_eq!(
+            loaded.config.dataview.default_datetime_format,
+            "yyyy-MM-dd HH:mm"
+        );
+        assert_eq!(loaded.config.dataview.max_recursive_render_depth, 8);
+        assert_eq!(loaded.config.dataview.primary_column_name, "Document");
+        assert_eq!(loaded.config.dataview.group_column_name, "Bucket");
         assert_eq!(loaded.config.templates.date_format, "DD/MM/YYYY");
         assert_eq!(loaded.config.templates.time_format, "HH:mm:ss");
     }
