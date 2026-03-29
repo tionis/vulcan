@@ -140,15 +140,11 @@ pub fn evaluate_parsed_dql(
                 rows = decorated.into_iter().map(|(_, row)| row).collect();
             }
             DqlDataCommand::Limit(limit) => rows.truncate(*limit),
-            DqlDataCommand::GroupBy(DqlNamedExpr { .. }) => {
-                return Err(DqlEvalError::Message(
-                    "GROUP BY evaluation is not implemented yet".to_string(),
-                ));
+            DqlDataCommand::GroupBy(named_expr) => {
+                rows = apply_group_by(rows, named_expr, &note_lookup)?;
             }
-            DqlDataCommand::Flatten(DqlNamedExpr { .. }) => {
-                return Err(DqlEvalError::Message(
-                    "FLATTEN evaluation is not implemented yet".to_string(),
-                ));
+            DqlDataCommand::Flatten(named_expr) => {
+                rows = apply_flatten(rows, named_expr, &note_lookup)?;
             }
         }
     }
@@ -156,6 +152,7 @@ pub fn evaluate_parsed_dql(
     render_result(
         query,
         &config.dataview.primary_column_name,
+        &config.dataview.group_column_name,
         rows,
         &note_lookup,
     )
@@ -222,11 +219,19 @@ pub fn load_dataview_blocks(
     Ok(blocks)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    Page,
+    Task,
+    Group,
+}
+
 #[derive(Debug, Clone)]
 struct ExecutionRow {
     note: NoteRecord,
     fields: Map<String, Value>,
     ordinal: i64,
+    kind: RowKind,
 }
 
 impl ExecutionRow {
@@ -239,6 +244,7 @@ impl ExecutionRow {
                 .cloned()
                 .unwrap_or_else(Map::new),
             ordinal: 0,
+            kind: RowKind::Page,
         }
     }
 
@@ -248,6 +254,16 @@ impl ExecutionRow {
             note: note.clone(),
             fields,
             ordinal,
+            kind: RowKind::Task,
+        }
+    }
+
+    fn group(fields: Map<String, Value>, ordinal: i64) -> Self {
+        Self {
+            note: synthetic_group_note(&fields),
+            fields,
+            ordinal,
+            kind: RowKind::Group,
         }
     }
 
@@ -265,6 +281,21 @@ impl ExecutionRow {
 
     fn identity(&self) -> (&str, i64) {
         (self.note.document_path.as_str(), self.ordinal)
+    }
+
+    fn data_object(&self) -> Value {
+        let mut object = self.fields.clone();
+        if self.kind != RowKind::Group {
+            object.insert("file".to_string(), FileMetadataResolver::object(&self.note));
+        }
+        Value::Object(object)
+    }
+
+    fn primary_value(&self) -> Value {
+        match self.kind {
+            RowKind::Group => self.fields.get("key").cloned().unwrap_or(Value::Null),
+            RowKind::Page | RowKind::Task => FileMetadataResolver::field(&self.note, "link"),
+        }
     }
 }
 
@@ -473,24 +504,164 @@ fn compare_sort_values(left: &Value, right: &Value) -> Ordering {
         .unwrap_or_else(|| value_to_display(left).cmp(&value_to_display(right)))
 }
 
+fn apply_group_by(
+    rows: Vec<ExecutionRow>,
+    named_expr: &DqlNamedExpr,
+    note_lookup: &HashMap<String, NoteRecord>,
+) -> Result<Vec<ExecutionRow>, DqlEvalError> {
+    let group_name = named_expr
+        .alias
+        .clone()
+        .unwrap_or_else(|| expression_label(&named_expr.expr));
+    let mut decorated = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let key = row
+            .evaluate(&named_expr.expr, note_lookup)
+            .map_err(|error| {
+                DqlEvalError::Message(format!(
+                    "failed to evaluate GROUP BY key for {}: {error}",
+                    row.note.document_path
+                ))
+            })?;
+        decorated.push((key, row));
+    }
+
+    decorated.sort_by(|left, right| {
+        compare_sort_values(&left.0, &right.0)
+            .then_with(|| left.1.identity().cmp(&right.1.identity()))
+    });
+
+    let mut grouped_rows: Vec<ExecutionRow> = Vec::new();
+    let mut group_index = 0_i64;
+    for (key, row) in decorated {
+        let row_data = row.data_object();
+        if let Some(last_group) = grouped_rows.last_mut() {
+            let same_key = last_group
+                .fields
+                .get("key")
+                .is_some_and(|last_key| group_keys_equal(last_key, &key));
+            if same_key {
+                if let Some(Value::Array(items)) = last_group.fields.get_mut("rows") {
+                    items.push(row_data);
+                    continue;
+                }
+            }
+        }
+
+        let mut fields = Map::new();
+        fields.insert("key".to_string(), key.clone());
+        fields.insert(group_name.clone(), key);
+        fields.insert("rows".to_string(), Value::Array(vec![row_data]));
+        grouped_rows.push(ExecutionRow::group(fields, group_index));
+        group_index += 1;
+    }
+
+    Ok(grouped_rows)
+}
+
+fn apply_flatten(
+    rows: Vec<ExecutionRow>,
+    named_expr: &DqlNamedExpr,
+    note_lookup: &HashMap<String, NoteRecord>,
+) -> Result<Vec<ExecutionRow>, DqlEvalError> {
+    let field_name = named_expr
+        .alias
+        .clone()
+        .unwrap_or_else(|| expression_label(&named_expr.expr));
+    let mut flattened_rows = Vec::new();
+
+    for row in rows {
+        let value = row
+            .evaluate(&named_expr.expr, note_lookup)
+            .map_err(|error| {
+                DqlEvalError::Message(format!(
+                    "failed to evaluate FLATTEN expression for {}: {error}",
+                    row.note.document_path
+                ))
+            })?;
+
+        let datapoints = match value {
+            Value::Array(values) => values,
+            other => vec![other],
+        };
+
+        for datapoint in datapoints {
+            let mut flattened = row.clone();
+            flattened.fields.insert(field_name.clone(), datapoint);
+            flattened_rows.push(flattened);
+        }
+    }
+
+    Ok(flattened_rows)
+}
+
+fn group_keys_equal(left: &Value, right: &Value) -> bool {
+    compare_values(left, right) == Some(Ordering::Equal) || left == right
+}
+
+fn synthetic_group_note(fields: &Map<String, Value>) -> NoteRecord {
+    NoteRecord {
+        document_id: String::new(),
+        document_path: String::new(),
+        file_name: String::new(),
+        file_ext: "md".to_string(),
+        file_mtime: 0,
+        file_ctime: 0,
+        file_size: 0,
+        properties: Value::Object(fields.clone()),
+        tags: Vec::new(),
+        links: Vec::new(),
+        starred: false,
+        inlinks: Vec::new(),
+        aliases: Vec::new(),
+        frontmatter: Value::Object(Map::new()),
+        list_items: Vec::new(),
+        tasks: Vec::new(),
+        raw_inline_expressions: Vec::new(),
+        inline_expressions: Vec::new(),
+    }
+}
+
 fn render_result(
     query: &DqlQuery,
     primary_column_name: &str,
+    group_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &HashMap<String, NoteRecord>,
 ) -> Result<DqlQueryResult, DqlEvalError> {
+    let first_column_name = result_first_column_name(query, primary_column_name, group_column_name);
     match query.query_type {
         super::DqlQueryType::Table => {
-            render_table_result(query, primary_column_name, rows, note_lookup)
+            render_table_result(query, first_column_name, rows, note_lookup)
         }
         super::DqlQueryType::List => {
-            render_list_result(query, primary_column_name, rows, note_lookup)
+            render_list_result(query, first_column_name, rows, note_lookup)
         }
-        super::DqlQueryType::Task => Ok(render_task_result(query, primary_column_name, rows)),
+        super::DqlQueryType::Task => Ok(render_task_result(query, first_column_name, rows)),
         super::DqlQueryType::Calendar => {
-            render_calendar_result(query, primary_column_name, rows, note_lookup)
+            render_calendar_result(query, first_column_name, rows, note_lookup)
         }
     }
+}
+
+fn result_first_column_name<'a>(
+    query: &DqlQuery,
+    primary_column_name: &'a str,
+    group_column_name: &'a str,
+) -> &'a str {
+    if query_has_group_by(query) {
+        group_column_name
+    } else {
+        primary_column_name
+    }
+}
+
+fn query_has_group_by(query: &DqlQuery) -> bool {
+    query
+        .commands
+        .iter()
+        .any(|command| matches!(command, DqlDataCommand::GroupBy(_)))
 }
 
 fn render_table_result(
@@ -526,10 +697,7 @@ fn render_table_row(
 ) -> Result<Value, DqlEvalError> {
     let mut object = Map::new();
     if !query.without_id {
-        object.insert(
-            primary_column_name.to_string(),
-            FileMetadataResolver::field(&row.note, "link"),
-        );
+        object.insert(primary_column_name.to_string(), row.primary_value());
     }
 
     for projection in &query.table_columns {
@@ -567,10 +735,7 @@ fn render_list_result(
         .map(|row| {
             let mut object = Map::new();
             if !query.without_id {
-                object.insert(
-                    primary_column_name.to_string(),
-                    FileMetadataResolver::field(&row.note, "link"),
-                );
+                object.insert(primary_column_name.to_string(), row.primary_value());
             }
             if let Some(expr) = &query.list_expression {
                 let value = row.evaluate(expr, note_lookup).map_err(|error| {
@@ -621,10 +786,7 @@ fn render_task_result(
         .into_iter()
         .map(|row| {
             let mut object = row.fields.clone();
-            object.insert(
-                primary_column_name.to_string(),
-                FileMetadataResolver::field(&row.note, "link"),
-            );
+            object.insert(primary_column_name.to_string(), row.primary_value());
             Value::Object(object)
         })
         .collect::<Vec<_>>();
@@ -661,10 +823,7 @@ fn render_calendar_result(
 
         let mut object = Map::new();
         object.insert("date".to_string(), value);
-        object.insert(
-            primary_column_name.to_string(),
-            FileMetadataResolver::field(&row.note, "link"),
-        );
+        object.insert(primary_column_name.to_string(), row.primary_value());
         rendered_rows.push(Value::Object(object));
     }
 
@@ -919,6 +1078,131 @@ SORT file.name ASC"#,
             result.rows[1]["date"],
             Value::String("2026-04-03".to_string())
         );
+    }
+
+    #[test]
+    fn evaluates_group_by_queries_with_null_keys_and_row_swizzling() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
+        fs::write(vault_root.join("Notes/A.md"), "category:: alpha\n")
+            .expect("first note should be written");
+        fs::write(vault_root.join("Notes/B.md"), "category:: alpha\n")
+            .expect("second note should be written");
+        fs::write(vault_root.join("Notes/C.md"), "reviewed:: true\n")
+            .expect("third note should be written");
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let result = evaluate_dql(
+            &paths,
+            r#"TABLE rows.file.link AS pages, length(rows) AS count
+FROM "Notes"
+GROUP BY category
+SORT key ASC"#,
+            None,
+        )
+        .expect("DQL should evaluate");
+
+        assert_eq!(result.query_type, super::super::DqlQueryType::Table);
+        assert_eq!(result.columns, vec!["Group", "pages", "count"]);
+        assert_eq!(result.result_count, 2);
+        assert_eq!(result.rows[0]["Group"], Value::Null);
+        assert_eq!(
+            result.rows[0]["pages"],
+            Value::Array(vec![Value::String("[[Notes/C]]".to_string())])
+        );
+        assert_eq!(result.rows[0]["count"].as_f64(), Some(1.0));
+        assert_eq!(result.rows[1]["Group"], Value::String("alpha".to_string()));
+        assert_eq!(
+            result.rows[1]["pages"],
+            Value::Array(vec![
+                Value::String("[[Notes/A]]".to_string()),
+                Value::String("[[Notes/B]]".to_string()),
+            ])
+        );
+        assert_eq!(result.rows[1]["count"].as_f64(), Some(2.0));
+    }
+
+    #[test]
+    fn evaluates_flatten_queries_for_arrays_scalars_and_sequential_composition() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let flattened_choices = evaluate_dql(
+            &paths,
+            r#"TABLE WITHOUT ID variant
+FROM "Dashboard"
+FLATTEN choices AS choice
+FLATTEN list(choice, upper(choice)) AS variant
+SORT variant ASC"#,
+            None,
+        )
+        .expect("array flatten should evaluate");
+
+        assert_eq!(flattened_choices.columns, vec!["variant"]);
+        assert_eq!(flattened_choices.result_count, 4);
+        assert_eq!(
+            flattened_choices.rows,
+            vec![
+                serde_json::json!({ "variant": "ALPHA" }),
+                serde_json::json!({ "variant": "BETA" }),
+                serde_json::json!({ "variant": "alpha" }),
+                serde_json::json!({ "variant": "beta" }),
+            ]
+        );
+
+        let flattened_scalar = evaluate_dql(
+            &paths,
+            r#"TABLE WITHOUT ID plain
+FROM "Dashboard"
+FLATTEN plain"#,
+            None,
+        )
+        .expect("scalar flatten should evaluate");
+
+        assert_eq!(flattened_scalar.columns, vec!["plain"]);
+        assert_eq!(flattened_scalar.result_count, 1);
+        assert_eq!(
+            flattened_scalar.rows,
+            vec![serde_json::json!({ "plain": "alpha, beta" })]
+        );
+    }
+
+    #[test]
+    fn respects_configured_primary_and_group_column_names() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+        fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[dataview]\nprimary_column_name = \"Document\"\ngroup_column_name = \"Bucket\"\n",
+        )
+        .expect("config should be written");
+        fs::write(vault_root.join("Notes/A.md"), "category:: alpha\n")
+            .expect("note should be written");
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let plain = evaluate_dql(&paths, r#"TABLE category FROM "Notes""#, None)
+            .expect("plain query should evaluate");
+        assert_eq!(plain.columns, vec!["Document", "category"]);
+
+        let grouped = evaluate_dql(
+            &paths,
+            r#"TABLE length(rows) AS count
+FROM "Notes"
+GROUP BY category"#,
+            None,
+        )
+        .expect("grouped query should evaluate");
+        assert_eq!(grouped.columns, vec!["Bucket", "count"]);
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {
