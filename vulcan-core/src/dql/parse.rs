@@ -663,4 +663,47 @@ WHERE ([[Alpha]].status = "active" AND file.tasks[0].completed != false)
             )]
         );
     }
+
+    #[test]
+    fn preserves_data_command_order_and_computed_grouping_expressions() {
+        let query = parse_dql(
+            r##"TABLE file.name
+FROM #project
+WHERE done = false
+FLATTEN (filter(file.tags, (tag) => tag != "#done")) AS active_tags
+SORT file.name DESC
+WHERE priority > 1
+GROUP BY (choice(priority > 5, "urgent", "normal")) AS bucket
+LIMIT 3"##,
+        )
+        .expect("DQL should parse");
+
+        assert_eq!(
+            query.commands,
+            vec![
+                DqlDataCommand::From(DqlSourceExpr::Tag("#project".to_string())),
+                DqlDataCommand::Where(
+                    parse_expression("done = false").expect("expression should parse")
+                ),
+                DqlDataCommand::Flatten(DqlNamedExpr {
+                    expr: parse_expression(r##"filter(file.tags, (tag) => tag != "#done")"##)
+                        .expect("expression should parse"),
+                    alias: Some("active_tags".to_string()),
+                }),
+                DqlDataCommand::Sort(vec![DqlSortKey {
+                    expr: parse_expression("file.name").expect("expression should parse"),
+                    direction: DqlSortDirection::Desc,
+                }]),
+                DqlDataCommand::Where(
+                    parse_expression("priority > 1").expect("expression should parse")
+                ),
+                DqlDataCommand::GroupBy(DqlNamedExpr {
+                    expr: parse_expression(r#"choice(priority > 5, "urgent", "normal")"#)
+                        .expect("expression should parse"),
+                    alias: Some("bucket".to_string()),
+                }),
+                DqlDataCommand::Limit(3),
+            ]
+        );
+    }
 }
