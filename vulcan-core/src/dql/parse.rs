@@ -1,8 +1,8 @@
 use crate::expression::{ast::Expr, parse_expression};
 
 use super::ast::{
-    DqlDataCommand, DqlNamedExpr, DqlProjection, DqlQuery, DqlQueryType, DqlSortDirection,
-    DqlSortKey, DqlSourceExpr,
+    DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery, DqlQueryType,
+    DqlSortDirection, DqlSortKey, DqlSourceExpr,
 };
 use super::token::{DqlToken, DqlTokenizer};
 
@@ -119,13 +119,7 @@ impl DqlParser {
             .advance()
             .ok_or_else(|| "expected data command".to_string())?
         {
-            DqlToken::From => {
-                let tokens = self.take_clause_body_tokens();
-                if tokens.is_empty() {
-                    return Err("FROM requires a source expression".to_string());
-                }
-                Ok(DqlDataCommand::From(DqlSourceExpr { tokens }))
-            }
+            DqlToken::From => Ok(DqlDataCommand::From(self.parse_from_clause()?)),
             DqlToken::Where => {
                 let tokens = self.take_clause_body_tokens();
                 if tokens.is_empty() {
@@ -152,6 +146,87 @@ impl DqlParser {
             DqlToken::Limit => Ok(DqlDataCommand::Limit(self.parse_limit()?)),
             token => Err(format!("unexpected token {token:?} at top level")),
         }
+    }
+
+    fn parse_from_clause(&mut self) -> Result<DqlSourceExpr, String> {
+        let source = self.parse_source_expression()?;
+        if let Some(token) = self.peek() {
+            if !is_clause_start(token) {
+                return Err(format!("unexpected token {token:?} in FROM clause"));
+            }
+        }
+        Ok(source)
+    }
+
+    fn parse_source_expression(&mut self) -> Result<DqlSourceExpr, String> {
+        let mut source = self.parse_source_atom()?;
+
+        while let Some(token) = self.peek() {
+            if matches!(token, DqlToken::RParen) || is_clause_start(token) {
+                break;
+            }
+
+            let combine = match self.advance() {
+                Some(DqlToken::And) => DqlSourceExpr::And,
+                Some(DqlToken::Or) => DqlSourceExpr::Or,
+                Some(token) => {
+                    return Err(format!("expected AND or OR in FROM clause, got {token:?}"))
+                }
+                None => break,
+            };
+
+            let right = self.parse_source_atom()?;
+            source = combine(Box::new(source), Box::new(right));
+        }
+
+        Ok(source)
+    }
+
+    fn parse_source_atom(&mut self) -> Result<DqlSourceExpr, String> {
+        if matches!(
+            self.peek(),
+            Some(DqlToken::Bang | DqlToken::Minus | DqlToken::Not)
+        ) {
+            self.advance();
+            return Ok(DqlSourceExpr::Not(Box::new(self.parse_source_atom()?)));
+        }
+
+        self.parse_source_primary()
+    }
+
+    fn parse_source_primary(&mut self) -> Result<DqlSourceExpr, String> {
+        match self
+            .advance()
+            .ok_or_else(|| "FROM requires a source expression".to_string())?
+        {
+            DqlToken::Tag(tag) => Ok(DqlSourceExpr::Tag(tag)),
+            DqlToken::Str(path) => Ok(DqlSourceExpr::Path(path)),
+            DqlToken::Wikilink(link) => Ok(DqlSourceExpr::IncomingLink(parse_link_target(&link))),
+            DqlToken::Ident(name) if name.eq_ignore_ascii_case("outgoing") => {
+                self.parse_outgoing_source()
+            }
+            DqlToken::LParen => {
+                let source = self.parse_source_expression()?;
+                self.expect(&DqlToken::RParen, "expected ')' to close FROM source group")?;
+                Ok(source)
+            }
+            token => Err(format!("expected source expression, got {token:?}")),
+        }
+    }
+
+    fn parse_outgoing_source(&mut self) -> Result<DqlSourceExpr, String> {
+        self.expect(&DqlToken::LParen, "expected '(' after outgoing")?;
+        let target = match self.advance() {
+            Some(DqlToken::Wikilink(link)) => parse_link_target(&link),
+            Some(token) => {
+                return Err(format!(
+                    "outgoing() expects a wikilink target, got {token:?}"
+                ))
+            }
+            None => return Err("outgoing() requires a wikilink target".to_string()),
+        };
+        self.expect(&DqlToken::RParen, "expected ')' after outgoing() target")?;
+        Ok(DqlSourceExpr::OutgoingLink(target))
     }
 
     fn parse_sort_keys(&mut self) -> Result<Vec<DqlSortKey>, String> {
@@ -279,6 +354,13 @@ fn parse_named_expression_tokens(tokens: &[DqlToken]) -> Result<DqlNamedExpr, St
         expr: parse_expression_tokens(expr_tokens)?,
         alias,
     })
+}
+
+fn parse_link_target(raw: &str) -> DqlLinkTarget {
+    match raw {
+        "[[]]" | "[[#]]" => DqlLinkTarget::SelfReference,
+        _ => DqlLinkTarget::Wikilink(raw.to_string()),
+    }
 }
 
 fn parse_sort_key(tokens: &[DqlToken]) -> Result<DqlSortKey, String> {
@@ -433,9 +515,7 @@ LIMIT 5"#,
         assert_eq!(
             query.commands,
             vec![
-                DqlDataCommand::From(DqlSourceExpr {
-                    tokens: vec![DqlToken::Tag("#project".to_string())],
-                }),
+                DqlDataCommand::From(DqlSourceExpr::Tag("#project".to_string())),
                 DqlDataCommand::Where(Expr::BinaryOp(
                     Box::new(Expr::Identifier("reviewed".to_string())),
                     BinOp::Eq,
@@ -470,9 +550,7 @@ LIMIT 5"#,
         assert_eq!(
             list_query.commands,
             vec![
-                DqlDataCommand::From(DqlSourceExpr {
-                    tokens: vec![DqlToken::Str("Projects".to_string())],
-                }),
+                DqlDataCommand::From(DqlSourceExpr::Path("Projects".to_string())),
                 DqlDataCommand::Limit(10),
             ]
         );
@@ -483,15 +561,10 @@ LIMIT 5"#,
         assert_eq!(task_query.calendar_expression, None);
         assert_eq!(
             task_query.commands,
-            vec![DqlDataCommand::From(DqlSourceExpr {
-                tokens: vec![
-                    DqlToken::LParen,
-                    DqlToken::Tag("#project".to_string()),
-                    DqlToken::Or,
-                    DqlToken::Wikilink("[[]]".to_string()),
-                    DqlToken::RParen,
-                ],
-            })]
+            vec![DqlDataCommand::From(DqlSourceExpr::Or(
+                Box::new(DqlSourceExpr::Tag("#project".to_string())),
+                Box::new(DqlSourceExpr::IncomingLink(DqlLinkTarget::SelfReference)),
+            ))]
         );
 
         let calendar_query = parse_dql("CALENDAR file.day WHERE file.day != null")
@@ -537,6 +610,36 @@ FLATTEN file.tasks AS task"#,
                     alias: Some("task".to_string()),
                 }),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_from_sources_with_outgoing_links_and_negation() {
+        let query = parse_dql(
+            r#"LIST
+FROM (#assignment AND "30 School") OR ("30 School/32 Homeworks" AND outgoing([[School Dashboard Current To Dos]])) AND !#done"#,
+        )
+        .expect("DQL should parse");
+
+        assert_eq!(
+            query.commands,
+            vec![DqlDataCommand::From(DqlSourceExpr::And(
+                Box::new(DqlSourceExpr::Or(
+                    Box::new(DqlSourceExpr::And(
+                        Box::new(DqlSourceExpr::Tag("#assignment".to_string())),
+                        Box::new(DqlSourceExpr::Path("30 School".to_string())),
+                    )),
+                    Box::new(DqlSourceExpr::And(
+                        Box::new(DqlSourceExpr::Path("30 School/32 Homeworks".to_string())),
+                        Box::new(DqlSourceExpr::OutgoingLink(DqlLinkTarget::Wikilink(
+                            "[[School Dashboard Current To Dos]]".to_string(),
+                        ))),
+                    )),
+                )),
+                Box::new(DqlSourceExpr::Not(Box::new(DqlSourceExpr::Tag(
+                    "#done".to_string(),
+                )))),
+            ))]
         );
     }
 }
