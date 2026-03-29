@@ -36,6 +36,7 @@ pub enum DqlToken {
     Star,
     Slash,
     Percent,
+    FatArrow,
     Eq,
     EqEq,
     Ne,
@@ -134,6 +135,10 @@ impl<'a> DqlTokenizer<'a> {
             b'%' => {
                 self.pos += 1;
                 DqlToken::Percent
+            }
+            b'=' if self.peek_next() == Some(b'>') => {
+                self.pos += 2;
+                DqlToken::FatArrow
             }
             b'=' if self.peek_next() == Some(b'=') => {
                 self.pos += 2;
@@ -617,6 +622,35 @@ mod tests {
                 DqlToken::LParen,
                 DqlToken::DurationLiteral("1d 3h".to_string()),
                 DqlToken::RParen,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenizes_lambda_expressions_in_where_clauses() {
+        assert_eq!(
+            tokenize("WHERE length(filter(file.tasks, (task) => task.completed)) > 0"),
+            vec![
+                DqlToken::Where,
+                DqlToken::Ident("length".to_string()),
+                DqlToken::LParen,
+                DqlToken::Ident("filter".to_string()),
+                DqlToken::LParen,
+                DqlToken::Ident("file".to_string()),
+                DqlToken::Dot,
+                DqlToken::Ident("tasks".to_string()),
+                DqlToken::Comma,
+                DqlToken::LParen,
+                DqlToken::Task,
+                DqlToken::RParen,
+                DqlToken::FatArrow,
+                DqlToken::Task,
+                DqlToken::Dot,
+                DqlToken::Ident("completed".to_string()),
+                DqlToken::RParen,
+                DqlToken::RParen,
+                DqlToken::Gt,
+                DqlToken::Number(0.0),
             ]
         );
     }

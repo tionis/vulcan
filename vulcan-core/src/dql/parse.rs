@@ -445,6 +445,7 @@ fn render_expression_token(token: &DqlToken) -> String {
         DqlToken::Star => "*".to_string(),
         DqlToken::Slash => "/".to_string(),
         DqlToken::Percent => "%".to_string(),
+        DqlToken::FatArrow => "=>".to_string(),
         DqlToken::Eq | DqlToken::EqEq => "=".to_string(),
         DqlToken::Ne => "!=".to_string(),
         DqlToken::Gt => ">".to_string(),
@@ -640,6 +641,26 @@ FROM (#assignment AND "30 School") OR ("30 School/32 Homeworks" AND outgoing([[S
                     "#done".to_string(),
                 )))),
             ))]
+        );
+    }
+
+    #[test]
+    fn parses_where_expressions_with_lambda_link_indexing_and_arrays() {
+        let query = parse_dql(
+            r#"TABLE file.name
+WHERE ([[Alpha]].status = "active" AND file.tasks[0].completed != false)
+  OR length(filter(file.tasks, (task) => task.completed)) > 0"#,
+        )
+        .expect("DQL should parse");
+
+        assert_eq!(
+            query.commands,
+            vec![DqlDataCommand::Where(
+                parse_expression(
+                    r#"([[Alpha]].status = "active" && file.tasks[0].completed != false) || length(filter(file.tasks, (task) => task.completed)) > 0"#,
+                )
+                .expect("expression should parse"),
+            )]
         );
     }
 }
