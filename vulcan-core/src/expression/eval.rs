@@ -932,6 +932,7 @@ mod tests {
     fn eval_comparison() {
         assert_eq!(eval("1 > 0"), Value::Bool(true));
         assert_eq!(eval("1 < 0"), Value::Bool(false));
+        assert_eq!(eval("1 = 1"), Value::Bool(true));
         assert_eq!(eval("1 == 1"), Value::Bool(true));
         assert_eq!(eval("1 != 2"), Value::Bool(true));
         assert_eq!(eval("5 >= 5"), Value::Bool(true));

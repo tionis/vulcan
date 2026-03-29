@@ -1651,6 +1651,63 @@ fn notes_json_output_filters_and_sorts_property_queries() {
 }
 
 #[test]
+fn notes_json_output_supports_inline_field_and_file_namespace_filters() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    fs::write(
+        vault_root.join("Large.md"),
+        format!("due:: 2020-01-01\n\n{}\n", "x".repeat(12_000)),
+    )
+    .expect("large note should be written");
+    fs::write(vault_root.join("Small.md"), "due:: 2099-01-01\n")
+        .expect("small note should be written");
+    run_scan(&vault_root);
+
+    let overdue = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "notes",
+            "--where",
+            "due < date(today)",
+        ])
+        .assert()
+        .success();
+    let overdue_rows = parse_stdout_json_lines(&overdue);
+    assert_eq!(overdue_rows.len(), 1);
+    assert_eq!(overdue_rows[0]["document_path"], "Large.md");
+
+    let large_files = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "notes",
+            "--where",
+            "file.size > 10000",
+        ])
+        .assert()
+        .success();
+    let large_file_rows = parse_stdout_json_lines(&large_files);
+    assert_eq!(large_file_rows.len(), 1);
+    assert_eq!(large_file_rows[0]["document_path"], "Large.md");
+}
+
+#[test]
 fn search_json_output_supports_has_property_filter() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

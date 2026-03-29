@@ -172,6 +172,11 @@ impl<'a> Tokenizer<'a> {
                 self.last_was_value = false;
                 Token::EqEq
             }
+            b'=' => {
+                self.pos += 1;
+                self.last_was_value = false;
+                Token::EqEq
+            }
             b'!' if self.peek_next() == Some(b'=') => {
                 self.pos += 2;
                 self.last_was_value = false;
@@ -626,21 +631,23 @@ mod tests {
     #[test]
     fn comparison_operators() {
         assert_eq!(
-            tokenize("a == b != c >= d <= e > f < g"),
+            tokenize("a = b == c != d >= e <= f > g < h"),
             vec![
                 Token::Ident("a".to_string()),
                 Token::EqEq,
                 Token::Ident("b".to_string()),
-                Token::Ne,
+                Token::EqEq,
                 Token::Ident("c".to_string()),
-                Token::Ge,
+                Token::Ne,
                 Token::Ident("d".to_string()),
-                Token::Le,
+                Token::Ge,
                 Token::Ident("e".to_string()),
-                Token::Gt,
+                Token::Le,
                 Token::Ident("f".to_string()),
-                Token::Lt,
+                Token::Gt,
                 Token::Ident("g".to_string()),
+                Token::Lt,
+                Token::Ident("h".to_string()),
             ]
         );
     }
