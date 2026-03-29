@@ -1,9 +1,11 @@
 use crate::parser::comment_scanner::{overlaps_comment, visible_subranges};
 use crate::parser::types::{
-    InlineFieldKind, RawDataviewBlock, RawInlineField, RawListItem, RawTask, RawTaskField,
-    SemanticBlock, SemanticBlockKind,
+    InlineFieldKind, LinkKind, RawDataviewBlock, RawInlineField, RawListItem, RawTask,
+    RawTaskField, SemanticBlock, SemanticBlockKind,
 };
+use crate::VaultConfig;
 use regex::Regex;
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -118,6 +120,7 @@ fn scan_block(
                 .unwrap_or("")
                 .trim()
                 .to_string();
+            let (tags, outlinks) = extract_list_item_metadata(&trimmed_visible);
             let mut inline_item_fields = Vec::new();
             scan_inline_field_variants(
                 raw_line,
@@ -131,6 +134,8 @@ fn scan_block(
             list_items.push(RawListItem {
                 symbol: list_line.symbol.clone(),
                 text: trimmed_visible.clone(),
+                tags,
+                outlinks,
                 byte_offset: line_start,
                 parent_item_index,
                 section_heading: block.heading_path.last().cloned(),
@@ -168,6 +173,32 @@ fn scan_block(
             property_value_ranges,
         );
     }
+}
+
+fn extract_list_item_metadata(text: &str) -> (Vec<String>, Vec<String>) {
+    let parsed = super::parse_document_fragment(text, &VaultConfig::default(), 0);
+
+    let mut tags = Vec::new();
+    let mut seen_tags = HashSet::new();
+    for tag in parsed.tags {
+        let tag_text = format!("#{}", tag.tag_text);
+        if seen_tags.insert(tag_text.clone()) {
+            tags.push(tag_text);
+        }
+    }
+
+    let mut outlinks = Vec::new();
+    let mut seen_links = HashSet::new();
+    for link in parsed.links {
+        if link.link_kind == LinkKind::External {
+            continue;
+        }
+        if seen_links.insert(link.raw_text.clone()) {
+            outlinks.push(link.raw_text);
+        }
+    }
+
+    (tags, outlinks)
 }
 
 enum InlineFieldTarget<'a> {
@@ -496,7 +527,8 @@ mod tests {
 
     #[test]
     fn detects_plain_and_numbered_list_items() {
-        let source = "- bullet item\n  1. nested numbered ^child-id\n";
+        let source =
+            "- bullet item [[Projects/Alpha]] #project/list\n  1. nested numbered ^child-id\n";
         let block = SemanticBlock {
             block_kind: SemanticBlockKind::List,
             text: source.to_string(),
@@ -512,12 +544,22 @@ mod tests {
         assert!(!extraction.list_items[0].is_task);
         assert_eq!(extraction.list_items[0].symbol, "-");
         assert_eq!(extraction.list_items[0].parent_item_index, None);
+        assert_eq!(
+            extraction.list_items[0].tags,
+            vec!["#project/list".to_string()]
+        );
+        assert_eq!(
+            extraction.list_items[0].outlinks,
+            vec!["[[Projects/Alpha]]".to_string()]
+        );
         assert_eq!(extraction.list_items[1].symbol, "1.");
         assert_eq!(extraction.list_items[1].parent_item_index, Some(0));
         assert_eq!(
             extraction.list_items[1].block_id.as_deref(),
             Some("child-id")
         );
+        assert!(extraction.list_items[1].tags.is_empty());
+        assert!(extraction.list_items[1].outlinks.is_empty());
         assert!(extraction.tasks.is_empty());
     }
 

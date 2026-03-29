@@ -1153,7 +1153,7 @@ Extract **all** list items (not just tasks) as structured data, matching Datavie
 **List item extraction:**
 - [x] Detect all list items (`-`, `*`, `+`, and numbered `1.`) during the semantic pass, including non-task items
 - [x] Schema: `list_items` table — `id`, `document_id`, `text` (full text including annotations), `line_number`, `line_count` (lines spanned), `byte_offset`, `section_heading`, `parent_item_id` (nullable, for nesting), `is_task` (boolean), `block_id` (nullable, `^blockId` syntax)
-- [ ] Extract tags and links within list item text and store as item-scoped metadata
+- [x] Extract tags and links within list item text and store as item-scoped metadata
 - [x] Track `annotated` flag: true if item text contains inline field annotations
 - [x] Index on `list_items(document_id)`, `list_items(is_task)`, `list_items(parent_item_id)`
 - [x] Unit tests: plain list items, nested lists, mixed task and non-task items, numbered lists

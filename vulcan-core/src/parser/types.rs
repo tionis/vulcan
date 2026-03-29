@@ -98,6 +98,8 @@ pub struct RawTaskField {
 pub struct RawListItem {
     pub symbol: String,
     pub text: String,
+    pub tags: Vec<String>,
+    pub outlinks: Vec<String>,
     pub byte_offset: usize,
     pub parent_item_index: Option<usize>,
     pub section_heading: Option<String>,
