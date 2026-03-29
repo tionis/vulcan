@@ -3054,6 +3054,7 @@ mod tests {
             Value::String("Alpha".to_string())
         );
         assert_eq!(eval(r#"[[Bob]].role"#), Value::String("editor".to_string()));
+        assert_eq!(eval(r#"[[Dashboard]].inline_expressions"#), Value::Null);
     }
 
     #[test]
