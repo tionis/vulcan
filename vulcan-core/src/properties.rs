@@ -10,9 +10,11 @@ use rusqlite::types::Value as SqlValue;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::fs;
+use std::path::Path;
 
 const PROPERTY_NAMESPACE_FRONTMATTER: &str = "frontmatter";
 const PROPERTY_NAMESPACE_INLINE: &str = "inline";
@@ -150,6 +152,8 @@ pub struct NoteRecord {
     pub properties: Value,
     pub tags: Vec<String>,
     pub links: Vec<String>,
+    #[serde(skip)]
+    pub starred: bool,
     #[serde(skip)]
     pub inlinks: Vec<String>,
     #[serde(skip)]
@@ -440,6 +444,7 @@ fn parse_frontmatter_json_object(raw_yaml: &str) -> Value {
 pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
+    let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
 
     let (sql_filters, expression_filters) = partition_note_query_filters(&query.filters)?;
 
@@ -472,6 +477,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         params_from_iter(params.iter()),
         |row| -> Result<(String, NoteRecord), rusqlite::Error> {
             let doc_id: String = row.get(0)?;
+            let document_path: String = row.get(1)?;
             let canonical_json: String = row.get(6)?;
             let raw_yaml: String = row.get(7)?;
             let properties = serde_json::from_str::<Value>(&canonical_json).map_err(|error| {
@@ -485,7 +491,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
                 doc_id.clone(),
                 NoteRecord {
                     document_id: doc_id.clone(),
-                    document_path: row.get(1)?,
+                    document_path: document_path.clone(),
                     file_name: row.get(2)?,
                     file_ext: row.get(3)?,
                     file_mtime: row.get(4)?,
@@ -493,6 +499,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
                     properties,
                     tags: Vec::new(),
                     links: Vec::new(),
+                    starred: bookmarked_paths.contains(&document_path),
                     inlinks: Vec::new(),
                     aliases: Vec::new(),
                     frontmatter: parse_frontmatter_json_object(&raw_yaml),
@@ -561,6 +568,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
 pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
+    let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
     let mut stmt = connection.prepare(
         "SELECT d.id, d.path, d.filename, d.extension, d.file_mtime, d.file_size, \
          COALESCE(p.canonical_json, '{}'), COALESCE(p.raw_yaml, '') \
@@ -589,7 +597,7 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
             document_id.clone(),
             NoteRecord {
                 document_id,
-                document_path: path,
+                document_path: path.clone(),
                 file_name,
                 file_ext,
                 file_mtime,
@@ -597,6 +605,7 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
                 properties,
                 tags: vec![],
                 links: vec![],
+                starred: bookmarked_paths.contains(&path),
                 inlinks: vec![],
                 aliases: vec![],
                 frontmatter: parse_frontmatter_json_object(&raw_yaml),
@@ -613,6 +622,48 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
         map.insert(note.file_name.clone(), note);
     }
     Ok(map)
+}
+
+fn load_bookmarked_paths(vault_root: &Path) -> HashSet<String> {
+    let path = vault_root.join(".obsidian/bookmarks.json");
+    let Ok(contents) = fs::read_to_string(path) else {
+        return HashSet::new();
+    };
+    let Ok(bookmarks) = serde_json::from_str::<Value>(&contents) else {
+        return HashSet::new();
+    };
+    bookmarked_paths_from_value(&bookmarks)
+}
+
+fn bookmarked_paths_from_value(bookmarks: &Value) -> HashSet<String> {
+    let mut paths = HashSet::new();
+    collect_bookmarked_paths(bookmarks, &mut paths);
+    paths
+}
+
+fn collect_bookmarked_paths(value: &Value, paths: &mut HashSet<String>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_bookmarked_paths(item, paths);
+            }
+        }
+        Value::Object(object) => {
+            if object
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|item_type| matches!(item_type, "file" | "markdown" | "canvas"))
+            {
+                if let Some(path) = object.get("path").and_then(Value::as_str) {
+                    paths.insert(path.to_string());
+                }
+            }
+            if let Some(items) = object.get("items") {
+                collect_bookmarked_paths(items, paths);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn hydrate_note_records(
@@ -1534,7 +1585,8 @@ fn parse_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> 
 
 fn is_legacy_filter_field(field: &str) -> bool {
     matches!(field, "file.path" | "file.name" | "file.ext" | "file.mtime")
-        || (!field.is_empty()
+        || (!field.starts_with("file.")
+            && !field.is_empty()
             && field
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
@@ -1901,7 +1953,7 @@ fn number_to_i64(value: f64) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_document, scan_vault, ScanMode};
+    use crate::{file_metadata::FileMetadataResolver, parse_document, scan_vault, ScanMode};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -2326,6 +2378,99 @@ mod tests {
                 "A.md".to_string(),
                 "B.md".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn bookmarked_paths_include_nested_file_items_only() {
+        let bookmarks = serde_json::json!({
+            "items": [
+                {
+                    "type": "group",
+                    "items": [
+                        {"type": "file", "path": "Inbox.md"},
+                        {"type": "markdown", "path": "Projects/Alpha.md"},
+                        {"type": "search", "query": "tag:#project"},
+                        {"type": "folder", "path": "Projects"}
+                    ]
+                },
+                {"type": "canvas", "path": "Boards/Roadmap.canvas"}
+            ]
+        });
+
+        assert_eq!(
+            bookmarked_paths_from_value(&bookmarks),
+            std::collections::HashSet::from_iter([
+                "Inbox.md".to_string(),
+                "Projects/Alpha.md".to_string(),
+                "Boards/Roadmap.canvas".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn query_notes_exposes_bookmarked_notes_via_file_starred() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".obsidian"))
+            .expect("obsidian directory should be created");
+        fs::create_dir_all(vault_root.join("Projects"))
+            .expect("project directory should be created");
+        fs::write(vault_root.join("Inbox.md"), "# Inbox\n").expect("note should be written");
+        fs::write(vault_root.join("Projects/Alpha.md"), "# Alpha\n")
+            .expect("note should be written");
+        fs::write(vault_root.join("Projects/Beta.md"), "# Beta\n").expect("note should be written");
+        fs::write(
+            vault_root.join(".obsidian/bookmarks.json"),
+            serde_json::json!({
+                "items": [
+                    {
+                        "type": "group",
+                        "items": [
+                            {"type": "file", "path": "Inbox.md"},
+                            {"type": "file", "path": "Projects/Alpha.md", "subpath": "#Overview"}
+                        ]
+                    },
+                    {"type": "search", "query": "tag:#project"}
+                ]
+            })
+            .to_string(),
+        )
+        .expect("bookmarks should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let note_index = load_note_index(&paths).expect("note index should load");
+        assert_eq!(
+            FileMetadataResolver::field(note_index.get("Inbox").expect("Inbox note"), "starred"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            FileMetadataResolver::field(note_index.get("Alpha").expect("Alpha note"), "starred"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            FileMetadataResolver::field(note_index.get("Beta").expect("Beta note"), "starred"),
+            Value::Bool(false)
+        );
+
+        let starred = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["file.starred == true".to_string()],
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("file.starred query should succeed");
+        assert_eq!(
+            starred
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Inbox.md".to_string(), "Projects/Alpha.md".to_string()]
         );
     }
 

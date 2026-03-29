@@ -30,7 +30,7 @@ impl FileMetadataResolver {
             "frontmatter" => note.frontmatter.clone(),
             "properties" => note.properties.clone(),
             "day" => resolve_file_day(note).map_or(Value::Null, Value::String),
-            "starred" => Value::Bool(false),
+            "starred" => Value::Bool(note.starred),
             _ => Value::Null,
         }
     }
@@ -404,6 +404,7 @@ mod tests {
             properties: serde_json::json!({"status": "done"}),
             tags: vec!["#project/alpha".to_string()],
             links: vec!["[[Other]]".to_string()],
+            starred: false,
             inlinks: vec!["[[Home]]".to_string()],
             aliases: vec!["Sprint Note".to_string()],
             frontmatter: serde_json::json!({"Date": "2026-04-18"}),
