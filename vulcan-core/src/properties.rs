@@ -196,6 +196,9 @@ pub struct NoteTaskRecord {
     pub id: String,
     pub list_item_id: String,
     pub status_char: String,
+    pub status_name: String,
+    pub status_type: String,
+    pub status_next_symbol: Option<String>,
     pub checked: bool,
     pub completed: bool,
     pub text: String,
@@ -878,15 +881,18 @@ fn hydrate_note_records(
     let mut task_stmt = connection.prepare(&task_sql)?;
     let task_rows = task_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
         let status_char: String = row.get(3)?;
-        let completion_state = config.tasks.statuses.completion_state(&status_char);
+        let status_state = config.tasks.statuses.status_state(&status_char);
         Ok((
             row.get::<_, String>(1)?,
             NoteTaskRecord {
                 id: row.get(0)?,
                 list_item_id: row.get(2)?,
                 status_char,
-                checked: completion_state.checked,
-                completed: completion_state.completed,
+                status_name: status_state.name,
+                status_type: status_state.status_type,
+                status_next_symbol: status_state.next_symbol,
+                checked: status_state.checked,
+                completed: status_state.completed,
                 text: row.get(4)?,
                 byte_offset: row.get(5)?,
                 parent_task_id: row.get(6)?,
@@ -2917,12 +2923,69 @@ completed = ["x", "v"]
 
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0]["status"], Value::String("!".to_string()));
+        assert_eq!(tasks[0]["statusName"], Value::String("Todo".to_string()));
+        assert_eq!(tasks[0]["statusType"], Value::String("TODO".to_string()));
         assert_eq!(tasks[0]["checked"], Value::Bool(false));
         assert_eq!(tasks[0]["completed"], Value::Bool(false));
         assert_eq!(tasks[1]["status"], Value::String("v".to_string()));
+        assert_eq!(tasks[1]["statusName"], Value::String("Done".to_string()));
+        assert_eq!(tasks[1]["statusType"], Value::String("DONE".to_string()));
         assert_eq!(tasks[1]["checked"], Value::Bool(true));
         assert_eq!(tasks[1]["completed"], Value::Bool(true));
         assert_eq!(tasks[1]["fullyCompleted"], Value::Bool(true));
+    }
+
+    #[test]
+    fn load_note_index_imports_tasks_plugin_status_definitions() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-tasks-plugin"))
+            .expect("tasks plugin dir should be created");
+        fs::write(
+            vault_root.join("Tasks.md"),
+            "- [>] Waiting review\n- [~] Parked for later\n",
+        )
+        .expect("note should be written");
+        fs::write(
+            vault_root.join(".obsidian/plugins/obsidian-tasks-plugin/data.json"),
+            r#"{
+              "statusSettings": {
+                "coreStatuses": [
+                  { "symbol": " ", "name": "Todo", "type": "TODO", "nextStatusSymbol": ">" },
+                  { "symbol": "x", "name": "Done", "type": "DONE", "nextStatusSymbol": " " }
+                ],
+                "customStatuses": [
+                  { "symbol": ">", "name": "Waiting", "type": "IN_PROGRESS", "nextStatusSymbol": "x" },
+                  { "symbol": "~", "name": "Parked", "type": "NON_TASK", "nextStatusSymbol": null }
+                ]
+              }
+            }"#,
+        )
+        .expect("tasks plugin config should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let note_index = load_note_index(&paths).expect("note index should load");
+        let note = note_index.get("Tasks").expect("task note should exist");
+        let tasks = FileMetadataResolver::field(note, "tasks");
+        let tasks = tasks.as_array().expect("tasks should be an array");
+
+        assert_eq!(tasks[0]["status"], Value::String(">".to_string()));
+        assert_eq!(tasks[0]["statusName"], Value::String("Waiting".to_string()));
+        assert_eq!(
+            tasks[0]["statusType"],
+            Value::String("IN_PROGRESS".to_string())
+        );
+        assert_eq!(tasks[0]["statusNext"], Value::String("x".to_string()));
+        assert_eq!(tasks[1]["status"], Value::String("~".to_string()));
+        assert_eq!(tasks[1]["statusName"], Value::String("Parked".to_string()));
+        assert_eq!(
+            tasks[1]["statusType"],
+            Value::String("NON_TASK".to_string())
+        );
+        assert_eq!(tasks[1]["checked"], Value::Bool(true));
+        assert_eq!(tasks[1]["completed"], Value::Bool(false));
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {
