@@ -41,37 +41,37 @@ use vulcan_core::{
     bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
     drop_vector_model, evaluate_base_file, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, export_static_search_index, git_status,
-    import_tasks_plugin_config, index_vectors_with_progress, initialize_vault, inspect_cache,
-    inspect_vector_queue, link_mentions, list_checkpoints, list_kanban_boards, list_saved_reports,
-    list_vector_models, load_dataview_blocks, load_kanban_board, load_saved_report,
-    load_tasks_blocks, load_vault_config, merge_tags, move_note, parse_tasks_query,
-    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
-    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
-    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
-    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
-    resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
-    suggest_duplicates, suggest_mentions, task_upcoming_occurrences, vector_duplicates,
-    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BaseViewGroupBy,
-    BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, InitSummary, KanbanBoardRecord,
-    KanbanBoardSummary, KanbanTaskStatus, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery, RebuildReport,
-    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksQueryResult,
-    TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
-    VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
-    WatchReport,
+    import_kanban_plugin_config, import_tasks_plugin_config, index_vectors_with_progress,
+    initialize_vault, inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints,
+    list_kanban_boards, list_saved_reports, list_vector_models, load_dataview_blocks,
+    load_kanban_board, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
+    move_note, parse_tasks_query, query_backlinks, query_change_report, query_graph_analytics,
+    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
+    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
+    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
+    repair_vectors_with_progress, resolve_note_reference, save_saved_report,
+    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
+    task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport,
+    BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    EvaluatedInlineExpression, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, InitSummary, KanbanBoardRecord, KanbanBoardSummary, KanbanTaskStatus,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
+    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, QueryAst,
+    QueryReport, RebuildQuery, RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery,
+    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort,
+    StoredModelInfo, TasksQueryResult, TemplatesConfig, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
+    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -4241,6 +4241,23 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         },
         Command::Config { ref command } => match command {
             ConfigCommand::Import { command } => match command {
+                ConfigImportCommand::Kanban { no_commit } => {
+                    let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                    warn_auto_commit_if_needed(&auto_commit);
+                    let had_gitignore = paths.gitignore_file().exists();
+                    let report =
+                        import_kanban_plugin_config(&paths).map_err(CliError::operation)?;
+                    if report.updated {
+                        auto_commit
+                            .commit(
+                                &paths,
+                                "config-import-kanban",
+                                &config_import_changed_files(&paths, had_gitignore),
+                            )
+                            .map_err(CliError::operation)?;
+                    }
+                    print_config_import_report(cli.output, &report)
+                }
                 ConfigImportCommand::Tasks { no_commit } => {
                     let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
                     warn_auto_commit_if_needed(&auto_commit);
@@ -8738,6 +8755,21 @@ mod tests {
             Command::Config {
                 command: ConfigCommand::Import {
                     command: ConfigImportCommand::Tasks { no_commit: false },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_import_kanban_command() {
+        let cli = Cli::try_parse_from(["vulcan", "config", "import", "kanban"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Import {
+                    command: ConfigImportCommand::Kanban { no_commit: false },
                 },
             }
         );

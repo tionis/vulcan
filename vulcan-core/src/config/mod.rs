@@ -75,6 +75,24 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # type = "TODO"
 # next_symbol = "x"
 
+# [kanban]
+# date_trigger = "@"
+# time_trigger = "@@"
+# date_format = "YYYY-MM-DD"
+# time_format = "HH:mm"
+# link_date_to_daily_note = false
+# metadata_keys = ["status", "owner"]
+# archive_with_date = false
+# append_archive_date = false
+# archive_date_format = "YYYY-MM-DD HH:mm"
+# new_card_insertion_method = "append"  # prepend | prepend-compact | append
+# hide_card_count = false
+# hide_tags_in_title = false
+# hide_tags_display = false
+# lane_width = 272
+# max_archive_size = 100
+# show_checkboxes = false
+
 # [dataview]
 # inline_query_prefix = "="
 # inline_js_query_prefix = "$="
@@ -418,18 +436,41 @@ pub struct TasksConfig {
     pub recurrence_on_completion: Option<String>,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KanbanConfig {
     #[serde(default = "default_kanban_date_trigger")]
     pub date_trigger: String,
     #[serde(default = "default_kanban_time_trigger")]
     pub time_trigger: String,
+    #[serde(default = "default_kanban_date_format")]
+    pub date_format: String,
+    #[serde(default = "default_kanban_time_format")]
+    pub time_format: String,
+    #[serde(default)]
+    pub link_date_to_daily_note: bool,
     #[serde(default)]
     pub metadata_keys: Vec<String>,
     #[serde(default)]
     pub archive_with_date: bool,
+    #[serde(default)]
+    pub append_archive_date: bool,
+    #[serde(default = "default_kanban_archive_date_format")]
+    pub archive_date_format: String,
     #[serde(default = "default_kanban_new_card_insertion_method")]
     pub new_card_insertion_method: String,
+    #[serde(default)]
+    pub hide_card_count: bool,
+    #[serde(default)]
+    pub hide_tags_in_title: bool,
+    #[serde(default)]
+    pub hide_tags_display: bool,
+    #[serde(default)]
+    pub lane_width: Option<usize>,
+    #[serde(default)]
+    pub max_archive_size: Option<usize>,
+    #[serde(default)]
+    pub show_checkboxes: bool,
 }
 
 impl Default for KanbanConfig {
@@ -437,9 +478,20 @@ impl Default for KanbanConfig {
         Self {
             date_trigger: default_kanban_date_trigger(),
             time_trigger: default_kanban_time_trigger(),
+            date_format: default_kanban_date_format(),
+            time_format: default_kanban_time_format(),
+            link_date_to_daily_note: false,
             metadata_keys: Vec::new(),
             archive_with_date: false,
+            append_archive_date: false,
+            archive_date_format: default_kanban_archive_date_format(),
             new_card_insertion_method: default_kanban_new_card_insertion_method(),
+            hide_card_count: false,
+            hide_tags_in_title: false,
+            hide_tags_display: false,
+            lane_width: None,
+            max_archive_size: None,
+            show_checkboxes: false,
         }
     }
 }
@@ -450,6 +502,18 @@ fn default_kanban_date_trigger() -> String {
 
 fn default_kanban_time_trigger() -> String {
     "@@".to_string()
+}
+
+fn default_kanban_date_format() -> String {
+    "YYYY-MM-DD".to_string()
+}
+
+fn default_kanban_time_format() -> String {
+    "HH:mm".to_string()
+}
+
+fn default_kanban_archive_date_format() -> String {
+    derived_kanban_archive_date_format(&default_kanban_date_format(), &default_kanban_time_format())
 }
 
 fn default_kanban_new_card_insertion_method() -> String {
@@ -610,11 +674,9 @@ impl Display for ConfigImportError {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Json(error) => write!(formatter, "{error}"),
-            Self::MissingSource(path) => write!(
-                formatter,
-                "missing Tasks plugin config at {}",
-                path.display()
-            ),
+            Self::MissingSource(path) => {
+                write!(formatter, "missing plugin config at {}", path.display())
+            }
             Self::TomlDeserialize(error) => write!(formatter, "{error}"),
             Self::TomlSerialize(error) => write!(formatter, "{error}"),
             Self::InvalidConfig(message) => formatter.write_str(message),
@@ -730,9 +792,20 @@ struct PartialTasksConfig {
 struct PartialKanbanConfig {
     date_trigger: Option<String>,
     time_trigger: Option<String>,
+    date_format: Option<String>,
+    time_format: Option<String>,
+    link_date_to_daily_note: Option<bool>,
     metadata_keys: Option<Vec<String>>,
     archive_with_date: Option<bool>,
+    append_archive_date: Option<bool>,
+    archive_date_format: Option<String>,
     new_card_insertion_method: Option<String>,
+    hide_card_count: Option<bool>,
+    hide_tags_in_title: Option<bool>,
+    hide_tags_display: Option<bool>,
+    lane_width: Option<usize>,
+    max_archive_size: Option<usize>,
+    show_checkboxes: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -846,6 +919,55 @@ struct ObsidianTasksStatusSettings {
     core_statuses: Vec<TaskStatusDefinition>,
     #[serde(rename = "customStatuses", default)]
     custom_statuses: Vec<TaskStatusDefinition>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianKanbanConfig {
+    #[serde(rename = "date-trigger")]
+    date_trigger: Option<String>,
+    #[serde(rename = "time-trigger")]
+    time_trigger: Option<String>,
+    #[serde(rename = "date-format")]
+    date_format: Option<String>,
+    #[serde(rename = "time-format")]
+    time_format: Option<String>,
+    #[serde(rename = "link-date-to-daily-note")]
+    link_date_to_daily_note: Option<bool>,
+    #[serde(rename = "metadata-keys")]
+    metadata_keys: Option<Vec<ObsidianKanbanMetadataKey>>,
+    #[serde(rename = "archive-with-date")]
+    archive_with_date: Option<bool>,
+    #[serde(rename = "append-archive-date", alias = "prepend-archive-date")]
+    append_archive_date: Option<bool>,
+    #[serde(rename = "archive-date-format")]
+    archive_date_format: Option<String>,
+    #[serde(rename = "new-card-insertion-method")]
+    new_card_insertion_method: Option<String>,
+    #[serde(rename = "hide-card-count")]
+    hide_card_count: Option<bool>,
+    #[serde(rename = "hide-tags-in-title")]
+    hide_tags_in_title: Option<bool>,
+    #[serde(rename = "hide-tags-display")]
+    hide_tags_display: Option<bool>,
+    #[serde(rename = "lane-width")]
+    lane_width: Option<usize>,
+    #[serde(rename = "max-archive-size")]
+    max_archive_size: Option<usize>,
+    #[serde(rename = "show-checkboxes")]
+    show_checkboxes: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ObsidianKanbanMetadataKey {
+    Object(ObsidianKanbanMetadataKeyObject),
+    String(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct ObsidianKanbanMetadataKeyObject {
+    #[serde(rename = "metadataKey")]
+    metadata_key: String,
 }
 
 #[must_use]
@@ -985,6 +1107,43 @@ pub fn import_tasks_plugin_config(
     })
 }
 
+pub fn import_kanban_plugin_config(
+    paths: &VaultPaths,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    let source_path = paths
+        .vault_root()
+        .join(".obsidian/plugins/obsidian-kanban/data.json");
+    if !source_path.exists() {
+        return Err(ConfigImportError::MissingSource(source_path));
+    }
+
+    let obsidian =
+        serde_json::from_str::<ObsidianKanbanConfig>(&fs::read_to_string(&source_path)?)?;
+    let imported_kanban = imported_kanban_config(obsidian);
+    let mappings = kanban_config_import_mappings(&imported_kanban)?;
+
+    ensure_vulcan_dir(paths)?;
+    let config_path = paths.config_file().to_path_buf();
+    let created_config = !config_path.exists();
+    let existing_contents = fs::read_to_string(&config_path).ok();
+    let mut config_value = load_config_value(&config_path)?;
+    write_kanban_import(&mut config_value, &imported_kanban)?;
+    let rendered = toml::to_string_pretty(&config_value)?;
+    let updated = existing_contents.as_deref() != Some(rendered.as_str());
+    if updated {
+        fs::write(&config_path, rendered)?;
+    }
+
+    Ok(ConfigImportReport {
+        plugin: "kanban".to_string(),
+        source_path,
+        config_path,
+        created_config,
+        updated,
+        mappings,
+    })
+}
+
 #[must_use]
 pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
     let mut config = VaultConfig::default();
@@ -1004,6 +1163,10 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
 
     if let Some(obsidian_tasks) = load_obsidian_tasks_config(paths, &mut diagnostics) {
         apply_obsidian_tasks_defaults(&mut config, obsidian_tasks);
+    }
+
+    if let Some(obsidian_kanban) = load_obsidian_kanban_config(paths, &mut diagnostics) {
+        apply_obsidian_kanban_defaults(&mut config, obsidian_kanban);
     }
 
     config.property_types = load_obsidian_property_types(paths, &mut diagnostics);
@@ -1102,10 +1265,27 @@ fn load_obsidian_tasks_config(
     load_json_file(&path, diagnostics)
 }
 
+fn load_obsidian_kanban_config(
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<ObsidianKanbanConfig> {
+    let path = paths
+        .vault_root()
+        .join(".obsidian/plugins/obsidian-kanban/data.json");
+
+    load_json_file(&path, diagnostics)
+}
+
 fn imported_tasks_config(obsidian: ObsidianTasksConfig) -> TasksConfig {
     let mut config = VaultConfig::default();
     apply_obsidian_tasks_defaults(&mut config, obsidian);
     config.tasks
+}
+
+fn imported_kanban_config(obsidian: ObsidianKanbanConfig) -> KanbanConfig {
+    let mut config = VaultConfig::default();
+    apply_obsidian_kanban_defaults(&mut config, obsidian);
+    config.kanban
 }
 
 fn tasks_config_import_mappings(
@@ -1167,6 +1347,93 @@ fn tasks_config_import_mappings(
             source: "recurrenceOnCompletion".to_string(),
             target: "tasks.recurrence_on_completion".to_string(),
             value: serde_json::to_value(&config.recurrence_on_completion)?,
+        },
+    ])
+}
+
+fn kanban_config_import_mappings(
+    config: &KanbanConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    Ok(vec![
+        ConfigImportMapping {
+            source: "date-trigger".to_string(),
+            target: "kanban.date_trigger".to_string(),
+            value: serde_json::to_value(&config.date_trigger)?,
+        },
+        ConfigImportMapping {
+            source: "time-trigger".to_string(),
+            target: "kanban.time_trigger".to_string(),
+            value: serde_json::to_value(&config.time_trigger)?,
+        },
+        ConfigImportMapping {
+            source: "date-format".to_string(),
+            target: "kanban.date_format".to_string(),
+            value: serde_json::to_value(&config.date_format)?,
+        },
+        ConfigImportMapping {
+            source: "time-format".to_string(),
+            target: "kanban.time_format".to_string(),
+            value: serde_json::to_value(&config.time_format)?,
+        },
+        ConfigImportMapping {
+            source: "link-date-to-daily-note".to_string(),
+            target: "kanban.link_date_to_daily_note".to_string(),
+            value: Value::Bool(config.link_date_to_daily_note),
+        },
+        ConfigImportMapping {
+            source: "metadata-keys[].metadataKey".to_string(),
+            target: "kanban.metadata_keys".to_string(),
+            value: serde_json::to_value(&config.metadata_keys)?,
+        },
+        ConfigImportMapping {
+            source: "archive-with-date".to_string(),
+            target: "kanban.archive_with_date".to_string(),
+            value: Value::Bool(config.archive_with_date),
+        },
+        ConfigImportMapping {
+            source: "append-archive-date".to_string(),
+            target: "kanban.append_archive_date".to_string(),
+            value: Value::Bool(config.append_archive_date),
+        },
+        ConfigImportMapping {
+            source: "archive-date-format".to_string(),
+            target: "kanban.archive_date_format".to_string(),
+            value: serde_json::to_value(&config.archive_date_format)?,
+        },
+        ConfigImportMapping {
+            source: "new-card-insertion-method".to_string(),
+            target: "kanban.new_card_insertion_method".to_string(),
+            value: serde_json::to_value(&config.new_card_insertion_method)?,
+        },
+        ConfigImportMapping {
+            source: "hide-card-count".to_string(),
+            target: "kanban.hide_card_count".to_string(),
+            value: Value::Bool(config.hide_card_count),
+        },
+        ConfigImportMapping {
+            source: "hide-tags-in-title".to_string(),
+            target: "kanban.hide_tags_in_title".to_string(),
+            value: Value::Bool(config.hide_tags_in_title),
+        },
+        ConfigImportMapping {
+            source: "hide-tags-display".to_string(),
+            target: "kanban.hide_tags_display".to_string(),
+            value: Value::Bool(config.hide_tags_display),
+        },
+        ConfigImportMapping {
+            source: "lane-width".to_string(),
+            target: "kanban.lane_width".to_string(),
+            value: serde_json::to_value(config.lane_width)?,
+        },
+        ConfigImportMapping {
+            source: "max-archive-size".to_string(),
+            target: "kanban.max_archive_size".to_string(),
+            value: serde_json::to_value(config.max_archive_size)?,
+        },
+        ConfigImportMapping {
+            source: "show-checkboxes".to_string(),
+            target: "kanban.show_checkboxes".to_string(),
+            value: Value::Bool(config.show_checkboxes),
         },
     ])
 }
@@ -1254,6 +1521,87 @@ fn write_tasks_import(
     Ok(())
 }
 
+fn write_kanban_import(
+    config_value: &mut toml::Value,
+    kanban: &KanbanConfig,
+) -> Result<(), ConfigImportError> {
+    let Some(root_table) = config_value.as_table_mut() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "expected .vulcan/config.toml to contain a TOML table".to_string(),
+        ));
+    };
+
+    let kanban_entry = root_table
+        .entry("kanban".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !kanban_entry.is_table() {
+        *kanban_entry = toml::Value::Table(toml::map::Map::new());
+    }
+    let Some(kanban_table) = kanban_entry.as_table_mut() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "expected [kanban] to be a TOML table".to_string(),
+        ));
+    };
+
+    kanban_table.insert(
+        "date_trigger".to_string(),
+        toml::Value::String(kanban.date_trigger.clone()),
+    );
+    kanban_table.insert(
+        "time_trigger".to_string(),
+        toml::Value::String(kanban.time_trigger.clone()),
+    );
+    kanban_table.insert(
+        "date_format".to_string(),
+        toml::Value::String(kanban.date_format.clone()),
+    );
+    kanban_table.insert(
+        "time_format".to_string(),
+        toml::Value::String(kanban.time_format.clone()),
+    );
+    kanban_table.insert(
+        "link_date_to_daily_note".to_string(),
+        toml::Value::Boolean(kanban.link_date_to_daily_note),
+    );
+    write_string_array(kanban_table, "metadata_keys", &kanban.metadata_keys);
+    kanban_table.insert(
+        "archive_with_date".to_string(),
+        toml::Value::Boolean(kanban.archive_with_date),
+    );
+    kanban_table.insert(
+        "append_archive_date".to_string(),
+        toml::Value::Boolean(kanban.append_archive_date),
+    );
+    kanban_table.insert(
+        "archive_date_format".to_string(),
+        toml::Value::String(kanban.archive_date_format.clone()),
+    );
+    kanban_table.insert(
+        "new_card_insertion_method".to_string(),
+        toml::Value::String(kanban.new_card_insertion_method.clone()),
+    );
+    kanban_table.insert(
+        "hide_card_count".to_string(),
+        toml::Value::Boolean(kanban.hide_card_count),
+    );
+    kanban_table.insert(
+        "hide_tags_in_title".to_string(),
+        toml::Value::Boolean(kanban.hide_tags_in_title),
+    );
+    kanban_table.insert(
+        "hide_tags_display".to_string(),
+        toml::Value::Boolean(kanban.hide_tags_display),
+    );
+    write_optional_toml_usize(kanban_table, "lane_width", kanban.lane_width)?;
+    write_optional_toml_usize(kanban_table, "max_archive_size", kanban.max_archive_size)?;
+    kanban_table.insert(
+        "show_checkboxes".to_string(),
+        toml::Value::Boolean(kanban.show_checkboxes),
+    );
+
+    Ok(())
+}
+
 fn write_optional_toml_string(
     table: &mut toml::map::Map<String, toml::Value>,
     key: &str,
@@ -1278,6 +1626,28 @@ fn write_string_array(
         key.to_string(),
         toml::Value::Array(values.iter().cloned().map(toml::Value::String).collect()),
     );
+}
+
+fn write_optional_toml_usize(
+    table: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    value: Option<usize>,
+) -> Result<(), ConfigImportError> {
+    match value {
+        Some(value) => {
+            let value = i64::try_from(value).map_err(|_| {
+                ConfigImportError::InvalidConfig(format!(
+                    "expected {key} to fit in a signed 64-bit integer"
+                ))
+            })?;
+            table.insert(key.to_string(), toml::Value::Integer(value));
+        }
+        None => {
+            table.remove(key);
+        }
+    }
+
+    Ok(())
 }
 
 fn load_vulcan_overrides(
@@ -1447,6 +1817,71 @@ fn apply_obsidian_tasks_defaults(config: &mut VaultConfig, obsidian: ObsidianTas
     apply_task_status_definitions(&mut config.tasks.statuses, definitions);
 }
 
+fn apply_obsidian_kanban_defaults(config: &mut VaultConfig, obsidian: ObsidianKanbanConfig) {
+    let previous_default =
+        derived_kanban_archive_date_format(&config.kanban.date_format, &config.kanban.time_format);
+    let archive_format_was_default = config.kanban.archive_date_format == previous_default;
+    let date_format_changed = obsidian.date_format.is_some();
+    let time_format_changed = obsidian.time_format.is_some();
+
+    if let Some(date_trigger) = obsidian.date_trigger {
+        config.kanban.date_trigger = date_trigger;
+    }
+    if let Some(time_trigger) = obsidian.time_trigger {
+        config.kanban.time_trigger = time_trigger;
+    }
+    if let Some(date_format) = obsidian.date_format {
+        config.kanban.date_format = date_format;
+    }
+    if let Some(time_format) = obsidian.time_format {
+        config.kanban.time_format = time_format;
+    }
+    if let Some(link_date_to_daily_note) = obsidian.link_date_to_daily_note {
+        config.kanban.link_date_to_daily_note = link_date_to_daily_note;
+    }
+
+    let metadata_keys = normalize_obsidian_kanban_metadata_keys(obsidian.metadata_keys);
+    if !metadata_keys.is_empty() {
+        config.kanban.metadata_keys = metadata_keys;
+    }
+
+    if let Some(archive_with_date) = obsidian.archive_with_date {
+        config.kanban.archive_with_date = archive_with_date;
+    }
+    if let Some(append_archive_date) = obsidian.append_archive_date {
+        config.kanban.append_archive_date = append_archive_date;
+    }
+    if let Some(archive_date_format) = obsidian.archive_date_format {
+        config.kanban.archive_date_format = archive_date_format;
+    } else if archive_format_was_default && (date_format_changed || time_format_changed) {
+        config.kanban.archive_date_format = derived_kanban_archive_date_format(
+            &config.kanban.date_format,
+            &config.kanban.time_format,
+        );
+    }
+    if let Some(new_card_insertion_method) = obsidian.new_card_insertion_method {
+        config.kanban.new_card_insertion_method = new_card_insertion_method;
+    }
+    if let Some(hide_card_count) = obsidian.hide_card_count {
+        config.kanban.hide_card_count = hide_card_count;
+    }
+    if let Some(hide_tags_in_title) = obsidian.hide_tags_in_title {
+        config.kanban.hide_tags_in_title = hide_tags_in_title;
+    }
+    if let Some(hide_tags_display) = obsidian.hide_tags_display {
+        config.kanban.hide_tags_display = hide_tags_display;
+    }
+    if obsidian.lane_width.is_some() {
+        config.kanban.lane_width = obsidian.lane_width;
+    }
+    if obsidian.max_archive_size.is_some() {
+        config.kanban.max_archive_size = obsidian.max_archive_size;
+    }
+    if let Some(show_checkboxes) = obsidian.show_checkboxes {
+        config.kanban.show_checkboxes = show_checkboxes;
+    }
+}
+
 fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConfig) {
     if let Some(scan) = overrides.scan {
         if let Some(default_mode) = scan.default_mode {
@@ -1559,11 +1994,28 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
     }
 
     if let Some(kanban) = overrides.kanban {
+        let previous_default = derived_kanban_archive_date_format(
+            &config.kanban.date_format,
+            &config.kanban.time_format,
+        );
+        let archive_format_was_default = config.kanban.archive_date_format == previous_default;
+        let date_format_changed = kanban.date_format.is_some();
+        let time_format_changed = kanban.time_format.is_some();
+
         if let Some(date_trigger) = kanban.date_trigger {
             config.kanban.date_trigger = date_trigger;
         }
         if let Some(time_trigger) = kanban.time_trigger {
             config.kanban.time_trigger = time_trigger;
+        }
+        if let Some(date_format) = kanban.date_format {
+            config.kanban.date_format = date_format;
+        }
+        if let Some(time_format) = kanban.time_format {
+            config.kanban.time_format = time_format;
+        }
+        if let Some(link_date_to_daily_note) = kanban.link_date_to_daily_note {
+            config.kanban.link_date_to_daily_note = link_date_to_daily_note;
         }
         if let Some(metadata_keys) = kanban.metadata_keys {
             config.kanban.metadata_keys = metadata_keys;
@@ -1571,8 +2023,37 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(archive_with_date) = kanban.archive_with_date {
             config.kanban.archive_with_date = archive_with_date;
         }
+        if let Some(append_archive_date) = kanban.append_archive_date {
+            config.kanban.append_archive_date = append_archive_date;
+        }
+        if let Some(archive_date_format) = kanban.archive_date_format {
+            config.kanban.archive_date_format = archive_date_format;
+        } else if archive_format_was_default && (date_format_changed || time_format_changed) {
+            config.kanban.archive_date_format = derived_kanban_archive_date_format(
+                &config.kanban.date_format,
+                &config.kanban.time_format,
+            );
+        }
         if let Some(new_card_insertion_method) = kanban.new_card_insertion_method {
             config.kanban.new_card_insertion_method = new_card_insertion_method;
+        }
+        if let Some(hide_card_count) = kanban.hide_card_count {
+            config.kanban.hide_card_count = hide_card_count;
+        }
+        if let Some(hide_tags_in_title) = kanban.hide_tags_in_title {
+            config.kanban.hide_tags_in_title = hide_tags_in_title;
+        }
+        if let Some(hide_tags_display) = kanban.hide_tags_display {
+            config.kanban.hide_tags_display = hide_tags_display;
+        }
+        if let Some(lane_width) = kanban.lane_width {
+            config.kanban.lane_width = Some(lane_width);
+        }
+        if let Some(max_archive_size) = kanban.max_archive_size {
+            config.kanban.max_archive_size = Some(max_archive_size);
+        }
+        if let Some(show_checkboxes) = kanban.show_checkboxes {
+            config.kanban.show_checkboxes = show_checkboxes;
         }
     }
 
@@ -1647,6 +2128,31 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn normalize_obsidian_kanban_metadata_keys(
+    metadata_keys: Option<Vec<ObsidianKanbanMetadataKey>>,
+) -> Vec<String> {
+    let mut normalized = Vec::new();
+
+    for key in metadata_keys.unwrap_or_default() {
+        let key = match key {
+            ObsidianKanbanMetadataKey::Object(key) => key.metadata_key,
+            ObsidianKanbanMetadataKey::String(key) => key,
+        };
+        let Some(key) = normalize_optional_text(Some(key)) else {
+            continue;
+        };
+        if normalized.iter().all(|existing| existing != &key) {
+            normalized.push(key);
+        }
+    }
+
+    normalized
+}
+
+fn derived_kanban_archive_date_format(date_format: &str, time_format: &str) -> String {
+    format!("{date_format} {time_format}")
 }
 
 fn apply_task_status_definitions(
@@ -1780,6 +2286,33 @@ mod tests {
             }"#,
         )
         .expect("dataview config should be written");
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-kanban"))
+            .expect("kanban plugin dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/obsidian-kanban/data.json"),
+            r#"{
+              "date-trigger": "DUE",
+              "time-trigger": "AT",
+              "date-format": "DD/MM/YYYY",
+              "time-format": "HH:mm:ss",
+              "link-date-to-daily-note": true,
+              "metadata-keys": [
+                { "metadataKey": "status", "label": "Status" },
+                { "metadataKey": "owner", "label": "Owner" }
+              ],
+              "archive-with-date": true,
+              "append-archive-date": true,
+              "archive-date-format": "DD/MM/YYYY HH:mm:ss",
+              "new-card-insertion-method": "prepend",
+              "hide-card-count": true,
+              "hide-tags-in-title": true,
+              "hide-tags-display": true,
+              "lane-width": 320,
+              "max-archive-size": 50,
+              "show-checkboxes": true
+            }"#,
+        )
+        .expect("kanban config should be written");
         let paths = VaultPaths::new(vault_root);
 
         let loaded = load_vault_config(&paths);
@@ -1822,6 +2355,28 @@ mod tests {
         assert_eq!(loaded.config.dataview.max_recursive_render_depth, 7);
         assert_eq!(loaded.config.dataview.primary_column_name, "Document");
         assert_eq!(loaded.config.dataview.group_column_name, "Bucket");
+        assert_eq!(loaded.config.kanban.date_trigger, "DUE");
+        assert_eq!(loaded.config.kanban.time_trigger, "AT");
+        assert_eq!(loaded.config.kanban.date_format, "DD/MM/YYYY");
+        assert_eq!(loaded.config.kanban.time_format, "HH:mm:ss");
+        assert!(loaded.config.kanban.link_date_to_daily_note);
+        assert_eq!(
+            loaded.config.kanban.metadata_keys,
+            vec!["status".to_string(), "owner".to_string()]
+        );
+        assert!(loaded.config.kanban.archive_with_date);
+        assert!(loaded.config.kanban.append_archive_date);
+        assert_eq!(
+            loaded.config.kanban.archive_date_format,
+            "DD/MM/YYYY HH:mm:ss"
+        );
+        assert_eq!(loaded.config.kanban.new_card_insertion_method, "prepend");
+        assert!(loaded.config.kanban.hide_card_count);
+        assert!(loaded.config.kanban.hide_tags_in_title);
+        assert!(loaded.config.kanban.hide_tags_display);
+        assert_eq!(loaded.config.kanban.lane_width, Some(320));
+        assert_eq!(loaded.config.kanban.max_archive_size, Some(50));
+        assert!(loaded.config.kanban.show_checkboxes);
     }
 
     #[test]
@@ -1896,6 +2451,24 @@ todo = [" ", "!"]
 completed = ["x", "v"]
 in_progress = ["/", ">"]
 cancelled = ["-"]
+
+[kanban]
+date_trigger = "DUE"
+time_trigger = "AT"
+date_format = "DD/MM/YYYY"
+time_format = "HH:mm:ss"
+link_date_to_daily_note = true
+metadata_keys = ["status", "owner"]
+archive_with_date = true
+append_archive_date = true
+archive_date_format = "DD/MM/YYYY HH:mm:ss"
+new_card_insertion_method = "prepend"
+hide_card_count = true
+hide_tags_in_title = true
+hide_tags_display = true
+lane_width = 300
+max_archive_size = 42
+show_checkboxes = true
 
 [dataview]
 inline_query_prefix = "inline:"
@@ -1999,6 +2572,28 @@ time_format = "HH:mm:ss"
             vec!["-".to_string()]
         );
         assert!(loaded.config.tasks.statuses.non_task.is_empty());
+        assert_eq!(loaded.config.kanban.date_trigger, "DUE");
+        assert_eq!(loaded.config.kanban.time_trigger, "AT");
+        assert_eq!(loaded.config.kanban.date_format, "DD/MM/YYYY");
+        assert_eq!(loaded.config.kanban.time_format, "HH:mm:ss");
+        assert!(loaded.config.kanban.link_date_to_daily_note);
+        assert_eq!(
+            loaded.config.kanban.metadata_keys,
+            vec!["status".to_string(), "owner".to_string()]
+        );
+        assert!(loaded.config.kanban.archive_with_date);
+        assert!(loaded.config.kanban.append_archive_date);
+        assert_eq!(
+            loaded.config.kanban.archive_date_format,
+            "DD/MM/YYYY HH:mm:ss"
+        );
+        assert_eq!(loaded.config.kanban.new_card_insertion_method, "prepend");
+        assert!(loaded.config.kanban.hide_card_count);
+        assert!(loaded.config.kanban.hide_tags_in_title);
+        assert!(loaded.config.kanban.hide_tags_display);
+        assert_eq!(loaded.config.kanban.lane_width, Some(300));
+        assert_eq!(loaded.config.kanban.max_archive_size, Some(42));
+        assert!(loaded.config.kanban.show_checkboxes);
         assert_eq!(loaded.config.dataview.inline_query_prefix, "inline:");
         assert_eq!(loaded.config.dataview.inline_js_query_prefix, "$inline:");
         assert!(!loaded.config.dataview.enable_dataview_js);
@@ -2061,6 +2656,11 @@ path = "Inbox.md"
 [tasks.statuses]
 completed = ["x"]
 
+[kanban]
+date_trigger = "@"
+archive_date_format = "YYYY-MM-DD HH:mm"
+lane_width = 256
+
 [templates]
 date_format = "YYYY-MM-DD"
 "###,
@@ -2084,6 +2684,12 @@ path = "Device/Inbox.md"
 [tasks.statuses]
 completed = ["x", "X", "v"]
 
+[kanban]
+date_trigger = "DUE"
+date_format = "DD.MM.YYYY"
+time_format = "HH:mm:ss"
+lane_width = 320
+
 [templates]
 date_format = "DD.MM.YYYY"
 time_format = "HH:mm:ss"
@@ -2103,6 +2709,14 @@ time_format = "HH:mm:ss"
             loaded.config.tasks.statuses.completed,
             vec!["x".to_string(), "X".to_string(), "v".to_string()]
         );
+        assert_eq!(loaded.config.kanban.date_trigger, "DUE");
+        assert_eq!(loaded.config.kanban.date_format, "DD.MM.YYYY");
+        assert_eq!(loaded.config.kanban.time_format, "HH:mm:ss");
+        assert_eq!(
+            loaded.config.kanban.archive_date_format,
+            "DD.MM.YYYY HH:mm:ss"
+        );
+        assert_eq!(loaded.config.kanban.lane_width, Some(320));
         assert_eq!(loaded.config.templates.date_format, "DD.MM.YYYY");
         assert_eq!(loaded.config.templates.time_format, "HH:mm:ss");
     }
@@ -2361,6 +2975,93 @@ default_mode = "off"
         let paths = VaultPaths::new(temp_dir.path());
 
         let error = import_tasks_plugin_config(&paths).expect_err("import should fail");
+        assert!(matches!(error, ConfigImportError::MissingSource(_)));
+    }
+
+    #[test]
+    fn import_kanban_plugin_config_preserves_existing_sections_and_is_idempotent() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-kanban"))
+            .expect("kanban plugin dir should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/obsidian-kanban/data.json"),
+            r#"{
+              "date-trigger": "DUE",
+              "time-trigger": "AT",
+              "date-format": "DD/MM/YYYY",
+              "time-format": "HH:mm:ss",
+              "link-date-to-daily-note": true,
+              "metadata-keys": [
+                { "metadataKey": "status", "label": "Status" },
+                { "metadataKey": "owner", "label": "Owner" }
+              ],
+              "archive-with-date": true,
+              "append-archive-date": true,
+              "archive-date-format": "DD/MM/YYYY HH:mm:ss",
+              "new-card-insertion-method": "prepend",
+              "hide-card-count": true,
+              "hide-tags-in-title": true,
+              "hide-tags-display": true,
+              "lane-width": 320,
+              "max-archive-size": 50,
+              "show-checkboxes": true
+            }"#,
+        )
+        .expect("kanban config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .expect("existing config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = import_kanban_plugin_config(&paths).expect("import should succeed");
+
+        assert_eq!(report.plugin, "kanban");
+        assert!(!report.created_config);
+        assert!(report.updated);
+        assert!(report
+            .mappings
+            .iter()
+            .any(|mapping| mapping.target == "kanban.date_trigger"
+                && mapping.value == Value::String("DUE".to_string())));
+
+        let rendered = fs::read_to_string(paths.config_file()).expect("config should exist");
+        assert!(rendered.contains("[git]"));
+        assert!(rendered.contains("auto_commit = true"));
+        assert!(rendered.contains("[kanban]"));
+        assert!(rendered.contains("date_trigger = \"DUE\""));
+        assert!(rendered.contains("time_trigger = \"AT\""));
+        assert!(rendered.contains("date_format = \"DD/MM/YYYY\""));
+        assert!(rendered.contains("time_format = \"HH:mm:ss\""));
+        assert!(rendered.contains("link_date_to_daily_note = true"));
+        assert!(rendered.contains("metadata_keys = ["));
+        assert!(rendered.contains("\"status\""));
+        assert!(rendered.contains("\"owner\""));
+        assert!(rendered.contains("archive_with_date = true"));
+        assert!(rendered.contains("append_archive_date = true"));
+        assert!(rendered.contains("archive_date_format = \"DD/MM/YYYY HH:mm:ss\""));
+        assert!(rendered.contains("new_card_insertion_method = \"prepend\""));
+        assert!(rendered.contains("hide_card_count = true"));
+        assert!(rendered.contains("hide_tags_in_title = true"));
+        assert!(rendered.contains("hide_tags_display = true"));
+        assert!(rendered.contains("lane_width = 320"));
+        assert!(rendered.contains("max_archive_size = 50"));
+        assert!(rendered.contains("show_checkboxes = true"));
+
+        let second_report =
+            import_kanban_plugin_config(&paths).expect("second import should succeed");
+        assert!(!second_report.updated);
+    }
+
+    #[test]
+    fn import_kanban_plugin_config_errors_when_source_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let error = import_kanban_plugin_config(&paths).expect_err("import should fail");
         assert!(matches!(error, ConfigImportError::MissingSource(_)));
     }
 }
