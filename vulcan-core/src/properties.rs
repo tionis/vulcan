@@ -1731,15 +1731,31 @@ fn parse_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> 
             if !is_legacy_filter_field(field) {
                 break;
             }
+            let value = value.trim();
+            if legacy_filter_needs_expression_fallback(operator, value) {
+                break;
+            }
             return Ok(ParsedFilter {
                 field: parse_filter_field(field),
                 operator,
-                value: parse_filter_value(value.trim()),
+                value: parse_filter_value(value),
             });
         }
     }
 
     Err(PropertyError::InvalidFilter(filter.to_string()))
+}
+
+fn legacy_filter_needs_expression_fallback(operator: FilterOperator, value: &str) -> bool {
+    matches!(
+        operator,
+        FilterOperator::Eq
+            | FilterOperator::Ne
+            | FilterOperator::Gt
+            | FilterOperator::Gte
+            | FilterOperator::Lt
+            | FilterOperator::Lte
+    ) && !is_sql_literal_filter_value(value)
 }
 
 fn is_legacy_filter_field(field: &str) -> bool {
@@ -1821,6 +1837,38 @@ fn strip_quotes(value: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn is_sql_literal_filter_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if strip_quotes(trimmed).is_some() {
+        return true;
+    }
+    if matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "null" | "true" | "false"
+    ) {
+        return true;
+    }
+    if trimmed.parse::<f64>().is_ok() || normalize_date_string(trimmed).is_some() {
+        return true;
+    }
+    if is_wikilink_literal(trimmed) {
+        return true;
+    }
+    if normalize_duration_string(trimmed).is_some() {
+        return false;
+    }
+    trimmed.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b'#')
+    })
+}
+
+fn is_wikilink_literal(value: &str) -> bool {
+    (value.starts_with("[[") || value.starts_with("![[")) && value.ends_with("]]")
 }
 
 fn filter_sql_clause(
@@ -2782,6 +2830,62 @@ mod tests {
             Value::String("draft".to_string())
         );
         assert_eq!(dashboard.inline_expressions[0].error, None);
+    }
+
+    #[test]
+    fn query_notes_expression_filters_support_date_and_duration_rhs_functions() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault directory should be created");
+        fs::write(
+            vault_root.join("Long.md"),
+            "due:: 2020-01-01\nduration:: 1d 3h\n",
+        )
+        .expect("long note should be written");
+        fs::write(
+            vault_root.join("Short.md"),
+            "due:: 2099-01-01\nduration:: 2h\n",
+        )
+        .expect("short note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let overdue = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["due < date(2099-01-01)".to_string()],
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("date function filter should succeed");
+        assert_eq!(
+            overdue
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Long.md".to_string()]
+        );
+
+        let long_duration = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["duration > dur(1d)".to_string()],
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("duration function filter should succeed");
+        assert_eq!(
+            long_duration
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Long.md".to_string()]
+        );
     }
 
     #[test]

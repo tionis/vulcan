@@ -429,6 +429,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_single_equals_comparison() {
+        assert_eq!(
+            parse(r#"status = "Done""#),
+            Expr::BinaryOp(
+                Box::new(Expr::Identifier("status".to_string())),
+                BinOp::Eq,
+                Box::new(Expr::Str("Done".to_string())),
+            )
+        );
+    }
+
+    #[test]
     fn parse_unary() {
         assert_eq!(
             parse("!completed"),
