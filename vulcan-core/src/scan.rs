@@ -6,13 +6,14 @@ use crate::properties::{
     refresh_property_catalog_for_documents, IndexedProperties,
 };
 use crate::resolver::{LinkResolutionProblem, ResolverDocument, ResolverIndex, ResolverLink};
+use crate::tasks::task_recurrence_properties;
 use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use rusqlite::{params, Connection, Transaction};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -1738,55 +1739,118 @@ fn insert_tasks(
     )?;
 
     for (task_id, task) in task_ids.iter().zip(tasks) {
+        let mut source_properties = Map::new();
+
         for inline_field in &task.inline_fields {
-            let expected_type = config
-                .property_types
-                .get(&inline_field.key)
-                .map(String::as_str)
-                .map(crate::properties::canonical_property_type);
-            let value = indexed_inline_property_value(
+            insert_task_property_text(
+                &mut property_statement,
+                task_id,
                 &inline_field.key,
                 &inline_field.value_text,
                 inline_field.kind,
                 config,
-                expected_type,
-            );
-            property_statement.execute(params![
-                Ulid::new().to_string(),
-                task_id,
-                &inline_field.key,
-                value.value_text.as_deref(),
-                value.value_number,
-                value.value_bool.map(i64::from),
-                value.value_date.as_deref(),
-                value.value_type,
-            ])?;
+            )?;
+            source_properties
+                .entry(inline_field.key.clone())
+                .or_insert_with(|| Value::String(inline_field.value_text.clone()));
         }
 
         for (key, value_text) in extract_task_text_properties(&task.text) {
-            let expected_type = config
-                .property_types
-                .get(&key)
-                .map(String::as_str)
-                .map(crate::properties::canonical_property_type);
-            let value = indexed_inline_property_value(
+            insert_task_property_text(
+                &mut property_statement,
+                task_id,
                 &key,
                 &value_text,
                 crate::parser::types::InlineFieldKind::Bare,
                 config,
-                expected_type,
-            );
-            property_statement.execute(params![
-                Ulid::new().to_string(),
+            )?;
+            source_properties
+                .entry(key)
+                .or_insert_with(|| Value::String(value_text));
+        }
+
+        for (key, value) in task_recurrence_properties(&source_properties) {
+            if source_properties.contains_key(&key) {
+                continue;
+            }
+            insert_task_property_json_value(
+                &mut property_statement,
                 task_id,
                 &key,
-                value.value_text.as_deref(),
-                value.value_number,
-                value.value_bool.map(i64::from),
-                value.value_date.as_deref(),
-                value.value_type,
-            ])?;
+                &value,
+                config,
+            )?;
         }
+    }
+
+    Ok(())
+}
+
+fn insert_task_property_text(
+    statement: &mut rusqlite::Statement<'_>,
+    task_id: &str,
+    key: &str,
+    value_text: &str,
+    kind: crate::parser::types::InlineFieldKind,
+    config: &crate::VaultConfig,
+) -> Result<(), ScanError> {
+    let expected_type = config
+        .property_types
+        .get(key)
+        .map(String::as_str)
+        .map(crate::properties::canonical_property_type);
+    let value = indexed_inline_property_value(key, value_text, kind, config, expected_type);
+    statement.execute(params![
+        Ulid::new().to_string(),
+        task_id,
+        key,
+        value.value_text.as_deref(),
+        value.value_number,
+        value.value_bool.map(i64::from),
+        value.value_date.as_deref(),
+        value.value_type,
+    ])?;
+    Ok(())
+}
+
+fn insert_task_property_json_value(
+    statement: &mut rusqlite::Statement<'_>,
+    task_id: &str,
+    key: &str,
+    value: &Value,
+    config: &crate::VaultConfig,
+) -> Result<(), ScanError> {
+    match value {
+        Value::Array(values) => {
+            for entry in values {
+                insert_task_property_json_value(statement, task_id, key, entry, config)?;
+            }
+        }
+        Value::String(text) => insert_task_property_text(
+            statement,
+            task_id,
+            key,
+            text,
+            crate::parser::types::InlineFieldKind::Bare,
+            config,
+        )?,
+        Value::Number(number) => insert_task_property_text(
+            statement,
+            task_id,
+            key,
+            &number.to_string(),
+            crate::parser::types::InlineFieldKind::Bare,
+            config,
+        )?,
+        Value::Bool(value_bool) => insert_task_property_text(
+            statement,
+            task_id,
+            key,
+            if *value_bool { "true" } else { "false" },
+            crate::parser::types::InlineFieldKind::Bare,
+            config,
+        )?,
+        Value::Null | Value::Object(_) => {}
     }
 
     Ok(())
@@ -2613,10 +2677,38 @@ mod tests {
 
         assert_eq!(count_rows(connection, "list_items"), 6);
         assert_eq!(count_rows(connection, "tasks"), 4);
-        assert_eq!(count_rows(connection, "task_properties"), 12);
+        assert_eq!(count_rows(connection, "task_properties"), 17);
         assert_eq!(count_rows(connection, "dataview_blocks"), 2);
         assert_eq!(count_rows(connection, "tasks_blocks"), 0);
         assert_eq!(count_rows(connection, "inline_expressions"), 1);
+        let beta_task_properties: Vec<(String, String)> = connection
+            .prepare(
+                "
+                SELECT task_properties.key, COALESCE(task_properties.value_text, task_properties.value_date, CAST(task_properties.value_number AS TEXT))
+                FROM task_properties
+                JOIN tasks ON tasks.id = task_properties.task_id
+                JOIN documents ON documents.id = tasks.document_id
+                WHERE documents.path = 'Projects/Beta.md' AND tasks.line_number = 9
+                ORDER BY task_properties.key, task_properties.value_text, task_properties.value_date, task_properties.value_number
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows should collect");
+        assert!(
+            beta_task_properties.iter().any(|(key, value)| {
+                key == "recurrenceRule" && value == "FREQ=WEEKLY;INTERVAL=1"
+            }),
+            "expected recurrenceRule in task_properties: {beta_task_properties:?}"
+        );
+        assert!(
+            beta_task_properties
+                .iter()
+                .any(|(key, value)| { key == "recurrenceAnchor" && value == "2026-04-05" }),
+            "expected recurrenceAnchor in task_properties: {beta_task_properties:?}"
+        );
         let dataview_blocks: Vec<(String, i64, String)> = connection
             .prepare(
                 "
