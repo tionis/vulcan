@@ -209,10 +209,9 @@ fn task_object(
     }
 
     let status = task.status_char.clone();
-    let completed = status.eq_ignore_ascii_case("x");
     object.insert("status".to_string(), Value::String(status.clone()));
-    object.insert("checked".to_string(), Value::Bool(status.trim() != ""));
-    object.insert("completed".to_string(), Value::Bool(completed));
+    object.insert("checked".to_string(), Value::Bool(task.checked));
+    object.insert("completed".to_string(), Value::Bool(task.completed));
     object.insert(
         "fullyCompleted".to_string(),
         Value::Bool(task_fully_completed(task, task_by_id, task_children)),
@@ -242,7 +241,7 @@ fn task_fully_completed(
     task_by_id: &HashMap<&str, &NoteTaskRecord>,
     task_children: &HashMap<&str, Vec<&NoteTaskRecord>>,
 ) -> bool {
-    if !task.status_char.eq_ignore_ascii_case("x") {
+    if !task.completed {
         return false;
     }
     task_children.get(task.id.as_str()).is_none_or(|children| {
@@ -546,6 +545,8 @@ mod tests {
             id: "task-1".to_string(),
             list_item_id: "list-2".to_string(),
             status_char: "x".to_string(),
+            checked: true,
+            completed: true,
             text: "Nested task [[Other]] #project ^child".to_string(),
             byte_offset: 120,
             parent_task_id: None,
@@ -579,5 +580,76 @@ mod tests {
         assert_eq!(tasks[0]["fullyCompleted"], Value::Bool(true));
         assert_eq!(tasks[0]["due"], Value::String("2026-04-18".to_string()));
         assert_eq!(tasks[0]["reviewed"], Value::Bool(true));
+    }
+
+    #[test]
+    fn fully_completed_uses_precomputed_completion_flags() {
+        let mut note = note_record();
+        note.list_items = vec![
+            NoteListItemRecord {
+                id: "list-parent".to_string(),
+                text: "Parent task".to_string(),
+                tags: vec![],
+                outlinks: vec![],
+                line_number: 10,
+                line_count: 1,
+                byte_offset: 100,
+                section_heading: Some("Lists".to_string()),
+                parent_item_id: None,
+                is_task: true,
+                block_id: None,
+                annotated: false,
+                symbol: "-".to_string(),
+            },
+            NoteListItemRecord {
+                id: "list-child".to_string(),
+                text: "Child task".to_string(),
+                tags: vec![],
+                outlinks: vec![],
+                line_number: 11,
+                line_count: 1,
+                byte_offset: 120,
+                section_heading: Some("Lists".to_string()),
+                parent_item_id: Some("list-parent".to_string()),
+                is_task: true,
+                block_id: None,
+                annotated: false,
+                symbol: "-".to_string(),
+            },
+        ];
+        note.tasks = vec![
+            NoteTaskRecord {
+                id: "task-parent".to_string(),
+                list_item_id: "list-parent".to_string(),
+                status_char: "v".to_string(),
+                checked: true,
+                completed: true,
+                text: "Parent task".to_string(),
+                byte_offset: 100,
+                parent_task_id: None,
+                section_heading: Some("Lists".to_string()),
+                line_number: 10,
+                properties: serde_json::Map::new(),
+            },
+            NoteTaskRecord {
+                id: "task-child".to_string(),
+                list_item_id: "list-child".to_string(),
+                status_char: "v".to_string(),
+                checked: true,
+                completed: true,
+                text: "Child task".to_string(),
+                byte_offset: 120,
+                parent_task_id: Some("task-parent".to_string()),
+                section_heading: Some("Lists".to_string()),
+                line_number: 11,
+                properties: serde_json::Map::new(),
+            },
+        ];
+
+        let tasks = FileMetadataResolver::field(&note, "tasks");
+        let tasks = tasks.as_array().expect("tasks should be an array");
+        assert_eq!(tasks[0]["status"], Value::String("v".to_string()));
+        assert_eq!(tasks[0]["completed"], Value::Bool(true));
+        assert_eq!(tasks[0]["fullyCompleted"], Value::Bool(true));
     }
 }
