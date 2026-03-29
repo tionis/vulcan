@@ -1273,17 +1273,17 @@ Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's i
 - [x] Detect `` ```dataview `` fenced code blocks during parsing; store raw DQL text as block metadata
 - [x] DQL tokenizer: keywords (`TABLE`, `LIST`, `TASK`, `CALENDAR`, `FROM`, `WHERE`, `SORT`, `GROUP BY`, `FLATTEN`, `LIMIT`, `ASC`, `DESC`, `ASCENDING`, `DESCENDING`, `AND`, `OR`, `NOT`, `WITHOUT`, `ID`, `AS`), identifiers, string literals, numbers, date/duration literals, operators, parentheses, links (`[[...]]`)
 - [ ] DQL parser: recursive descent parser producing the internal query AST
-  - [ ] Query type: `TABLE`, `LIST`, `TASK`, `CALENDAR`
-  - [ ] `WITHOUT ID` modifier for TABLE and LIST
-  - [ ] Column/display expressions with `AS "alias"` support
+  - [x] Query type: `TABLE`, `LIST`, `TASK`, `CALENDAR`
+  - [x] `WITHOUT ID` modifier for TABLE and LIST
+  - [x] Column/display expressions with `AS "alias"` support
   - [ ] FROM clause: tag sources (`#tag`, includes subtags), folder sources (`"folder"`, includes subfolders), single-file sources (`"folder/File"`), incoming link sources (`[[note]]`), outgoing link sources (`outgoing([[note]])`), self-reference (`[[]]`, `[[#]]`), boolean combinations (`AND`, `OR`, `-`/`!`), parenthesized grouping
   - [ ] WHERE clause: full expression language — field access (dotted paths, array indexing, link indexing `[[Note]].field`), comparisons (`=`, `!=`, `<`, `>`, `<=`, `>=`), boolean logic (`AND`, `OR`, `!`), arithmetic (`+`, `-`, `*`, `/`, `%`), function calls with arbitrary arguments, lambda expressions
-  - [ ] SORT clause: field + direction (`ASC`/`DESC`/`ASCENDING`/`DESCENDING`), multiple sort keys with comma separation
-  - [ ] GROUP BY clause: field or `(expression) AS name`
-  - [ ] FLATTEN clause: field or `(expression) AS name`
-  - [ ] LIMIT clause: integer cap on result count
-  - [ ] TABLE column expressions: arbitrary expressions evaluated per note (reuse extended expression evaluator)
-  - [ ] LIST display expression: optional per-note expression
+  - [x] SORT clause: field + direction (`ASC`/`DESC`/`ASCENDING`/`DESCENDING`), multiple sort keys with comma separation
+  - [x] GROUP BY clause: field or `(expression) AS name`
+  - [x] FLATTEN clause: field or `(expression) AS name`
+  - [x] LIMIT clause: integer cap on result count
+  - [x] TABLE column expressions: arbitrary expressions evaluated per note (reuse extended expression evaluator)
+  - [x] LIST display expression: optional per-note expression
 - [ ] Compile FROM clauses to source/filter primitives (tag → `tags` table filter, folder → `documents.path` prefix, links → `links` table join, outgoing → forward `links` join)
 - [ ] Compile WHERE expressions to `FilterExpression` structs (shared with Bases and `--where` CLI flag)
 - [ ] Data commands executed in source order (except FROM which is always first); multiple WHERE, SORT, FLATTEN, GROUP BY clauses allowed and composed sequentially
