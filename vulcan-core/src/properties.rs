@@ -1838,7 +1838,6 @@ fn sql_comparator(operator: FilterOperator) -> Result<&'static str, PropertyErro
 
 #[derive(Debug, Clone, PartialEq)]
 enum SortKey {
-    Missing,
     Null,
     Bool(bool),
     Integer(i64),
@@ -1860,7 +1859,7 @@ fn sort_key_for_note(note: &NoteRecord, sort_by: &str) -> SortKey {
             }
             Some(Value::String(value_text)) => SortKey::Text(value_text.clone()),
             Some(other) => SortKey::Text(other.to_string()),
-            None => SortKey::Missing,
+            None => SortKey::Null,
         },
     }
 }
@@ -1883,12 +1882,11 @@ fn compare_sort_keys(left: &SortKey, right: &SortKey) -> Ordering {
 
 fn sort_key_rank(key: &SortKey) -> u8 {
     match key {
-        SortKey::Missing => 0,
-        SortKey::Null => 1,
-        SortKey::Bool(_) => 2,
-        SortKey::Integer(_) => 3,
-        SortKey::Number(_) => 4,
-        SortKey::Text(_) => 5,
+        SortKey::Null => 0,
+        SortKey::Bool(_) => 1,
+        SortKey::Integer(_) => 2,
+        SortKey::Number(_) => 3,
+        SortKey::Text(_) => 4,
     }
 }
 
@@ -2265,6 +2263,69 @@ mod tests {
                 .map(|note| note.document_path.clone())
                 .collect::<Vec<_>>(),
             vec!["Dashboard.md".to_string(), "Projects/Alpha.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_notes_sorts_missing_properties_like_nulls() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault directory should be created");
+        fs::write(vault_root.join("A.md"), "# A\n").expect("note should be written");
+        fs::write(vault_root.join("B.md"), "---\nrank: null\n---\n# B\n")
+            .expect("note should be written");
+        fs::write(vault_root.join("C.md"), "---\nrank: 1\n---\n# C\n")
+            .expect("note should be written");
+        fs::write(vault_root.join("D.md"), "---\nrank: 2\n---\n# D\n")
+            .expect("note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let ascending = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: Vec::new(),
+                sort_by: Some("rank".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("ascending sort query should succeed");
+        assert_eq!(
+            ascending
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "A.md".to_string(),
+                "B.md".to_string(),
+                "C.md".to_string(),
+                "D.md".to_string(),
+            ]
+        );
+
+        let descending = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: Vec::new(),
+                sort_by: Some("rank".to_string()),
+                sort_descending: true,
+            },
+        )
+        .expect("descending sort query should succeed");
+        assert_eq!(
+            descending
+                .notes
+                .iter()
+                .map(|note| note.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "D.md".to_string(),
+                "C.md".to_string(),
+                "A.md".to_string(),
+                "B.md".to_string(),
+            ]
         );
     }
 
