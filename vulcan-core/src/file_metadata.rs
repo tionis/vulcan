@@ -393,6 +393,8 @@ mod tests {
             frontmatter: serde_json::json!({"Date": "2026-04-18"}),
             list_items: vec![],
             tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
         }
     }
 

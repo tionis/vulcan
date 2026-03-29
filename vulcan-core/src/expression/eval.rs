@@ -889,6 +889,8 @@ mod tests {
             frontmatter: serde_json::json!({"Date": "2026-04-18", "status": "done"}),
             list_items: vec![],
             tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
         };
         let formulas = BTreeMap::new();
         let mut ctx = EvalContext::new(&note, &formulas);
@@ -1216,6 +1218,8 @@ mod tests {
             frontmatter: serde_json::json!({}),
             list_items: vec![],
             tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
         };
         let mut formulas = BTreeMap::new();
         formulas.insert("total".to_string(), serde_json::json!(100));
@@ -1323,6 +1327,8 @@ mod tests {
             frontmatter: serde_json::json!({}),
             list_items: vec![],
             tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
         };
         let formulas = BTreeMap::new();
         let ctx = EvalContext::new(&note, &formulas).with_note_lookup(lookup);
@@ -1348,6 +1354,8 @@ mod tests {
             frontmatter: serde_json::json!({"role": "editor"}),
             list_items: vec![],
             tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
         };
         let mut lookup = HashMap::new();
         lookup.insert("alice".to_string(), alice);
@@ -1409,6 +1417,8 @@ mod tests {
             frontmatter: serde_json::json!({"role": "editor"}),
             list_items: vec![],
             tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
         };
         let mut lookup = HashMap::new();
         lookup.insert("alice".to_string(), alice);

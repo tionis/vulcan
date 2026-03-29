@@ -171,6 +171,49 @@ fn dataview_inline_json_output_reports_expression_errors() {
 }
 
 #[test]
+fn notes_json_output_includes_evaluated_inline_expressions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,inline_expressions",
+            "notes",
+            "--where",
+            "status = draft",
+        ])
+        .assert()
+        .success();
+    let json_lines = parse_stdout_json_lines(&assert);
+
+    assert_eq!(json_lines.len(), 1);
+    assert_eq!(json_lines[0]["document_path"], "Dashboard.md");
+    assert_eq!(
+        json_lines[0]["inline_expressions"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        json_lines[0]["inline_expressions"][0]["expression"],
+        Value::String("this.status".to_string())
+    );
+    assert_eq!(
+        json_lines[0]["inline_expressions"][0]["value"],
+        Value::String("draft".to_string())
+    );
+    assert_eq!(json_lines[0]["inline_expressions"][0]["error"], Value::Null);
+}
+
+#[test]
 fn notes_help_documents_filter_syntax() {
     Command::cargo_bin("vulcan")
         .expect("binary should build")

@@ -627,6 +627,8 @@ mod tests {
             frontmatter: serde_json::json!({}),
             list_items: vec![],
             tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
         };
         let formulas = BTreeMap::new();
         let ctx = EvalContext::new(&note, &formulas);

@@ -168,6 +168,10 @@ pub struct NoteRecord {
     pub list_items: Vec<NoteListItemRecord>,
     #[serde(skip)]
     pub tasks: Vec<NoteTaskRecord>,
+    #[serde(skip)]
+    pub raw_inline_expressions: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub inline_expressions: Vec<EvaluatedInlineExpression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +204,14 @@ pub struct NoteTaskRecord {
     pub section_heading: Option<String>,
     pub line_number: i64,
     pub properties: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EvaluatedInlineExpression {
+    pub expression: String,
+    pub value: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 pub fn extract_indexed_properties(
@@ -517,6 +529,8 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
                     frontmatter: parse_frontmatter_json_object(&raw_yaml),
                     list_items: Vec::new(),
                     tasks: Vec::new(),
+                    raw_inline_expressions: Vec::new(),
+                    inline_expressions: Vec::new(),
                 },
             ))
         },
@@ -530,12 +544,13 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         .map(|(_, note)| note)
         .collect();
 
+    let mut note_index = None;
     if !expression_filters.is_empty() {
-        let note_index = load_note_index(paths)?;
+        let loaded_note_index = load_note_index(paths)?;
         let formulas = BTreeMap::new();
         let mut filtered = Vec::with_capacity(notes.len());
         for note in notes {
-            let ctx = EvalContext::new(&note, &formulas).with_note_lookup(&note_index);
+            let ctx = EvalContext::new(&note, &formulas).with_note_lookup(&loaded_note_index);
             let mut keep = true;
             for (filter, expr) in &expression_filters {
                 let value = evaluate(expr, &ctx)
@@ -550,6 +565,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             }
         }
         notes = filtered;
+        note_index = Some(loaded_note_index);
     }
 
     if let Some(sort_by) = query.sort_by.as_deref() {
@@ -565,6 +581,19 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             };
             ordering.then_with(|| left.document_path.cmp(&right.document_path))
         });
+    }
+
+    if notes
+        .iter()
+        .any(|note| !note.raw_inline_expressions.is_empty())
+    {
+        let loaded_note_index = match note_index {
+            Some(index) => index,
+            None => load_note_index(paths)?,
+        };
+        for note in &mut notes {
+            note.inline_expressions = evaluate_note_inline_expressions(note, &loaded_note_index);
+        }
     }
 
     Ok(NotesReport {
@@ -626,6 +655,8 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
                 frontmatter: parse_frontmatter_json_object(&raw_yaml),
                 list_items: vec![],
                 tasks: vec![],
+                raw_inline_expressions: vec![],
+                inline_expressions: vec![],
             },
         ));
     }
@@ -919,6 +950,26 @@ fn hydrate_note_records(
         }
     }
 
+    let mut inline_expression_map: HashMap<String, Vec<String>> = HashMap::new();
+    let inline_expression_sql = format!(
+        "SELECT document_id, expression
+         FROM inline_expressions
+         WHERE document_id IN ({placeholders})
+         ORDER BY line_number ASC, byte_offset_start ASC"
+    );
+    let mut inline_expression_stmt = connection.prepare(&inline_expression_sql)?;
+    let inline_expression_rows = inline_expression_stmt
+        .query_map(params_from_iter(doc_ids.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+    for inline_expression_row in inline_expression_rows {
+        let (doc_id, expression) = inline_expression_row?;
+        inline_expression_map
+            .entry(doc_id)
+            .or_default()
+            .push(expression);
+    }
+
     for (doc_id, note) in doc_ids_and_notes {
         if let Some(tags) = tag_map.remove(doc_id.as_str()) {
             note.tags = tags;
@@ -944,9 +995,44 @@ fn hydrate_note_records(
             tasks.sort_by_key(|task| (task.line_number, task.byte_offset));
             note.tasks = tasks;
         }
+        if let Some(expressions) = inline_expression_map.remove(doc_id.as_str()) {
+            note.raw_inline_expressions = expressions;
+        }
     }
 
     Ok(())
+}
+
+#[must_use]
+pub fn evaluate_note_inline_expressions(
+    note: &NoteRecord,
+    note_lookup: &HashMap<String, NoteRecord, std::collections::hash_map::RandomState>,
+) -> Vec<EvaluatedInlineExpression> {
+    let formulas = BTreeMap::new();
+    note.raw_inline_expressions
+        .iter()
+        .map(|expression| {
+            let (value, error) = match Parser::new(expression) {
+                Ok(parser) => match parser.parse() {
+                    Ok(expr) => {
+                        let ctx = EvalContext::new(note, &formulas).with_note_lookup(note_lookup);
+                        match evaluate(&expr, &ctx) {
+                            Ok(value) => (value, None),
+                            Err(error) => (Value::Null, Some(error)),
+                        }
+                    }
+                    Err(error) => (Value::Null, Some(error.clone())),
+                },
+                Err(error) => (Value::Null, Some(error.clone())),
+            };
+
+            EvaluatedInlineExpression {
+                expression: expression.clone(),
+                value,
+                error,
+            }
+        })
+        .collect()
 }
 
 fn parse_json_string_array(value: &str) -> Result<Vec<String>, rusqlite::Error> {
@@ -2686,6 +2772,16 @@ mod tests {
             dashboard.properties["reviewed"],
             Value::Array(vec![Value::Bool(true), Value::Bool(false)])
         );
+        assert_eq!(dashboard.inline_expressions.len(), 1);
+        assert_eq!(
+            dashboard.inline_expressions[0].expression,
+            "this.status".to_string()
+        );
+        assert_eq!(
+            dashboard.inline_expressions[0].value,
+            Value::String("draft".to_string())
+        );
+        assert_eq!(dashboard.inline_expressions[0].error, None);
     }
 
     #[test]

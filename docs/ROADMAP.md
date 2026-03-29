@@ -1327,7 +1327,7 @@ Support Dataview inline expressions (`` `= expr` ``) for note rendering and quer
 - [x] Reuse the extended expression evaluator (9.8.4) with the `this` context binding and full function library
 - [ ] Known limitation: inline expressions store the expression text, not the evaluated result — other notes cannot query the result of an inline expression (this matches Dataview behavior)
 - [x] `vulcan dataview inline <file>` — evaluate all inline expressions in a note, output results alongside source expressions
-- [ ] In `--output json` mode, include evaluated inline expression results in note metadata
+- [x] In `--output json` mode, include evaluated inline expression results in note metadata
 - [x] Diagnostics for expressions that fail to evaluate (type errors, missing fields)
 - [x] Unit tests: `this.property` access, `this.file.name`, nested field access, function calls, missing field handling
 - [x] Integration test: note with inline expressions, verify evaluation results
