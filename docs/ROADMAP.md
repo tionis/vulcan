@@ -1607,13 +1607,13 @@ These require the sandboxed JS runtime and are only available when `--features d
 #### 9.11.1 Kanban board parsing
 
 - [ ] Detect Kanban board files: presence of `kanban-plugin` key in frontmatter or YAML config code block at top of file
-- [ ] Parse board structure: headings → columns, list items under headings → cards
-- [ ] Extract card metadata: checkbox status, inline dates, tags, links, inline fields
+- [x] Parse board structure: headings → columns, list items under headings → cards
+- [x] Extract card metadata: checkbox status, inline dates, tags, links, inline fields
 - [ ] Parse board configuration from YAML code block (if present): column settings, archive column, completed column
-- [ ] Configurable date and time triggers: parse date/time from card text using configurable trigger tokens (not hardcoded emoji — Kanban plugin allows `{date-trigger}` and `{time-trigger}` config, defaults `📅` and `⏰` but can be any string)
+- [x] Configurable date and time triggers: parse date/time from card text using configurable trigger tokens (not hardcoded emoji — Kanban plugin allows `{date-trigger}` and `{time-trigger}` config, defaults `📅` and `⏰` but can be any string)
 - [ ] Linked page metadata: cards that are `[[wikilinks]]` inherit metadata from the linked note (frontmatter, tags, inline fields) — enables filtering/sorting cards by linked note properties
-- [ ] Store board structure in cache: `kanban_boards` table (or extend existing tables with board context)
-- [ ] Index on board → column → card hierarchy
+- [x] Store board structure in cache: `kanban_boards` table (or extend existing tables with board context)
+- [x] Index on board → column → card hierarchy
 
 #### 9.11.2 Archive support
 
@@ -2211,27 +2211,27 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.2 (browse TUI) ← 9.1                  │
 9.3 (auto-commit) ──────────────────────│── can proceed in parallel
 9.4 (additional CLI) ───────────────────│
-9.5 (config layering) ─────────────────│
+9.5 (config layering) ────────────────-─│
                                         │
-9.6 (advanced search) ─────────────────│── foundation for 9.8, 9.12
-9.7 (enhanced templates) ──────────────│── foundation for 9.9
+9.6 (advanced search) ───────────────-──│── foundation for 9.8, 9.12
+9.7 (enhanced templates) ────────────-──│── foundation for 9.9
                                         │
-9.8 (Dataview) ← 4 (Bases), 9.6        │
+9.8 (Dataview) ← 4 (Bases), 9.6         │
   9.8.1 (inline fields + type inference)│
   9.8.2 (list items + tasks)            │── sequential within 9.8
-  9.8.3 (file.* metadata) ← 9.16       │
+  9.8.3 (file.* metadata) ← 9.16        │
   9.8.4 (type system + expression eval) │
-  9.8.5-9.8.7 (DQL + inline)           │
+  9.8.5-9.8.7 (DQL + inline)            │
   9.8.8 (DataviewJS) ← sandbox          │── enables 9.9.3
-  9.8.9 (settings import)              │
+  9.8.9 (settings import)               │
                                         │
-9.9  (Templater)    ← 9.7, 9.8.8       │
-9.10 (Tasks plugin) ← 9.8.2            │── can proceed in parallel
-9.11 (Kanban)       ← 9.8.2, 7.1       │   (after their prerequisites)
-9.16 (Periodic)     ← 1, 9.7           │
+9.9  (Templater)    ← 9.7, 9.8.8        │
+9.10 (Tasks plugin) ← 9.8.2             │── can proceed in parallel
+9.11 (Kanban)       ← 9.8.2, 7.1        │   (after their prerequisites)
+9.16 (Periodic)     ← 1, 9.7            │
                                         │
-9.12 (AI assistant) ← 5, 7.12, 9.6     │── independent of 9.9–9.11
-9.15 (TaskNotes)    ← 4, 9.8, 4.5.1    │── independent of 9.9–9.12
+9.12 (AI assistant) ← 5, 7.12, 9.6      │── independent of 9.9–9.11
+9.15 (TaskNotes)    ← 4, 9.8, 4.5.1     │── independent of 9.9–9.12
                                         │
 9.13 (QuickAdd)     ← investigation     │── can start anytime
 9.14 (plugin notes) ← informational     │

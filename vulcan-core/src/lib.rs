@@ -11,6 +11,7 @@ pub mod git;
 pub mod graph;
 pub mod history;
 pub mod init;
+pub mod kanban;
 pub mod maintenance;
 pub mod move_rewrite;
 pub mod parser;
@@ -38,8 +39,8 @@ pub use config::{
     create_default_config, default_config_template, import_tasks_plugin_config, load_vault_config,
     AttachmentExtractionConfig, AutoScanMode, ChunkingConfig, ChunkingStrategy, ConfigDiagnostic,
     ConfigImportError, ConfigImportMapping, ConfigImportReport, ConfigLoadResult,
-    EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, InboxConfig, LinkResolutionMode,
-    LinkStylePreference, ScanConfig, TemplatesConfig, VaultConfig,
+    EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, InboxConfig, KanbanConfig,
+    LinkResolutionMode, LinkStylePreference, ScanConfig, TemplatesConfig, VaultConfig,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,
@@ -68,6 +69,10 @@ pub use history::{
     GraphTrendPoint, GraphTrendsReport,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
+pub use kanban::{
+    list_kanban_boards, load_kanban_board, KanbanBoardRecord, KanbanBoardSummary, KanbanCardRecord,
+    KanbanColumnRecord, KanbanError, KanbanTaskStatus,
+};
 pub use maintenance::{
     cache_vacuum, inspect_cache, rebuild_vault, rebuild_vault_with_progress, repair_fts,
     verify_cache, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyCheck,
@@ -144,4 +149,4 @@ pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchR
 
 pub const PARSER_VERSION: u32 = 5;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;

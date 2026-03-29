@@ -215,6 +215,7 @@ mod tests {
             "property_values",
             "property_list_items",
             "property_catalog",
+            "kanban_boards",
             "vector_index_state",
             "vector_clusters",
             "chunks",

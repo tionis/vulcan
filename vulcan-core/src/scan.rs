@@ -1203,6 +1203,7 @@ fn replace_derived_rows(
         &list_item_ids,
         config,
     )?;
+    insert_kanban_board(transaction, document_id, parsed, config)?;
     insert_dataview_blocks(transaction, document_id, &parsed.dataview_blocks)?;
     insert_tasks_blocks(transaction, document_id, &parsed.tasks_blocks)?;
     insert_inline_expressions(transaction, document_id, &parsed.inline_expressions)?;
@@ -2049,6 +2050,40 @@ fn insert_dataview_blocks(
     Ok(())
 }
 
+fn insert_kanban_board(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    parsed: &ParsedDocument,
+    config: &crate::VaultConfig,
+) -> Result<(), ScanError> {
+    let Some(board) = crate::kanban::extract_indexed_board(parsed, config) else {
+        return Ok(());
+    };
+
+    transaction.execute(
+        "
+        INSERT INTO kanban_boards (
+            document_id,
+            format,
+            settings_json,
+            date_trigger,
+            time_trigger
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ",
+        params![
+            document_id,
+            board.format,
+            serde_json::to_string(&Value::Object(board.settings))
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            board.date_trigger,
+            board.time_trigger,
+        ],
+    )?;
+
+    Ok(())
+}
+
 fn insert_tasks_blocks(
     transaction: &Transaction<'_>,
     document_id: &str,
@@ -2150,6 +2185,7 @@ fn clear_derived_rows(
 ) -> Result<(), rusqlite::Error> {
     // Static SQL strings so prepare_cached can reuse them across calls.
     static CLEAR_STATEMENTS: &[&str] = &[
+        "DELETE FROM kanban_boards WHERE document_id = ?1",
         "DELETE FROM task_properties WHERE task_id IN (SELECT id FROM tasks WHERE document_id = ?1)",
         "DELETE FROM tasks WHERE document_id = ?1",
         "DELETE FROM list_items WHERE document_id = ?1",

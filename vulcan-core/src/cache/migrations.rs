@@ -89,6 +89,7 @@ impl MigrationRegistry {
                 schema::apply_schema_v12,
             ),
             Migration::new(13, "persist tasks query blocks", schema::apply_schema_v13),
+            Migration::new(14, "add kanban board metadata", schema::apply_schema_v14),
         ])
     }
 
