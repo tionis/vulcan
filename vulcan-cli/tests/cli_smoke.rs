@@ -30,6 +30,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("notes"))
             .and(predicate::str::contains("dataview"))
             .and(predicate::str::contains("tasks"))
+            .and(predicate::str::contains("kanban"))
             .and(predicate::str::contains("browse"))
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("suggest"))
@@ -73,7 +74,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Indexing: init, scan, rebuild, repair, watch, serve",
             ))
             .and(predicate::str::contains(
-                "Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, bases, suggest, diff",
+                "Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff",
             ))
             .and(predicate::str::contains(
                 "Semantic: vectors, cluster, related",
@@ -427,6 +428,31 @@ fn write_tasks_import_fixture(vault_root: &Path) {
     .expect("tasks plugin config should be written");
 }
 
+fn write_kanban_cli_fixture(vault_root: &Path) {
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+    fs::write(
+        vault_root.join("Projects/Alpha.md"),
+        "---\nstatus: active\nowner: Ops\n---\n# Alpha\n",
+    )
+    .expect("linked note should be written");
+    fs::write(
+        vault_root.join("Board.md"),
+        concat!(
+            "---\n",
+            "kanban-plugin: board\n",
+            "date-trigger: DUE\n",
+            "time-trigger: AT\n",
+            "---\n\n",
+            "## Todo\n\n",
+            "- Release DUE{2026-04-01} AT{09:30} #ship [[Projects/Alpha]] [priority:: high]\n",
+            "- [/] Waiting on review [owner:: Ops]\n\n",
+            "## Done\n\n",
+            "- Shipped DUE{2026-04-03}\n",
+        ),
+    )
+    .expect("board should be written");
+}
+
 #[test]
 fn tasks_query_json_output_evaluates_tasks_dsl() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -778,6 +804,148 @@ fn tasks_graph_json_output_lists_nodes_and_edges() {
         Value::String("MISSING-1".to_string())
     );
     assert_eq!(json["edges"][1]["resolved"], Value::Bool(false));
+}
+
+#[test]
+fn kanban_list_json_output_lists_indexed_boards() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_kanban_cli_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "list",
+        ])
+        .assert()
+        .success();
+    let json_lines = parse_stdout_json_lines(&assert);
+
+    assert_eq!(json_lines.len(), 1);
+    assert_eq!(json_lines[0]["path"], Value::String("Board.md".to_string()));
+    assert_eq!(json_lines[0]["title"], Value::String("Board".to_string()));
+    assert_eq!(json_lines[0]["format"], Value::String("board".to_string()));
+    assert_eq!(json_lines[0]["column_count"], Value::Number(2.into()));
+    assert_eq!(json_lines[0]["card_count"], Value::Number(3.into()));
+}
+
+#[test]
+fn kanban_show_json_output_returns_columns_and_verbose_cards() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_kanban_cli_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "show",
+            "Board",
+            "--verbose",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["path"], Value::String("Board.md".to_string()));
+    assert_eq!(json["title"], Value::String("Board".to_string()));
+    assert_eq!(json["date_trigger"], Value::String("DUE".to_string()));
+    assert_eq!(json["time_trigger"], Value::String("AT".to_string()));
+    assert_eq!(json["columns"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        json["columns"][0]["name"],
+        Value::String("Todo".to_string())
+    );
+    assert_eq!(
+        json["columns"][0]["cards"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        json["columns"][0]["cards"][0]["date"],
+        Value::String("2026-04-01".to_string())
+    );
+    assert_eq!(
+        json["columns"][0]["cards"][0]["time"],
+        Value::String("09:30".to_string())
+    );
+    assert_eq!(
+        json["columns"][0]["cards"][1]["task"]["status_type"],
+        Value::String("IN_PROGRESS".to_string())
+    );
+}
+
+#[test]
+fn kanban_cards_json_output_filters_by_column_and_status() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_kanban_cli_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "cards",
+            "Board",
+            "--column",
+            "Todo",
+            "--status",
+            "IN_PROGRESS",
+        ])
+        .assert()
+        .success();
+    let json_lines = parse_stdout_json_lines(&assert);
+
+    assert_eq!(json_lines.len(), 1);
+    assert_eq!(
+        json_lines[0]["board_path"],
+        Value::String("Board.md".to_string())
+    );
+    assert_eq!(
+        json_lines[0]["column_filter"],
+        Value::String("Todo".to_string())
+    );
+    assert_eq!(
+        json_lines[0]["status_filter"],
+        Value::String("IN_PROGRESS".to_string())
+    );
+    assert_eq!(json_lines[0]["column"], Value::String("Todo".to_string()));
+    assert_eq!(
+        json_lines[0]["text"],
+        Value::String("Waiting on review [owner:: Ops]".to_string())
+    );
+    assert_eq!(
+        json_lines[0]["task_status_type"],
+        Value::String("IN_PROGRESS".to_string())
+    );
+    assert_eq!(
+        json_lines[0]["inline_fields"]["owner"],
+        Value::String("Ops".to_string())
+    );
 }
 
 #[test]
