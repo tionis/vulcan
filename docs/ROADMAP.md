@@ -1652,7 +1652,7 @@ These require the sandboxed JS runtime and are only available when `--features d
   | `max-archive-size` | Archive size limit |
   | `show-checkboxes` | Whether to show checkboxes on cards |
 - [x] `vulcan config import kanban` — import Kanban settings and report mapping
-- [ ] Per-board settings override: individual boards can override global settings via their YAML code block
+- [x] Per-board settings override: individual boards can override global settings via their YAML code block
 
 #### 9.11.5 TUI and WebUI (future)
 

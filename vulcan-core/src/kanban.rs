@@ -1750,6 +1750,71 @@ mod tests {
     }
 
     #[test]
+    fn footer_settings_override_global_kanban_config() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            concat!(
+                "[kanban]\n",
+                "date_trigger = \"@\"\n",
+                "time_trigger = \"@@\"\n",
+                "archive_with_date = false\n",
+                "append_archive_date = false\n",
+                "archive_date_format = \"YYYY\"\n",
+                "new_card_insertion_method = \"append\"\n",
+            ),
+        )
+        .expect("config should be written");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "## Todo\n\n",
+                "- Build release DUE{2026-04-01} AT{09:30}\n",
+                "- Existing card\n\n",
+                "## Done\n\n",
+                "- Shipped\n\n",
+                "%% kanban:settings\n",
+                "```\n",
+                "{\"kanban-plugin\":\"board\",\"date-trigger\":\"DUE\",\"time-trigger\":\"AT\",\"archive-with-date\":true,\"append-archive-date\":true,\"archive-date-format\":\"YYYY-MM-DD\",\"new-card-insertion-method\":\"prepend\"}\n",
+                "```\n",
+                "%%\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let board = load_kanban_board(&paths, "Board", false).expect("board should load");
+        assert_eq!(board.date_trigger, "DUE");
+        assert_eq!(board.time_trigger, "AT");
+        assert_eq!(
+            board.columns[0].cards[0].date.as_deref(),
+            Some("2026-04-01")
+        );
+        assert_eq!(board.columns[0].cards[0].time.as_deref(), Some("09:30"));
+
+        add_kanban_card(&paths, "Board", "Todo", "Prep docs", false).expect("add should work");
+
+        let board = load_kanban_board(&paths, "Board", false).expect("board should reload");
+        assert_eq!(board.columns[0].cards[0].text, "Prep docs");
+
+        let report = archive_kanban_card(
+            &paths,
+            "Board",
+            "Build release DUE{2026-04-01} AT{09:30}",
+            false,
+        )
+        .expect("archive works");
+        assert!(report.archive_with_date_applied);
+        assert!(report
+            .archived_text
+            .starts_with("Build release DUE{2026-04-01} AT{09:30} "));
+    }
+
+    #[test]
     fn scan_indexes_footer_only_kanban_boards() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
