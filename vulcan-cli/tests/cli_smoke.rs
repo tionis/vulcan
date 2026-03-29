@@ -1168,6 +1168,90 @@ fn kanban_archive_dry_run_json_output_leaves_board_unchanged() {
 }
 
 #[test]
+fn kanban_move_json_output_moves_cards_between_columns() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    fs::write(
+        vault_root.join("Board.md"),
+        concat!(
+            "---\n",
+            "kanban-plugin: board\n",
+            "---\n\n",
+            "## Todo\n\n",
+            "- Build release\n\n",
+            "## Doing\n\n",
+            "- Review QA\n\n",
+            "## Done\n\n",
+            "- Shipped\n",
+        ),
+    )
+    .expect("board should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "move",
+            "Board",
+            "Build release",
+            "Done",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["path"], Value::String("Board.md".to_string()));
+    assert_eq!(json["source_column"], Value::String("Todo".to_string()));
+    assert_eq!(json["target_column"], Value::String("Done".to_string()));
+    assert_eq!(
+        json["card_text"],
+        Value::String("Build release".to_string())
+    );
+    assert_eq!(json["dry_run"], Value::Bool(false));
+    assert_eq!(json["rescanned"], Value::Bool(true));
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "show",
+            "Board",
+            "--verbose",
+        ])
+        .assert()
+        .success();
+    let board = parse_stdout_json(&show_assert);
+
+    assert_eq!(
+        board["columns"][0]["cards"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        board["columns"][2]["cards"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        board["columns"][2]["cards"][1]["text"],
+        Value::String("Build release".to_string())
+    );
+}
+
+#[test]
 fn dataview_query_human_output_respects_display_result_count_setting() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
