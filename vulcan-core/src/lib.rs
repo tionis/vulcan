@@ -71,8 +71,8 @@ pub use history::{
 };
 pub use init::{initialize_vault, InitError, InitSummary};
 pub use kanban::{
-    archive_kanban_card, list_kanban_boards, load_kanban_board, move_kanban_card,
-    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanCardRecord,
+    add_kanban_card, archive_kanban_card, list_kanban_boards, load_kanban_board, move_kanban_card,
+    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanCardRecord,
     KanbanColumnRecord, KanbanError, KanbanMoveReport, KanbanTaskStatus,
 };
 pub use maintenance::{

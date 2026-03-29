@@ -148,6 +148,16 @@ pub struct KanbanMoveReport {
     pub rescanned: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KanbanAddReport {
+    pub path: String,
+    pub title: String,
+    pub column: String,
+    pub card_text: String,
+    pub dry_run: bool,
+    pub rescanned: bool,
+}
+
 #[derive(Debug, Clone)]
 struct BoardRow {
     document_id: String,
@@ -492,6 +502,72 @@ pub fn move_kanban_card(
         card_id: card_record.id.clone(),
         card_text: card_record.text.clone(),
         line_number: card_record.line_number,
+        dry_run,
+        rescanned: !dry_run,
+    })
+}
+
+pub fn add_kanban_card(
+    paths: &VaultPaths,
+    board: &str,
+    column: &str,
+    text: &str,
+    dry_run: bool,
+) -> Result<KanbanAddReport, KanbanError> {
+    let resolved = resolve_note_reference(paths, board)
+        .map_err(|error| KanbanError::Message(error.to_string()))?;
+    let database =
+        CacheDatabase::open(paths).map_err(|error| KanbanError::Message(error.to_string()))?;
+    let connection = database.connection();
+    let config = crate::load_vault_config(paths).config;
+    let Some(board_row) = load_board_row(connection, resolved.id.as_str())? else {
+        return Err(KanbanError::Message(format!(
+            "{} is not an indexed Kanban board",
+            resolved.path
+        )));
+    };
+
+    let source_path = paths.vault_root().join(&board_row.path);
+    let source = fs::read_to_string(&source_path).map_err(|error| {
+        KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
+    })?;
+    let column_states = load_board_column_states(paths, connection, &board_row, &config, true)?;
+    let target_column_index = resolve_column_match(&column_states, column)?;
+    let target_column = &column_states[target_column_index];
+    if target_column.layout.archived {
+        return Err(KanbanError::Message(format!(
+            "{} is the archive column; archive moves existing cards instead of adding new ones",
+            target_column.layout.name
+        )));
+    }
+
+    let footer_start = footer_settings_start_offset(&source, &line_start_offsets(&source));
+    let insertion_method = card_insertion_method(board_row.settings.as_object(), &config);
+    let insertion_offset = column_card_insertion_offset(
+        target_column,
+        footer_start,
+        &source,
+        insertion_method.as_str(),
+    );
+    let new_card_block = build_new_card_block(target_column, text);
+    let updated = apply_text_edits(
+        &source,
+        &[(insertion_offset..insertion_offset, new_card_block)],
+    );
+
+    if !dry_run {
+        fs::write(&source_path, updated).map_err(|error| {
+            KanbanError::Message(format!("failed to write {}: {error}", board_row.path))
+        })?;
+        scan_vault(paths, ScanMode::Incremental)
+            .map_err(|error| KanbanError::Message(error.to_string()))?;
+    }
+
+    Ok(KanbanAddReport {
+        path: board_row.path.clone(),
+        title: board_title(&board_row.path),
+        column: target_column.layout.name.clone(),
+        card_text: text.to_string(),
         dry_run,
         rescanned: !dry_run,
     })
@@ -913,6 +989,15 @@ fn normalize_card_block(block_text: &str) -> String {
     } else {
         format!("{trimmed}\n")
     }
+}
+
+fn build_new_card_block(column: &BoardColumnState, text: &str) -> String {
+    let symbol = column
+        .cards
+        .first()
+        .map(|card| card.symbol.as_str())
+        .unwrap_or("-");
+    format!("{symbol} {text}\n")
 }
 
 fn line_start_offsets(source: &str) -> Vec<usize> {
@@ -1868,5 +1953,68 @@ mod tests {
         assert_eq!(board.columns[1].card_count, 2);
         assert_eq!(board.columns[1].cards[0].text, "Build release");
         assert_eq!(board.columns[1].cards[1].text, "Shipped");
+    }
+
+    #[test]
+    fn add_kanban_card_appends_to_target_column_by_default() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "---\n\n",
+                "## Todo\n\n",
+                "- Existing card\n\n",
+                "## Done\n\n",
+                "- Shipped\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report =
+            add_kanban_card(&paths, "Board", "Todo", "Build release", false).expect("add works");
+        assert_eq!(report.column, "Todo");
+        assert_eq!(report.card_text, "Build release");
+        assert!(report.rescanned);
+
+        let board = load_kanban_board(&paths, "Board", false).expect("board should load");
+        assert_eq!(board.columns[0].card_count, 2);
+        assert_eq!(board.columns[0].cards[0].text, "Existing card");
+        assert_eq!(board.columns[0].cards[1].text, "Build release");
+    }
+
+    #[test]
+    fn add_kanban_card_respects_prepend_insertion_mode() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Board.md"),
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "new-card-insertion-method: prepend\n",
+                "---\n\n",
+                "## Todo\n\n",
+                "- Existing card\n",
+            ),
+        )
+        .expect("board should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        add_kanban_card(&paths, "Board", "Todo", "Build release", false).expect("add works");
+
+        let board = load_kanban_board(&paths, "Board", false).expect("board should load");
+        assert_eq!(board.columns[0].card_count, 2);
+        assert_eq!(board.columns[0].cards[0].text, "Build release");
+        assert_eq!(board.columns[0].cards[1].text, "Existing card");
     }
 }
