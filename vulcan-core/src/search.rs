@@ -3070,6 +3070,63 @@ mod tests {
     }
 
     #[test]
+    fn search_excludes_dataview_query_metadata_but_keeps_inline_field_values() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::write(
+            vault_root.join("Search.md"),
+            concat!(
+                "topic:: crimsonnectar\n\n",
+                "`= choice(true, \"expressiontoken\", null)`\n\n",
+                "```dataview\n",
+                "TABLE dqlsentinel\n",
+                "FROM #project\n",
+                "```\n\n",
+                "```dataviewjs\n",
+                "dv.table([\"jssentinel\"], [[this.topic]])\n",
+                "```\n",
+            ),
+        )
+        .expect("note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let inline_value_report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "crimsonnectar".to_string(),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("inline field value search should succeed");
+        assert_eq!(
+            inline_value_report
+                .hits
+                .iter()
+                .map(|hit| hit.document_path.clone())
+                .collect::<Vec<_>>(),
+            vec!["Search.md".to_string()]
+        );
+
+        for hidden_term in ["expressiontoken", "dqlsentinel", "jssentinel"] {
+            let report = search_vault(
+                &paths,
+                &SearchQuery {
+                    text: hidden_term.to_string(),
+                    ..SearchQuery::default()
+                },
+            )
+            .expect("metadata-only term search should succeed");
+            assert!(
+                report.hits.is_empty(),
+                "{hidden_term} should stay out of FTS-indexed note content"
+            );
+        }
+    }
+
+    #[test]
     fn static_search_index_export_includes_chunk_content_and_headings() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
