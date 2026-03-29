@@ -4,6 +4,7 @@ pub const TABLES_TO_CLEAR: &[&str] = &[
     "task_properties",
     "tasks",
     "list_items",
+    "tasks_blocks",
     "inline_expressions",
     "dataview_blocks",
     "headings",
@@ -599,6 +600,26 @@ pub fn apply_schema_v12(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
         "
         ALTER TABLE list_items ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE list_items ADD COLUMN outlinks_json TEXT NOT NULL DEFAULT '[]';
+        ",
+    )?;
+    Ok(())
+}
+
+pub fn apply_schema_v13(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS tasks_blocks (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            block_index INTEGER NOT NULL,
+            byte_offset_start INTEGER NOT NULL,
+            byte_offset_end INTEGER NOT NULL,
+            line_number INTEGER NOT NULL,
+            raw_text TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tasks_blocks_document_id
+            ON tasks_blocks(document_id);
         ",
     )?;
     Ok(())
