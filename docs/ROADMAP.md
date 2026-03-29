@@ -1577,7 +1577,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 
 #### 9.10.5 Settings import
 
-- [ ] Read Tasks plugin settings from `.obsidian/plugins/obsidian-tasks-plugin/data.json`:
+- [x] Read Tasks plugin settings from `.obsidian/plugins/obsidian-tasks-plugin/data.json`:
   | Setting key | Vulcan mapping |
   |---|---|
   | `statusSettings.coreStatuses` | Core status type definitions (`[ ]`, `[x]`) |
