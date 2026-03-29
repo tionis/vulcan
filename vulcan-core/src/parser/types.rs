@@ -14,6 +14,7 @@ pub struct ParsedDocument {
     pub list_items: Vec<RawListItem>,
     pub tasks: Vec<RawTask>,
     pub dataview_blocks: Vec<RawDataviewBlock>,
+    pub tasks_blocks: Vec<RawTasksBlock>,
     pub inline_expressions: Vec<RawInlineExpression>,
     pub chunk_texts: Vec<ChunkText>,
     pub diagnostics: Vec<ParseDiagnostic>,
@@ -125,6 +126,14 @@ pub struct RawTask {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawDataviewBlock {
     pub language: String,
+    pub text: String,
+    pub block_index: usize,
+    pub byte_range: Range<usize>,
+    pub line_number: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTasksBlock {
     pub text: String,
     pub block_index: usize,
     pub byte_range: Range<usize>,

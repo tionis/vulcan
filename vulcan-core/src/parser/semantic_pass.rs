@@ -438,6 +438,7 @@ impl<'a> SemanticProcessor<'a> {
         self.parsed.list_items.extend(parsed.list_items);
         self.parsed.tasks.extend(parsed.tasks);
         self.parsed.dataview_blocks.extend(parsed.dataview_blocks);
+        self.parsed.tasks_blocks.extend(parsed.tasks_blocks);
         self.parsed
             .inline_expressions
             .extend(parsed.inline_expressions);
@@ -453,6 +454,7 @@ impl<'a> SemanticProcessor<'a> {
         self.parsed.list_items = dataview.list_items;
         self.parsed.tasks = dataview.tasks;
         self.parsed.dataview_blocks = dataview.dataview_blocks;
+        self.parsed.tasks_blocks = dataview.tasks_blocks;
         for property_range in dataview.property_value_ranges {
             for link in &mut self.parsed.links {
                 if property_range.start <= link.byte_offset && link.byte_offset < property_range.end

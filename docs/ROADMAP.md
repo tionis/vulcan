@@ -1537,7 +1537,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 
 #### 9.10.1 Tasks query language parser
 
-- [ ] Detect `` ```tasks `` fenced code blocks during parsing; store raw query text as block metadata
+- [x] Detect `` ```tasks `` fenced code blocks during parsing; store raw query text as block metadata
 - [ ] Tasks DSL parser: line-based filter language (each line is a filter or instruction)
   - [ ] Status filters: `not done`, `done`, `status.name includes <text>`, `status.type is <type>`
   - [ ] Date filters: `due before <date>`, `due after <date>`, `due on <date>`, `has due date`, `no due date` — and same for `created`, `start`, `scheduled`, `done` dates
