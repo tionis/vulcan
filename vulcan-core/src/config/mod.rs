@@ -61,6 +61,11 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # in_progress = ["/"]
 # cancelled = ["-"]
 # non_task = []
+# global_filter = "#task"
+# global_query = "not done"
+# remove_global_filter = true
+# set_created_date = false
+# recurrence_on_completion = "next-line"  # same-line | next-line
 #
 # [[tasks.statuses.definitions]]
 # symbol = "!"
@@ -399,6 +404,16 @@ impl TaskStatusesConfig {
 pub struct TasksConfig {
     #[serde(default)]
     pub statuses: TaskStatusesConfig,
+    #[serde(default)]
+    pub global_filter: Option<String>,
+    #[serde(default)]
+    pub global_query: Option<String>,
+    #[serde(default)]
+    pub remove_global_filter: bool,
+    #[serde(default)]
+    pub set_created_date: bool,
+    #[serde(default)]
+    pub recurrence_on_completion: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -581,6 +596,11 @@ struct PartialTemplatesConfig {
 #[derive(Debug, Deserialize, Default)]
 struct PartialTasksConfig {
     statuses: Option<PartialTaskStatusesConfig>,
+    global_filter: Option<String>,
+    global_query: Option<String>,
+    remove_global_filter: Option<bool>,
+    set_created_date: Option<bool>,
+    recurrence_on_completion: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -672,6 +692,18 @@ struct ObsidianDataviewConfig {
 
 #[derive(Debug, Deserialize, Default)]
 struct ObsidianTasksConfig {
+    #[serde(rename = "globalFilter")]
+    global_filter: Option<String>,
+    #[serde(rename = "globalQuery")]
+    global_query: Option<String>,
+    #[serde(rename = "removeGlobalFilter")]
+    remove_global_filter: Option<bool>,
+    #[serde(rename = "setCreatedDate")]
+    set_created_date: Option<bool>,
+    #[serde(rename = "recurrenceOnCompletion")]
+    recurrence_on_completion: Option<String>,
+    #[serde(rename = "recurrenceOnNextLine")]
+    recurrence_on_next_line: Option<bool>,
     #[serde(rename = "statusSettings")]
     status_settings: Option<ObsidianTasksStatusSettings>,
 }
@@ -1043,6 +1075,19 @@ fn apply_obsidian_dataview_defaults(config: &mut VaultConfig, obsidian: Obsidian
 }
 
 fn apply_obsidian_tasks_defaults(config: &mut VaultConfig, obsidian: ObsidianTasksConfig) {
+    let recurrence_on_completion = normalize_obsidian_task_recurrence_mode(&obsidian);
+    config.tasks.global_filter = normalize_optional_text(obsidian.global_filter);
+    config.tasks.global_query = normalize_optional_text(obsidian.global_query);
+    if let Some(remove_global_filter) = obsidian.remove_global_filter {
+        config.tasks.remove_global_filter = remove_global_filter;
+    }
+    if let Some(set_created_date) = obsidian.set_created_date {
+        config.tasks.set_created_date = set_created_date;
+    }
+    if let Some(recurrence_on_completion) = recurrence_on_completion {
+        config.tasks.recurrence_on_completion = Some(recurrence_on_completion);
+    }
+
     let Some(status_settings) = obsidian.status_settings else {
         return;
     };
@@ -1129,6 +1174,22 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
     }
 
     if let Some(tasks) = overrides.tasks {
+        if let Some(global_filter) = tasks.global_filter {
+            config.tasks.global_filter = normalize_optional_text(Some(global_filter));
+        }
+        if let Some(global_query) = tasks.global_query {
+            config.tasks.global_query = normalize_optional_text(Some(global_query));
+        }
+        if let Some(remove_global_filter) = tasks.remove_global_filter {
+            config.tasks.remove_global_filter = remove_global_filter;
+        }
+        if let Some(set_created_date) = tasks.set_created_date {
+            config.tasks.set_created_date = set_created_date;
+        }
+        if let Some(recurrence_on_completion) = tasks.recurrence_on_completion {
+            config.tasks.recurrence_on_completion =
+                normalize_optional_text(Some(recurrence_on_completion));
+        }
         if let Some(statuses) = tasks.statuses {
             if let Some(definitions) = statuses.definitions {
                 apply_task_status_definitions(&mut config.tasks.statuses, definitions);
@@ -1218,6 +1279,12 @@ fn normalize_template_folder(path: &str) -> PathBuf {
     PathBuf::from(path.trim_matches('/'))
 }
 
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn apply_task_status_definitions(
     config: &mut TaskStatusesConfig,
     definitions: Vec<TaskStatusDefinition>,
@@ -1268,6 +1335,14 @@ fn default_task_status_name(status_type: &str) -> String {
         "NON_TASK" => "Non-task".to_string(),
         _ => "Unknown".to_string(),
     }
+}
+
+fn normalize_obsidian_task_recurrence_mode(config: &ObsidianTasksConfig) -> Option<String> {
+    normalize_optional_text(config.recurrence_on_completion.clone()).or_else(|| {
+        config
+            .recurrence_on_next_line
+            .map(|next_line| (if next_line { "next-line" } else { "same-line" }).to_string())
+    })
 }
 
 #[cfg(test)]
@@ -1445,6 +1520,13 @@ format = "* {datetime} {text}"
 timestamp = false
 heading = "## Notes"
 
+[tasks]
+global_filter = "#work"
+global_query = "not done"
+remove_global_filter = true
+set_created_date = true
+recurrence_on_completion = "next-line"
+
 [tasks.statuses]
 todo = [" ", "!"]
 completed = ["x", "v"]
@@ -1525,6 +1607,17 @@ time_format = "HH:mm:ss"
         assert_eq!(loaded.config.inbox.format, "* {datetime} {text}");
         assert!(!loaded.config.inbox.timestamp);
         assert_eq!(loaded.config.inbox.heading.as_deref(), Some("## Notes"));
+        assert_eq!(loaded.config.tasks.global_filter, Some("#work".to_string()));
+        assert_eq!(
+            loaded.config.tasks.global_query,
+            Some("not done".to_string())
+        );
+        assert!(loaded.config.tasks.remove_global_filter);
+        assert!(loaded.config.tasks.set_created_date);
+        assert_eq!(
+            loaded.config.tasks.recurrence_on_completion,
+            Some("next-line".to_string())
+        );
         assert_eq!(
             loaded.config.tasks.statuses.todo,
             vec![" ".to_string(), "!".to_string()]
@@ -1709,7 +1802,12 @@ time_format = "HH:mm:ss"
             .expect("tasks plugin dir should be created");
         fs::write(
             vault_root.join(".obsidian/plugins/obsidian-tasks-plugin/data.json"),
-            r#"{
+            r##"{
+              "globalFilter": "#task",
+              "globalQuery": "",
+              "removeGlobalFilter": true,
+              "setCreatedDate": true,
+              "recurrenceOnNextLine": false,
               "statusSettings": {
                 "coreStatuses": [
                   { "symbol": " ", "name": "Todo", "type": "TODO", "nextStatusSymbol": ">" },
@@ -1720,13 +1818,21 @@ time_format = "HH:mm:ss"
                   { "symbol": "~", "name": "Parked", "type": "NON_TASK" }
                 ]
               }
-            }"#,
+            }"##,
         )
         .expect("tasks config should be written");
 
         let loaded = load_vault_config(&VaultPaths::new(vault_root));
 
         assert!(loaded.diagnostics.is_empty());
+        assert_eq!(loaded.config.tasks.global_filter, Some("#task".to_string()));
+        assert_eq!(loaded.config.tasks.global_query, None);
+        assert!(loaded.config.tasks.remove_global_filter);
+        assert!(loaded.config.tasks.set_created_date);
+        assert_eq!(
+            loaded.config.tasks.recurrence_on_completion,
+            Some("same-line".to_string())
+        );
         assert_eq!(
             loaded.config.tasks.statuses.in_progress,
             vec![">".to_string()]
