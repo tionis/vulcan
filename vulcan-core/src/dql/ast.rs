@@ -1,7 +1,5 @@
 use crate::expression::ast::Expr;
 
-use super::token::DqlToken;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DqlQueryType {
     Table,
@@ -36,9 +34,21 @@ pub enum DqlDataCommand {
     Limit(usize),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct DqlSourceExpr {
-    pub tokens: Vec<DqlToken>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DqlSourceExpr {
+    Tag(String),
+    Path(String),
+    IncomingLink(DqlLinkTarget),
+    OutgoingLink(DqlLinkTarget),
+    Not(Box<DqlSourceExpr>),
+    And(Box<DqlSourceExpr>, Box<DqlSourceExpr>),
+    Or(Box<DqlSourceExpr>, Box<DqlSourceExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DqlLinkTarget {
+    Wikilink(String),
+    SelfReference,
 }
 
 #[derive(Debug, Clone, PartialEq)]
