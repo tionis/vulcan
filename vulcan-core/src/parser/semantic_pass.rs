@@ -259,17 +259,20 @@ impl<'a> SemanticProcessor<'a> {
             return;
         }
 
-        if let Some(expression) = text.strip_prefix('=').map(str::trim) {
-            if !expression.is_empty() {
-                self.parsed
-                    .inline_expressions
-                    .push(crate::RawInlineExpression {
-                        expression: expression.to_string(),
-                        byte_range: range.clone(),
-                        line_number: line_number_for_offset(self.source, range.start),
-                    });
+        let inline_query_prefix = self.config.dataview.inline_query_prefix.as_str();
+        if !inline_query_prefix.is_empty() {
+            if let Some(expression) = text.strip_prefix(inline_query_prefix).map(str::trim) {
+                if !expression.is_empty() {
+                    self.parsed
+                        .inline_expressions
+                        .push(crate::RawInlineExpression {
+                            expression: expression.to_string(),
+                            byte_range: range.clone(),
+                            line_number: line_number_for_offset(self.source, range.start),
+                        });
+                }
+                return;
             }
-            return;
         }
 
         self.handle_literal(text, range);

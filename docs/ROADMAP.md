@@ -1322,7 +1322,7 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 Support Dataview inline expressions (`` `= expr` ``) for note rendering and query contexts.
 
 - [x] Detect inline expressions (backtick-delimited text starting with configurable prefix, default `=`) during the semantic pass; store as inline expression metadata
-- [ ] Configurable inline query prefix from Dataview settings (`inlineQueryPrefix`, default `"="`); also detect inline DataviewJS prefix (`inlineJsQueryPrefix`, default `"$="`) when `dataviewjs` feature is enabled
+- [x] Configurable inline query prefix from Dataview settings (`inlineQueryPrefix`, default `"="`); also detect inline DataviewJS prefix (`inlineJsQueryPrefix`, default `"$="`) when `dataviewjs` feature is enabled
 - [x] `this` binding: within an inline expression, `this` resolves to the current note's full metadata (frontmatter + inline fields + `file.*` implicit metadata)
 - [x] Reuse the extended expression evaluator (9.8.4) with the `this` context binding and full function library
 - [ ] Known limitation: inline expressions store the expression text, not the evaluated result — other notes cannot query the result of an inline expression (this matches Dataview behavior)
@@ -1402,11 +1402,11 @@ Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript
 
 Read and respect Dataview's per-vault configuration from `.obsidian/plugins/dataview/data.json` for seamless migration.
 
-- [ ] Discover and parse `.obsidian/plugins/dataview/data.json` during vault initialization
-- [ ] Import settings: `inlineQueryPrefix` (default `"="`), `inlineJsQueryPrefix` (default `"$="`), `enableDataviewJs`, `enableInlineDataviewJs`, `taskCompletionTracking`, `taskCompletionUseEmojiShorthand`, `taskCompletionText`, `recursiveSubTaskCompletion`, `displayResultCount`, `defaultDateFormat`, `defaultDateTimeFormat`, `maxRecursiveRenderDepth`, `primaryColumnName`, `groupColumnName`
-- [ ] Merge into runtime config with `.vulcan/config.toml` overrides taking precedence
-- [ ] Settings not found in the Dataview config fall back to Vulcan defaults
-- [ ] Unit test: parse sample `data.json`, verify settings merge and precedence
+- [x] Discover and parse `.obsidian/plugins/dataview/data.json` during vault initialization
+- [x] Import settings: `inlineQueryPrefix` (default `"="`), `inlineJsQueryPrefix` (default `"$="`), `enableDataviewJs`, `enableInlineDataviewJs`, `taskCompletionTracking`, `taskCompletionUseEmojiShorthand`, `taskCompletionText`, `recursiveSubTaskCompletion`, `displayResultCount`, `defaultDateFormat`, `defaultDateTimeFormat`, `maxRecursiveRenderDepth`, `primaryColumnName`, `groupColumnName`
+- [x] Merge into runtime config with `.vulcan/config.toml` overrides taking precedence
+- [x] Settings not found in the Dataview config fall back to Vulcan defaults
+- [x] Unit test: parse sample `data.json`, verify settings merge and precedence
 - [ ] Integration test: vault with custom Dataview settings, verify inline prefix and display settings are respected
 
 #### 9.8.10 Cross-cutting integration
