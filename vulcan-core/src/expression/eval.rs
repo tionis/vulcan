@@ -72,6 +72,9 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
                 return Ok(value.clone());
             }
             let normalized_name = normalize_field_name(name);
+            if normalized_name == "this" {
+                return Ok(note_to_page_object(ctx.note));
+            }
             // `file` standalone → basename string (usable as link target)
             if normalized_name == "file" {
                 return Ok(Value::String(ctx.note.file_name.clone()));
@@ -244,6 +247,17 @@ fn swizzle_array_field(values: &[Value], field: &str, ctx: &EvalContext) -> Valu
 #[must_use]
 pub fn note_to_file_object(note: &NoteRecord) -> Value {
     FileMetadataResolver::object(note)
+}
+
+#[must_use]
+pub fn note_to_page_object(note: &NoteRecord) -> Value {
+    let mut object = note
+        .properties
+        .as_object()
+        .cloned()
+        .unwrap_or_else(serde_json::Map::new);
+    object.insert("file".to_string(), note_to_file_object(note));
+    Value::Object(object)
 }
 
 /// Parse the target filename from a wikilink string like `[[target]]` or `[[target|display]]`.
@@ -1000,6 +1014,25 @@ mod tests {
         assert_eq!(
             eval("file.frontmatter.status"),
             Value::String("done".to_string())
+        );
+    }
+
+    #[test]
+    fn eval_this_binding() {
+        assert_eq!(eval("this.status"), Value::String("done".to_string()));
+        assert_eq!(eval("this.file.name"), Value::String("note".to_string()));
+        assert_eq!(eval("this.file.day.year"), serde_json::json!(2026));
+        assert_eq!(
+            eval(r#"this["due date"]"#),
+            Value::String("2026-04".to_string())
+        );
+        assert_eq!(
+            eval(r#"default(this.missing, "none")"#),
+            Value::String("none".to_string())
+        );
+        assert_eq!(
+            eval(r##"contains(this.file.tags, "#tag2")"##),
+            Value::Bool(true)
         );
     }
 
