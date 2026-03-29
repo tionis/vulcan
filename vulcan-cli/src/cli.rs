@@ -319,6 +319,7 @@ Subcommands:
   query       evaluate a Tasks plugin query string directly
   eval        evaluate indexed ```tasks``` blocks from one note
   list        list indexed tasks, optionally filtered
+  next        show upcoming recurring task instances
   blocked     list currently blocked tasks with their blockers
   graph       show the task dependency graph
 
@@ -332,6 +333,7 @@ Examples:
   vulcan tasks eval Dashboard --block 0
   vulcan tasks list
   vulcan tasks list --filter 'completed && file.name = \"Alpha\"'
+  vulcan tasks next 5 --from 2026-03-29
   vulcan tasks blocked
   vulcan tasks graph";
 
@@ -823,6 +825,16 @@ pub enum TasksCommand {
     List {
         #[arg(long, help = "Optional Tasks DSL query or Dataview expression filter")]
         filter: Option<String>,
+    },
+    #[command(about = "Show upcoming recurring task instances")]
+    Next {
+        #[arg(help = "Maximum number of upcoming task instances to return")]
+        count: usize,
+        #[arg(
+            long,
+            help = "Reference date for recurrence expansion (defaults to today)"
+        )]
+        from: Option<String>,
     },
     #[command(about = "List currently blocked tasks with their blocking dependencies")]
     Blocked,

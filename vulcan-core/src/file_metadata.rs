@@ -1,5 +1,6 @@
 use crate::expression::functions::date_components;
 use crate::properties::{NoteListItemRecord, NoteRecord, NoteTaskRecord};
+use crate::tasks::inject_task_recurrence_fields;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -245,6 +246,8 @@ fn task_object(
     for (key, value) in &task.properties {
         object.insert(key.clone(), value.clone());
     }
+
+    inject_task_recurrence_fields(&mut object);
 
     Value::Object(object)
 }
@@ -571,10 +574,17 @@ mod tests {
             parent_task_id: None,
             section_heading: Some("Lists".to_string()),
             line_number: 11,
-            properties: serde_json::Map::from_iter([(
-                "due".to_string(),
-                Value::String("2026-04-18".to_string()),
-            )]),
+            properties: serde_json::Map::from_iter([
+                ("due".to_string(), Value::String("2026-04-18".to_string())),
+                (
+                    "repeat".to_string(),
+                    Value::String("every month on the 15th".to_string()),
+                ),
+                (
+                    "scheduled".to_string(),
+                    Value::String("2026-02-15".to_string()),
+                ),
+            ]),
         }];
 
         let lists = FileMetadataResolver::field(&note, "lists");
@@ -603,6 +613,19 @@ mod tests {
         assert_eq!(tasks[0]["visual"], tasks[0]["text"]);
         assert_eq!(tasks[0]["due"], Value::String("2026-04-18".to_string()));
         assert_eq!(tasks[0]["reviewed"], Value::Bool(true));
+        assert_eq!(
+            tasks[0]["recurrence"],
+            Value::String("every month on the 15th".to_string())
+        );
+        assert_eq!(
+            tasks[0]["recurrenceRule"],
+            Value::String("FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=15".to_string())
+        );
+        assert_eq!(tasks[0]["recurrenceMonthDay"], Value::Number(15.into()));
+        assert_eq!(
+            tasks[0]["recurrenceAnchor"],
+            Value::String("2026-02-15".to_string())
+        );
     }
 
     #[test]

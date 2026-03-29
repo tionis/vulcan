@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
+use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::expression::parse_expression;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::load_note_index;
@@ -49,25 +50,25 @@ use vulcan_core::{
     rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
     repair_vectors_with_progress, resolve_note_reference, save_saved_report,
     scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
-    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
-    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport,
-    BulkMutationReport, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport,
-    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery,
-    ClusterReport, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, InitSummary, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
-    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery,
-    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
-    TasksQueryResult, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
-    VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
-    WatchReport,
+    task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport,
+    BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    EvaluatedInlineExpression, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorReport,
+    RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
+    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TasksQueryResult, TemplatesConfig, VaultPaths,
+    VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
+    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -587,6 +588,20 @@ struct TasksBlockEvalReport {
     effective_source: Option<String>,
     result: Option<TasksQueryResult>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TasksNextReport {
+    reference_date: String,
+    result_count: usize,
+    occurrences: Vec<TasksNextOccurrence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TasksNextOccurrence {
+    date: String,
+    sequence: usize,
+    task: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1276,6 +1291,47 @@ fn run_tasks_list_command(
     }
 }
 
+fn run_tasks_next_command(
+    paths: &VaultPaths,
+    count: usize,
+    from: Option<&str>,
+) -> Result<TasksNextReport, CliError> {
+    let (reference_date, reference_ms) = resolve_tasks_reference_date(from)?;
+    let result = run_tasks_query_command(paths, "is recurring")?;
+    let mut occurrences = Vec::new();
+
+    for task in result.tasks {
+        let Value::Object(task_object) = task.clone() else {
+            continue;
+        };
+
+        for (sequence, date) in task_upcoming_occurrences(&task_object, reference_ms, count)
+            .into_iter()
+            .enumerate()
+        {
+            occurrences.push(TasksNextOccurrence {
+                date,
+                sequence: sequence.saturating_add(1),
+                task: task.clone(),
+            });
+        }
+    }
+
+    occurrences.sort_by(|left, right| {
+        left.date
+            .cmp(&right.date)
+            .then_with(|| task_sort_key(&left.task).cmp(&task_sort_key(&right.task)))
+            .then_with(|| left.sequence.cmp(&right.sequence))
+    });
+    occurrences.truncate(count);
+
+    Ok(TasksNextReport {
+        reference_date,
+        result_count: occurrences.len(),
+        occurrences,
+    })
+}
+
 fn run_tasks_list_dql_filter(
     paths: &VaultPaths,
     filter: &str,
@@ -1334,6 +1390,26 @@ fn run_tasks_list_dql_filter(
     };
     strip_global_filter_from_output(&mut result, config);
     Ok(result)
+}
+
+fn resolve_tasks_reference_date(from: Option<&str>) -> Result<(String, i64), CliError> {
+    let reference_date = from
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| TemplateTimestamp::current().default_date_string());
+    let reference_ms = parse_date_like_string(&reference_date).ok_or_else(|| {
+        CliError::operation(format!(
+            "failed to parse recurrence reference date: {reference_date}"
+        ))
+    })?;
+
+    Ok((day_string_from_ms(reference_ms), reference_ms))
+}
+
+fn day_string_from_ms(ms: i64) -> String {
+    let (year, month, day, _, _, _, _) = date_components(ms);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 fn tasks_query_source(
@@ -3767,6 +3843,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let result = run_tasks_list_command(&paths, filter.as_deref())?;
                 print_tasks_query_result(cli.output, &result)
             }
+            TasksCommand::Next { count, from } => {
+                let report = run_tasks_next_command(&paths, *count, from.as_deref())?;
+                print_tasks_next_report(cli.output, &report)
+            }
             TasksCommand::Blocked => {
                 let report = run_tasks_blocked_command(&paths)?;
                 print_tasks_blocked_report(cli.output, &report)
@@ -6196,6 +6276,56 @@ fn print_tasks_eval_report(output: OutputFormat, report: &TasksEvalReport) -> Re
     }
 }
 
+fn print_tasks_next_report(output: OutputFormat, report: &TasksNextReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.occurrences.is_empty() {
+                println!("No recurring task instances.");
+                return Ok(());
+            }
+
+            let mut current_date: Option<&str> = None;
+            let mut current_path: Option<&str> = None;
+            for occurrence in &report.occurrences {
+                if current_date != Some(occurrence.date.as_str()) {
+                    if current_date.is_some() {
+                        println!();
+                    }
+                    current_date = Some(occurrence.date.as_str());
+                    current_path = None;
+                    println!("{}", occurrence.date);
+                }
+
+                let path = occurrence
+                    .task
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<unknown>");
+                if current_path != Some(path) {
+                    current_path = Some(path);
+                    println!("{path}");
+                }
+
+                let status = occurrence
+                    .task
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or(" ");
+                let text = occurrence
+                    .task
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                println!("- [{status}] {text}");
+            }
+
+            println!("{} occurrence(s)", report.result_count);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_tasks_blocked_report(
     output: OutputFormat,
     report: &TasksBlockedReport,
@@ -8055,6 +8185,22 @@ mod tests {
             Command::Tasks {
                 command: TasksCommand::List {
                     filter: Some("completed".to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_next_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "next", "5", "--from", "2026-03-29"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Next {
+                    count: 5,
+                    from: Some("2026-03-29".to_string()),
                 },
             }
         );

@@ -1553,11 +1553,11 @@ These require the sandboxed JS runtime and are only available when `--features d
 
 #### 9.10.2 Recurring task support
 
-- [ ] Parse recurrence patterns from task text: `🔁 every <pattern>` (Tasks emoji) and `[repeat:: <pattern>]` (Dataview inline field)
-- [ ] Support recurrence patterns: `every day`, `every week`, `every month`, `every year`, `every <n> days/weeks/months/years`, `every weekday`, `every Monday`, `every month on the 15th`
-- [ ] Optional RRULE support for complex recurrence (RFC 5545 subset)
-- [ ] Recurrence expansion: given a recurring task, compute next occurrence dates for query purposes
-- [ ] `vulcan tasks next <n>` — show next N upcoming task instances (expanding recurrence)
+- [x] Parse recurrence patterns from task text: `🔁 every <pattern>` (Tasks emoji) and `[repeat:: <pattern>]` (Dataview inline field)
+- [x] Support recurrence patterns: `every day`, `every week`, `every month`, `every year`, `every <n> days/weeks/months/years`, `every weekday`, `every Monday`, `every month on the 15th`
+- [x] Optional RRULE support for complex recurrence (RFC 5545 subset)
+- [x] Recurrence expansion: given a recurring task, compute next occurrence dates for query purposes
+- [x] `vulcan tasks next <n>` — show next N upcoming task instances (expanding recurrence)
 - [ ] Store recurrence metadata in `task_properties` for query access
 
 #### 9.10.3 Task dependencies
