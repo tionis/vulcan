@@ -581,6 +581,7 @@ mod tests {
         assert_eq!(tasks[0]["checked"], Value::Bool(true));
         assert_eq!(tasks[0]["completed"], Value::Bool(true));
         assert_eq!(tasks[0]["fullyCompleted"], Value::Bool(true));
+        assert_eq!(tasks[0]["visual"], tasks[0]["text"]);
         assert_eq!(tasks[0]["due"], Value::String("2026-04-18".to_string()));
         assert_eq!(tasks[0]["reviewed"], Value::Bool(true));
     }
