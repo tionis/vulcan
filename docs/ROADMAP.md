@@ -1330,7 +1330,7 @@ Support Dataview inline expressions (`` `= expr` ``) for note rendering and quer
 - [ ] In `--output json` mode, include evaluated inline expression results in note metadata
 - [ ] Diagnostics for expressions that fail to evaluate (type errors, missing fields)
 - [x] Unit tests: `this.property` access, `this.file.name`, nested field access, function calls, missing field handling
-- [ ] Integration test: note with inline expressions, verify evaluation results
+- [x] Integration test: note with inline expressions, verify evaluation results
 
 #### 9.8.8 DataviewJS evaluation (compile-time feature flag)
 

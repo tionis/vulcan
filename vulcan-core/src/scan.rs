@@ -3057,6 +3057,53 @@ mod tests {
     }
 
     #[test]
+    fn dataview_fixture_inline_expressions_evaluate_against_note_metadata() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let expressions: Vec<String> = database
+            .connection()
+            .prepare(
+                "
+                SELECT inline_expressions.expression
+                FROM inline_expressions
+                JOIN documents ON documents.id = inline_expressions.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ORDER BY inline_expressions.byte_offset_start
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows should collect");
+        assert_eq!(expressions, vec!["this.status".to_string()]);
+
+        let note_index = load_note_index(&paths).expect("note index should load");
+        let dashboard = note_index
+            .get("Dashboard")
+            .expect("dashboard note should be indexed");
+        let formulas = BTreeMap::new();
+        let results = expressions
+            .iter()
+            .map(|expression| {
+                let expr = Parser::new(expression)
+                    .expect("expression should parse")
+                    .parse()
+                    .expect("expression should build AST");
+                let ctx = EvalContext::new(dashboard, &formulas).with_note_lookup(&note_index);
+                evaluate(&expr, &ctx).expect("expression should evaluate")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(results, vec![Value::String("draft".to_string())]);
+    }
+
+    #[test]
     fn extracts_tasks_plugin_text_annotations() {
         let properties = extract_task_text_properties(
             "Prepare backlog 🗓️ 2026-04-03 ✅ 2026-04-04 ➕ 2026-04-01 🛫 2026-04-02 ⏳ 2026-04-05 🔺 🔁 every week ⛔ ALPHA-1 🆔 BETA-1",
