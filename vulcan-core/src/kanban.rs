@@ -183,7 +183,7 @@ pub fn list_kanban_boards(paths: &VaultPaths) -> Result<Vec<KanbanBoardSummary>,
     boards
         .into_iter()
         .map(|board| {
-            let columns = load_board_columns(paths, connection, &board, &config)?;
+            let columns = load_board_columns(paths, connection, &board, &config, false)?;
             Ok(KanbanBoardSummary {
                 title: board_title(&board.path),
                 path: board.path,
@@ -198,6 +198,7 @@ pub fn list_kanban_boards(paths: &VaultPaths) -> Result<Vec<KanbanBoardSummary>,
 pub fn load_kanban_board(
     paths: &VaultPaths,
     board: &str,
+    include_archive: bool,
 ) -> Result<KanbanBoardRecord, KanbanError> {
     let resolved = resolve_note_reference(paths, board)
         .map_err(|error| KanbanError::Message(error.to_string()))?;
@@ -211,7 +212,7 @@ pub fn load_kanban_board(
             resolved.path
         )));
     };
-    let columns = load_board_columns(paths, connection, &board_row, &config)?;
+    let columns = load_board_columns(paths, connection, &board_row, &config, include_archive)?;
 
     Ok(KanbanBoardRecord {
         title: board_title(&board_row.path),
@@ -306,6 +307,7 @@ fn load_board_columns(
     connection: &rusqlite::Connection,
     board: &BoardRow,
     config: &VaultConfig,
+    include_archive: bool,
 ) -> Result<Vec<KanbanColumnRecord>, KanbanError> {
     let headings = load_board_headings(connection, board.document_id.as_str())?;
     let Some(column_level) = headings.iter().map(|heading| heading.level).min() else {
@@ -327,7 +329,7 @@ fn load_board_columns(
             .get(index)
             .cloned()
             .unwrap_or_else(|| default_column_layout(heading.text.as_str()));
-        if layout.archived {
+        if layout.archived && !include_archive {
             continue;
         }
         columns.push(KanbanColumnRecord {
@@ -832,7 +834,7 @@ mod tests {
         assert_eq!(boards[0].column_count, 2);
         assert_eq!(boards[0].card_count, 3);
 
-        let board = load_kanban_board(&paths, "Board").expect("board should load");
+        let board = load_kanban_board(&paths, "Board", false).expect("board should load");
         assert_eq!(board.path, "Board.md");
         assert_eq!(board.date_trigger, "DUE");
         assert_eq!(board.time_trigger, "AT");
@@ -904,7 +906,7 @@ mod tests {
         assert_eq!(boards.len(), 1);
         assert_eq!(boards[0].path, "Board.md");
 
-        let board = load_kanban_board(&paths, "Board").expect("board should load");
+        let board = load_kanban_board(&paths, "Board", false).expect("board should load");
         assert_eq!(board.date_trigger, "DUE");
         assert_eq!(board.time_trigger, "AT");
         assert_eq!(board.columns.len(), 1);
@@ -1001,7 +1003,7 @@ mod tests {
         assert_eq!(boards[0].column_count, 2);
         assert_eq!(boards[0].card_count, 3);
 
-        let board = load_kanban_board(&paths, "Board").expect("board should load");
+        let board = load_kanban_board(&paths, "Board", false).expect("board should load");
         assert_eq!(
             board
                 .columns
@@ -1012,5 +1014,17 @@ mod tests {
         );
         assert_eq!(board.columns[0].card_count, 2);
         assert_eq!(board.columns[1].card_count, 1);
+
+        let with_archive =
+            load_kanban_board(&paths, "Board", true).expect("board should load with archive");
+        assert_eq!(
+            with_archive
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Todo", "Done", "Archive"]
+        );
+        assert_eq!(with_archive.columns[2].card_count, 1);
     }
 }

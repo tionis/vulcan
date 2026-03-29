@@ -357,12 +357,14 @@ Subcommands:
 
 Notes:
   `kanban show` defaults to column counts; add `--verbose` to include cards.
+  `kanban show --include-archive` adds the parsed archive section back into the output.
   `kanban cards --status` matches a task status character, status name, or status type.
 
 Examples:
   vulcan kanban list
   vulcan kanban show Board
   vulcan kanban show Board --verbose
+  vulcan kanban show Board --include-archive
   vulcan kanban cards Board --column Todo
   vulcan --output json kanban cards Board --status IN_PROGRESS";
 
@@ -899,6 +901,8 @@ pub enum KanbanCommand {
         board: String,
         #[arg(long, help = "Include card details in the output")]
         verbose: bool,
+        #[arg(long, help = "Include archived cards in the output")]
+        include_archive: bool,
     },
     #[command(about = "List cards from one Kanban board")]
     Cards {
