@@ -7,10 +7,10 @@ mod note_picker;
 mod serve;
 
 pub use cli::{
-    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command,
-    DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GraphCommand, OutputFormat,
-    RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg, SuggestCommand,
-    TasksCommand, TemplateSubcommand, VectorQueueCommand, VectorsCommand,
+    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
+    ConfigImportCommand, DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GraphCommand,
+    OutputFormat, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
+    SuggestCommand, TasksCommand, TemplateSubcommand, VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -40,10 +40,10 @@ use vulcan_core::{
     bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
     drop_vector_model, evaluate_base_file, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, export_static_search_index, git_status,
-    index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
-    link_mentions, list_checkpoints, list_saved_reports, list_vector_models, load_dataview_blocks,
-    load_saved_report, load_tasks_blocks, load_vault_config, merge_tags, move_note,
-    parse_tasks_query, query_backlinks, query_change_report, query_graph_analytics,
+    import_tasks_plugin_config, index_vectors_with_progress, initialize_vault, inspect_cache,
+    inspect_vector_queue, link_mentions, list_checkpoints, list_saved_reports, list_vector_models,
+    load_dataview_blocks, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
+    move_note, parse_tasks_query, query_backlinks, query_change_report, query_graph_analytics,
     query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
     query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
     query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
@@ -928,6 +928,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         Command::Saved { command } => matches!(command, SavedCommand::Run { .. }),
         Command::Checkpoint { .. } => true,
         Command::Export { command } => matches!(command, ExportCommand::SearchIndex { .. }),
+        Command::Config { .. } => false,
         Command::Vectors { command } => matches!(
             command,
             VectorsCommand::Related { .. }
@@ -4091,6 +4092,26 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_static_search_index_report(cli.output, &report, path.as_ref(), *pretty)
             }
         },
+        Command::Config { ref command } => match command {
+            ConfigCommand::Import { command } => match command {
+                ConfigImportCommand::Tasks { no_commit } => {
+                    let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                    warn_auto_commit_if_needed(&auto_commit);
+                    let had_gitignore = paths.gitignore_file().exists();
+                    let report = import_tasks_plugin_config(&paths).map_err(CliError::operation)?;
+                    if report.updated {
+                        auto_commit
+                            .commit(
+                                &paths,
+                                "config-import-tasks",
+                                &config_import_changed_files(&paths, had_gitignore),
+                            )
+                            .map_err(CliError::operation)?;
+                    }
+                    print_config_import_report(cli.output, &report)
+                }
+            },
+        },
         Command::Changes {
             ref checkpoint,
             ref export,
@@ -5554,6 +5575,54 @@ fn print_init_summary(output: OutputFormat, summary: &InitSummary) -> Result<(),
     }
 }
 
+fn print_config_import_report(
+    output: OutputFormat,
+    report: &vulcan_core::ConfigImportReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "Imported {} settings from {} into {} ({}, {})",
+                report.plugin,
+                report.source_path.display(),
+                report.config_path.display(),
+                if report.created_config {
+                    "created config"
+                } else {
+                    "existing config"
+                },
+                if report.updated {
+                    "updated"
+                } else {
+                    "unchanged"
+                }
+            );
+            for mapping in &report.mappings {
+                println!(
+                    "  {} -> {} = {}",
+                    mapping.source,
+                    mapping.target,
+                    render_config_import_value(&mapping.value)?
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn render_config_import_value(value: &Value) -> Result<String, CliError> {
+    match value {
+        Value::Null => Ok("<unset>".to_string()),
+        Value::String(text) => Ok(format!("{text:?}")),
+        Value::Bool(value_bool) => Ok(value_bool.to_string()),
+        Value::Number(number) => Ok(number.to_string()),
+        Value::Array(_) | Value::Object(_) => {
+            serde_json::to_string(value).map_err(CliError::operation)
+        }
+    }
+}
+
 fn print_scan_summary(output: OutputFormat, summary: &ScanSummary, use_color: bool) {
     let palette = AnsiPalette::new(use_color);
     match output {
@@ -5572,6 +5641,14 @@ fn print_scan_summary(output: OutputFormat, summary: &ScanSummary, use_color: bo
             print_json(summary).expect("scan summary JSON serialization should succeed");
         }
     }
+}
+
+fn config_import_changed_files(paths: &VaultPaths, had_gitignore: bool) -> Vec<String> {
+    let mut changed = vec![".vulcan/config.toml".to_string()];
+    if !had_gitignore && paths.gitignore_file().exists() {
+        changed.push(".vulcan/.gitignore".to_string());
+    }
+    changed
 }
 
 fn print_edit_report(output: OutputFormat, report: &EditReport) {
@@ -8231,6 +8308,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_config_import_tasks_command() {
+        let cli =
+            Cli::try_parse_from(["vulcan", "config", "import", "tasks"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Import {
+                    command: ConfigImportCommand::Tasks { no_commit: false },
+                },
+            }
+        );
+    }
+
+    #[test]
     fn edit_new_auto_commit_creates_git_commit() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         init_git_repo(temp_dir.path());
@@ -9438,6 +9530,10 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "rename-property"));
+        assert!(report
+            .commands
+            .iter()
+            .any(|command| command.name == "config"));
         assert!(report
             .commands
             .iter()

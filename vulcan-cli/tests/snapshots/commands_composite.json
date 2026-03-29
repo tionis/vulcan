@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -2119,6 +2119,42 @@
               }
             ],
             "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Import compatible plugin settings into .vulcan/config.toml",
+        "after_help": "Subcommands:\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.\n\nExamples:\n  vulcan config import tasks\n  vulcan --output json config import tasks",
+        "name": "config",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Import compatible Obsidian plugin settings",
+            "name": "import",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Import Obsidian Tasks plugin settings",
+                "name": "tasks",
+                "options": [
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },

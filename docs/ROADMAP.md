@@ -1587,7 +1587,7 @@ These require the sandboxed JS runtime and are only available when `--features d
   | `removeGlobalFilter` | Whether to hide the global filter tag in rendered output |
   | `setCreatedDate` | Auto-set `➕ created` date on new tasks |
   | `recurrenceOnCompletion` | How recurring tasks create next instance on completion |
-- [ ] `vulcan config import tasks` — import Tasks settings and report mapping
+- [x] `vulcan config import tasks` — import Tasks settings and report mapping
 
 #### 9.10.6 CLI surface and evaluation
 
