@@ -1286,9 +1286,9 @@ Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's i
   - [x] LIST display expression: optional per-note expression
 - [ ] Compile FROM clauses to source/filter primitives (tag → `tags` table filter, folder → `documents.path` prefix, links → `links` table join, outgoing → forward `links` join)
 - [ ] Compile WHERE expressions to `FilterExpression` structs (shared with Bases and `--where` CLI flag)
-- [ ] Data commands executed in source order (except FROM which is always first); multiple WHERE, SORT, FLATTEN, GROUP BY clauses allowed and composed sequentially
-- [ ] Computed GROUP BY: `GROUP BY (expr) AS name` with arbitrary expression
-- [ ] Computed FLATTEN: `FLATTEN (expr) AS name` assigns flattened result to a new field; if expression returns non-array, treat as single-element array
+- [x] Data commands executed in source order (except FROM which is always first); multiple WHERE, SORT, FLATTEN, GROUP BY clauses allowed and composed sequentially
+- [x] Computed GROUP BY: `GROUP BY (expr) AS name` with arbitrary expression
+- [x] Computed FLATTEN: `FLATTEN (expr) AS name` assigns flattened result to a new field; if expression returns non-array, treat as single-element array
 - [ ] Multiple blocks per note: a note can contain multiple `` ```dataview `` blocks; `--block <n>` selects by 0-based index, default evaluates all
 - [ ] Error recovery: malformed DQL produces diagnostics, not panics
 - [ ] Unit tests: parse each clause type, boolean FROM combinations, nested WHERE expressions, lambda expressions, link indexing, `WITHOUT ID`, `AS` aliases, computed GROUP BY/FLATTEN, multiple data commands, malformed input
