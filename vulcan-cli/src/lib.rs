@@ -3307,11 +3307,25 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             DataviewCommand::Query { dql } => {
                 let result = run_dataview_query_command(&paths, dql)?;
-                print_dql_query_result(cli.output, &result)
+                print_dql_query_result(
+                    cli.output,
+                    &result,
+                    load_vault_config(&paths)
+                        .config
+                        .dataview
+                        .display_result_count,
+                )
             }
             DataviewCommand::Eval { file, block } => {
                 let report = run_dataview_eval_command(&paths, file, *block)?;
-                print_dataview_eval_report(cli.output, &report)
+                print_dataview_eval_report(
+                    cli.output,
+                    &report,
+                    load_vault_config(&paths)
+                        .config
+                        .dataview
+                        .display_result_count,
+                )
             }
         },
         Command::Search {
@@ -5647,6 +5661,7 @@ fn print_dataview_inline_report(
 fn print_dataview_eval_report(
     output: OutputFormat,
     report: &DataviewEvalReport,
+    show_result_count: bool,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
@@ -5669,7 +5684,7 @@ fn print_dataview_eval_report(
                     continue;
                 }
                 if let Some(result) = &block.result {
-                    print_dql_query_result_human(result);
+                    print_dql_query_result_human(result, show_result_count);
                 }
             }
             Ok(())
@@ -5678,26 +5693,30 @@ fn print_dataview_eval_report(
     }
 }
 
-fn print_dql_query_result(output: OutputFormat, result: &DqlQueryResult) -> Result<(), CliError> {
+fn print_dql_query_result(
+    output: OutputFormat,
+    result: &DqlQueryResult,
+    show_result_count: bool,
+) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
-            print_dql_query_result_human(result);
+            print_dql_query_result_human(result, show_result_count);
             Ok(())
         }
         OutputFormat::Json => print_json(result),
     }
 }
 
-fn print_dql_query_result_human(result: &DqlQueryResult) {
+fn print_dql_query_result_human(result: &DqlQueryResult, show_result_count: bool) {
     match result.query_type {
-        vulcan_core::dql::DqlQueryType::Table => print_dql_table_human(result),
+        vulcan_core::dql::DqlQueryType::Table => print_dql_table_human(result, show_result_count),
         vulcan_core::dql::DqlQueryType::List => print_dql_list_human(result),
-        vulcan_core::dql::DqlQueryType::Task => print_dql_task_human(result),
+        vulcan_core::dql::DqlQueryType::Task => print_dql_task_human(result, show_result_count),
         vulcan_core::dql::DqlQueryType::Calendar => print_dql_calendar_human(result),
     }
 }
 
-fn print_dql_table_human(result: &DqlQueryResult) {
+fn print_dql_table_human(result: &DqlQueryResult, show_result_count: bool) {
     if !result.columns.is_empty() {
         println!("{}", result.columns.join(" | "));
     }
@@ -5710,12 +5729,13 @@ fn print_dql_table_human(result: &DqlQueryResult) {
             .join(" | ");
         println!("{line}");
     }
-    println!("{} result(s)", result.result_count);
+    if show_result_count {
+        println!("{} result(s)", result.result_count);
+    }
 }
 
 fn print_dql_list_human(result: &DqlQueryResult) {
     if result.rows.is_empty() {
-        println!("No results.");
         return;
     }
     for row in &result.rows {
@@ -5732,9 +5752,8 @@ fn print_dql_list_human(result: &DqlQueryResult) {
     }
 }
 
-fn print_dql_task_human(result: &DqlQueryResult) {
+fn print_dql_task_human(result: &DqlQueryResult, show_result_count: bool) {
     if result.rows.is_empty() {
-        println!("No tasks.");
         return;
     }
 
@@ -5750,7 +5769,9 @@ fn print_dql_task_human(result: &DqlQueryResult) {
         let text = render_dataview_inline_value(&row["text"]);
         println!("- [{status}] {text}");
     }
-    println!("{} task(s)", result.result_count);
+    if show_result_count {
+        println!("{} task(s)", result.result_count);
+    }
 }
 
 fn print_dql_calendar_human(result: &DqlQueryResult) {
@@ -5769,7 +5790,6 @@ fn print_dql_calendar_human(result: &DqlQueryResult) {
         }
         println!("- {}", render_dataview_inline_value(&row[file_column]));
     }
-    println!("{} entry(s)", result.result_count);
 }
 
 fn render_dataview_inline_value(value: &Value) -> String {
