@@ -3050,6 +3050,8 @@ mod tests {
             json!(["[[People/Bob]]", "[[People/Bob]]"])
         );
         assert_eq!(eval("file.tasks.statusType"), json!(["TODO", "DONE"]));
+        assert_eq!(eval("file.tasks.status.type"), json!(["TODO", "DONE"]));
+        assert_eq!(eval("file.tasks.status.name"), json!(["Todo", "Done"]));
         assert_eq!(
             eval(r#"default(file.day, "none")"#),
             Value::String("none".to_string())
