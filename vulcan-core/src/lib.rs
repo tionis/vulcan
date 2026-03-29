@@ -36,11 +36,12 @@ pub use bases::{
 };
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{
-    create_default_config, default_config_template, import_tasks_plugin_config, load_vault_config,
-    AttachmentExtractionConfig, AutoScanMode, ChunkingConfig, ChunkingStrategy, ConfigDiagnostic,
-    ConfigImportError, ConfigImportMapping, ConfigImportReport, ConfigLoadResult,
-    EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, InboxConfig, KanbanConfig,
-    LinkResolutionMode, LinkStylePreference, ScanConfig, TemplatesConfig, VaultConfig,
+    create_default_config, default_config_template, import_kanban_plugin_config,
+    import_tasks_plugin_config, load_vault_config, AttachmentExtractionConfig, AutoScanMode,
+    ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigImportError, ConfigImportMapping,
+    ConfigImportReport, ConfigLoadResult, EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger,
+    InboxConfig, KanbanConfig, LinkResolutionMode, LinkStylePreference, ScanConfig,
+    TemplatesConfig, VaultConfig,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,

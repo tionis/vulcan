@@ -339,6 +339,7 @@ Examples:
 
 const CONFIG_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
   import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml
 
 Notes:
@@ -346,6 +347,7 @@ Notes:
   When git auto-commit is enabled for mutations, config imports participate like other mutating commands.
 
 Examples:
+  vulcan config import kanban
   vulcan config import tasks
   vulcan --output json config import tasks";
 
@@ -819,6 +821,11 @@ pub enum ExportCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ConfigImportCommand {
+    #[command(about = "Import Obsidian Kanban plugin settings")]
+    Kanban {
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
     #[command(about = "Import Obsidian Tasks plugin settings")]
     Tasks {
         #[arg(long, help = "Suppress auto-commit for this invocation")]

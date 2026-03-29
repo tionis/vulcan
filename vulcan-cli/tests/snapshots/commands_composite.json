@@ -2224,7 +2224,7 @@
       },
       {
         "about": "Import compatible plugin settings into .vulcan/config.toml",
-        "after_help": "Subcommands:\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.\n\nExamples:\n  vulcan config import tasks\n  vulcan --output json config import tasks",
+        "after_help": "Subcommands:\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.\n\nExamples:\n  vulcan config import kanban\n  vulcan config import tasks\n  vulcan --output json config import tasks",
         "name": "config",
         "options": [],
         "subcommands": [
@@ -2233,6 +2233,27 @@
             "name": "import",
             "options": [],
             "subcommands": [
+              {
+                "about": "Import Obsidian Kanban plugin settings",
+                "name": "kanban",
+                "options": [
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
               {
                 "about": "Import Obsidian Tasks plugin settings",
                 "name": "tasks",

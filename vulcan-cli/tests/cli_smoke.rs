@@ -100,6 +100,60 @@ fn help_mentions_global_flags_and_core_commands() {
 }
 
 #[test]
+fn config_import_kanban_json_output_reports_mappings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-kanban"))
+        .expect("kanban plugin dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/obsidian-kanban/data.json"),
+        r#"{
+          "date-trigger": "DUE",
+          "time-trigger": "AT",
+          "date-format": "DD/MM/YYYY",
+          "time-format": "HH:mm:ss",
+          "metadata-keys": [
+            { "metadataKey": "status", "label": "Status" }
+          ],
+          "archive-with-date": true,
+          "new-card-insertion-method": "prepend"
+        }"#,
+    )
+    .expect("kanban plugin config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "kanban",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["plugin"], "kanban");
+    assert_eq!(json["created_config"], true);
+    assert_eq!(json["updated"], true);
+    assert!(json["mappings"].as_array().is_some_and(|mappings| mappings
+        .iter()
+        .any(|mapping| mapping["target"] == "kanban.date_trigger" && mapping["value"] == "DUE")));
+
+    let config =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(config.contains("[kanban]"));
+    assert!(config.contains("date_trigger = \"DUE\""));
+    assert!(config.contains("metadata_keys = [\"status\"]"));
+}
+
+#[test]
 fn dataview_inline_json_output_evaluates_expressions() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
