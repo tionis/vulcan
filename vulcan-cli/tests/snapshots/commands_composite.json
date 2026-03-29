@@ -1057,7 +1057,7 @@
       },
       {
         "about": "Inspect indexed Kanban boards and cards",
-        "after_help": "Subcommands:\n  list        list indexed Kanban boards\n  show        display one board by column\n  cards       list cards from one board with optional filters\n\nNotes:\n  `kanban show` defaults to column counts; add `--verbose` to include cards.\n  `kanban cards --status` matches a task status character, status name, or status type.\n\nExamples:\n  vulcan kanban list\n  vulcan kanban show Board\n  vulcan kanban show Board --verbose\n  vulcan kanban cards Board --column Todo\n  vulcan --output json kanban cards Board --status IN_PROGRESS",
+        "after_help": "Subcommands:\n  list        list indexed Kanban boards\n  show        display one board by column\n  cards       list cards from one board with optional filters\n\nNotes:\n  `kanban show` defaults to column counts; add `--verbose` to include cards.\n  `kanban show --include-archive` adds the parsed archive section back into the output.\n  `kanban cards --status` matches a task status character, status name, or status type.\n\nExamples:\n  vulcan kanban list\n  vulcan kanban show Board\n  vulcan kanban show Board --verbose\n  vulcan kanban show Board --include-archive\n  vulcan kanban cards Board --column Todo\n  vulcan --output json kanban cards Board --status IN_PROGRESS",
         "name": "kanban",
         "options": [],
         "subcommands": [
@@ -1094,6 +1094,20 @@
                 "short": null,
                 "value_names": [
                   "VERBOSE"
+                ]
+              },
+              {
+                "help": "Include archived cards in the output",
+                "id": "include_archive",
+                "long": "include-archive",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "INCLUDE_ARCHIVE"
                 ]
               }
             ],

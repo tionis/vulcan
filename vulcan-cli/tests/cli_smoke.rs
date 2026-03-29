@@ -453,6 +453,25 @@ fn write_kanban_cli_fixture(vault_root: &Path) {
     .expect("board should be written");
 }
 
+fn write_kanban_archive_fixture(vault_root: &Path) {
+    fs::write(
+        vault_root.join("Board.md"),
+        concat!(
+            "---\n",
+            "kanban-plugin: board\n",
+            "---\n\n",
+            "## Todo\n\n",
+            "- Build release\n\n",
+            "## Done\n\n",
+            "- Shipped\n\n",
+            "***\n\n",
+            "## Archive\n\n",
+            "- Old card\n",
+        ),
+    )
+    .expect("board should be written");
+}
+
 #[test]
 fn tasks_query_json_output_evaluates_tasks_dsl() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -888,6 +907,43 @@ fn kanban_show_json_output_returns_columns_and_verbose_cards() {
     assert_eq!(
         json["columns"][0]["cards"][1]["task"]["status_type"],
         Value::String("IN_PROGRESS".to_string())
+    );
+}
+
+#[test]
+fn kanban_show_json_output_includes_archive_when_requested() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_kanban_archive_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "kanban",
+            "show",
+            "Board",
+            "--include-archive",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["columns"].as_array().map(Vec::len), Some(3));
+    assert_eq!(
+        json["columns"][2]["name"],
+        Value::String("Archive".to_string())
+    );
+    assert_eq!(
+        json["columns"][2]["cards"][0]["text"],
+        Value::String("Old card".to_string())
     );
 }
 

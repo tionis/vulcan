@@ -1669,7 +1669,7 @@ fn run_kanban_cards_command(
     column: Option<&str>,
     status: Option<&str>,
 ) -> Result<KanbanCardsReport, CliError> {
-    let board = load_kanban_board(paths, board).map_err(CliError::operation)?;
+    let board = load_kanban_board(paths, board, false).map_err(CliError::operation)?;
     let column_filter = normalize_optional_filter(column);
     let status_filter = normalize_optional_filter(status);
     let mut cards = Vec::new();
@@ -3979,8 +3979,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     use_stdout_color,
                 )
             }
-            KanbanCommand::Show { board, verbose } => {
-                let report = load_kanban_board(&paths, board).map_err(CliError::operation)?;
+            KanbanCommand::Show {
+                board,
+                verbose,
+                include_archive,
+            } => {
+                let report = load_kanban_board(&paths, board, *include_archive)
+                    .map_err(CliError::operation)?;
                 print_kanban_board_report(cli.output, &report, *verbose)
             }
             KanbanCommand::Cards {
@@ -8675,8 +8680,15 @@ mod tests {
 
     #[test]
     fn parses_kanban_show_command() {
-        let cli = Cli::try_parse_from(["vulcan", "kanban", "show", "Board", "--verbose"])
-            .expect("cli should parse");
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "kanban",
+            "show",
+            "Board",
+            "--verbose",
+            "--include-archive",
+        ])
+        .expect("cli should parse");
 
         assert_eq!(
             cli.command,
@@ -8684,6 +8696,7 @@ mod tests {
                 command: KanbanCommand::Show {
                     board: "Board".to_string(),
                     verbose: true,
+                    include_archive: true,
                 },
             }
         );

@@ -1620,7 +1620,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [x] Parse archive column: Kanban plugin supports a dedicated archive section (heading `## Archive` or configured via `archive-with-date` setting)
 - [ ] `vulcan kanban archive <board> <card>` — move a card to the archive column
 - [ ] Archive-with-date: optionally prepend archive date to card text (configurable via `archive-with-date` setting)
-- [ ] `vulcan kanban show <board> --include-archive` — include archived cards in output (excluded by default)
+- [x] `vulcan kanban show <board> --include-archive` — include archived cards in output (excluded by default)
 
 #### 9.11.3 CLI surface
 
