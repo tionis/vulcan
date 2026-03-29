@@ -1077,6 +1077,10 @@ mod tests {
             Value::String("date".to_string())
         );
         assert_eq!(
+            eval(r#"typeof(link("My Project"))"#),
+            Value::String("link".to_string())
+        );
+        assert_eq!(
             eval("typeof(dur(1d 3h))"),
             Value::String("duration".to_string())
         );
@@ -1228,6 +1232,10 @@ mod tests {
             Value::String("Displayed link text".to_string())
         );
         assert_eq!(
+            eval(r#"meta(link("My Project#Next Actions", "Shown")).display"#),
+            Value::String("Shown".to_string())
+        );
+        assert_eq!(
             eval(r#"meta([[My Project#Next Actions]]).path"#),
             Value::String("My Project".to_string())
         );
@@ -1242,6 +1250,10 @@ mod tests {
         assert_eq!(
             eval(r#"meta([[My Project#Next Actions]]).type"#),
             Value::String("header".to_string())
+        );
+        assert_eq!(
+            eval(r#"meta(link("My Project#Next Actions", "Shown")).subpath"#),
+            Value::String("Next Actions".to_string())
         );
     }
 
