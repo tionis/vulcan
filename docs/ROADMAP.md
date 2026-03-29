@@ -1271,7 +1271,7 @@ Extend the expression evaluator to support Dataview's full type system and expre
 Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's internal query AST.
 
 - [x] Detect `` ```dataview `` fenced code blocks during parsing; store raw DQL text as block metadata
-- [ ] DQL tokenizer: keywords (`TABLE`, `LIST`, `TASK`, `CALENDAR`, `FROM`, `WHERE`, `SORT`, `GROUP BY`, `FLATTEN`, `LIMIT`, `ASC`, `DESC`, `ASCENDING`, `DESCENDING`, `AND`, `OR`, `NOT`, `WITHOUT`, `ID`, `AS`), identifiers, string literals, numbers, date/duration literals, operators, parentheses, links (`[[...]]`)
+- [x] DQL tokenizer: keywords (`TABLE`, `LIST`, `TASK`, `CALENDAR`, `FROM`, `WHERE`, `SORT`, `GROUP BY`, `FLATTEN`, `LIMIT`, `ASC`, `DESC`, `ASCENDING`, `DESCENDING`, `AND`, `OR`, `NOT`, `WITHOUT`, `ID`, `AS`), identifiers, string literals, numbers, date/duration literals, operators, parentheses, links (`[[...]]`)
 - [ ] DQL parser: recursive descent parser producing the internal query AST
   - [ ] Query type: `TABLE`, `LIST`, `TASK`, `CALENDAR`
   - [ ] `WITHOUT ID` modifier for TABLE and LIST
