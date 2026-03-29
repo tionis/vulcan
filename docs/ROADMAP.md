@@ -1573,7 +1573,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [x] Support Tasks plugin custom status configuration: `[x]` = DONE, `[ ]` = TODO, `[/]` = IN_PROGRESS, `[-]` = CANCELLED, `[!]` = IMPORTANT, etc.
 - [x] Status type categories: `TODO`, `DONE`, `IN_PROGRESS`, `CANCELLED`, `NON_TASK` — configurable via `.vulcan/config.toml` or imported from Tasks plugin settings
 - [x] Read Tasks plugin status configuration from `.obsidian/plugins/obsidian-tasks-plugin/data.json`
-- [ ] `status.type` and `status.name` queryable in both DQL and Tasks DSL
+- [x] `status.type` and `status.name` queryable in both DQL and Tasks DSL
 
 #### 9.10.5 Settings import
 

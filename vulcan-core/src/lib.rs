@@ -122,8 +122,9 @@ pub use suggestions::{
     SuggestionError,
 };
 pub use tasks::{
-    load_tasks_blocks, parse_tasks_query, TasksBlockRecord, TasksDateField, TasksDateRelation,
-    TasksError, TasksFilter, TasksQuery, TasksQueryCommand, TasksTextField,
+    evaluate_parsed_tasks_query, evaluate_tasks_query, load_tasks_blocks, parse_tasks_query,
+    TasksBlockRecord, TasksDateField, TasksDateRelation, TasksError, TasksFilter, TasksQuery,
+    TasksQueryCommand, TasksQueryGroup, TasksQueryResult, TasksTextField,
 };
 pub use vector::{
     cluster_vectors, drop_vector_model, index_vectors, index_vectors_with_progress,

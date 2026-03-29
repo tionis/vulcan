@@ -1,4 +1,5 @@
 mod ast;
+mod eval;
 mod parse;
 
 use std::fmt::{Display, Formatter};
@@ -7,27 +8,40 @@ use serde::Serialize;
 
 use crate::cache::CacheDatabase;
 use crate::paths::VaultPaths;
+use crate::properties::PropertyError;
 use crate::resolve_note_reference;
 
 pub use ast::{
     TasksDateField, TasksDateRelation, TasksFilter, TasksQuery, TasksQueryCommand, TasksTextField,
 };
+pub use eval::{
+    evaluate_parsed_tasks_query, evaluate_tasks_query, TasksQueryGroup, TasksQueryResult,
+};
 pub use parse::parse_tasks_query;
 
 #[derive(Debug)]
 pub enum TasksError {
+    Parse(String),
+    Property(PropertyError),
     Message(String),
 }
 
 impl Display for TasksError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Message(message) => f.write_str(message),
+            Self::Parse(message) | Self::Message(message) => f.write_str(message),
+            Self::Property(error) => Display::fmt(error, f),
         }
     }
 }
 
 impl std::error::Error for TasksError {}
+
+impl From<PropertyError> for TasksError {
+    fn from(error: PropertyError) -> Self {
+        Self::Property(error)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TasksBlockRecord {
