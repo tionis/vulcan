@@ -34,35 +34,36 @@ use vulcan_core::properties::load_note_index;
 use vulcan_core::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace,
     bulk_set_property, cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault,
-    drop_vector_model, evaluate_base_file, evaluate_note_inline_expressions, execute_query_report,
-    export_static_search_index, git_status, index_vectors_with_progress, initialize_vault,
-    inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints, list_saved_reports,
-    list_vector_models, load_saved_report, load_vault_config, merge_tags, move_note,
-    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
-    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
-    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
-    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
-    resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
-    suggest_duplicates, suggest_mentions, vector_duplicates, verify_cache, watch_vault,
-    AutoScanMode, BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec,
-    BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DuplicateSuggestionsReport, EvaluatedInlineExpression,
-    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    InitSummary, MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary,
-    NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
-    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorReport, RelatedNoteHit,
-    RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, TemplatesConfig, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
-    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
-    VectorRepairReport, WatchOptions, WatchReport,
+    drop_vector_model, evaluate_base_file, evaluate_dql, evaluate_note_inline_expressions,
+    execute_query_report, export_static_search_index, git_status, index_vectors_with_progress,
+    initialize_vault, inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints,
+    list_saved_reports, list_vector_models, load_dataview_blocks, load_saved_report,
+    load_vault_config, merge_tags, move_note, query_backlinks, query_change_report,
+    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
+    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
+    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
+    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    repair_fts, repair_vectors_with_progress, resolve_note_reference, save_saved_report,
+    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
+    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
+    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport,
+    BulkMutationReport, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport,
+    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery,
+    ClusterReport, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, InitSummary, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
+    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery,
+    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
+    TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
+    VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 
 #[derive(Debug)]
@@ -549,6 +550,22 @@ struct DiffReport {
 struct DataviewInlineReport {
     file: String,
     results: Vec<EvaluatedInlineExpression>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct DataviewEvalReport {
+    file: String,
+    blocks: Vec<DataviewBlockReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct DataviewBlockReport {
+    block_index: usize,
+    line_number: i64,
+    language: String,
+    source: String,
+    result: Option<DqlQueryResult>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1086,6 +1103,51 @@ fn run_dataview_inline_command(
     Ok(DataviewInlineReport {
         file: resolved.path,
         results,
+    })
+}
+
+fn run_dataview_query_command(paths: &VaultPaths, dql: &str) -> Result<DqlQueryResult, CliError> {
+    evaluate_dql(paths, dql, None).map_err(CliError::operation)
+}
+
+fn run_dataview_eval_command(
+    paths: &VaultPaths,
+    file: &str,
+    block: Option<usize>,
+) -> Result<DataviewEvalReport, CliError> {
+    let blocks = load_dataview_blocks(paths, file, block).map_err(CliError::operation)?;
+    let file = blocks
+        .first()
+        .map(|block| block.file.clone())
+        .unwrap_or_else(|| file.to_string());
+    let mut reports = Vec::with_capacity(blocks.len());
+
+    for block in blocks {
+        let (result, error) = if block.language == "dataview" {
+            match evaluate_dql(paths, &block.source, Some(&block.file)) {
+                Ok(result) => (Some(result), None),
+                Err(error) => (None, Some(error.to_string())),
+            }
+        } else {
+            (
+                None,
+                Some("DataviewJS blocks require the `dataviewjs` feature flag".to_string()),
+            )
+        };
+
+        reports.push(DataviewBlockReport {
+            block_index: block.block_index,
+            line_number: block.line_number,
+            language: block.language,
+            source: block.source,
+            result,
+            error,
+        });
+    }
+
+    Ok(DataviewEvalReport {
+        file,
+        blocks: reports,
     })
 }
 
@@ -3242,6 +3304,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             DataviewCommand::Inline { file } => {
                 let report = run_dataview_inline_command(&paths, file)?;
                 print_dataview_inline_report(cli.output, &report)
+            }
+            DataviewCommand::Query { dql } => {
+                let result = run_dataview_query_command(&paths, dql)?;
+                print_dql_query_result(cli.output, &result)
+            }
+            DataviewCommand::Eval { file, block } => {
+                let report = run_dataview_eval_command(&paths, file, *block)?;
+                print_dataview_eval_report(cli.output, &report)
             }
         },
         Command::Search {
@@ -5574,6 +5644,134 @@ fn print_dataview_inline_report(
     }
 }
 
+fn print_dataview_eval_report(
+    output: OutputFormat,
+    report: &DataviewEvalReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.blocks.is_empty() {
+                println!("No Dataview blocks in {}", report.file);
+                return Ok(());
+            }
+
+            println!("Dataview blocks for {}", report.file);
+            for (index, block) in report.blocks.iter().enumerate() {
+                if index > 0 {
+                    println!();
+                }
+                println!(
+                    "Block {} ({}, line {})",
+                    block.block_index, block.language, block.line_number
+                );
+                if let Some(error) = &block.error {
+                    println!("error: {error}");
+                    continue;
+                }
+                if let Some(result) = &block.result {
+                    print_dql_query_result_human(result);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_dql_query_result(output: OutputFormat, result: &DqlQueryResult) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            print_dql_query_result_human(result);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(result),
+    }
+}
+
+fn print_dql_query_result_human(result: &DqlQueryResult) {
+    match result.query_type {
+        vulcan_core::dql::DqlQueryType::Table => print_dql_table_human(result),
+        vulcan_core::dql::DqlQueryType::List => print_dql_list_human(result),
+        vulcan_core::dql::DqlQueryType::Task => print_dql_task_human(result),
+        vulcan_core::dql::DqlQueryType::Calendar => print_dql_calendar_human(result),
+    }
+}
+
+fn print_dql_table_human(result: &DqlQueryResult) {
+    if !result.columns.is_empty() {
+        println!("{}", result.columns.join(" | "));
+    }
+    for row in &result.rows {
+        let line = result
+            .columns
+            .iter()
+            .map(|column| render_dataview_inline_value(&row[column]))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        println!("{line}");
+    }
+    println!("{} result(s)", result.result_count);
+}
+
+fn print_dql_list_human(result: &DqlQueryResult) {
+    if result.rows.is_empty() {
+        println!("No results.");
+        return;
+    }
+    for row in &result.rows {
+        let rendered = match result.columns.as_slice() {
+            [column] => render_dataview_inline_value(&row[column]),
+            [left, right, ..] => format!(
+                "{}: {}",
+                render_dataview_inline_value(&row[left]),
+                render_dataview_inline_value(&row[right])
+            ),
+            [] => serde_json::to_string(row).unwrap_or_default(),
+        };
+        println!("- {rendered}");
+    }
+}
+
+fn print_dql_task_human(result: &DqlQueryResult) {
+    if result.rows.is_empty() {
+        println!("No tasks.");
+        return;
+    }
+
+    let file_column = result.columns.first().map(String::as_str).unwrap_or("File");
+    let mut current_file: Option<&str> = None;
+    for row in &result.rows {
+        let file = row[file_column].as_str().unwrap_or_default();
+        if current_file != Some(file) {
+            current_file = Some(file);
+            println!("{file}");
+        }
+        let status = row["status"].as_str().unwrap_or(" ");
+        let text = render_dataview_inline_value(&row["text"]);
+        println!("- [{status}] {text}");
+    }
+    println!("{} task(s)", result.result_count);
+}
+
+fn print_dql_calendar_human(result: &DqlQueryResult) {
+    if result.rows.is_empty() {
+        println!("No calendar entries.");
+        return;
+    }
+
+    let file_column = result.columns.get(1).map(String::as_str).unwrap_or("File");
+    let mut current_date: Option<&str> = None;
+    for row in &result.rows {
+        let date = row["date"].as_str().unwrap_or_default();
+        if current_date != Some(date) {
+            current_date = Some(date);
+            println!("{date}");
+        }
+        println!("- {}", render_dataview_inline_value(&row[file_column]));
+    }
+    println!("{} entry(s)", result.result_count);
+}
+
 fn render_dataview_inline_value(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
@@ -7140,6 +7338,37 @@ mod tests {
             Command::Dataview {
                 command: DataviewCommand::Inline {
                     file: "Dashboard".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_dataview_query_command() {
+        let cli = Cli::try_parse_from(["vulcan", "dataview", "query", "TABLE status FROM #tag"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Dataview {
+                command: DataviewCommand::Query {
+                    dql: "TABLE status FROM #tag".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_dataview_eval_command() {
+        let cli = Cli::try_parse_from(["vulcan", "dataview", "eval", "Dashboard", "--block", "1"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Dataview {
+                command: DataviewCommand::Eval {
+                    file: "Dashboard".to_string(),
+                    block: Some(1),
                 },
             }
         );

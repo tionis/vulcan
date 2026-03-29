@@ -305,10 +305,14 @@ Examples:
 const DATAVIEW_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   inline      evaluate Dataview inline expressions from one note
+  query       evaluate a DQL query string directly
+  eval        evaluate indexed ```dataview``` blocks from one note
 
 Examples:
   vulcan dataview inline Dashboard
-  vulcan --output json dataview inline Projects/Alpha";
+  vulcan --output json dataview inline Projects/Alpha
+  vulcan dataview query 'TABLE status FROM \"Projects\"'
+  vulcan dataview eval Dashboard --block 0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -765,6 +769,18 @@ pub enum DataviewCommand {
     Inline {
         #[arg(help = "Note path, filename, or alias containing inline expressions")]
         file: String,
+    },
+    #[command(about = "Evaluate a Dataview DQL query string")]
+    Query {
+        #[arg(help = "Quoted DQL query string")]
+        dql: String,
+    },
+    #[command(about = "Evaluate indexed Dataview code blocks from one note")]
+    Eval {
+        #[arg(help = "Note path, filename, or alias containing Dataview blocks")]
+        file: String,
+        #[arg(long, help = "0-based Dataview block index to evaluate")]
+        block: Option<usize>,
     },
 }
 

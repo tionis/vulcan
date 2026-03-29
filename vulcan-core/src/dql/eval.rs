@@ -6,14 +6,16 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::cache::CacheDatabase;
 use crate::config::load_vault_config;
 use crate::expression::eval::{
-    compare_values, evaluate, is_truthy, parse_wikilink_target, resolve_note_reference,
-    value_to_display, EvalContext,
+    compare_values, evaluate, is_truthy, parse_wikilink_target,
+    resolve_note_reference as resolve_lookup_note_reference, value_to_display, EvalContext,
 };
 use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
 use crate::properties::{load_note_index, NoteRecord, PropertyError};
+use crate::resolve_note_reference as resolve_vault_note_reference;
 
 use super::ast::{DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery};
 use super::parse_dql;
@@ -48,6 +50,15 @@ pub struct DqlQueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Value>,
     pub result_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DataviewBlockRecord {
+    pub file: String,
+    pub language: String,
+    pub block_index: usize,
+    pub line_number: i64,
+    pub source: String,
 }
 
 pub fn evaluate_dql(
@@ -148,6 +159,67 @@ pub fn evaluate_parsed_dql(
         rows,
         &note_lookup,
     )
+}
+
+pub fn load_dataview_blocks(
+    paths: &VaultPaths,
+    file: &str,
+    block: Option<usize>,
+) -> Result<Vec<DataviewBlockRecord>, DqlEvalError> {
+    let resolved = resolve_vault_note_reference(paths, file)
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let database =
+        CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let connection = database.connection();
+    let mut statement = connection
+        .prepare(
+            "SELECT dataview_blocks.language, dataview_blocks.block_index, \
+             dataview_blocks.line_number, dataview_blocks.raw_text
+             FROM dataview_blocks
+             JOIN documents ON documents.id = dataview_blocks.document_id
+             WHERE documents.path = ?1
+             ORDER BY dataview_blocks.block_index",
+        )
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let rows = statement
+        .query_map([resolved.path.as_str()], |row| {
+            let block_index = row.get::<_, i64>(1)?;
+            Ok(DataviewBlockRecord {
+                file: resolved.path.clone(),
+                language: row.get(0)?,
+                block_index: usize::try_from(block_index).unwrap_or_default(),
+                line_number: row.get(2)?,
+                source: row.get(3)?,
+            })
+        })
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+
+    let mut blocks = Vec::new();
+    for row in rows {
+        blocks.push(row.map_err(|error| DqlEvalError::Message(error.to_string()))?);
+    }
+
+    if let Some(requested_block) = block {
+        return blocks
+            .into_iter()
+            .find(|candidate| candidate.block_index == requested_block)
+            .map(|candidate| vec![candidate])
+            .ok_or_else(|| {
+                DqlEvalError::Message(format!(
+                    "no Dataview block {requested_block} found in {}",
+                    resolved.path
+                ))
+            });
+    }
+
+    if blocks.is_empty() {
+        return Err(DqlEvalError::Message(format!(
+            "no Dataview blocks found in {}",
+            resolved.path
+        )));
+    }
+
+    Ok(blocks)
 }
 
 #[derive(Debug, Clone)]
@@ -342,7 +414,7 @@ fn resolve_source_target<'a>(
         DqlLinkTarget::Wikilink(raw) => {
             let source_path = current_file.unwrap_or_default();
             let target = parse_wikilink_target(raw);
-            resolve_note_reference(note_lookup, source_path, &target).ok_or_else(|| {
+            resolve_lookup_note_reference(note_lookup, source_path, &target).ok_or_else(|| {
                 DqlEvalError::Message(format!("could not resolve DQL source target {raw}"))
             })
         }
@@ -359,7 +431,7 @@ fn incoming_link_sources(
         .filter(|note| {
             note.links.iter().any(|link| {
                 let target = parse_wikilink_target(link);
-                resolve_note_reference(note_lookup, &note.document_path, &target)
+                resolve_lookup_note_reference(note_lookup, &note.document_path, &target)
                     .is_some_and(|resolved| resolved.document_path == target_note.document_path)
             })
         })
@@ -376,7 +448,7 @@ fn outgoing_link_sources(
         .iter()
         .filter_map(|link| {
             let target = parse_wikilink_target(link);
-            resolve_note_reference(note_lookup, &target_note.document_path, &target)
+            resolve_lookup_note_reference(note_lookup, &target_note.document_path, &target)
                 .map(|note| note.document_path.clone())
         })
         .collect()

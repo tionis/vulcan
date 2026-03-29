@@ -171,6 +171,135 @@ fn dataview_inline_json_output_reports_expression_errors() {
 }
 
 #[test]
+fn dataview_query_json_output_evaluates_dql_strings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "dataview",
+            "query",
+            r#"TABLE status, priority FROM "Projects" SORT file.name ASC"#,
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["query_type"], "table");
+    assert_eq!(
+        json["columns"],
+        serde_json::json!(["File", "status", "priority"])
+    );
+    assert_eq!(json["rows"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        json["rows"][0]["File"],
+        Value::String("[[Projects/Alpha]]".to_string())
+    );
+    assert_eq!(
+        json["rows"][0]["status"],
+        Value::String("active".to_string())
+    );
+    assert_eq!(json["rows"][0]["priority"].as_f64(), Some(1.0));
+    assert_eq!(
+        json["rows"][1]["File"],
+        Value::String("[[Projects/Beta]]".to_string())
+    );
+}
+
+#[test]
+fn dataview_eval_json_output_evaluates_selected_block() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "dataview",
+            "eval",
+            "Dashboard",
+            "--block",
+            "0",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["file"], Value::String("Dashboard.md".to_string()));
+    assert_eq!(json["blocks"].as_array().map(Vec::len), Some(1));
+    assert_eq!(json["blocks"][0]["block_index"], Value::Number(0.into()));
+    assert_eq!(
+        json["blocks"][0]["language"],
+        Value::String("dataview".to_string())
+    );
+    assert_eq!(json["blocks"][0]["error"], Value::Null);
+    assert_eq!(json["blocks"][0]["result"]["query_type"], "table");
+    assert_eq!(
+        json["blocks"][0]["result"]["columns"],
+        serde_json::json!(["File", "status", "priority"])
+    );
+    assert_eq!(
+        json["blocks"][0]["result"]["result_count"],
+        Value::Number(0.into())
+    );
+}
+
+#[test]
+fn dataview_eval_json_output_defaults_to_all_indexed_blocks() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "dataview",
+            "eval",
+            "Dashboard",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["blocks"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        json["blocks"][0]["language"],
+        Value::String("dataview".to_string())
+    );
+    assert_eq!(json["blocks"][0]["error"], Value::Null);
+    assert_eq!(
+        json["blocks"][1]["language"],
+        Value::String("dataviewjs".to_string())
+    );
+    assert!(json["blocks"][1]["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("dataviewjs")));
+}
+
+#[test]
 fn notes_json_output_includes_evaluated_inline_expressions() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
