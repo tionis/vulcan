@@ -100,6 +100,68 @@ fn help_mentions_global_flags_and_core_commands() {
 }
 
 #[test]
+fn config_import_templater_json_output_reports_mappings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/templater-obsidian"))
+        .expect("templater plugin dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
+        r#"{
+          "command_timeout": 12,
+          "templates_folder": "Templater/Templates",
+          "templates_pairs": [["slugify", "bun run slugify"]],
+          "trigger_on_file_creation": true,
+          "enable_system_commands": true,
+          "user_scripts_folder": "Scripts/User",
+          "startup_templates": ["Startup"],
+          "intellisense_render": 4
+        }"#,
+    )
+    .expect("templater plugin config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "templater",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["plugin"], "templater");
+    assert_eq!(
+        json["mappings"][0]["target"],
+        Value::String("templates.templater_folder".to_string())
+    );
+    assert_eq!(
+        json["mappings"][0]["value"],
+        Value::String("Templater/Templates".to_string())
+    );
+
+    let rendered =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(rendered.contains("[templates]"));
+    assert!(rendered.contains("templater_folder = \"Templater/Templates\""));
+    assert!(rendered.contains("command_timeout = 12"));
+    assert!(rendered.contains("[[templates.templates_pairs]]"));
+    assert!(rendered.contains("name = \"slugify\""));
+    assert!(rendered.contains("enable_system_commands = true"));
+    assert!(rendered.contains("user_scripts_folder = \"Scripts/User\""));
+    assert!(rendered.contains("startup_templates = [\"Startup\"]"));
+    assert!(rendered.contains("intellisense_render = 4"));
+}
+
+#[test]
 fn config_import_kanban_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -1727,7 +1789,7 @@ fn inbox_and_template_help_document_config_and_variables() {
         .stdout(
             predicate::str::contains("Template source:")
                 .and(predicate::str::contains(
-                    "If .obsidian/templates.json configures a template folder",
+                    "If .obsidian/templates.json or the Templater plugin configures a template folder",
                 ))
                 .and(predicate::str::contains(
                     "{{title}} {{date}} {{time}} {{datetime}} {{uuid}}",

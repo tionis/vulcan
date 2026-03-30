@@ -42,16 +42,16 @@ use vulcan_core::{
     create_checkpoint, doctor_fix, doctor_vault, drop_vector_model, evaluate_base_file,
     evaluate_dql, evaluate_note_inline_expressions, evaluate_tasks_query, execute_query_report,
     export_static_search_index, git_status, import_kanban_plugin_config,
-    import_tasks_plugin_config, index_vectors_with_progress, initialize_vault, inspect_cache,
-    inspect_vector_queue, link_mentions, list_checkpoints, list_kanban_boards, list_saved_reports,
-    list_vector_models, load_dataview_blocks, load_kanban_board, load_saved_report,
-    load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card, move_note,
-    parse_tasks_query, query_backlinks, query_change_report, query_graph_analytics,
-    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
-    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
-    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
-    repair_vectors_with_progress, resolve_note_reference, save_saved_report,
+    import_tasks_plugin_config, import_templater_plugin_config, index_vectors_with_progress,
+    initialize_vault, inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints,
+    list_kanban_boards, list_saved_reports, list_vector_models, load_dataview_blocks,
+    load_kanban_board, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
+    move_kanban_card, move_note, parse_tasks_query, query_backlinks, query_change_report,
+    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
+    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
+    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
+    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    repair_fts, repair_vectors_with_progress, resolve_note_reference, save_saved_report,
     scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
     task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
     BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport,
@@ -1896,7 +1896,11 @@ fn run_template_command(
     stdout_is_tty: bool,
 ) -> Result<TemplateCommandResult, CliError> {
     let config = load_vault_config(paths).config;
-    let templates = discover_templates(paths, config.templates.obsidian_folder.as_deref())?;
+    let templates = discover_templates(
+        paths,
+        config.templates.obsidian_folder.as_deref(),
+        config.templates.templater_folder.as_deref(),
+    )?;
     if list {
         return Ok(TemplateCommandResult::List(TemplateListReport {
             templates: templates
@@ -1966,7 +1970,11 @@ fn run_template_insert_command(
     interactive_note_selection: bool,
 ) -> Result<TemplateInsertReport, CliError> {
     let config = load_vault_config(paths).config;
-    let templates = discover_templates(paths, config.templates.obsidian_folder.as_deref())?;
+    let templates = discover_templates(
+        paths,
+        config.templates.obsidian_folder.as_deref(),
+        config.templates.templater_folder.as_deref(),
+    )?;
     let template = resolve_template_file(paths, &templates.templates, template_name)?;
     let target_identifier = resolve_note_argument(
         paths,
@@ -2017,6 +2025,7 @@ enum TemplateCommandResult {
 fn discover_templates(
     paths: &VaultPaths,
     obsidian_folder: Option<&Path>,
+    templater_folder: Option<&Path>,
 ) -> Result<TemplateDiscovery, CliError> {
     let mut warnings = Vec::new();
     let mut templates = list_templates_in_directory(
@@ -2024,42 +2033,64 @@ fn discover_templates(
         ".vulcan/templates",
         "vulcan",
     )?;
-    let mut obsidian_templates = obsidian_folder
-        .filter(|folder| !folder.as_os_str().is_empty())
-        .map(|folder| {
-            list_templates_in_directory(
-                paths.vault_root().join(folder),
-                &folder.to_string_lossy(),
-                "obsidian",
-            )
-        })
-        .transpose()?
-        .unwrap_or_default();
-
-    for obsidian_template in obsidian_templates.drain(..) {
-        if let Some(existing) = templates
-            .iter_mut()
-            .find(|template| template.name == obsidian_template.name)
-        {
-            let warning = format!(
-                "template {} exists in both {} and {}; using {}",
-                existing.name,
-                obsidian_template.display_path,
-                existing.display_path,
-                existing.display_path
-            );
-            existing.warning = Some(warning.clone());
-            warnings.push(warning);
-        } else {
-            templates.push(obsidian_template);
-        }
-    }
+    merge_template_source(
+        &mut templates,
+        &mut warnings,
+        paths,
+        templater_folder,
+        "templater",
+    )?;
+    merge_template_source(
+        &mut templates,
+        &mut warnings,
+        paths,
+        obsidian_folder,
+        "obsidian",
+    )?;
 
     templates.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(TemplateDiscovery {
         templates,
         warnings,
     })
+}
+
+fn merge_template_source(
+    templates: &mut Vec<TemplateCandidate>,
+    warnings: &mut Vec<String>,
+    paths: &VaultPaths,
+    folder: Option<&Path>,
+    source: &'static str,
+) -> Result<(), CliError> {
+    let mut discovered = folder
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .map(|folder| {
+            list_templates_in_directory(
+                paths.vault_root().join(folder),
+                &folder.to_string_lossy(),
+                source,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    for candidate in discovered.drain(..) {
+        if let Some(existing) = templates
+            .iter_mut()
+            .find(|template| template.name == candidate.name)
+        {
+            let warning = format!(
+                "template {} exists in both {} and {}; using {}",
+                existing.name, candidate.display_path, existing.display_path, existing.display_path
+            );
+            existing.warning = Some(warning.clone());
+            warnings.push(warning);
+        } else {
+            templates.push(candidate);
+        }
+    }
+
+    Ok(())
 }
 
 fn resolve_template_file(
@@ -2075,7 +2106,12 @@ fn resolve_template_file(
     }
 
     let mut searched = vec![paths.vulcan_dir().join("templates").display().to_string()];
-    let obsidian_folder = load_vault_config(paths).config.templates.obsidian_folder;
+    let templates_config = load_vault_config(paths).config.templates;
+    let templater_folder = templates_config.templater_folder;
+    let obsidian_folder = templates_config.obsidian_folder;
+    if let Some(folder) = templater_folder.filter(|folder| !folder.as_os_str().is_empty()) {
+        searched.push(paths.vault_root().join(folder).display().to_string());
+    }
     if let Some(folder) = obsidian_folder.filter(|folder| !folder.as_os_str().is_empty()) {
         searched.push(paths.vault_root().join(folder).display().to_string());
     }
@@ -4328,6 +4364,23 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         },
         Command::Config { ref command } => match command {
             ConfigCommand::Import { command } => match command {
+                ConfigImportCommand::Templater { no_commit } => {
+                    let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                    warn_auto_commit_if_needed(&auto_commit);
+                    let had_gitignore = paths.gitignore_file().exists();
+                    let report =
+                        import_templater_plugin_config(&paths).map_err(CliError::operation)?;
+                    if report.updated {
+                        auto_commit
+                            .commit(
+                                &paths,
+                                "config-import-templater",
+                                &config_import_changed_files(&paths, had_gitignore),
+                            )
+                            .map_err(CliError::operation)?;
+                    }
+                    print_config_import_report(cli.output, &report)
+                }
                 ConfigImportCommand::Kanban { no_commit } => {
                     let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
                     warn_auto_commit_if_needed(&auto_commit);
@@ -9012,6 +9065,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_config_import_templater_command() {
+        let cli = Cli::try_parse_from(["vulcan", "config", "import", "templater"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Import {
+                    command: ConfigImportCommand::Templater { no_commit: false },
+                },
+            }
+        );
+    }
+
+    #[test]
     fn parses_config_import_kanban_command() {
         let cli = Cli::try_parse_from(["vulcan", "config", "import", "kanban"])
             .expect("cli should parse");
@@ -9106,7 +9174,7 @@ mod tests {
         let config = TemplatesConfig {
             date_format: "dddd, MMMM Do YYYY".to_string(),
             time_format: "hh:mm A".to_string(),
-            obsidian_folder: None,
+            ..TemplatesConfig::default()
         };
 
         let rendered = render_template_contents(
@@ -9193,6 +9261,44 @@ mod tests {
         assert_eq!(report.warnings.len(), 1);
         assert!(report.warnings[0].contains("daily.md"));
         assert!(report.warnings[0].contains(".vulcan/templates/daily.md"));
+    }
+
+    #[test]
+    fn template_command_lists_templater_templates_with_sources() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        fs::create_dir_all(paths.vulcan_dir().join("templates")).expect("template dir");
+        fs::create_dir_all(temp_dir.path().join(".obsidian/plugins/templater-obsidian"))
+            .expect("templater dir");
+        fs::create_dir_all(temp_dir.path().join("Templater")).expect("templater templates dir");
+        fs::write(
+            temp_dir
+                .path()
+                .join(".obsidian/plugins/templater-obsidian/data.json"),
+            r#"{"templates_folder":"Templater"}"#,
+        )
+        .expect("templater config should be written");
+        fs::write(
+            temp_dir.path().join("Templater").join("daily.md"),
+            "# Templater\n",
+        )
+        .expect("templater template should be written");
+
+        let result = run_template_command(&paths, None, true, None, false, false)
+            .expect("template list should succeed");
+        let TemplateCommandResult::List(report) = result else {
+            panic!("template command should list templates");
+        };
+
+        assert_eq!(
+            report.templates,
+            vec![TemplateSummary {
+                name: "daily.md".to_string(),
+                source: "templater".to_string(),
+                path: "Templater/daily.md".to_string(),
+            }]
+        );
+        assert!(report.warnings.is_empty());
     }
 
     #[test]

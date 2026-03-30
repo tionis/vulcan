@@ -2427,6 +2427,27 @@
             "options": [],
             "subcommands": [
               {
+                "about": "Import Obsidian Templater plugin settings",
+                "name": "templater",
+                "options": [
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
                 "about": "Import Obsidian Kanban plugin settings",
                 "name": "kanban",
                 "options": [
@@ -2591,7 +2612,7 @@
       },
       {
         "about": "Create notes from templates or insert templates into existing notes",
-        "after_help": "Template source:\n  Templates live under .vulcan/templates as regular .md files.\n  If .obsidian/templates.json configures a template folder, Vulcan lists that folder too.\n  When the same template exists in both places, .vulcan/templates takes precedence.\n  NAME can be the full filename or the filename stem.\n\nVariables:\n  {{title}} {{date}} {{time}} {{datetime}} {{uuid}}\n  {{date:YYYY-MM-DD}} {{time:HH:mm}} {{date:dddd, MMMM Do YYYY}}\n\nConfiguration:\n  Default template date/time formats live under [templates] in .vulcan/config.toml.\n  date_format applies to {{date}} and time_format applies to {{time}}.\n\nNotes:\n  If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.\n  In an interactive terminal, the new note is opened in $VISUAL/$EDITOR after rendering.\n  `template insert` appends by default; use --prepend to insert after frontmatter instead.\n  If the insert target note is omitted in an interactive terminal, Vulcan opens the note picker.\n\nExamples:\n  vulcan template --list\n  vulcan template daily --path Daily/2026-03-26\n  vulcan template meeting\n  vulcan template insert daily Projects/Alpha\n  vulcan template insert daily --prepend",
+        "after_help": "Template source:\n  Templates live under .vulcan/templates as regular .md files.\n  If .obsidian/templates.json or the Templater plugin configures a template folder, Vulcan lists those folders too.\n  When the same template exists in both places, .vulcan/templates takes precedence.\n  NAME can be the full filename or the filename stem.\n\nVariables:\n  {{title}} {{date}} {{time}} {{datetime}} {{uuid}}\n  {{date:YYYY-MM-DD}} {{time:HH:mm}} {{date:dddd, MMMM Do YYYY}}\n\nConfiguration:\n  Default template date/time formats live under [templates] in .vulcan/config.toml.\n  date_format applies to {{date}} and time_format applies to {{time}}.\n\nNotes:\n  If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.\n  In an interactive terminal, the new note is opened in $VISUAL/$EDITOR after rendering.\n  `template insert` appends by default; use --prepend to insert after frontmatter instead.\n  If the insert target note is omitted in an interactive terminal, Vulcan opens the note picker.\n\nExamples:\n  vulcan template --list\n  vulcan template daily --path Daily/2026-03-26\n  vulcan template meeting\n  vulcan template insert daily Projects/Alpha\n  vulcan template insert daily --prepend",
         "name": "template",
         "options": [
           {
