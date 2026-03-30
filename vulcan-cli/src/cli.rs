@@ -252,7 +252,7 @@ Examples:
 const TEMPLATE_COMMAND_AFTER_HELP: &str = "\
 Template source:
   Templates live under .vulcan/templates as regular .md files.
-  If .obsidian/templates.json configures a template folder, Vulcan lists that folder too.
+  If .obsidian/templates.json or the Templater plugin configures a template folder, Vulcan lists those folders too.
   When the same template exists in both places, .vulcan/templates takes precedence.
   NAME can be the full filename or the filename stem.
 
@@ -830,6 +830,11 @@ pub enum ExportCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ConfigImportCommand {
+    #[command(about = "Import Obsidian Templater plugin settings")]
+    Templater {
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
     #[command(about = "Import Obsidian Kanban plugin settings")]
     Kanban {
         #[arg(long, help = "Suppress auto-commit for this invocation")]

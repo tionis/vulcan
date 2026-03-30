@@ -1504,11 +1504,11 @@ These require the sandboxed JS runtime and are only available when `--features d
 
 #### 9.9.4 Settings import
 
-- [ ] Read Templater settings from `.obsidian/plugins/templater-obsidian/data.json`:
+- [x] Read Templater settings from `.obsidian/plugins/templater-obsidian/data.json`:
   | Setting key | Vulcan mapping |
   |---|---|
   | `templates_folder` | Template discovery path |
-  | `templates_pairs` | Folder-specific template assignments |
+  | `templates_pairs` | User system command function assignments |
   | `user_scripts_folder` | User script discovery path for `tp.user.*` |
   | `enable_system_commands` | Enable/disable `tp.system` command execution |
   | `shell_path` | Shell path for system commands |
@@ -1517,7 +1517,7 @@ These require the sandboxed JS runtime and are only available when `--features d
   | `trigger_on_file_creation` | Auto-template on new file creation |
   | `syntax_highlighting` | Informational only (no CLI equivalent) |
   | `auto_jump_to_cursor` | Informational only (no CLI equivalent) |
-- [ ] `vulcan config import templater` — import Templater settings and report mapping
+- [x] `vulcan config import templater` — import Templater settings and report mapping
 
 #### 9.9.5 CLI integration
 

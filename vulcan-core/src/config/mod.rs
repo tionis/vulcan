@@ -140,6 +140,24 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # [templates]
 # date_format = "YYYY-MM-DD"
 # time_format = "HH:mm"
+# obsidian_folder = "Shared Templates"  # Obsidian core Templates plugin
+# templater_folder = "Templates"        # Templater plugin templates_folder
+# command_timeout = 5
+# trigger_on_file_creation = false
+# auto_jump_to_cursor = false
+# enable_system_commands = false
+# shell_path = "/bin/bash"
+# user_scripts_folder = "Scripts"
+# enable_folder_templates = true
+# enable_file_templates = false
+# syntax_highlighting = true
+# syntax_highlighting_mobile = false
+# intellisense_render = 1
+# enabled_templates_hotkeys = ["Daily"]
+# startup_templates = ["Startup"]
+# templates_pairs = [{ name = "slugify", command = "node scripts/slugify.js" }]
+# folder_templates = [{ folder = "Daily", template = "Daily Template" }]
+# file_templates = [{ regex = "^Projects/.*\\.md$", template = "Project Template" }]
 "###;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,10 +328,62 @@ impl Default for InboxConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplaterCommandPairConfig {
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplaterFolderTemplateConfig {
+    pub folder: PathBuf,
+    pub template: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplaterFileTemplateConfig {
+    pub regex: String,
+    pub template: String,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplatesConfig {
     pub date_format: String,
     pub time_format: String,
     pub obsidian_folder: Option<PathBuf>,
+    pub templater_folder: Option<PathBuf>,
+    #[serde(default = "default_templater_command_timeout")]
+    pub command_timeout: usize,
+    #[serde(default)]
+    pub templates_pairs: Vec<TemplaterCommandPairConfig>,
+    #[serde(default)]
+    pub trigger_on_file_creation: bool,
+    #[serde(default)]
+    pub auto_jump_to_cursor: bool,
+    #[serde(default)]
+    pub enable_system_commands: bool,
+    #[serde(default)]
+    pub shell_path: Option<PathBuf>,
+    #[serde(default)]
+    pub user_scripts_folder: Option<PathBuf>,
+    #[serde(default = "default_templater_enable_folder_templates")]
+    pub enable_folder_templates: bool,
+    #[serde(default)]
+    pub folder_templates: Vec<TemplaterFolderTemplateConfig>,
+    #[serde(default)]
+    pub enable_file_templates: bool,
+    #[serde(default)]
+    pub file_templates: Vec<TemplaterFileTemplateConfig>,
+    #[serde(default = "default_templater_syntax_highlighting")]
+    pub syntax_highlighting: bool,
+    #[serde(default)]
+    pub syntax_highlighting_mobile: bool,
+    #[serde(default)]
+    pub enabled_templates_hotkeys: Vec<String>,
+    #[serde(default)]
+    pub startup_templates: Vec<String>,
+    #[serde(default = "default_templater_intellisense_render")]
+    pub intellisense_render: usize,
 }
 
 impl Default for TemplatesConfig {
@@ -322,6 +392,23 @@ impl Default for TemplatesConfig {
             date_format: "YYYY-MM-DD".to_string(),
             time_format: "HH:mm".to_string(),
             obsidian_folder: None,
+            templater_folder: None,
+            command_timeout: default_templater_command_timeout(),
+            templates_pairs: Vec::new(),
+            trigger_on_file_creation: false,
+            auto_jump_to_cursor: false,
+            enable_system_commands: false,
+            shell_path: None,
+            user_scripts_folder: None,
+            enable_folder_templates: default_templater_enable_folder_templates(),
+            folder_templates: Vec::new(),
+            enable_file_templates: false,
+            file_templates: Vec::new(),
+            syntax_highlighting: default_templater_syntax_highlighting(),
+            syntax_highlighting_mobile: false,
+            enabled_templates_hotkeys: Vec::new(),
+            startup_templates: Vec::new(),
+            intellisense_render: default_templater_intellisense_render(),
         }
     }
 }
@@ -677,6 +764,22 @@ fn default_kanban_new_card_insertion_method() -> String {
     "append".to_string()
 }
 
+fn default_templater_command_timeout() -> usize {
+    5
+}
+
+fn default_templater_enable_folder_templates() -> bool {
+    true
+}
+
+fn default_templater_syntax_highlighting() -> bool {
+    true
+}
+
+fn default_templater_intellisense_render() -> usize {
+    1
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataviewConfig {
     #[serde(default = "default_dataview_inline_query_prefix")]
@@ -933,6 +1036,24 @@ struct PartialInboxConfig {
 struct PartialTemplatesConfig {
     date_format: Option<String>,
     time_format: Option<String>,
+    obsidian_folder: Option<PathBuf>,
+    templater_folder: Option<PathBuf>,
+    command_timeout: Option<usize>,
+    templates_pairs: Option<Vec<TemplaterCommandPairConfig>>,
+    trigger_on_file_creation: Option<bool>,
+    auto_jump_to_cursor: Option<bool>,
+    enable_system_commands: Option<bool>,
+    shell_path: Option<PathBuf>,
+    user_scripts_folder: Option<PathBuf>,
+    enable_folder_templates: Option<bool>,
+    folder_templates: Option<Vec<TemplaterFolderTemplateConfig>>,
+    enable_file_templates: Option<bool>,
+    file_templates: Option<Vec<TemplaterFileTemplateConfig>>,
+    syntax_highlighting: Option<bool>,
+    syntax_highlighting_mobile: Option<bool>,
+    enabled_templates_hotkeys: Option<Vec<String>>,
+    startup_templates: Option<Vec<String>>,
+    intellisense_render: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1043,6 +1164,38 @@ struct ObsidianTemplatesConfig {
         alias = "templateFolderPath"
     )]
     folder: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianTemplaterConfig {
+    command_timeout: Option<usize>,
+    templates_folder: Option<String>,
+    #[serde(default)]
+    templates_pairs: Vec<[String; 2]>,
+    trigger_on_file_creation: Option<bool>,
+    auto_jump_to_cursor: Option<bool>,
+    enable_system_commands: Option<bool>,
+    shell_path: Option<String>,
+    user_scripts_folder: Option<String>,
+    enable_folder_templates: Option<bool>,
+    #[serde(default)]
+    folder_templates: Vec<ObsidianTemplaterFolderTemplateConfig>,
+    enable_file_templates: Option<bool>,
+    #[serde(default)]
+    file_templates: Vec<TemplaterFileTemplateConfig>,
+    syntax_highlighting: Option<bool>,
+    syntax_highlighting_mobile: Option<bool>,
+    #[serde(default)]
+    enabled_templates_hotkeys: Vec<String>,
+    #[serde(default)]
+    startup_templates: Vec<String>,
+    intellisense_render: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianTemplaterFolderTemplateConfig {
+    folder: String,
+    template: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1326,6 +1479,43 @@ pub fn import_tasks_plugin_config(
     })
 }
 
+pub fn import_templater_plugin_config(
+    paths: &VaultPaths,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    let source_path = paths
+        .vault_root()
+        .join(".obsidian/plugins/templater-obsidian/data.json");
+    if !source_path.exists() {
+        return Err(ConfigImportError::MissingSource(source_path));
+    }
+
+    let obsidian =
+        serde_json::from_str::<ObsidianTemplaterConfig>(&fs::read_to_string(&source_path)?)?;
+    let imported_templates = imported_templater_config(obsidian);
+    let mappings = templater_config_import_mappings(&imported_templates)?;
+
+    ensure_vulcan_dir(paths)?;
+    let config_path = paths.config_file().to_path_buf();
+    let created_config = !config_path.exists();
+    let existing_contents = fs::read_to_string(&config_path).ok();
+    let mut config_value = load_config_value(&config_path)?;
+    write_templater_import(&mut config_value, &imported_templates)?;
+    let rendered = toml::to_string_pretty(&config_value)?;
+    let updated = existing_contents.as_deref() != Some(rendered.as_str());
+    if updated {
+        fs::write(&config_path, rendered)?;
+    }
+
+    Ok(ConfigImportReport {
+        plugin: "templater".to_string(),
+        source_path,
+        config_path,
+        created_config,
+        updated,
+        mappings,
+    })
+}
+
 pub fn import_kanban_plugin_config(
     paths: &VaultPaths,
 ) -> Result<ConfigImportReport, ConfigImportError> {
@@ -1374,6 +1564,10 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
 
     if let Some(obsidian_templates) = load_obsidian_templates_config(paths, &mut diagnostics) {
         apply_obsidian_template_defaults(&mut config, obsidian_templates);
+    }
+
+    if let Some(obsidian_templater) = load_obsidian_templater_config(paths, &mut diagnostics) {
+        apply_obsidian_templater_defaults(&mut config, obsidian_templater);
     }
 
     if let Some(obsidian_dataview) = load_obsidian_dataview_config(paths, &mut diagnostics) {
@@ -1462,6 +1656,17 @@ fn load_obsidian_templates_config(
     load_json_file(&path, diagnostics)
 }
 
+fn load_obsidian_templater_config(
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<ObsidianTemplaterConfig> {
+    let path = paths
+        .vault_root()
+        .join(".obsidian/plugins/templater-obsidian/data.json");
+
+    load_json_file(&path, diagnostics)
+}
+
 fn load_obsidian_dataview_config(
     paths: &VaultPaths,
     diagnostics: &mut Vec<ConfigDiagnostic>,
@@ -1499,6 +1704,12 @@ fn imported_tasks_config(obsidian: ObsidianTasksConfig) -> TasksConfig {
     let mut config = VaultConfig::default();
     apply_obsidian_tasks_defaults(&mut config, obsidian);
     config.tasks
+}
+
+fn imported_templater_config(obsidian: ObsidianTemplaterConfig) -> TemplatesConfig {
+    let mut config = VaultConfig::default();
+    apply_obsidian_templater_defaults(&mut config, obsidian);
+    config.templates
 }
 
 fn imported_kanban_config(obsidian: ObsidianKanbanConfig) -> KanbanConfig {
@@ -1582,6 +1793,116 @@ fn push_config_import_mapping<T: Serialize>(
         value: serde_json::to_value(value)?,
     });
     Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn templater_config_import_mappings(
+    config: &TemplatesConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let mut mappings = Vec::new();
+    push_config_import_mapping(
+        &mut mappings,
+        "templates_folder",
+        "templates.templater_folder",
+        &config.templater_folder,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "command_timeout",
+        "templates.command_timeout",
+        &config.command_timeout,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "templates_pairs",
+        "templates.templates_pairs",
+        &config.templates_pairs,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "trigger_on_file_creation",
+        "templates.trigger_on_file_creation",
+        &config.trigger_on_file_creation,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "auto_jump_to_cursor",
+        "templates.auto_jump_to_cursor",
+        &config.auto_jump_to_cursor,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "enable_system_commands",
+        "templates.enable_system_commands",
+        &config.enable_system_commands,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "shell_path",
+        "templates.shell_path",
+        &config.shell_path,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "user_scripts_folder",
+        "templates.user_scripts_folder",
+        &config.user_scripts_folder,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "enable_folder_templates",
+        "templates.enable_folder_templates",
+        &config.enable_folder_templates,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "folder_templates",
+        "templates.folder_templates",
+        &config.folder_templates,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "enable_file_templates",
+        "templates.enable_file_templates",
+        &config.enable_file_templates,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "file_templates",
+        "templates.file_templates",
+        &config.file_templates,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "syntax_highlighting",
+        "templates.syntax_highlighting",
+        &config.syntax_highlighting,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "syntax_highlighting_mobile",
+        "templates.syntax_highlighting_mobile",
+        &config.syntax_highlighting_mobile,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "enabled_templates_hotkeys",
+        "templates.enabled_templates_hotkeys",
+        &config.enabled_templates_hotkeys,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "startup_templates",
+        "templates.startup_templates",
+        &config.startup_templates,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "intellisense_render",
+        "templates.intellisense_render",
+        &config.intellisense_render,
+    )?;
+    Ok(mappings)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1916,6 +2237,114 @@ fn write_tasks_import(
     statuses_table.insert(
         "definitions".to_string(),
         toml::Value::try_from(&tasks.statuses.definitions)?,
+    );
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn write_templater_import(
+    config_value: &mut toml::Value,
+    templates: &TemplatesConfig,
+) -> Result<(), ConfigImportError> {
+    let Some(root_table) = config_value.as_table_mut() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "expected .vulcan/config.toml to contain a TOML table".to_string(),
+        ));
+    };
+
+    let templates_entry = root_table
+        .entry("templates".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !templates_entry.is_table() {
+        *templates_entry = toml::Value::Table(toml::map::Map::new());
+    }
+    let Some(templates_table) = templates_entry.as_table_mut() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "expected [templates] to be a TOML table".to_string(),
+        ));
+    };
+
+    write_optional_toml_serialized(
+        templates_table,
+        "templater_folder",
+        templates.templater_folder.as_ref(),
+    )?;
+    templates_table.insert(
+        "command_timeout".to_string(),
+        toml::Value::Integer(i64::try_from(templates.command_timeout).map_err(|_| {
+            ConfigImportError::InvalidConfig(
+                "expected command_timeout to fit in a signed 64-bit integer".to_string(),
+            )
+        })?),
+    );
+    write_optional_toml_serialized(
+        templates_table,
+        "templates_pairs",
+        (!templates.templates_pairs.is_empty()).then_some(&templates.templates_pairs),
+    )?;
+    templates_table.insert(
+        "trigger_on_file_creation".to_string(),
+        toml::Value::Boolean(templates.trigger_on_file_creation),
+    );
+    templates_table.insert(
+        "auto_jump_to_cursor".to_string(),
+        toml::Value::Boolean(templates.auto_jump_to_cursor),
+    );
+    templates_table.insert(
+        "enable_system_commands".to_string(),
+        toml::Value::Boolean(templates.enable_system_commands),
+    );
+    write_optional_toml_serialized(templates_table, "shell_path", templates.shell_path.as_ref())?;
+    write_optional_toml_serialized(
+        templates_table,
+        "user_scripts_folder",
+        templates.user_scripts_folder.as_ref(),
+    )?;
+    templates_table.insert(
+        "enable_folder_templates".to_string(),
+        toml::Value::Boolean(templates.enable_folder_templates),
+    );
+    write_optional_toml_serialized(
+        templates_table,
+        "folder_templates",
+        (!templates.folder_templates.is_empty()).then_some(&templates.folder_templates),
+    )?;
+    templates_table.insert(
+        "enable_file_templates".to_string(),
+        toml::Value::Boolean(templates.enable_file_templates),
+    );
+    write_optional_toml_serialized(
+        templates_table,
+        "file_templates",
+        (!templates.file_templates.is_empty()).then_some(&templates.file_templates),
+    )?;
+    templates_table.insert(
+        "syntax_highlighting".to_string(),
+        toml::Value::Boolean(templates.syntax_highlighting),
+    );
+    templates_table.insert(
+        "syntax_highlighting_mobile".to_string(),
+        toml::Value::Boolean(templates.syntax_highlighting_mobile),
+    );
+    write_optional_toml_serialized(
+        templates_table,
+        "enabled_templates_hotkeys",
+        (!templates.enabled_templates_hotkeys.is_empty())
+            .then_some(&templates.enabled_templates_hotkeys),
+    )?;
+    write_optional_toml_serialized(
+        templates_table,
+        "startup_templates",
+        (!templates.startup_templates.is_empty()).then_some(&templates.startup_templates),
+    )?;
+    templates_table.insert(
+        "intellisense_render".to_string(),
+        toml::Value::Integer(i64::try_from(templates.intellisense_render).map_err(|_| {
+            ConfigImportError::InvalidConfig(
+                "expected intellisense_render to fit in a signed 64-bit integer".to_string(),
+            )
+        })?),
     );
 
     Ok(())
@@ -2264,7 +2693,53 @@ fn apply_obsidian_template_defaults(config: &mut VaultConfig, obsidian: Obsidian
     }
 
     if let Some(folder) = obsidian.folder {
-        config.templates.obsidian_folder = Some(normalize_template_folder(&folder));
+        config.templates.obsidian_folder = normalize_template_path(Some(folder));
+    }
+}
+
+fn apply_obsidian_templater_defaults(config: &mut VaultConfig, obsidian: ObsidianTemplaterConfig) {
+    if let Some(folder) = obsidian.templates_folder {
+        config.templates.templater_folder = normalize_template_path(Some(folder));
+    }
+    if let Some(command_timeout) = obsidian.command_timeout {
+        config.templates.command_timeout = command_timeout;
+    }
+    config.templates.templates_pairs = normalize_templater_command_pairs(obsidian.templates_pairs);
+    if let Some(trigger_on_file_creation) = obsidian.trigger_on_file_creation {
+        config.templates.trigger_on_file_creation = trigger_on_file_creation;
+    }
+    if let Some(auto_jump_to_cursor) = obsidian.auto_jump_to_cursor {
+        config.templates.auto_jump_to_cursor = auto_jump_to_cursor;
+    }
+    if let Some(enable_system_commands) = obsidian.enable_system_commands {
+        config.templates.enable_system_commands = enable_system_commands;
+    }
+    if let Some(shell_path) = obsidian.shell_path {
+        config.templates.shell_path = normalize_filesystem_path(Some(shell_path));
+    }
+    if let Some(user_scripts_folder) = obsidian.user_scripts_folder {
+        config.templates.user_scripts_folder = normalize_template_path(Some(user_scripts_folder));
+    }
+    if let Some(enable_folder_templates) = obsidian.enable_folder_templates {
+        config.templates.enable_folder_templates = enable_folder_templates;
+    }
+    config.templates.folder_templates =
+        normalize_templater_folder_templates(obsidian.folder_templates);
+    if let Some(enable_file_templates) = obsidian.enable_file_templates {
+        config.templates.enable_file_templates = enable_file_templates;
+    }
+    config.templates.file_templates = normalize_templater_file_templates(obsidian.file_templates);
+    if let Some(syntax_highlighting) = obsidian.syntax_highlighting {
+        config.templates.syntax_highlighting = syntax_highlighting;
+    }
+    if let Some(syntax_highlighting_mobile) = obsidian.syntax_highlighting_mobile {
+        config.templates.syntax_highlighting_mobile = syntax_highlighting_mobile;
+    }
+    config.templates.enabled_templates_hotkeys =
+        normalize_string_list(obsidian.enabled_templates_hotkeys);
+    config.templates.startup_templates = normalize_string_list(obsidian.startup_templates);
+    if let Some(intellisense_render) = obsidian.intellisense_render {
+        config.templates.intellisense_render = intellisense_render;
     }
 }
 
@@ -2790,6 +3265,64 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(time_format) = templates.time_format {
             config.templates.time_format = time_format;
         }
+        if let Some(obsidian_folder) = templates.obsidian_folder {
+            config.templates.obsidian_folder = normalize_template_pathbuf(&obsidian_folder);
+        }
+        if let Some(templater_folder) = templates.templater_folder {
+            config.templates.templater_folder = normalize_template_pathbuf(&templater_folder);
+        }
+        if let Some(command_timeout) = templates.command_timeout {
+            config.templates.command_timeout = command_timeout;
+        }
+        if let Some(templates_pairs) = templates.templates_pairs {
+            config.templates.templates_pairs =
+                normalize_templater_command_pairs_from_config(templates_pairs);
+        }
+        if let Some(trigger_on_file_creation) = templates.trigger_on_file_creation {
+            config.templates.trigger_on_file_creation = trigger_on_file_creation;
+        }
+        if let Some(auto_jump_to_cursor) = templates.auto_jump_to_cursor {
+            config.templates.auto_jump_to_cursor = auto_jump_to_cursor;
+        }
+        if let Some(enable_system_commands) = templates.enable_system_commands {
+            config.templates.enable_system_commands = enable_system_commands;
+        }
+        if let Some(shell_path) = templates.shell_path {
+            config.templates.shell_path = normalize_filesystem_pathbuf(&shell_path);
+        }
+        if let Some(user_scripts_folder) = templates.user_scripts_folder {
+            config.templates.user_scripts_folder = normalize_template_pathbuf(&user_scripts_folder);
+        }
+        if let Some(enable_folder_templates) = templates.enable_folder_templates {
+            config.templates.enable_folder_templates = enable_folder_templates;
+        }
+        if let Some(folder_templates) = templates.folder_templates {
+            config.templates.folder_templates =
+                normalize_templater_folder_templates_from_config(folder_templates);
+        }
+        if let Some(enable_file_templates) = templates.enable_file_templates {
+            config.templates.enable_file_templates = enable_file_templates;
+        }
+        if let Some(file_templates) = templates.file_templates {
+            config.templates.file_templates =
+                normalize_templater_file_templates_from_config(file_templates);
+        }
+        if let Some(syntax_highlighting) = templates.syntax_highlighting {
+            config.templates.syntax_highlighting = syntax_highlighting;
+        }
+        if let Some(syntax_highlighting_mobile) = templates.syntax_highlighting_mobile {
+            config.templates.syntax_highlighting_mobile = syntax_highlighting_mobile;
+        }
+        if let Some(enabled_templates_hotkeys) = templates.enabled_templates_hotkeys {
+            config.templates.enabled_templates_hotkeys =
+                normalize_string_list(enabled_templates_hotkeys);
+        }
+        if let Some(startup_templates) = templates.startup_templates {
+            config.templates.startup_templates = normalize_string_list(startup_templates);
+        }
+        if let Some(intellisense_render) = templates.intellisense_render {
+            config.templates.intellisense_render = intellisense_render;
+        }
     }
 }
 
@@ -2801,14 +3334,155 @@ fn normalize_attachment_folder(path: &str) -> PathBuf {
     }
 }
 
-fn normalize_template_folder(path: &str) -> PathBuf {
-    PathBuf::from(path.trim_matches('/'))
-}
-
 fn normalize_optional_text(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn normalize_template_path(value: Option<String>) -> Option<PathBuf> {
+    let value = normalize_optional_text(value)?;
+    if value == "/" {
+        Some(PathBuf::from("."))
+    } else {
+        let trimmed = value.trim_matches('/');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(trimmed))
+        }
+    }
+}
+
+fn normalize_template_pathbuf(value: &Path) -> Option<PathBuf> {
+    normalize_template_path(Some(value.to_string_lossy().into_owned()))
+}
+
+fn normalize_filesystem_path(value: Option<String>) -> Option<PathBuf> {
+    normalize_optional_text(value).map(PathBuf::from)
+}
+
+fn normalize_filesystem_pathbuf(value: &Path) -> Option<PathBuf> {
+    normalize_filesystem_path(Some(value.to_string_lossy().into_owned()))
+}
+
+fn normalize_string_list(values: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let Some(value) = normalize_optional_text(Some(value)) else {
+            continue;
+        };
+        if !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    normalized
+}
+
+fn normalize_templater_command_pairs(
+    raw_pairs: Vec<[String; 2]>,
+) -> Vec<TemplaterCommandPairConfig> {
+    normalize_templater_command_pairs_from_config(
+        raw_pairs
+            .into_iter()
+            .map(|[name, command]| TemplaterCommandPairConfig { name, command })
+            .collect(),
+    )
+}
+
+fn normalize_templater_command_pairs_from_config(
+    raw_pairs: Vec<TemplaterCommandPairConfig>,
+) -> Vec<TemplaterCommandPairConfig> {
+    let mut normalized = Vec::new();
+
+    for pair in raw_pairs {
+        let Some(name) = normalize_optional_text(Some(pair.name)) else {
+            continue;
+        };
+        let Some(command) = normalize_optional_text(Some(pair.command)) else {
+            continue;
+        };
+        if !normalized
+            .iter()
+            .any(|existing: &TemplaterCommandPairConfig| existing.name == name)
+        {
+            normalized.push(TemplaterCommandPairConfig { name, command });
+        }
+    }
+
+    normalized
+}
+
+fn normalize_templater_folder_templates(
+    raw_templates: Vec<ObsidianTemplaterFolderTemplateConfig>,
+) -> Vec<TemplaterFolderTemplateConfig> {
+    normalize_templater_folder_templates_from_config(
+        raw_templates
+            .into_iter()
+            .map(|template| TemplaterFolderTemplateConfig {
+                folder: PathBuf::from(template.folder),
+                template: template.template,
+            })
+            .collect(),
+    )
+}
+
+fn normalize_templater_folder_templates_from_config(
+    raw_templates: Vec<TemplaterFolderTemplateConfig>,
+) -> Vec<TemplaterFolderTemplateConfig> {
+    let mut normalized = Vec::new();
+
+    for template in raw_templates {
+        let Some(folder) = normalize_template_pathbuf(&template.folder) else {
+            continue;
+        };
+        let Some(template_name) = normalize_optional_text(Some(template.template)) else {
+            continue;
+        };
+        if !normalized
+            .iter()
+            .any(|existing: &TemplaterFolderTemplateConfig| existing.folder == folder)
+        {
+            normalized.push(TemplaterFolderTemplateConfig {
+                folder,
+                template: template_name,
+            });
+        }
+    }
+
+    normalized
+}
+
+fn normalize_templater_file_templates(
+    raw_templates: Vec<TemplaterFileTemplateConfig>,
+) -> Vec<TemplaterFileTemplateConfig> {
+    normalize_templater_file_templates_from_config(raw_templates)
+}
+
+fn normalize_templater_file_templates_from_config(
+    raw_templates: Vec<TemplaterFileTemplateConfig>,
+) -> Vec<TemplaterFileTemplateConfig> {
+    let mut normalized = Vec::new();
+
+    for template in raw_templates {
+        let Some(regex) = normalize_optional_text(Some(template.regex)) else {
+            continue;
+        };
+        let Some(template_name) = normalize_optional_text(Some(template.template)) else {
+            continue;
+        };
+        if !normalized
+            .iter()
+            .any(|existing: &TemplaterFileTemplateConfig| existing.regex == regex)
+        {
+            normalized.push(TemplaterFileTemplateConfig {
+                regex,
+                template: template_name,
+            });
+        }
+    }
+
+    normalized
 }
 
 fn normalize_kanban_metadata_keys(
@@ -3212,6 +3886,100 @@ mod tests {
     }
 
     #[test]
+    fn templater_plugin_settings_seed_defaults() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/templater-obsidian"))
+            .expect("templater plugin dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
+            r##"{
+              "command_timeout": 9,
+              "templates_folder": "Templater/Templates",
+              "templates_pairs": [
+                ["slugify", "node scripts/slugify.js"],
+                ["", ""]
+              ],
+              "trigger_on_file_creation": true,
+              "auto_jump_to_cursor": true,
+              "enable_system_commands": true,
+              "shell_path": "/bin/zsh",
+              "user_scripts_folder": "Scripts/User",
+              "enable_folder_templates": false,
+              "folder_templates": [
+                { "folder": "Daily", "template": "Daily Template" },
+                { "folder": "", "template": "" }
+              ],
+              "enable_file_templates": true,
+              "file_templates": [
+                { "regex": "^Projects/.*\\\\.md$", "template": "Project Template" },
+                { "regex": "", "template": "" }
+              ],
+              "syntax_highlighting": false,
+              "syntax_highlighting_mobile": true,
+              "enabled_templates_hotkeys": ["Daily", ""],
+              "startup_templates": ["Startup", ""],
+              "intellisense_render": 3
+            }"##,
+        )
+        .expect("templater config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(
+            loaded.config.templates.templater_folder,
+            Some(PathBuf::from("Templater/Templates"))
+        );
+        assert_eq!(loaded.config.templates.command_timeout, 9);
+        assert_eq!(
+            loaded.config.templates.templates_pairs,
+            vec![TemplaterCommandPairConfig {
+                name: "slugify".to_string(),
+                command: "node scripts/slugify.js".to_string(),
+            }]
+        );
+        assert!(loaded.config.templates.trigger_on_file_creation);
+        assert!(loaded.config.templates.auto_jump_to_cursor);
+        assert!(loaded.config.templates.enable_system_commands);
+        assert_eq!(
+            loaded.config.templates.shell_path,
+            Some(PathBuf::from("/bin/zsh"))
+        );
+        assert_eq!(
+            loaded.config.templates.user_scripts_folder,
+            Some(PathBuf::from("Scripts/User"))
+        );
+        assert!(!loaded.config.templates.enable_folder_templates);
+        assert_eq!(
+            loaded.config.templates.folder_templates,
+            vec![TemplaterFolderTemplateConfig {
+                folder: PathBuf::from("Daily"),
+                template: "Daily Template".to_string(),
+            }]
+        );
+        assert!(loaded.config.templates.enable_file_templates);
+        assert_eq!(
+            loaded.config.templates.file_templates,
+            vec![TemplaterFileTemplateConfig {
+                regex: "^Projects/.*\\\\.md$".to_string(),
+                template: "Project Template".to_string(),
+            }]
+        );
+        assert!(!loaded.config.templates.syntax_highlighting);
+        assert!(loaded.config.templates.syntax_highlighting_mobile);
+        assert_eq!(
+            loaded.config.templates.enabled_templates_hotkeys,
+            vec!["Daily".to_string()]
+        );
+        assert_eq!(
+            loaded.config.templates.startup_templates,
+            vec!["Startup".to_string()]
+        );
+        assert_eq!(loaded.config.templates.intellisense_render, 3);
+    }
+
+    #[test]
     fn vulcan_config_overrides_obsidian_values() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
@@ -3543,6 +4311,128 @@ time_format = "HH:mm:ss"
         assert_eq!(loaded.config.dataview.group_column_name, "Bucket");
         assert_eq!(loaded.config.templates.date_format, "DD/MM/YYYY");
         assert_eq!(loaded.config.templates.time_format, "HH:mm:ss");
+    }
+
+    #[test]
+    fn templater_settings_follow_vulcan_and_local_precedence() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/templater-obsidian"))
+            .expect("templater plugin dir should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
+            r##"{
+              "command_timeout": 5,
+              "templates_folder": "Templater/Templates",
+              "templates_pairs": [["slugify", "node scripts/slugify.js"]],
+              "trigger_on_file_creation": false,
+              "auto_jump_to_cursor": false,
+              "enable_system_commands": false,
+              "shell_path": "/bin/bash",
+              "user_scripts_folder": "Scripts/User",
+              "enable_folder_templates": true,
+              "folder_templates": [{ "folder": "Daily", "template": "Daily Template" }],
+              "enable_file_templates": false,
+              "file_templates": [{ "regex": "^Projects/.*\\\\.md$", "template": "Project Template" }],
+              "syntax_highlighting": true,
+              "syntax_highlighting_mobile": false,
+              "enabled_templates_hotkeys": ["Daily"],
+              "startup_templates": ["Startup"],
+              "intellisense_render": 1
+            }"##,
+        )
+        .expect("templater config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r###"[templates]
+templater_folder = "Shared/Templater"
+command_timeout = 12
+templates_pairs = [{ name = "slugify", command = "bun run slugify" }]
+trigger_on_file_creation = true
+auto_jump_to_cursor = true
+enable_system_commands = true
+shell_path = "/usr/bin/fish"
+user_scripts_folder = "Scripts/Shared"
+enable_folder_templates = false
+folder_templates = [{ folder = "Projects", template = "Project Template" }]
+enable_file_templates = true
+file_templates = [{ regex = "^Daily/.*\\.md$", template = "Daily Template" }]
+syntax_highlighting = false
+syntax_highlighting_mobile = true
+enabled_templates_hotkeys = ["Shared Daily"]
+startup_templates = ["Shared Startup"]
+intellisense_render = 4
+"###,
+        )
+        .expect("shared config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.local.toml"),
+            r###"[templates]
+command_timeout = 20
+templater_folder = "Device/Templates"
+shell_path = "/bin/zsh"
+user_scripts_folder = "Scripts/Device"
+enabled_templates_hotkeys = ["Device Daily"]
+startup_templates = ["Device Startup"]
+intellisense_render = 2
+"###,
+        )
+        .expect("local config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(
+            loaded.config.templates.templater_folder,
+            Some(PathBuf::from("Device/Templates"))
+        );
+        assert_eq!(loaded.config.templates.command_timeout, 20);
+        assert_eq!(
+            loaded.config.templates.templates_pairs,
+            vec![TemplaterCommandPairConfig {
+                name: "slugify".to_string(),
+                command: "bun run slugify".to_string(),
+            }]
+        );
+        assert!(loaded.config.templates.trigger_on_file_creation);
+        assert!(loaded.config.templates.auto_jump_to_cursor);
+        assert!(loaded.config.templates.enable_system_commands);
+        assert_eq!(
+            loaded.config.templates.shell_path,
+            Some(PathBuf::from("/bin/zsh"))
+        );
+        assert_eq!(
+            loaded.config.templates.user_scripts_folder,
+            Some(PathBuf::from("Scripts/Device"))
+        );
+        assert!(!loaded.config.templates.enable_folder_templates);
+        assert_eq!(
+            loaded.config.templates.folder_templates,
+            vec![TemplaterFolderTemplateConfig {
+                folder: PathBuf::from("Projects"),
+                template: "Project Template".to_string(),
+            }]
+        );
+        assert!(loaded.config.templates.enable_file_templates);
+        assert_eq!(
+            loaded.config.templates.file_templates,
+            vec![TemplaterFileTemplateConfig {
+                regex: "^Daily/.*\\.md$".to_string(),
+                template: "Daily Template".to_string(),
+            }]
+        );
+        assert!(!loaded.config.templates.syntax_highlighting);
+        assert!(loaded.config.templates.syntax_highlighting_mobile);
+        assert_eq!(
+            loaded.config.templates.enabled_templates_hotkeys,
+            vec!["Device Daily".to_string()]
+        );
+        assert_eq!(
+            loaded.config.templates.startup_templates,
+            vec!["Device Startup".to_string()]
+        );
+        assert_eq!(loaded.config.templates.intellisense_render, 2);
     }
 
     #[test]
@@ -3914,6 +4804,101 @@ default_mode = "off"
         let paths = VaultPaths::new(temp_dir.path());
 
         let error = import_tasks_plugin_config(&paths).expect_err("import should fail");
+        assert!(matches!(error, ConfigImportError::MissingSource(_)));
+    }
+
+    #[test]
+    fn import_templater_plugin_config_preserves_existing_sections_and_is_idempotent() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/templater-obsidian"))
+            .expect("templater plugin dir should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
+            r##"{
+              "command_timeout": 12,
+              "templates_folder": "Templater/Templates",
+              "templates_pairs": [["slugify", "bun run slugify"], ["", ""]],
+              "trigger_on_file_creation": true,
+              "auto_jump_to_cursor": true,
+              "enable_system_commands": true,
+              "shell_path": "/bin/zsh",
+              "user_scripts_folder": "Scripts/User",
+              "enable_folder_templates": false,
+              "folder_templates": [
+                { "folder": "Daily", "template": "Daily Template" },
+                { "folder": "", "template": "" }
+              ],
+              "enable_file_templates": true,
+              "file_templates": [
+                { "regex": "^Projects/.*\\\\.md$", "template": "Project Template" },
+                { "regex": "", "template": "" }
+              ],
+              "syntax_highlighting": false,
+              "syntax_highlighting_mobile": true,
+              "enabled_templates_hotkeys": ["Daily", ""],
+              "startup_templates": ["Startup", ""],
+              "intellisense_render": 4
+            }"##,
+        )
+        .expect("templater config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .expect("existing config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = import_templater_plugin_config(&paths).expect("import should succeed");
+
+        assert_eq!(report.plugin, "templater");
+        assert!(!report.created_config);
+        assert!(report.updated);
+        assert!(report
+            .mappings
+            .iter()
+            .any(|mapping| mapping.target == "templates.templater_folder"
+                && mapping.value == Value::String("Templater/Templates".to_string())));
+
+        let rendered = fs::read_to_string(paths.config_file()).expect("config should exist");
+        assert!(rendered.contains("[git]"));
+        assert!(rendered.contains("auto_commit = true"));
+        assert!(rendered.contains("[templates]"));
+        assert!(rendered.contains("templater_folder = \"Templater/Templates\""));
+        assert!(rendered.contains("command_timeout = 12"));
+        assert!(rendered.contains("[[templates.templates_pairs]]"));
+        assert!(rendered.contains("name = \"slugify\""));
+        assert!(rendered.contains("command = \"bun run slugify\""));
+        assert!(rendered.contains("trigger_on_file_creation = true"));
+        assert!(rendered.contains("auto_jump_to_cursor = true"));
+        assert!(rendered.contains("enable_system_commands = true"));
+        assert!(rendered.contains("shell_path = \"/bin/zsh\""));
+        assert!(rendered.contains("user_scripts_folder = \"Scripts/User\""));
+        assert!(rendered.contains("enable_folder_templates = false"));
+        assert!(rendered.contains("[[templates.folder_templates]]"));
+        assert!(rendered.contains("folder = \"Daily\""));
+        assert!(rendered.contains("template = \"Daily Template\""));
+        assert!(rendered.contains("enable_file_templates = true"));
+        assert!(rendered.contains("[[templates.file_templates]]"));
+        assert!(rendered.contains("template = \"Project Template\""));
+        assert!(rendered.contains("syntax_highlighting = false"));
+        assert!(rendered.contains("syntax_highlighting_mobile = true"));
+        assert!(rendered.contains("enabled_templates_hotkeys = [\"Daily\"]"));
+        assert!(rendered.contains("startup_templates = [\"Startup\"]"));
+        assert!(rendered.contains("intellisense_render = 4"));
+
+        let second_report =
+            import_templater_plugin_config(&paths).expect("second import should succeed");
+        assert!(!second_report.updated);
+    }
+
+    #[test]
+    fn import_templater_plugin_config_errors_when_source_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let error = import_templater_plugin_config(&paths).expect_err("import should fail");
         assert!(matches!(error, ConfigImportError::MissingSource(_)));
     }
 
