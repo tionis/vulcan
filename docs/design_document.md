@@ -732,14 +732,14 @@ Inline expression evaluation is primarily a rendering concern. For Vulcan's purp
 
 Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. These are arbitrary JS programs with access to a Dataview API object (`dv`) that provides methods like `dv.pages()`, `dv.table()`, `dv.list()`, `dv.taskList()`, and direct access to the Dataview index.
 
-**DataviewJS is a stretch goal, gated behind a compile-time feature flag (`dataviewjs`).** The core Dataview support (DQL, inline fields, inline expressions) ships without a JS dependency. DataviewJS adds an embedded JavaScript runtime for vaults that depend on JS-based queries.
+**DataviewJS is gated behind the `js_runtime` compile-time feature flag (enabled by default).** The core Dataview support (DQL, inline fields, inline expressions) works without it. The flag adds an embedded JavaScript runtime for vaults that depend on JS-based queries; disable with `--no-default-features` for minimal binary size.
 
 **Detection and fallback (always available):**
 - Detect `dataviewjs` code blocks during parsing and store as block metadata.
-- When the `dataviewjs` feature is not compiled in, emit a diagnostic: "DataviewJS blocks require the `dataviewjs` feature flag."
+- When the `js_runtime` feature is not compiled in, emit a diagnostic: "DataviewJS blocks require the `js_runtime` feature flag."
 - Exclude from FTS indexing (they are code, not content).
 
-**Sandboxed evaluation (behind `dataviewjs` feature flag):**
+**Sandboxed evaluation (behind `js_runtime` feature flag):**
 - Embed a lightweight JS runtime (candidates: [Boa](https://boajs.dev/) for pure Rust, [rquickjs](https://github.com/nickel-org/nickel.rs) / QuickJS bindings for performance). Boa is preferred for build simplicity and safety; QuickJS is an alternative if performance requires it.
 - Sandbox constraints: no filesystem access, no network access, no `eval` of external scripts, execution timeout (configurable, default 5 seconds per block), memory limit.
 - Provide a `dv` API object that proxies to Vulcan's query engine:
@@ -787,7 +787,7 @@ Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. Thes
 
 - Page objects returned by `dv.pages()` expose the same fields as DQL queries: frontmatter, inline fields, and the full `file.*` namespace.
 - CLI surface: `vulcan dataview eval <file> [--block <n>]` evaluates DataviewJS blocks when the feature is compiled in; `vulcan dataview query-js <js-string>` evaluates a JS snippet directly.
-- Build: `cargo build --features dataviewjs` enables the feature. Default builds exclude it for minimal binary size.
+- Build: `js_runtime` is enabled by default. To exclude the JS runtime for minimal binary size: `cargo build --no-default-features`.
 
 ### Relationship to existing query surfaces
 

@@ -467,7 +467,7 @@ impl<'a> SemanticProcessor<'a> {
             if block.language == "dataviewjs" {
                 self.parsed.diagnostics.push(ParseDiagnostic {
                     kind: ParseDiagnosticKind::UnsupportedSyntax,
-                    message: "DataviewJS blocks require the `dataviewjs` feature flag".to_string(),
+                    message: "DataviewJS blocks require the `js_runtime` feature flag".to_string(),
                     byte_range: Some(block.byte_range.clone()),
                 });
             }

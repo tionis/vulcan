@@ -1243,7 +1243,7 @@ fn run_dataview_eval_command(
         } else {
             (
                 None,
-                Some("DataviewJS blocks require the `dataviewjs` feature flag".to_string()),
+                Some("DataviewJS blocks require the `js_runtime` feature flag".to_string()),
             )
         };
 

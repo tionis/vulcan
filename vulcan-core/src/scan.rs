@@ -3034,7 +3034,7 @@ mod tests {
             .collect();
         assert!(unsupported_messages
             .iter()
-            .any(|message| message.contains("require the `dataviewjs` feature flag")));
+            .any(|message| message.contains("require the `js_runtime` feature flag")));
 
         let task_to_list_links: Vec<(String, String)> = connection
             .prepare(

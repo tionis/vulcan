@@ -429,7 +429,7 @@ fn dataview_eval_json_output_defaults_to_all_indexed_blocks() {
     );
     assert!(json["blocks"][1]["error"]
         .as_str()
-        .is_some_and(|error| error.contains("dataviewjs")));
+        .is_some_and(|error| error.contains("js_runtime")));
 }
 
 #[test]
