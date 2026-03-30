@@ -1408,6 +1408,7 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 - [x] Settings not found in the Dataview config fall back to Vulcan defaults
 - [x] Unit test: parse sample `data.json`, verify settings merge and precedence
 - [x] Integration test: vault with custom Dataview settings, verify inline prefix and display settings are respected
+- Explicit `vulcan config import dataview` command is in 9.17.5; this section covers auto-load during vault initialization
 
 #### 9.8.10 Cross-cutting integration
 
@@ -1518,6 +1519,7 @@ These require the sandboxed JS runtime and are only available when `--features j
   | `syntax_highlighting` | Informational only (no CLI equivalent) |
   | `auto_jump_to_cursor` | Informational only (no CLI equivalent) |
 - [x] `vulcan config import templater` — import Templater settings and report mapping
+- Refactor to implement `PluginImporter` trait when 9.17.1 lands
 
 #### 9.9.5 CLI integration
 
@@ -1588,6 +1590,7 @@ These require the sandboxed JS runtime and are only available when `--features j
   | `setCreatedDate` | Auto-set `➕ created` date on new tasks |
   | `recurrenceOnCompletion` | How recurring tasks create next instance on completion |
 - [x] `vulcan config import tasks` — import Tasks settings and report mapping
+- Refactor to implement `PluginImporter` trait when 9.17.1 lands
 
 #### 9.10.6 CLI surface and evaluation
 
@@ -1652,6 +1655,7 @@ These require the sandboxed JS runtime and are only available when `--features j
   | `max-archive-size` | Archive size limit |
   | `show-checkboxes` | Whether to show checkboxes on cards |
 - [x] `vulcan config import kanban` — import Kanban settings and report mapping
+- Refactor to implement `PluginImporter` trait when 9.17.1 lands
 - [x] Per-board settings override: individual boards can override global settings via their YAML code block
 
 #### 9.11.5 TUI and WebUI (future)
@@ -1869,7 +1873,7 @@ Skills are Markdown-defined capabilities that combine a prompt with specific too
   | `globalVariables` | Global variable definitions for format syntax expansion |
   | `ai` | AI provider config (model, API key env, system prompt) — cross-reference with 9.12 assistant config |
   | `migrations.migrateToMacroIDRecords` | Internal migration flag (informational only) |
-- [ ] `vulcan config import quickadd` — import QuickAdd choices as Vulcan macros where feasible, report unmappable choices
+- [ ] `vulcan config import quickadd` — import QuickAdd choices as Vulcan macros where feasible, report unmappable choices (implement as `PluginImporter` per 9.17.1)
 
 ### 9.14 Plugin compatibility notes
 
@@ -2073,7 +2077,7 @@ Calendar sync requires OAuth2 flows and HTTP clients; gate behind a `calendar-sy
   | **Saved views** | `savedViews` — named filter/sort/group presets |
   | **Task defaults** | `taskCreationDefaults` (defaultContexts, defaultTags, defaultProjects, defaultDueDate, defaultTimeEstimate, defaultReminders) |
   | **UI/Editor** | `modalFieldsConfig`, `defaultVisibleProperties`, `singleClickAction` — informational for future TUI/WebUI |
-- [ ] `vulcan config import tasknotes` — import TaskNotes settings, create Vulcan-native config, report mapping
+- [ ] `vulcan config import tasknotes` — import TaskNotes settings, create Vulcan-native config, report mapping (implement as `PluginImporter` per 9.17.1)
 - [ ] Migrate `.base` view files: copy TaskNotes view definitions and validate they work with Vulcan's Bases evaluator
 
 #### 9.15.12 HTTP API compatibility (daemon phase)
@@ -2176,29 +2180,146 @@ When the daemon is running (Phase 10+), expose TaskNotes-compatible REST endpoin
   | `monthly.enabled`, `monthly.folder`, `monthly.format`, `monthly.templatePath` | `periodic.monthly.*` |
   | `quarterly.enabled`, `quarterly.folder`, `quarterly.format`, `quarterly.templatePath` | `periodic.quarterly.*` |
   | `yearly.enabled`, `yearly.folder`, `yearly.format`, `yearly.templatePath` | `periodic.yearly.*` |
-- [ ] `vulcan config import periodic-notes` — import periodic notes settings
+- [ ] `vulcan config import periodic-notes` — import periodic notes settings (implement as `PluginImporter` per 9.17.1; covers both core Daily Notes and community Periodic Notes sources)
 
-### 9.17 Unified plugin settings import
+### 9.17 Unified settings import infrastructure
 
-**Goal:** A single command to discover and import settings from all supported Obsidian plugins at once, plus a status overview of what's importable.
+**Goal:** A shared import framework that all individual importers conform to, with comprehensive CLI flags, conflict detection, batch import, and importers for Obsidian core settings and every supported plugin. The infrastructure (9.17.1–9.17.3) is implementable early — individual plugin importers in their respective phases plug into it.
 
-- [ ] `vulcan config import --all` — discover all supported plugin `data.json` files in `.obsidian/plugins/` and import each one, reporting results:
+**Depends on:** Phase 9.5 (config layering — already complete). Individual plugin importers depend on 9.17.1 for the shared trait.
+
+#### 9.17.1 Importer trait and shared engine
+
+Define a trait that all importers implement, replacing the current free-standing `import_*_plugin_config` functions:
+
+- [ ] `PluginImporter` trait in `vulcan-core::config`:
+  - `fn name(&self) -> &str` — importer identifier (e.g., `"tasks"`, `"core"`, `"dataview"`)
+  - `fn display_name(&self) -> &str` — human-readable name (e.g., `"Obsidian Tasks plugin"`)
+  - `fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf>` — files this importer reads from
+  - `fn detect(&self, paths: &VaultPaths) -> bool` — whether the source is present and importable
+  - `fn import(&self, paths: &VaultPaths, target: ImportTarget) -> Result<ConfigImportReport, ConfigImportError>` — perform the import
+  - `fn dry_run(&self, paths: &VaultPaths) -> Result<ConfigImportReport, ConfigImportError>` — compute what would change without writing
+- [ ] `ImportTarget` enum: `Shared` (config.toml, default) | `Local` (config.local.toml)
+- [ ] Extend `ConfigImportReport` with `target_file: PathBuf` and `dry_run: bool`
+- [ ] Importer registry: `fn all_importers() -> Vec<Box<dyn PluginImporter>>` — returns all known importers in priority order
+- [ ] Extract shared TOML merge logic from the current duplicated `write_*_import()` functions into a single `merge_import_into_toml()` helper
+- [ ] Refactor existing `import_tasks_plugin_config`, `import_templater_plugin_config`, `import_kanban_plugin_config` to implement `PluginImporter`
+- [ ] Import idempotency: re-running any import updates existing config without duplicating entries (already the case — verify trait implementations preserve this)
+- [ ] Unit test: trait dispatch works for all existing importers
+- [ ] Unit test: `dry_run` returns accurate diff without writing files
+
+#### 9.17.2 Shared CLI flags
+
+Add shared flags to the import CLI surface, replacing the per-variant `no_commit` with shared arguments:
+
+- [ ] `--dry-run` flag on all import subcommands and on `vulcan config import` itself — calls `dry_run()` instead of `import()`, prints what would change without writing
+- [ ] `--target shared|local` flag (default: `shared`) — selects `config.toml` or `config.local.toml` as write target
+- [ ] `--no-commit` flag retained (suppress auto-commit for this invocation)
+- [ ] Global `--output json|human` already works — verify all import report rendering respects it
+- [ ] Extract shared CLI dispatch handler: the current three near-identical match arms in `lib.rs` become a single `run_import(importer, flags, paths)` function that handles auto-commit, dry-run gating, target selection, and report printing
+- [ ] CLI test: `--dry-run` does not write to disk
+- [ ] CLI test: `--target local` writes to `config.local.toml`
+- [ ] CLI test: flags compose correctly (`--dry-run --target local` previews what would go into `config.local.toml`)
+
+#### 9.17.3 Conflict detection
+
+- [ ] When multiple importers set the same Vulcan config key (during `--all`), detect and report the conflict
+- [ ] Priority tiers for resolution:
+  1. Plugin-specific importer wins over core importer (e.g., Templater `templates_folder` over core Templates `folder`)
+  2. Within the same tier, the more specific plugin wins (e.g., Periodic Notes plugin over core Daily Notes)
+  3. If truly ambiguous, warn and use the last-applied value
+- [ ] `ConfigImportReport` gains `conflicts: Vec<ImportConflict>` with `key`, `winning_source`, `losing_source`, `winning_value`, `losing_value`
+- [ ] Human output shows conflicts as warnings; JSON output includes them in the report object
+- [ ] Unit test: two importers setting the same key produces a conflict warning
+
+#### 9.17.4 Core settings importer (`vulcan config import core`)
+
+Import Obsidian's core settings files, which are currently only used as runtime fallback defaults during `load_vault_config`. Explicit import makes the vault self-contained — removing `.obsidian/` does not change behavior.
+
+- [ ] `CoreImporter` implementing `PluginImporter`, reading from up to three source files:
+  - `.obsidian/app.json` — link style, link resolution mode, attachment folder, strict line breaks
+  - `.obsidian/templates.json` — date format, time format, template folder
+  - `.obsidian/types.json` — property type definitions
+- [ ] Import mappings:
+  | Source file | Source key | Vulcan config key |
+  |---|---|---|
+  | `app.json` | `useMarkdownLinks` | `links.style` |
+  | `app.json` | `newLinkFormat` | `links.resolution` |
+  | `app.json` | `attachmentFolderPath` | `links.attachment_folder` |
+  | `app.json` | `strictLineBreaks` | `strict_line_breaks` |
+  | `templates.json` | `dateFormat` | `templates.date_format` |
+  | `templates.json` | `timeFormat` | `templates.time_format` |
+  | `templates.json` | `folder` | `templates.obsidian_folder` |
+  | `types.json` | (all entries) | `property_types.*` |
+- [ ] `vulcan config import core` CLI subcommand with all shared flags
+- [ ] Missing source files are individually skipped (not all-or-nothing) — report which were found
+- [ ] Unit test: import from all three source files, verify config output
+- [ ] Unit test: partial sources (e.g., only `app.json` present) import correctly
+
+#### 9.17.5 Dataview settings importer (`vulcan config import dataview`)
+
+Parity with the other plugin importers. Dataview settings are currently auto-loaded during config initialization but have no explicit import command to write them into `config.toml`.
+
+- [ ] `DataviewImporter` implementing `PluginImporter`, reading from `.obsidian/plugins/dataview/data.json`
+- [ ] Import mappings (same 14 settings already parsed in `load_obsidian_dataview_config`):
+  | Setting key | Vulcan config key |
+  |---|---|
+  | `inlineQueryPrefix` | `dataview.inline_query_prefix` |
+  | `inlineJsQueryPrefix` | `dataview.inline_js_query_prefix` |
+  | `enableDataviewJs` | `dataview.enable_dataview_js` |
+  | `enableInlineDataviewJs` | `dataview.enable_inline_dataview_js` |
+  | `taskCompletionTracking` | `dataview.task_completion_tracking` |
+  | `taskCompletionUseEmojiShorthand` | `dataview.task_completion_use_emoji_shorthand` |
+  | `taskCompletionText` | `dataview.task_completion_text` |
+  | `recursiveSubTaskCompletion` | `dataview.recursive_subtask_completion` |
+  | `displayResultCount` | `dataview.display_result_count` |
+  | `defaultDateFormat` | `dataview.default_date_format` |
+  | `defaultDateTimeFormat` | `dataview.default_datetime_format` |
+  | `maxRecursiveRenderDepth` | `dataview.max_recursive_render_depth` |
+  | `primaryColumnName` | `dataview.primary_column_name` |
+  | `groupColumnName` | `dataview.group_column_name` |
+- [ ] `vulcan config import dataview` CLI subcommand with all shared flags
+- [ ] Unit test: import and idempotency
+
+#### 9.17.6 Batch import commands
+
+- [ ] `vulcan config import --all` — discover all importable sources via the importer registry, run each in priority order, aggregate reports:
+  - Respects `--dry-run`, `--target`, `--no-commit`, `--output`
+  - Single commit for the batch (not one commit per importer)
+  - Reports per-importer results and any conflicts (9.17.3)
+  - Human output format:
+    ```
+    Importing settings...
+      + core: 7 settings from app.json, templates.json, types.json
+      + dataview: 14 settings imported
+      + templater: 10 settings imported
+      + tasks: 7 settings imported
+      + kanban: 39 settings imported
+      - quickadd: not detected
+      - tasknotes: not detected
+      - periodic-notes: not detected
+    ```
+- [ ] `vulcan config import --list` — show what is importable without importing; calls `detect()` on each importer
+  - Human output: detected/not-detected with source file paths
+  - JSON output: array of `{ name, detected, source_paths }`
+- [ ] `--all` and `--list` are flags on the `Import` variant of `ConfigCommand`, coexisting with the existing subcommand dispatch
+- [ ] Unit test: `--all` imports all detected sources
+- [ ] Unit test: `--list` does not write anything
+- [ ] Integration test: `--all --dry-run` shows batch preview
+
+#### 9.17.7 `vulcan init` integration
+
+- [ ] After `vulcan init` creates `.vulcan/config.toml`, detect importable sources via the importer registry and print a summary:
   ```
-  Importing plugin settings...
-    ✓ dataview: 14 settings imported
-    ✓ templater-obsidian: 10 settings imported
-    ✓ obsidian-tasks-plugin: 7 settings imported
-    ✓ obsidian-kanban: 39 settings imported
-    ✗ quickadd: not installed
-    ✓ tasknotes: 50 settings imported
-    ✓ periodic-notes: 5 settings imported
-    ✓ daily-notes (core): 3 settings imported
+  Detected importable Obsidian settings:
+    core (app.json, templates.json, types.json)
+    dataview (.obsidian/plugins/dataview/data.json)
+    templater (.obsidian/plugins/templater-obsidian/data.json)
+  Run `vulcan config import --all` to import them.
   ```
-- [ ] `vulcan config import --list` — show which plugins are detected and importable without actually importing
-- [ ] `vulcan config import --dry-run` — show what would be imported without writing config
-- [ ] Conflict resolution: when multiple plugins configure the same Vulcan setting (e.g., template folder from both Templater and QuickAdd), warn and prefer the more specific plugin
-- [ ] Import idempotency: re-running import updates existing config without duplicating entries
-- [ ] Individual plugin importers remain available: `vulcan config import dataview`, `vulcan config import templater`, etc.
+- [ ] `vulcan init --import` — automatically run `--all` import after initialization
+- [ ] `vulcan init --no-import` — suppress the detection summary (for scripted use)
+- [ ] Default behavior (no flag): detect and print the suggestion, do not auto-import
 
 ### Phase 9 implementation order
 
@@ -2235,18 +2356,23 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
                                         │
 9.13 (QuickAdd)     ← investigation     │── can start anytime
 9.14 (plugin notes) ← informational     │
-9.17 (unified import) ← all importers   │── last
+                                        │
+9.17.1-3 (import infra)  ← 9.5          │── early (Wave 2)
+9.17.4 (core importer)   ← 9.17.1      │── Wave 2
+9.17.5 (dataview import) ← 9.17.1,9.8.9│── Wave 3
+9.17.6 (batch commands)  ← 9.17.1      │── Wave 3
+9.17.7 (init integration)← 9.17.6      │── Wave 3+
 ```
 
 **Recommended implementation order:**
 
 1. **Wave 1 (parallel):** 9.1–9.5 — CLI foundation. These are largely complete and independent.
-2. **Wave 2 (parallel):** 9.6 (search), 9.7 (templates) — foundation for later waves.
-3. **Wave 3 (sequential):** 9.8.1 → 9.8.2 → 9.8.3 → 9.8.4 → 9.8.5 → 9.8.6 → 9.8.7 → 9.8.8 → 9.8.9 — Dataview, the largest sub-phase. Internal ordering is sequential.
-4. **Wave 4 (parallel):** 9.9 (Templater), 9.10 (Tasks), 9.11 (Kanban), 9.16 (Periodic notes) — all have their prerequisites met after Wave 3. Can proceed in parallel.
-5. **Wave 5 (parallel):** 9.12 (AI assistant), 9.15 (TaskNotes) — independent of Wave 4. Can start as early as after Wave 3, or run in parallel with Wave 4.
-6. **Wave 6:** 9.13 (QuickAdd) — investigation phase, can start anytime but benefits from seeing 9.9 and 9.12 patterns first.
-7. **Wave 7:** 9.17 (unified import) — must come after all individual plugin importers are implemented.
+2. **Wave 2 (parallel):** 9.6 (search), 9.7 (templates), **9.17.1–9.17.4 (import infrastructure + core importer)** — the import infrastructure only depends on 9.5 (already complete). Core importer depends only on 9.17.1.
+3. **Wave 3 (sequential + parallel):** 9.8.1 → 9.8.2 → 9.8.3 → 9.8.4 → 9.8.5 → 9.8.6 → 9.8.7 → 9.8.8 → 9.8.9 — Dataview, the largest sub-phase. Internal ordering is sequential. **9.17.5 (dataview importer) slots in after 9.8.9. 9.17.6 (batch commands) can proceed as soon as 9.17.4 + any existing importer are on the trait.** Refactor existing importers (9.9.4, 9.10.5, 9.11.4) to `PluginImporter` trait.
+4. **Wave 4 (parallel):** 9.9 (Templater), 9.10 (Tasks), 9.11 (Kanban), 9.16 (Periodic notes) — all have their prerequisites met after Wave 3. Can proceed in parallel. Each plugin's settings import uses `PluginImporter` from the start.
+5. **Wave 5 (parallel):** 9.12 (AI assistant), 9.15 (TaskNotes) — independent of Wave 4. Can start as early as after Wave 3, or run in parallel with Wave 4. TaskNotes importer (9.15.11) uses `PluginImporter`.
+6. **Wave 6:** 9.13 (QuickAdd) — investigation phase, can start anytime but benefits from seeing 9.9 and 9.12 patterns first. QuickAdd importer (9.13.3) uses `PluginImporter`.
+7. **9.17.7 (init integration)** can land anytime after 9.17.6.
 
 **Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features.
 
@@ -3156,7 +3282,7 @@ Phase 9.12 (AI assistant) builds on Phase 5 (vectors) and Phase 7.12 (query mode
 Phase 9.13 (QuickAdd) is an investigation phase — scope depends on CLI applicability findings. May be deferred or replaced by a Vulcan-native automation DSL.
 Phase 9.15 (TaskNotes) builds on Phase 4 (properties/Bases, including 4.5.1 custom source types) and Phase 9.8 (Dataview metadata). It complements Phase 9.10 (Tasks plugin) — TaskNotes uses task-as-note files with rich frontmatter and Bases views, while Tasks plugin operates on inline checkboxes. Calendar sync (9.15.10) is behind a `calendar-sync` feature flag. HTTP API compatibility (9.15.12) depends on Phase 10 (daemon).
 Phase 9.16 (Periodic notes) builds on Phase 1 (document indexing) and Phase 9.7 (template variables). It provides shared infrastructure for `file.day` resolution (9.8.3), Kanban date linking (9.11), QuickAdd daily note capture (9.13), and TaskNotes pomodoro storage (9.15). Can start as early as Wave 2 but `file.day` can be stubbed pending its completion.
-Phase 9.17 (Unified import) must come after all individual plugin settings importers (9.8.9, 9.9.4, 9.10.5, 9.11.4, 9.13.3, 9.15.11, 9.16.4) are implemented.
+Phase 9.17 (Unified settings import) infrastructure (9.17.1–9.17.3) depends only on 9.5 (config layering) and can start in Wave 2. Core importer (9.17.4) depends on 9.17.1. Dataview importer (9.17.5) depends on 9.17.1 and 9.8.9. Batch commands (9.17.6) depend on 9.17.1 and any two or more importers on the trait. Init integration (9.17.7) depends on 9.17.6. Individual plugin importers (9.9.4, 9.10.5, 9.11.4, 9.13.3, 9.15.11, 9.16.4) are refactored or implemented as `PluginImporter` (9.17.1) within their respective phases.
 Phase 4.5.1 (Custom Bases source types) extends the Bases evaluator with pluggable data sources. The trait and `FileSource` extraction are part of Phase 4. The actual custom source registrations happen in Phase 9.15.8 (TaskNotes Bases views).
 Phase 18.8 (Excalidraw) is part of Phase 18 (Canvas) — both are visual JSON-based document types. Parsing/indexing (18.8.1–18.8.2) depends on Phase 7. WebUI rendering (18.8.3) depends on Phase 13. WebUI editing (18.8.4) depends on Phase 14.
 Phase 14.1 (Note editor) includes Advanced Tables-style table editing for the WebUI — tab navigation, column management, sorting, CSV paste, and formula support.
