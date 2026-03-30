@@ -1633,7 +1633,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 
 #### 9.11.4 Settings import
 
-- [ ] Read Kanban settings from `.obsidian/plugins/obsidian-kanban/data.json` — 39+ config keys including:
+- [x] Read Kanban settings from `.obsidian/plugins/obsidian-kanban/data.json` — 39+ config keys including:
   | Setting key | Vulcan mapping |
   |---|---|
   | `date-trigger` | Date trigger token for card date parsing (default: `📅`) |
@@ -2188,7 +2188,7 @@ When the daemon is running (Phase 10+), expose TaskNotes-compatible REST endpoin
     ✓ dataview: 14 settings imported
     ✓ templater-obsidian: 10 settings imported
     ✓ obsidian-tasks-plugin: 7 settings imported
-    ✓ obsidian-kanban: 15 settings imported
+    ✓ obsidian-kanban: 39 settings imported
     ✗ quickadd: not installed
     ✓ tasknotes: 50 settings imported
     ✓ periodic-notes: 5 settings imported
