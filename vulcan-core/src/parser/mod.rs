@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(parsed.tasks_blocks.len(), 0);
         assert!(parsed.diagnostics.iter().any(|diagnostic| diagnostic
             .message
-            .contains("require the `dataviewjs` feature flag")));
+            .contains("require the `js_runtime` feature flag")));
         assert!(parsed
             .chunk_texts
             .iter()

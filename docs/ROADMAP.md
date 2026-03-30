@@ -1322,7 +1322,7 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 Support Dataview inline expressions (`` `= expr` ``) for note rendering and query contexts.
 
 - [x] Detect inline expressions (backtick-delimited text starting with configurable prefix, default `=`) during the semantic pass; store as inline expression metadata
-- [x] Configurable inline query prefix from Dataview settings (`inlineQueryPrefix`, default `"="`); also detect inline DataviewJS prefix (`inlineJsQueryPrefix`, default `"$="`) when `dataviewjs` feature is enabled
+- [x] Configurable inline query prefix from Dataview settings (`inlineQueryPrefix`, default `"="`); also detect inline DataviewJS prefix (`inlineJsQueryPrefix`, default `"$="`) when `js_runtime` feature is enabled
 - [x] `this` binding: within an inline expression, `this` resolves to the current note's full metadata (frontmatter + inline fields + `file.*` implicit metadata)
 - [x] Reuse the extended expression evaluator (9.8.4) with the `this` context binding and full function library
 - [x] Known limitation: inline expressions store the expression text, not the evaluated result — other notes cannot query the result of an inline expression (this matches Dataview behavior)
@@ -1334,17 +1334,17 @@ Support Dataview inline expressions (`` `= expr` ``) for note rendering and quer
 
 #### 9.8.8 DataviewJS evaluation (compile-time feature flag)
 
-Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript runtime. Gated behind a `dataviewjs` Cargo feature flag — default builds detect and diagnose these blocks without a JS dependency.
+Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript runtime. Gated behind the `js_runtime` Cargo feature flag (enabled by default).
 
 **Detection and fallback (always available):**
 - [x] Detect `dataviewjs` code blocks during parsing
 - [x] Store as block metadata with `language = "dataviewjs"`
-- [x] When feature is not compiled in: emit diagnostic "DataviewJS blocks require the `dataviewjs` feature flag"
+- [x] When feature is not compiled in: emit diagnostic "DataviewJS blocks require the `js_runtime` feature flag"
 - [x] Exclude from FTS indexing (code, not content)
-- [x] Unit test: dataviewjs block detected and diagnosed without feature flag
+- [x] Unit test: `dataviewjs` block detected and diagnosed without feature flag
 
-**JS runtime integration (behind `dataviewjs` feature):**
-- [x] Add `dataviewjs` feature flag to `vulcan-core/Cargo.toml` and `vulcan-cli/Cargo.toml`
+**JS runtime integration (behind `js_runtime` feature):**
+- [x] Add `js_runtime` feature flag to `vulcan-core/Cargo.toml` and `vulcan-cli/Cargo.toml`
 - [ ] Embed JS runtime: Boa (pure Rust, preferred for build simplicity) or rquickjs/QuickJS bindings (alternative if performance requires it)
 - [ ] Sandbox constraints: no filesystem access, no network access, no `eval` of external scripts
 - [ ] Execution timeout: configurable via `.vulcan/config.toml` (default 5 seconds per block)
@@ -1396,7 +1396,7 @@ Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript
 - [ ] Unit tests: `dv.pages()`, `dv.page()`, `dv.current()`, `dv.table()`, `dv.list()`, `dv.taskList()`, `dv.execute()`
 - [ ] Integration test: DataviewJS blocks in test vault produce expected output
 - [ ] Sandbox test: verify filesystem/network access is blocked, timeout triggers correctly
-- [ ] Feature flag test: build without `dataviewjs`, verify detection-only behavior
+- [ ] Feature flag test: build without `js_runtime`, verify detection-only behavior
 
 #### 9.8.9 Dataview plugin settings import
 
@@ -1429,7 +1429,7 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 6. **DQL evaluation and CLI** (9.8.6) — wire the parser to the evaluator, implement GROUP BY / FLATTEN / LIMIT semantics with null key handling, add CLI commands.
 7. **Inline expressions** (9.8.7) — configurable prefix, `this` binding, and CLI evaluation command.
 8. **Dataview settings import** (9.8.9) — read `.obsidian/plugins/dataview/data.json` so all configurable behavior respects per-vault settings.
-9. **DataviewJS** (9.8.8) — detection always; sandboxed JS evaluation with full `dv` API, DataArray, and `dv.view()` behind `dataviewjs` feature flag.
+9. **DataviewJS** (9.8.8) — detection always; sandboxed JS evaluation with full `dv` API, DataArray, and `dv.view()` behind `js_runtime` feature flag.
 10. **Cross-cutting integration** (9.8.10) — search exclusions, doctor checks, API endpoints, comprehensive test vault.
 
 ### 9.9 Templater-compatible template engine
@@ -1479,9 +1479,9 @@ Implement the `tp` namespace natively (no JS required) for the most common templ
 - [ ] `tp.system.suggester(items, values, ...)` — CLI: use existing note picker or `--var` flag; TUI: show selection picker
 - [ ] `tp.system.clipboard()` — read system clipboard (platform-dependent, best-effort)
 
-#### 9.9.3 `tp` API object — JS-dependent modules (behind `dataviewjs` feature)
+#### 9.9.3 `tp` API object — JS-dependent modules (behind `js_runtime` feature)
 
-These require the sandboxed JS runtime and are only available when `--features dataviewjs` is compiled:
+These require the sandboxed JS runtime and are only available when `--features js_runtime` is compiled:
 
 - [ ] `<%* %>` execution commands — arbitrary JS with `tR` output accumulator
 - [ ] `tp.web.request(url, json_path?)` — sandboxed HTTP GET (allowlist-based, configurable)
@@ -1525,7 +1525,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [ ] `vulcan template --engine native|templater|auto` — force template engine selection (default: auto-detect based on `<% %>` presence)
 - [ ] `--var key=value` flag for non-interactive template variable binding (replaces `tp.system.prompt()` in CI/automation contexts)
 - [ ] Template preview: `vulcan template preview <name>` — show expanded template without creating a file
-- [ ] Error diagnostics for Templater syntax that requires unavailable features (e.g., `tp.web` without `dataviewjs` feature)
+- [ ] Error diagnostics for Templater syntax that requires unavailable features (e.g., `tp.web` without `js_runtime` feature)
 - [ ] Integration test: Templater-syntax templates produce expected output, including `tp.file`, `tp.date`, `tp.frontmatter` access
 
 ### 9.10 Tasks plugin compatibility
@@ -3148,7 +3148,7 @@ Phase 15 requires 10. Phase 16 requires 13, 14, and 17.4–17.5 (document secret
 Phase 17.6 (OIDC/SSO) is a future direction — deferred until the local auth system is stable.
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas ACLs follow from Phase 17.
-Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language) and Phase 9.6 (search operators, task search). Sub-phase 9.8.1 (inline fields + type inference) and 9.8.2 (list items and tasks) extend the parser pipeline. Sub-phase 9.8.3 (file.* metadata) synthesizes implicit fields from existing cache tables. Sub-phase 9.8.4 (type system and expression evaluator) extends the value representation with Date, Duration, Link types, ~60 built-in functions with auto-vectorization, lambda expressions, link indexing, swizzling, and null ordering. Sub-phases 9.8.5–9.8.7 (DQL parser, evaluation, inline expressions) build the query surface on top. Sub-phase 9.8.8 (DataviewJS) adds sandboxed JS evaluation with full dv API and DataArray behind a `dataviewjs` compile-time feature flag. Sub-phase 9.8.9 imports Dataview plugin settings from `.obsidian/plugins/dataview/data.json`. Dataview metadata and queries are available to all later phases (daemon, web, wiki) as foundation infrastructure.
+Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language) and Phase 9.6 (search operators, task search). Sub-phase 9.8.1 (inline fields + type inference) and 9.8.2 (list items and tasks) extend the parser pipeline. Sub-phase 9.8.3 (file.* metadata) synthesizes implicit fields from existing cache tables. Sub-phase 9.8.4 (type system and expression evaluator) extends the value representation with Date, Duration, Link types, ~60 built-in functions with auto-vectorization, lambda expressions, link indexing, swizzling, and null ordering. Sub-phases 9.8.5–9.8.7 (DQL parser, evaluation, inline expressions) build the query surface on top. Sub-phase 9.8.8 (DataviewJS) adds sandboxed JS evaluation with full dv API and DataArray behind a `js_runtime` compile-time feature flag. Sub-phase 9.8.9 imports Dataview plugin settings from `.obsidian/plugins/dataview/data.json`. Dataview metadata and queries are available to all later phases (daemon, web, wiki) as foundation infrastructure.
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and adds the Tasks DSL parser, recurring task expansion, dependency graph, and custom status types. Independent of 9.9.
 Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.

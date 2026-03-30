@@ -56,7 +56,7 @@ Phases 1–8 and 9.1–9.7 are complete. The codebase has:
 
 See "Phase 9 implementation order" in `docs/ROADMAP.md` for the full dependency graph. Summary:
 
-1. **9.8 Dataview** (largest) — Inline fields, type inference, `file.*` metadata, DQL parser/evaluator, ~60 built-in functions, DataviewJS sandbox (behind `dataviewjs` feature flag)
+1. **9.8 Dataview** (largest) — Inline fields, type inference, `file.*` metadata, DQL parser/evaluator, ~60 built-in functions, DataviewJS sandbox (behind `js_runtime` feature flag)
 2. **9.9 Templater** — `<% %>` template syntax, `tp.*` API modules, reuses DataviewJS sandbox for JS
 3. **9.10 Tasks plugin** — `tasks` code block DSL, recurring tasks (RRULE), dependencies, custom statuses
 4. **9.11 Kanban** — Board parsing, configurable date/time triggers, archive, CLI commands

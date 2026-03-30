@@ -15,8 +15,8 @@ name = "vulcan"
 path = "src/main.rs"
 
 [features]
-default = []
-dataviewjs = ["vulcan-core/dataviewjs"]
+default = ["js_runtime"]
+js_runtime = ["vulcan-core/js_runtime"]
 
 [dependencies]
 clap.workspace = true
