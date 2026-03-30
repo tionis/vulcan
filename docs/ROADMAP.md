@@ -1558,7 +1558,7 @@ These require the sandboxed JS runtime and are only available when `--features d
 - [x] Optional RRULE support for complex recurrence (RFC 5545 subset)
 - [x] Recurrence expansion: given a recurring task, compute next occurrence dates for query purposes
 - [x] `vulcan tasks next <n>` — show next N upcoming task instances (expanding recurrence)
-- [ ] Store recurrence metadata in `task_properties` for query access
+- [x] Store recurrence metadata in `task_properties` for query access
 
 #### 9.10.3 Task dependencies
 
