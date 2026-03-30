@@ -80,18 +80,46 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # time_trigger = "@@"
 # date_format = "YYYY-MM-DD"
 # time_format = "HH:mm"
+# date_display_format = "YYYY-MM-DD"
+# date_time_display_format = "YYYY-MM-DD HH:mm"
 # link_date_to_daily_note = false
-# metadata_keys = ["status", "owner"]
+# metadata_keys = [
+#   { metadata_key = "status", label = "Status", should_hide_label = false, contains_markdown = false },
+#   { metadata_key = "owner", label = "Owner" },
+# ]
 # archive_with_date = false
 # append_archive_date = false
 # archive_date_format = "YYYY-MM-DD HH:mm"
+# archive_date_separator = ""
 # new_card_insertion_method = "append"  # prepend | prepend-compact | append
+# new_line_trigger = "shift-enter"  # enter | shift-enter
+# new_note_folder = "Cards"
+# new_note_template = "Kanban Card"
 # hide_card_count = false
 # hide_tags_in_title = false
 # hide_tags_display = false
+# inline_metadata_position = "body"  # body | footer | metadata-table
 # lane_width = 272
+# full_list_lane_width = false
+# list_collapse = [false, true]
 # max_archive_size = 100
+# move_dates = true
+# move_tags = true
+# move_task_metadata = true
+# show_add_list = true
+# show_archive_all = true
+# show_board_settings = true
 # show_checkboxes = false
+# show_relative_date = true
+# show_search = true
+# show_set_view = true
+# show_view_as_markdown = true
+# date_picker_week_start = 1
+# table_sizing = { Title = 240, Tags = 120 }
+# tag_action = "obsidian"  # kanban | obsidian
+# tag_colors = [{ tag_key = "#urgent", color = "#ffffff", background_color = "#cc0000" }]
+# tag_sort = [{ tag = "#urgent" }]
+# date_colors = [{ is_today = true, color = "#ffffff", background_color = "#2d6cdf" }]
 
 # [dataview]
 # inline_query_prefix = "="
@@ -436,6 +464,60 @@ pub struct TasksConfig {
     pub recurrence_on_completion: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum KanbanMetadataKeyConfig {
+    Detailed(KanbanMetadataFieldConfig),
+    Key(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KanbanMetadataFieldConfig {
+    #[serde(alias = "metadataKey")]
+    pub metadata_key: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default, alias = "shouldHideLabel")]
+    pub should_hide_label: bool,
+    #[serde(default, alias = "containsMarkdown")]
+    pub contains_markdown: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct KanbanTagColorConfig {
+    #[serde(alias = "tagKey")]
+    pub tag_key: String,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default, alias = "backgroundColor")]
+    pub background_color: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct KanbanTagSortConfig {
+    pub tag: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct KanbanDateColorConfig {
+    #[serde(default, alias = "isToday")]
+    pub is_today: Option<bool>,
+    #[serde(default, alias = "isBefore")]
+    pub is_before: Option<bool>,
+    #[serde(default, alias = "isAfter")]
+    pub is_after: Option<bool>,
+    #[serde(default)]
+    pub distance: Option<usize>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub direction: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default, alias = "backgroundColor")]
+    pub background_color: Option<String>,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KanbanConfig {
@@ -448,17 +530,29 @@ pub struct KanbanConfig {
     #[serde(default = "default_kanban_time_format")]
     pub time_format: String,
     #[serde(default)]
+    pub date_display_format: Option<String>,
+    #[serde(default)]
+    pub date_time_display_format: Option<String>,
+    #[serde(default)]
     pub link_date_to_daily_note: bool,
     #[serde(default)]
-    pub metadata_keys: Vec<String>,
+    pub metadata_keys: Vec<KanbanMetadataKeyConfig>,
     #[serde(default)]
     pub archive_with_date: bool,
     #[serde(default)]
     pub append_archive_date: bool,
     #[serde(default = "default_kanban_archive_date_format")]
     pub archive_date_format: String,
+    #[serde(default)]
+    pub archive_date_separator: Option<String>,
     #[serde(default = "default_kanban_new_card_insertion_method")]
     pub new_card_insertion_method: String,
+    #[serde(default)]
+    pub new_line_trigger: Option<String>,
+    #[serde(default)]
+    pub new_note_folder: Option<String>,
+    #[serde(default)]
+    pub new_note_template: Option<String>,
     #[serde(default)]
     pub hide_card_count: bool,
     #[serde(default)]
@@ -466,11 +560,49 @@ pub struct KanbanConfig {
     #[serde(default)]
     pub hide_tags_display: bool,
     #[serde(default)]
+    pub inline_metadata_position: Option<String>,
+    #[serde(default)]
     pub lane_width: Option<usize>,
+    #[serde(default)]
+    pub full_list_lane_width: Option<bool>,
+    #[serde(default)]
+    pub list_collapse: Vec<bool>,
     #[serde(default)]
     pub max_archive_size: Option<usize>,
     #[serde(default)]
     pub show_checkboxes: bool,
+    #[serde(default)]
+    pub move_dates: Option<bool>,
+    #[serde(default)]
+    pub move_tags: Option<bool>,
+    #[serde(default)]
+    pub move_task_metadata: Option<bool>,
+    #[serde(default)]
+    pub show_add_list: Option<bool>,
+    #[serde(default)]
+    pub show_archive_all: Option<bool>,
+    #[serde(default)]
+    pub show_board_settings: Option<bool>,
+    #[serde(default)]
+    pub show_relative_date: Option<bool>,
+    #[serde(default)]
+    pub show_search: Option<bool>,
+    #[serde(default)]
+    pub show_set_view: Option<bool>,
+    #[serde(default)]
+    pub show_view_as_markdown: Option<bool>,
+    #[serde(default)]
+    pub date_picker_week_start: Option<usize>,
+    #[serde(default)]
+    pub table_sizing: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub tag_action: Option<String>,
+    #[serde(default)]
+    pub tag_colors: Vec<KanbanTagColorConfig>,
+    #[serde(default)]
+    pub tag_sort: Vec<KanbanTagSortConfig>,
+    #[serde(default)]
+    pub date_colors: Vec<KanbanDateColorConfig>,
 }
 
 impl Default for KanbanConfig {
@@ -480,18 +612,43 @@ impl Default for KanbanConfig {
             time_trigger: default_kanban_time_trigger(),
             date_format: default_kanban_date_format(),
             time_format: default_kanban_time_format(),
+            date_display_format: None,
+            date_time_display_format: None,
             link_date_to_daily_note: false,
             metadata_keys: Vec::new(),
             archive_with_date: false,
             append_archive_date: false,
             archive_date_format: default_kanban_archive_date_format(),
+            archive_date_separator: None,
             new_card_insertion_method: default_kanban_new_card_insertion_method(),
+            new_line_trigger: None,
+            new_note_folder: None,
+            new_note_template: None,
             hide_card_count: false,
             hide_tags_in_title: false,
             hide_tags_display: false,
+            inline_metadata_position: None,
             lane_width: None,
+            full_list_lane_width: None,
+            list_collapse: Vec::new(),
             max_archive_size: None,
             show_checkboxes: false,
+            move_dates: None,
+            move_tags: None,
+            move_task_metadata: None,
+            show_add_list: None,
+            show_archive_all: None,
+            show_board_settings: None,
+            show_relative_date: None,
+            show_search: None,
+            show_set_view: None,
+            show_view_as_markdown: None,
+            date_picker_week_start: None,
+            table_sizing: BTreeMap::new(),
+            tag_action: None,
+            tag_colors: Vec::new(),
+            tag_sort: Vec::new(),
+            date_colors: Vec::new(),
         }
     }
 }
@@ -794,18 +951,43 @@ struct PartialKanbanConfig {
     time_trigger: Option<String>,
     date_format: Option<String>,
     time_format: Option<String>,
+    date_display_format: Option<String>,
+    date_time_display_format: Option<String>,
     link_date_to_daily_note: Option<bool>,
-    metadata_keys: Option<Vec<String>>,
+    metadata_keys: Option<Vec<KanbanMetadataKeyConfig>>,
     archive_with_date: Option<bool>,
     append_archive_date: Option<bool>,
     archive_date_format: Option<String>,
+    archive_date_separator: Option<String>,
     new_card_insertion_method: Option<String>,
+    new_line_trigger: Option<String>,
+    new_note_folder: Option<String>,
+    new_note_template: Option<String>,
     hide_card_count: Option<bool>,
     hide_tags_in_title: Option<bool>,
     hide_tags_display: Option<bool>,
+    inline_metadata_position: Option<String>,
     lane_width: Option<usize>,
+    full_list_lane_width: Option<bool>,
+    list_collapse: Option<Vec<bool>>,
     max_archive_size: Option<usize>,
     show_checkboxes: Option<bool>,
+    move_dates: Option<bool>,
+    move_tags: Option<bool>,
+    move_task_metadata: Option<bool>,
+    show_add_list: Option<bool>,
+    show_archive_all: Option<bool>,
+    show_board_settings: Option<bool>,
+    show_relative_date: Option<bool>,
+    show_search: Option<bool>,
+    show_set_view: Option<bool>,
+    show_view_as_markdown: Option<bool>,
+    date_picker_week_start: Option<usize>,
+    table_sizing: Option<BTreeMap<String, usize>>,
+    tag_action: Option<String>,
+    tag_colors: Option<Vec<KanbanTagColorConfig>>,
+    tag_sort: Option<Vec<KanbanTagSortConfig>>,
+    date_colors: Option<Vec<KanbanDateColorConfig>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -931,43 +1113,80 @@ struct ObsidianKanbanConfig {
     date_format: Option<String>,
     #[serde(rename = "time-format")]
     time_format: Option<String>,
+    #[serde(rename = "date-display-format")]
+    date_display_format: Option<String>,
+    #[serde(rename = "date-time-display-format")]
+    date_time_display_format: Option<String>,
     #[serde(rename = "link-date-to-daily-note")]
     link_date_to_daily_note: Option<bool>,
     #[serde(rename = "metadata-keys")]
-    metadata_keys: Option<Vec<ObsidianKanbanMetadataKey>>,
+    metadata_keys: Option<Vec<KanbanMetadataKeyConfig>>,
     #[serde(rename = "archive-with-date")]
     archive_with_date: Option<bool>,
     #[serde(rename = "append-archive-date", alias = "prepend-archive-date")]
     append_archive_date: Option<bool>,
     #[serde(rename = "archive-date-format")]
     archive_date_format: Option<String>,
+    #[serde(rename = "archive-date-separator")]
+    archive_date_separator: Option<String>,
     #[serde(rename = "new-card-insertion-method")]
     new_card_insertion_method: Option<String>,
+    #[serde(rename = "new-line-trigger")]
+    new_line_trigger: Option<String>,
+    #[serde(rename = "new-note-folder")]
+    new_note_folder: Option<String>,
+    #[serde(rename = "new-note-template")]
+    new_note_template: Option<String>,
     #[serde(rename = "hide-card-count")]
     hide_card_count: Option<bool>,
     #[serde(rename = "hide-tags-in-title")]
     hide_tags_in_title: Option<bool>,
     #[serde(rename = "hide-tags-display")]
     hide_tags_display: Option<bool>,
+    #[serde(rename = "inline-metadata-position")]
+    inline_metadata_position: Option<String>,
     #[serde(rename = "lane-width")]
     lane_width: Option<usize>,
+    #[serde(rename = "full-list-lane-width")]
+    full_list_lane_width: Option<bool>,
+    #[serde(rename = "list-collapse")]
+    list_collapse: Option<Vec<bool>>,
     #[serde(rename = "max-archive-size")]
     max_archive_size: Option<usize>,
     #[serde(rename = "show-checkboxes")]
     show_checkboxes: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum ObsidianKanbanMetadataKey {
-    Object(ObsidianKanbanMetadataKeyObject),
-    String(String),
-}
-
-#[derive(Debug, Deserialize)]
-struct ObsidianKanbanMetadataKeyObject {
-    #[serde(rename = "metadataKey")]
-    metadata_key: String,
+    #[serde(rename = "move-dates")]
+    move_dates: Option<bool>,
+    #[serde(rename = "move-tags")]
+    move_tags: Option<bool>,
+    #[serde(rename = "move-task-metadata")]
+    move_task_metadata: Option<bool>,
+    #[serde(rename = "show-add-list")]
+    show_add_list: Option<bool>,
+    #[serde(rename = "show-archive-all")]
+    show_archive_all: Option<bool>,
+    #[serde(rename = "show-board-settings")]
+    show_board_settings: Option<bool>,
+    #[serde(rename = "show-relative-date")]
+    show_relative_date: Option<bool>,
+    #[serde(rename = "show-search")]
+    show_search: Option<bool>,
+    #[serde(rename = "show-set-view")]
+    show_set_view: Option<bool>,
+    #[serde(rename = "show-view-as-markdown")]
+    show_view_as_markdown: Option<bool>,
+    #[serde(rename = "date-picker-week-start")]
+    date_picker_week_start: Option<usize>,
+    #[serde(rename = "table-sizing")]
+    table_sizing: Option<BTreeMap<String, usize>>,
+    #[serde(rename = "tag-action")]
+    tag_action: Option<String>,
+    #[serde(rename = "tag-colors")]
+    tag_colors: Option<Vec<KanbanTagColorConfig>>,
+    #[serde(rename = "tag-sort")]
+    tag_sort: Option<Vec<KanbanTagSortConfig>>,
+    #[serde(rename = "date-colors")]
+    date_colors: Option<Vec<KanbanDateColorConfig>>,
 }
 
 #[must_use]
@@ -1351,91 +1570,272 @@ fn tasks_config_import_mappings(
     ])
 }
 
+fn push_config_import_mapping<T: Serialize>(
+    mappings: &mut Vec<ConfigImportMapping>,
+    source: &str,
+    target: &str,
+    value: &T,
+) -> Result<(), ConfigImportError> {
+    mappings.push(ConfigImportMapping {
+        source: source.to_string(),
+        target: target.to_string(),
+        value: serde_json::to_value(value)?,
+    });
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 fn kanban_config_import_mappings(
     config: &KanbanConfig,
 ) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
-    Ok(vec![
-        ConfigImportMapping {
-            source: "date-trigger".to_string(),
-            target: "kanban.date_trigger".to_string(),
-            value: serde_json::to_value(&config.date_trigger)?,
-        },
-        ConfigImportMapping {
-            source: "time-trigger".to_string(),
-            target: "kanban.time_trigger".to_string(),
-            value: serde_json::to_value(&config.time_trigger)?,
-        },
-        ConfigImportMapping {
-            source: "date-format".to_string(),
-            target: "kanban.date_format".to_string(),
-            value: serde_json::to_value(&config.date_format)?,
-        },
-        ConfigImportMapping {
-            source: "time-format".to_string(),
-            target: "kanban.time_format".to_string(),
-            value: serde_json::to_value(&config.time_format)?,
-        },
-        ConfigImportMapping {
-            source: "link-date-to-daily-note".to_string(),
-            target: "kanban.link_date_to_daily_note".to_string(),
-            value: Value::Bool(config.link_date_to_daily_note),
-        },
-        ConfigImportMapping {
-            source: "metadata-keys[].metadataKey".to_string(),
-            target: "kanban.metadata_keys".to_string(),
-            value: serde_json::to_value(&config.metadata_keys)?,
-        },
-        ConfigImportMapping {
-            source: "archive-with-date".to_string(),
-            target: "kanban.archive_with_date".to_string(),
-            value: Value::Bool(config.archive_with_date),
-        },
-        ConfigImportMapping {
-            source: "append-archive-date".to_string(),
-            target: "kanban.append_archive_date".to_string(),
-            value: Value::Bool(config.append_archive_date),
-        },
-        ConfigImportMapping {
-            source: "archive-date-format".to_string(),
-            target: "kanban.archive_date_format".to_string(),
-            value: serde_json::to_value(&config.archive_date_format)?,
-        },
-        ConfigImportMapping {
-            source: "new-card-insertion-method".to_string(),
-            target: "kanban.new_card_insertion_method".to_string(),
-            value: serde_json::to_value(&config.new_card_insertion_method)?,
-        },
-        ConfigImportMapping {
-            source: "hide-card-count".to_string(),
-            target: "kanban.hide_card_count".to_string(),
-            value: Value::Bool(config.hide_card_count),
-        },
-        ConfigImportMapping {
-            source: "hide-tags-in-title".to_string(),
-            target: "kanban.hide_tags_in_title".to_string(),
-            value: Value::Bool(config.hide_tags_in_title),
-        },
-        ConfigImportMapping {
-            source: "hide-tags-display".to_string(),
-            target: "kanban.hide_tags_display".to_string(),
-            value: Value::Bool(config.hide_tags_display),
-        },
-        ConfigImportMapping {
-            source: "lane-width".to_string(),
-            target: "kanban.lane_width".to_string(),
-            value: serde_json::to_value(config.lane_width)?,
-        },
-        ConfigImportMapping {
-            source: "max-archive-size".to_string(),
-            target: "kanban.max_archive_size".to_string(),
-            value: serde_json::to_value(config.max_archive_size)?,
-        },
-        ConfigImportMapping {
-            source: "show-checkboxes".to_string(),
-            target: "kanban.show_checkboxes".to_string(),
-            value: Value::Bool(config.show_checkboxes),
-        },
-    ])
+    let mut mappings = Vec::new();
+    push_config_import_mapping(
+        &mut mappings,
+        "date-trigger",
+        "kanban.date_trigger",
+        &config.date_trigger,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "time-trigger",
+        "kanban.time_trigger",
+        &config.time_trigger,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "date-format",
+        "kanban.date_format",
+        &config.date_format,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "time-format",
+        "kanban.time_format",
+        &config.time_format,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "date-display-format",
+        "kanban.date_display_format",
+        &config.date_display_format,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "date-time-display-format",
+        "kanban.date_time_display_format",
+        &config.date_time_display_format,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "link-date-to-daily-note",
+        "kanban.link_date_to_daily_note",
+        &config.link_date_to_daily_note,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "metadata-keys",
+        "kanban.metadata_keys",
+        &config.metadata_keys,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "archive-with-date",
+        "kanban.archive_with_date",
+        &config.archive_with_date,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "append-archive-date",
+        "kanban.append_archive_date",
+        &config.append_archive_date,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "archive-date-format",
+        "kanban.archive_date_format",
+        &config.archive_date_format,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "archive-date-separator",
+        "kanban.archive_date_separator",
+        &config.archive_date_separator,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "new-card-insertion-method",
+        "kanban.new_card_insertion_method",
+        &config.new_card_insertion_method,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "new-line-trigger",
+        "kanban.new_line_trigger",
+        &config.new_line_trigger,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "new-note-folder",
+        "kanban.new_note_folder",
+        &config.new_note_folder,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "new-note-template",
+        "kanban.new_note_template",
+        &config.new_note_template,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "hide-card-count",
+        "kanban.hide_card_count",
+        &config.hide_card_count,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "hide-tags-in-title",
+        "kanban.hide_tags_in_title",
+        &config.hide_tags_in_title,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "hide-tags-display",
+        "kanban.hide_tags_display",
+        &config.hide_tags_display,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "inline-metadata-position",
+        "kanban.inline_metadata_position",
+        &config.inline_metadata_position,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "lane-width",
+        "kanban.lane_width",
+        &config.lane_width,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "full-list-lane-width",
+        "kanban.full_list_lane_width",
+        &config.full_list_lane_width,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "list-collapse",
+        "kanban.list_collapse",
+        &config.list_collapse,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "max-archive-size",
+        "kanban.max_archive_size",
+        &config.max_archive_size,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "show-checkboxes",
+        "kanban.show_checkboxes",
+        &config.show_checkboxes,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "move-dates",
+        "kanban.move_dates",
+        &config.move_dates,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "move-tags",
+        "kanban.move_tags",
+        &config.move_tags,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "move-task-metadata",
+        "kanban.move_task_metadata",
+        &config.move_task_metadata,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "show-add-list",
+        "kanban.show_add_list",
+        &config.show_add_list,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "show-archive-all",
+        "kanban.show_archive_all",
+        &config.show_archive_all,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "show-board-settings",
+        "kanban.show_board_settings",
+        &config.show_board_settings,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "show-relative-date",
+        "kanban.show_relative_date",
+        &config.show_relative_date,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "show-search",
+        "kanban.show_search",
+        &config.show_search,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "show-set-view",
+        "kanban.show_set_view",
+        &config.show_set_view,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "show-view-as-markdown",
+        "kanban.show_view_as_markdown",
+        &config.show_view_as_markdown,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "date-picker-week-start",
+        "kanban.date_picker_week_start",
+        &config.date_picker_week_start,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "table-sizing",
+        "kanban.table_sizing",
+        &config.table_sizing,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "tag-action",
+        "kanban.tag_action",
+        &config.tag_action,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "tag-colors",
+        "kanban.tag_colors",
+        &config.tag_colors,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "tag-sort",
+        "kanban.tag_sort",
+        &config.tag_sort,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "date-colors",
+        "kanban.date_colors",
+        &config.date_colors,
+    )?;
+    Ok(mappings)
 }
 
 fn load_config_value(path: &Path) -> Result<toml::Value, ConfigImportError> {
@@ -1521,6 +1921,7 @@ fn write_tasks_import(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_kanban_import(
     config_value: &mut toml::Value,
     kanban: &KanbanConfig,
@@ -1559,11 +1960,25 @@ fn write_kanban_import(
         "time_format".to_string(),
         toml::Value::String(kanban.time_format.clone()),
     );
+    write_optional_toml_string(
+        kanban_table,
+        "date_display_format",
+        kanban.date_display_format.as_deref(),
+    );
+    write_optional_toml_string(
+        kanban_table,
+        "date_time_display_format",
+        kanban.date_time_display_format.as_deref(),
+    );
     kanban_table.insert(
         "link_date_to_daily_note".to_string(),
         toml::Value::Boolean(kanban.link_date_to_daily_note),
     );
-    write_string_array(kanban_table, "metadata_keys", &kanban.metadata_keys);
+    write_optional_toml_serialized(
+        kanban_table,
+        "metadata_keys",
+        (!kanban.metadata_keys.is_empty()).then_some(&kanban.metadata_keys),
+    )?;
     kanban_table.insert(
         "archive_with_date".to_string(),
         toml::Value::Boolean(kanban.archive_with_date),
@@ -1576,9 +1991,29 @@ fn write_kanban_import(
         "archive_date_format".to_string(),
         toml::Value::String(kanban.archive_date_format.clone()),
     );
+    write_optional_toml_string(
+        kanban_table,
+        "archive_date_separator",
+        kanban.archive_date_separator.as_deref(),
+    );
     kanban_table.insert(
         "new_card_insertion_method".to_string(),
         toml::Value::String(kanban.new_card_insertion_method.clone()),
+    );
+    write_optional_toml_string(
+        kanban_table,
+        "new_line_trigger",
+        kanban.new_line_trigger.as_deref(),
+    );
+    write_optional_toml_string(
+        kanban_table,
+        "new_note_folder",
+        kanban.new_note_folder.as_deref(),
+    );
+    write_optional_toml_string(
+        kanban_table,
+        "new_note_template",
+        kanban.new_note_template.as_deref(),
     );
     kanban_table.insert(
         "hide_card_count".to_string(),
@@ -1592,12 +2027,83 @@ fn write_kanban_import(
         "hide_tags_display".to_string(),
         toml::Value::Boolean(kanban.hide_tags_display),
     );
+    write_optional_toml_string(
+        kanban_table,
+        "inline_metadata_position",
+        kanban.inline_metadata_position.as_deref(),
+    );
     write_optional_toml_usize(kanban_table, "lane_width", kanban.lane_width)?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "full_list_lane_width",
+        kanban.full_list_lane_width.as_ref(),
+    )?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "list_collapse",
+        (!kanban.list_collapse.is_empty()).then_some(&kanban.list_collapse),
+    )?;
     write_optional_toml_usize(kanban_table, "max_archive_size", kanban.max_archive_size)?;
     kanban_table.insert(
         "show_checkboxes".to_string(),
         toml::Value::Boolean(kanban.show_checkboxes),
     );
+    write_optional_toml_serialized(kanban_table, "move_dates", kanban.move_dates.as_ref())?;
+    write_optional_toml_serialized(kanban_table, "move_tags", kanban.move_tags.as_ref())?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "move_task_metadata",
+        kanban.move_task_metadata.as_ref(),
+    )?;
+    write_optional_toml_serialized(kanban_table, "show_add_list", kanban.show_add_list.as_ref())?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "show_archive_all",
+        kanban.show_archive_all.as_ref(),
+    )?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "show_board_settings",
+        kanban.show_board_settings.as_ref(),
+    )?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "show_relative_date",
+        kanban.show_relative_date.as_ref(),
+    )?;
+    write_optional_toml_serialized(kanban_table, "show_search", kanban.show_search.as_ref())?;
+    write_optional_toml_serialized(kanban_table, "show_set_view", kanban.show_set_view.as_ref())?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "show_view_as_markdown",
+        kanban.show_view_as_markdown.as_ref(),
+    )?;
+    write_optional_toml_usize(
+        kanban_table,
+        "date_picker_week_start",
+        kanban.date_picker_week_start,
+    )?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "table_sizing",
+        (!kanban.table_sizing.is_empty()).then_some(&kanban.table_sizing),
+    )?;
+    write_optional_toml_string(kanban_table, "tag_action", kanban.tag_action.as_deref());
+    write_optional_toml_serialized(
+        kanban_table,
+        "tag_colors",
+        (!kanban.tag_colors.is_empty()).then_some(&kanban.tag_colors),
+    )?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "tag_sort",
+        (!kanban.tag_sort.is_empty()).then_some(&kanban.tag_sort),
+    )?;
+    write_optional_toml_serialized(
+        kanban_table,
+        "date_colors",
+        (!kanban.date_colors.is_empty()).then_some(&kanban.date_colors),
+    )?;
 
     Ok(())
 }
@@ -1641,6 +2147,23 @@ fn write_optional_toml_usize(
                 ))
             })?;
             table.insert(key.to_string(), toml::Value::Integer(value));
+        }
+        None => {
+            table.remove(key);
+        }
+    }
+
+    Ok(())
+}
+
+fn write_optional_toml_serialized<T: Serialize>(
+    table: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    value: Option<&T>,
+) -> Result<(), ConfigImportError> {
+    match value {
+        Some(value) => {
+            table.insert(key.to_string(), toml::Value::try_from(value)?);
         }
         None => {
             table.remove(key);
@@ -1817,6 +2340,7 @@ fn apply_obsidian_tasks_defaults(config: &mut VaultConfig, obsidian: ObsidianTas
     apply_task_status_definitions(&mut config.tasks.statuses, definitions);
 }
 
+#[allow(clippy::too_many_lines)]
 fn apply_obsidian_kanban_defaults(config: &mut VaultConfig, obsidian: ObsidianKanbanConfig) {
     let previous_default =
         derived_kanban_archive_date_format(&config.kanban.date_format, &config.kanban.time_format);
@@ -1836,12 +2360,19 @@ fn apply_obsidian_kanban_defaults(config: &mut VaultConfig, obsidian: ObsidianKa
     if let Some(time_format) = obsidian.time_format {
         config.kanban.time_format = time_format;
     }
+    if let Some(date_display_format) = obsidian.date_display_format {
+        config.kanban.date_display_format = normalize_optional_text(Some(date_display_format));
+    }
+    if let Some(date_time_display_format) = obsidian.date_time_display_format {
+        config.kanban.date_time_display_format =
+            normalize_optional_text(Some(date_time_display_format));
+    }
     if let Some(link_date_to_daily_note) = obsidian.link_date_to_daily_note {
         config.kanban.link_date_to_daily_note = link_date_to_daily_note;
     }
 
-    let metadata_keys = normalize_obsidian_kanban_metadata_keys(obsidian.metadata_keys);
-    if !metadata_keys.is_empty() {
+    if let Some(metadata_keys) = obsidian.metadata_keys {
+        let metadata_keys = normalize_kanban_metadata_keys(metadata_keys);
         config.kanban.metadata_keys = metadata_keys;
     }
 
@@ -1859,8 +2390,21 @@ fn apply_obsidian_kanban_defaults(config: &mut VaultConfig, obsidian: ObsidianKa
             &config.kanban.time_format,
         );
     }
+    if let Some(archive_date_separator) = obsidian.archive_date_separator {
+        config.kanban.archive_date_separator =
+            (!archive_date_separator.is_empty()).then_some(archive_date_separator);
+    }
     if let Some(new_card_insertion_method) = obsidian.new_card_insertion_method {
         config.kanban.new_card_insertion_method = new_card_insertion_method;
+    }
+    if let Some(new_line_trigger) = obsidian.new_line_trigger {
+        config.kanban.new_line_trigger = normalize_optional_text(Some(new_line_trigger));
+    }
+    if let Some(new_note_folder) = obsidian.new_note_folder {
+        config.kanban.new_note_folder = normalize_optional_text(Some(new_note_folder));
+    }
+    if let Some(new_note_template) = obsidian.new_note_template {
+        config.kanban.new_note_template = normalize_optional_text(Some(new_note_template));
     }
     if let Some(hide_card_count) = obsidian.hide_card_count {
         config.kanban.hide_card_count = hide_card_count;
@@ -1871,8 +2415,18 @@ fn apply_obsidian_kanban_defaults(config: &mut VaultConfig, obsidian: ObsidianKa
     if let Some(hide_tags_display) = obsidian.hide_tags_display {
         config.kanban.hide_tags_display = hide_tags_display;
     }
+    if let Some(inline_metadata_position) = obsidian.inline_metadata_position {
+        config.kanban.inline_metadata_position =
+            normalize_optional_text(Some(inline_metadata_position));
+    }
     if obsidian.lane_width.is_some() {
         config.kanban.lane_width = obsidian.lane_width;
+    }
+    if let Some(full_list_lane_width) = obsidian.full_list_lane_width {
+        config.kanban.full_list_lane_width = Some(full_list_lane_width);
+    }
+    if let Some(list_collapse) = obsidian.list_collapse {
+        config.kanban.list_collapse = list_collapse;
     }
     if obsidian.max_archive_size.is_some() {
         config.kanban.max_archive_size = obsidian.max_archive_size;
@@ -1880,8 +2434,57 @@ fn apply_obsidian_kanban_defaults(config: &mut VaultConfig, obsidian: ObsidianKa
     if let Some(show_checkboxes) = obsidian.show_checkboxes {
         config.kanban.show_checkboxes = show_checkboxes;
     }
+    if let Some(move_dates) = obsidian.move_dates {
+        config.kanban.move_dates = Some(move_dates);
+    }
+    if let Some(move_tags) = obsidian.move_tags {
+        config.kanban.move_tags = Some(move_tags);
+    }
+    if let Some(move_task_metadata) = obsidian.move_task_metadata {
+        config.kanban.move_task_metadata = Some(move_task_metadata);
+    }
+    if let Some(show_add_list) = obsidian.show_add_list {
+        config.kanban.show_add_list = Some(show_add_list);
+    }
+    if let Some(show_archive_all) = obsidian.show_archive_all {
+        config.kanban.show_archive_all = Some(show_archive_all);
+    }
+    if let Some(show_board_settings) = obsidian.show_board_settings {
+        config.kanban.show_board_settings = Some(show_board_settings);
+    }
+    if let Some(show_relative_date) = obsidian.show_relative_date {
+        config.kanban.show_relative_date = Some(show_relative_date);
+    }
+    if let Some(show_search) = obsidian.show_search {
+        config.kanban.show_search = Some(show_search);
+    }
+    if let Some(show_set_view) = obsidian.show_set_view {
+        config.kanban.show_set_view = Some(show_set_view);
+    }
+    if let Some(show_view_as_markdown) = obsidian.show_view_as_markdown {
+        config.kanban.show_view_as_markdown = Some(show_view_as_markdown);
+    }
+    if let Some(date_picker_week_start) = obsidian.date_picker_week_start {
+        config.kanban.date_picker_week_start = Some(date_picker_week_start);
+    }
+    if let Some(table_sizing) = obsidian.table_sizing {
+        config.kanban.table_sizing = table_sizing;
+    }
+    if let Some(tag_action) = obsidian.tag_action {
+        config.kanban.tag_action = normalize_optional_text(Some(tag_action));
+    }
+    if let Some(tag_colors) = obsidian.tag_colors {
+        config.kanban.tag_colors = tag_colors;
+    }
+    if let Some(tag_sort) = obsidian.tag_sort {
+        config.kanban.tag_sort = tag_sort;
+    }
+    if let Some(date_colors) = obsidian.date_colors {
+        config.kanban.date_colors = date_colors;
+    }
 }
 
+#[allow(clippy::too_many_lines)]
 fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConfig) {
     if let Some(scan) = overrides.scan {
         if let Some(default_mode) = scan.default_mode {
@@ -2014,11 +2617,18 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(time_format) = kanban.time_format {
             config.kanban.time_format = time_format;
         }
+        if let Some(date_display_format) = kanban.date_display_format {
+            config.kanban.date_display_format = normalize_optional_text(Some(date_display_format));
+        }
+        if let Some(date_time_display_format) = kanban.date_time_display_format {
+            config.kanban.date_time_display_format =
+                normalize_optional_text(Some(date_time_display_format));
+        }
         if let Some(link_date_to_daily_note) = kanban.link_date_to_daily_note {
             config.kanban.link_date_to_daily_note = link_date_to_daily_note;
         }
         if let Some(metadata_keys) = kanban.metadata_keys {
-            config.kanban.metadata_keys = metadata_keys;
+            config.kanban.metadata_keys = normalize_kanban_metadata_keys(metadata_keys);
         }
         if let Some(archive_with_date) = kanban.archive_with_date {
             config.kanban.archive_with_date = archive_with_date;
@@ -2034,8 +2644,21 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
                 &config.kanban.time_format,
             );
         }
+        if let Some(archive_date_separator) = kanban.archive_date_separator {
+            config.kanban.archive_date_separator =
+                (!archive_date_separator.is_empty()).then_some(archive_date_separator);
+        }
         if let Some(new_card_insertion_method) = kanban.new_card_insertion_method {
             config.kanban.new_card_insertion_method = new_card_insertion_method;
+        }
+        if let Some(new_line_trigger) = kanban.new_line_trigger {
+            config.kanban.new_line_trigger = normalize_optional_text(Some(new_line_trigger));
+        }
+        if let Some(new_note_folder) = kanban.new_note_folder {
+            config.kanban.new_note_folder = normalize_optional_text(Some(new_note_folder));
+        }
+        if let Some(new_note_template) = kanban.new_note_template {
+            config.kanban.new_note_template = normalize_optional_text(Some(new_note_template));
         }
         if let Some(hide_card_count) = kanban.hide_card_count {
             config.kanban.hide_card_count = hide_card_count;
@@ -2046,14 +2669,72 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(hide_tags_display) = kanban.hide_tags_display {
             config.kanban.hide_tags_display = hide_tags_display;
         }
+        if let Some(inline_metadata_position) = kanban.inline_metadata_position {
+            config.kanban.inline_metadata_position =
+                normalize_optional_text(Some(inline_metadata_position));
+        }
         if let Some(lane_width) = kanban.lane_width {
             config.kanban.lane_width = Some(lane_width);
+        }
+        if let Some(full_list_lane_width) = kanban.full_list_lane_width {
+            config.kanban.full_list_lane_width = Some(full_list_lane_width);
+        }
+        if let Some(list_collapse) = kanban.list_collapse {
+            config.kanban.list_collapse = list_collapse;
         }
         if let Some(max_archive_size) = kanban.max_archive_size {
             config.kanban.max_archive_size = Some(max_archive_size);
         }
         if let Some(show_checkboxes) = kanban.show_checkboxes {
             config.kanban.show_checkboxes = show_checkboxes;
+        }
+        if let Some(move_dates) = kanban.move_dates {
+            config.kanban.move_dates = Some(move_dates);
+        }
+        if let Some(move_tags) = kanban.move_tags {
+            config.kanban.move_tags = Some(move_tags);
+        }
+        if let Some(move_task_metadata) = kanban.move_task_metadata {
+            config.kanban.move_task_metadata = Some(move_task_metadata);
+        }
+        if let Some(show_add_list) = kanban.show_add_list {
+            config.kanban.show_add_list = Some(show_add_list);
+        }
+        if let Some(show_archive_all) = kanban.show_archive_all {
+            config.kanban.show_archive_all = Some(show_archive_all);
+        }
+        if let Some(show_board_settings) = kanban.show_board_settings {
+            config.kanban.show_board_settings = Some(show_board_settings);
+        }
+        if let Some(show_relative_date) = kanban.show_relative_date {
+            config.kanban.show_relative_date = Some(show_relative_date);
+        }
+        if let Some(show_search) = kanban.show_search {
+            config.kanban.show_search = Some(show_search);
+        }
+        if let Some(show_set_view) = kanban.show_set_view {
+            config.kanban.show_set_view = Some(show_set_view);
+        }
+        if let Some(show_view_as_markdown) = kanban.show_view_as_markdown {
+            config.kanban.show_view_as_markdown = Some(show_view_as_markdown);
+        }
+        if let Some(date_picker_week_start) = kanban.date_picker_week_start {
+            config.kanban.date_picker_week_start = Some(date_picker_week_start);
+        }
+        if let Some(table_sizing) = kanban.table_sizing {
+            config.kanban.table_sizing = table_sizing;
+        }
+        if let Some(tag_action) = kanban.tag_action {
+            config.kanban.tag_action = normalize_optional_text(Some(tag_action));
+        }
+        if let Some(tag_colors) = kanban.tag_colors {
+            config.kanban.tag_colors = tag_colors;
+        }
+        if let Some(tag_sort) = kanban.tag_sort {
+            config.kanban.tag_sort = tag_sort;
+        }
+        if let Some(date_colors) = kanban.date_colors {
+            config.kanban.date_colors = date_colors;
         }
     }
 
@@ -2130,20 +2811,36 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn normalize_obsidian_kanban_metadata_keys(
-    metadata_keys: Option<Vec<ObsidianKanbanMetadataKey>>,
-) -> Vec<String> {
+fn normalize_kanban_metadata_keys(
+    metadata_keys: Vec<KanbanMetadataKeyConfig>,
+) -> Vec<KanbanMetadataKeyConfig> {
     let mut normalized = Vec::new();
 
-    for key in metadata_keys.unwrap_or_default() {
-        let key = match key {
-            ObsidianKanbanMetadataKey::Object(key) => key.metadata_key,
-            ObsidianKanbanMetadataKey::String(key) => key,
+    for key in metadata_keys {
+        let (normalized_key, key) = match key {
+            KanbanMetadataKeyConfig::Detailed(mut field) => {
+                let Some(metadata_key) =
+                    normalize_optional_text(Some(std::mem::take(&mut field.metadata_key)))
+                else {
+                    continue;
+                };
+                field.metadata_key = metadata_key;
+                field.label = normalize_optional_text(field.label);
+                let normalized_key = field.metadata_key.clone();
+                (normalized_key, KanbanMetadataKeyConfig::Detailed(field))
+            }
+            KanbanMetadataKeyConfig::Key(key) => {
+                let Some(key) = normalize_optional_text(Some(key)) else {
+                    continue;
+                };
+                (key.clone(), KanbanMetadataKeyConfig::Key(key))
+            }
         };
-        let Some(key) = normalize_optional_text(Some(key)) else {
-            continue;
-        };
-        if normalized.iter().all(|existing| existing != &key) {
+        let duplicate = normalized.iter().any(|existing| match existing {
+            KanbanMetadataKeyConfig::Detailed(field) => field.metadata_key == normalized_key,
+            KanbanMetadataKeyConfig::Key(key) => key == &normalized_key,
+        });
+        if !duplicate {
             normalized.push(key);
         }
     }
@@ -2221,6 +2918,15 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    fn kanban_metadata_key_names(keys: &[KanbanMetadataKeyConfig]) -> Vec<String> {
+        keys.iter()
+            .map(|key| match key {
+                KanbanMetadataKeyConfig::Detailed(field) => field.metadata_key.clone(),
+                KanbanMetadataKeyConfig::Key(key) => key.clone(),
+            })
+            .collect()
+    }
+
     #[test]
     fn missing_files_use_builtin_defaults() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -2239,20 +2945,20 @@ mod tests {
         fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
         fs::write(
             vault_root.join(".obsidian/app.json"),
-            r#"{
+            r##"{
               "useMarkdownLinks": true,
               "newLinkFormat": "relative",
               "attachmentFolderPath": "/",
               "strictLineBreaks": true
-            }"#,
+            }"##,
         )
         .expect("app config should be written");
         fs::write(
             vault_root.join(".obsidian/types.json"),
-            r#"{
+            r##"{
               "status": "text",
               "priority": { "type": "number" }
-            }"#,
+            }"##,
         )
         .expect("types config should be written");
         fs::write(
@@ -2290,27 +2996,74 @@ mod tests {
             .expect("kanban plugin dir should be created");
         fs::write(
             vault_root.join(".obsidian/plugins/obsidian-kanban/data.json"),
-            r#"{
+            r##"{
               "date-trigger": "DUE",
               "time-trigger": "AT",
               "date-format": "DD/MM/YYYY",
               "time-format": "HH:mm:ss",
+              "date-display-format": "ddd DD MMM",
+              "date-time-display-format": "ddd DD MMM HH:mm:ss",
               "link-date-to-daily-note": true,
               "metadata-keys": [
-                { "metadataKey": "status", "label": "Status" },
+                {
+                  "metadataKey": "status",
+                  "label": "Status",
+                  "shouldHideLabel": true,
+                  "containsMarkdown": true
+                },
                 { "metadataKey": "owner", "label": "Owner" }
               ],
               "archive-with-date": true,
               "append-archive-date": true,
               "archive-date-format": "DD/MM/YYYY HH:mm:ss",
+              "archive-date-separator": " :: ",
               "new-card-insertion-method": "prepend",
+              "new-line-trigger": "enter",
+              "new-note-folder": "Cards/Ideas",
+              "new-note-template": "Kanban Card",
               "hide-card-count": true,
               "hide-tags-in-title": true,
               "hide-tags-display": true,
+              "inline-metadata-position": "metadata-table",
               "lane-width": 320,
+              "full-list-lane-width": true,
+              "list-collapse": [true, false],
               "max-archive-size": 50,
-              "show-checkboxes": true
-            }"#,
+              "show-checkboxes": true,
+              "move-dates": true,
+              "move-tags": false,
+              "move-task-metadata": true,
+              "show-add-list": false,
+              "show-archive-all": false,
+              "show-board-settings": false,
+              "show-relative-date": true,
+              "show-search": false,
+              "show-set-view": false,
+              "show-view-as-markdown": false,
+              "date-picker-week-start": 1,
+              "table-sizing": {
+                "Title": 240,
+                "Tags": 96
+              },
+              "tag-action": "kanban",
+              "tag-colors": [
+                {
+                  "tagKey": "#urgent",
+                  "color": "#ffffff",
+                  "backgroundColor": "#cc0000"
+                }
+              ],
+              "tag-sort": [
+                { "tag": "#urgent" }
+              ],
+              "date-colors": [
+                {
+                  "isToday": true,
+                  "backgroundColor": "#2d6cdf",
+                  "color": "#ffffff"
+                }
+              ]
+            }"##,
         )
         .expect("kanban config should be written");
         let paths = VaultPaths::new(vault_root);
@@ -2359,10 +3112,27 @@ mod tests {
         assert_eq!(loaded.config.kanban.time_trigger, "AT");
         assert_eq!(loaded.config.kanban.date_format, "DD/MM/YYYY");
         assert_eq!(loaded.config.kanban.time_format, "HH:mm:ss");
+        assert_eq!(
+            loaded.config.kanban.date_display_format.as_deref(),
+            Some("ddd DD MMM")
+        );
+        assert_eq!(
+            loaded.config.kanban.date_time_display_format.as_deref(),
+            Some("ddd DD MMM HH:mm:ss")
+        );
         assert!(loaded.config.kanban.link_date_to_daily_note);
         assert_eq!(
-            loaded.config.kanban.metadata_keys,
+            kanban_metadata_key_names(&loaded.config.kanban.metadata_keys),
             vec!["status".to_string(), "owner".to_string()]
+        );
+        assert_eq!(
+            loaded.config.kanban.metadata_keys[0],
+            KanbanMetadataKeyConfig::Detailed(KanbanMetadataFieldConfig {
+                metadata_key: "status".to_string(),
+                label: Some("Status".to_string()),
+                should_hide_label: true,
+                contains_markdown: true,
+            })
         );
         assert!(loaded.config.kanban.archive_with_date);
         assert!(loaded.config.kanban.append_archive_date);
@@ -2370,13 +3140,75 @@ mod tests {
             loaded.config.kanban.archive_date_format,
             "DD/MM/YYYY HH:mm:ss"
         );
+        assert_eq!(
+            loaded.config.kanban.archive_date_separator.as_deref(),
+            Some(" :: ")
+        );
         assert_eq!(loaded.config.kanban.new_card_insertion_method, "prepend");
+        assert_eq!(
+            loaded.config.kanban.new_line_trigger.as_deref(),
+            Some("enter")
+        );
+        assert_eq!(
+            loaded.config.kanban.new_note_folder.as_deref(),
+            Some("Cards/Ideas")
+        );
+        assert_eq!(
+            loaded.config.kanban.new_note_template.as_deref(),
+            Some("Kanban Card")
+        );
         assert!(loaded.config.kanban.hide_card_count);
         assert!(loaded.config.kanban.hide_tags_in_title);
         assert!(loaded.config.kanban.hide_tags_display);
+        assert_eq!(
+            loaded.config.kanban.inline_metadata_position.as_deref(),
+            Some("metadata-table")
+        );
         assert_eq!(loaded.config.kanban.lane_width, Some(320));
+        assert_eq!(loaded.config.kanban.full_list_lane_width, Some(true));
+        assert_eq!(loaded.config.kanban.list_collapse, vec![true, false]);
         assert_eq!(loaded.config.kanban.max_archive_size, Some(50));
         assert!(loaded.config.kanban.show_checkboxes);
+        assert_eq!(loaded.config.kanban.move_dates, Some(true));
+        assert_eq!(loaded.config.kanban.move_tags, Some(false));
+        assert_eq!(loaded.config.kanban.move_task_metadata, Some(true));
+        assert_eq!(loaded.config.kanban.show_add_list, Some(false));
+        assert_eq!(loaded.config.kanban.show_archive_all, Some(false));
+        assert_eq!(loaded.config.kanban.show_board_settings, Some(false));
+        assert_eq!(loaded.config.kanban.show_relative_date, Some(true));
+        assert_eq!(loaded.config.kanban.show_search, Some(false));
+        assert_eq!(loaded.config.kanban.show_set_view, Some(false));
+        assert_eq!(loaded.config.kanban.show_view_as_markdown, Some(false));
+        assert_eq!(loaded.config.kanban.date_picker_week_start, Some(1));
+        assert_eq!(loaded.config.kanban.table_sizing.get("Title"), Some(&240));
+        assert_eq!(loaded.config.kanban.tag_action.as_deref(), Some("kanban"));
+        assert_eq!(
+            loaded.config.kanban.tag_colors,
+            vec![KanbanTagColorConfig {
+                tag_key: "#urgent".to_string(),
+                color: Some("#ffffff".to_string()),
+                background_color: Some("#cc0000".to_string()),
+            }]
+        );
+        assert_eq!(
+            loaded.config.kanban.tag_sort,
+            vec![KanbanTagSortConfig {
+                tag: "#urgent".to_string()
+            }]
+        );
+        assert_eq!(
+            loaded.config.kanban.date_colors,
+            vec![KanbanDateColorConfig {
+                is_today: Some(true),
+                is_before: None,
+                is_after: None,
+                distance: None,
+                unit: None,
+                direction: None,
+                color: Some("#ffffff".to_string()),
+                background_color: Some("#2d6cdf".to_string()),
+            }]
+        );
     }
 
     #[test]
@@ -2457,18 +3289,46 @@ date_trigger = "DUE"
 time_trigger = "AT"
 date_format = "DD/MM/YYYY"
 time_format = "HH:mm:ss"
+date_display_format = "ddd DD MMM"
+date_time_display_format = "ddd DD MMM HH:mm:ss"
 link_date_to_daily_note = true
-metadata_keys = ["status", "owner"]
+metadata_keys = [
+  { metadata_key = "status", label = "Status", should_hide_label = true, contains_markdown = true },
+  { metadata_key = "owner", label = "Owner" },
+]
 archive_with_date = true
 append_archive_date = true
 archive_date_format = "DD/MM/YYYY HH:mm:ss"
+archive_date_separator = " :: "
 new_card_insertion_method = "prepend"
+new_line_trigger = "enter"
+new_note_folder = "Cards/Ideas"
+new_note_template = "Kanban Card"
 hide_card_count = true
 hide_tags_in_title = true
 hide_tags_display = true
+inline_metadata_position = "metadata-table"
 lane_width = 300
+full_list_lane_width = true
+list_collapse = [true, false]
 max_archive_size = 42
 show_checkboxes = true
+move_dates = true
+move_tags = false
+move_task_metadata = true
+show_add_list = false
+show_archive_all = false
+show_board_settings = false
+show_relative_date = true
+show_search = false
+show_set_view = false
+show_view_as_markdown = false
+date_picker_week_start = 1
+table_sizing = { Title = 240, Tags = 96 }
+tag_action = "kanban"
+tag_colors = [{ tag_key = "#urgent", color = "#ffffff", background_color = "#cc0000" }]
+tag_sort = [{ tag = "#urgent" }]
+date_colors = [{ is_today = true, background_color = "#2d6cdf", color = "#ffffff" }]
 
 [dataview]
 inline_query_prefix = "inline:"
@@ -2576,9 +3436,17 @@ time_format = "HH:mm:ss"
         assert_eq!(loaded.config.kanban.time_trigger, "AT");
         assert_eq!(loaded.config.kanban.date_format, "DD/MM/YYYY");
         assert_eq!(loaded.config.kanban.time_format, "HH:mm:ss");
+        assert_eq!(
+            loaded.config.kanban.date_display_format.as_deref(),
+            Some("ddd DD MMM")
+        );
+        assert_eq!(
+            loaded.config.kanban.date_time_display_format.as_deref(),
+            Some("ddd DD MMM HH:mm:ss")
+        );
         assert!(loaded.config.kanban.link_date_to_daily_note);
         assert_eq!(
-            loaded.config.kanban.metadata_keys,
+            kanban_metadata_key_names(&loaded.config.kanban.metadata_keys),
             vec!["status".to_string(), "owner".to_string()]
         );
         assert!(loaded.config.kanban.archive_with_date);
@@ -2587,13 +3455,75 @@ time_format = "HH:mm:ss"
             loaded.config.kanban.archive_date_format,
             "DD/MM/YYYY HH:mm:ss"
         );
+        assert_eq!(
+            loaded.config.kanban.archive_date_separator.as_deref(),
+            Some(" :: ")
+        );
         assert_eq!(loaded.config.kanban.new_card_insertion_method, "prepend");
+        assert_eq!(
+            loaded.config.kanban.new_line_trigger.as_deref(),
+            Some("enter")
+        );
+        assert_eq!(
+            loaded.config.kanban.new_note_folder.as_deref(),
+            Some("Cards/Ideas")
+        );
+        assert_eq!(
+            loaded.config.kanban.new_note_template.as_deref(),
+            Some("Kanban Card")
+        );
         assert!(loaded.config.kanban.hide_card_count);
         assert!(loaded.config.kanban.hide_tags_in_title);
         assert!(loaded.config.kanban.hide_tags_display);
+        assert_eq!(
+            loaded.config.kanban.inline_metadata_position.as_deref(),
+            Some("metadata-table")
+        );
         assert_eq!(loaded.config.kanban.lane_width, Some(300));
+        assert_eq!(loaded.config.kanban.full_list_lane_width, Some(true));
+        assert_eq!(loaded.config.kanban.list_collapse, vec![true, false]);
         assert_eq!(loaded.config.kanban.max_archive_size, Some(42));
         assert!(loaded.config.kanban.show_checkboxes);
+        assert_eq!(loaded.config.kanban.move_dates, Some(true));
+        assert_eq!(loaded.config.kanban.move_tags, Some(false));
+        assert_eq!(loaded.config.kanban.move_task_metadata, Some(true));
+        assert_eq!(loaded.config.kanban.show_add_list, Some(false));
+        assert_eq!(loaded.config.kanban.show_archive_all, Some(false));
+        assert_eq!(loaded.config.kanban.show_board_settings, Some(false));
+        assert_eq!(loaded.config.kanban.show_relative_date, Some(true));
+        assert_eq!(loaded.config.kanban.show_search, Some(false));
+        assert_eq!(loaded.config.kanban.show_set_view, Some(false));
+        assert_eq!(loaded.config.kanban.show_view_as_markdown, Some(false));
+        assert_eq!(loaded.config.kanban.date_picker_week_start, Some(1));
+        assert_eq!(loaded.config.kanban.table_sizing.get("Title"), Some(&240));
+        assert_eq!(loaded.config.kanban.tag_action.as_deref(), Some("kanban"));
+        assert_eq!(
+            loaded.config.kanban.tag_colors,
+            vec![KanbanTagColorConfig {
+                tag_key: "#urgent".to_string(),
+                color: Some("#ffffff".to_string()),
+                background_color: Some("#cc0000".to_string()),
+            }]
+        );
+        assert_eq!(
+            loaded.config.kanban.tag_sort,
+            vec![KanbanTagSortConfig {
+                tag: "#urgent".to_string()
+            }]
+        );
+        assert_eq!(
+            loaded.config.kanban.date_colors,
+            vec![KanbanDateColorConfig {
+                is_today: Some(true),
+                is_before: None,
+                is_after: None,
+                distance: None,
+                unit: None,
+                direction: None,
+                color: Some("#ffffff".to_string()),
+                background_color: Some("#2d6cdf".to_string()),
+            }]
+        );
         assert_eq!(loaded.config.dataview.inline_query_prefix, "inline:");
         assert_eq!(loaded.config.dataview.inline_js_query_prefix, "$inline:");
         assert!(!loaded.config.dataview.enable_dataview_js);
@@ -2660,6 +3590,8 @@ completed = ["x"]
 date_trigger = "@"
 archive_date_format = "YYYY-MM-DD HH:mm"
 lane_width = 256
+show_search = true
+metadata_keys = ["status"]
 
 [templates]
 date_format = "YYYY-MM-DD"
@@ -2689,6 +3621,8 @@ date_trigger = "DUE"
 date_format = "DD.MM.YYYY"
 time_format = "HH:mm:ss"
 lane_width = 320
+show_search = false
+metadata_keys = [{ metadata_key = "owner", label = "Owner" }]
 
 [templates]
 date_format = "DD.MM.YYYY"
@@ -2717,6 +3651,11 @@ time_format = "HH:mm:ss"
             "DD.MM.YYYY HH:mm:ss"
         );
         assert_eq!(loaded.config.kanban.lane_width, Some(320));
+        assert_eq!(loaded.config.kanban.show_search, Some(false));
+        assert_eq!(
+            kanban_metadata_key_names(&loaded.config.kanban.metadata_keys),
+            vec!["owner".to_string()]
+        );
         assert_eq!(loaded.config.templates.date_format, "DD.MM.YYYY");
         assert_eq!(loaded.config.templates.time_format, "HH:mm:ss");
     }
@@ -2987,27 +3926,44 @@ default_mode = "off"
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
         fs::write(
             vault_root.join(".obsidian/plugins/obsidian-kanban/data.json"),
-            r#"{
+            r##"{
               "date-trigger": "DUE",
               "time-trigger": "AT",
               "date-format": "DD/MM/YYYY",
               "time-format": "HH:mm:ss",
+              "date-display-format": "ddd DD MMM",
               "link-date-to-daily-note": true,
               "metadata-keys": [
-                { "metadataKey": "status", "label": "Status" },
+                {
+                  "metadataKey": "status",
+                  "label": "Status",
+                  "shouldHideLabel": true,
+                  "containsMarkdown": true
+                },
                 { "metadataKey": "owner", "label": "Owner" }
               ],
               "archive-with-date": true,
               "append-archive-date": true,
               "archive-date-format": "DD/MM/YYYY HH:mm:ss",
+              "archive-date-separator": " :: ",
               "new-card-insertion-method": "prepend",
+              "new-line-trigger": "enter",
               "hide-card-count": true,
               "hide-tags-in-title": true,
               "hide-tags-display": true,
               "lane-width": 320,
               "max-archive-size": 50,
-              "show-checkboxes": true
-            }"#,
+              "show-checkboxes": true,
+              "show-search": false,
+              "tag-action": "kanban",
+              "tag-colors": [
+                {
+                  "tagKey": "#urgent",
+                  "color": "#ffffff",
+                  "backgroundColor": "#cc0000"
+                }
+              ]
+            }"##,
         )
         .expect("kanban config should be written");
         fs::write(
@@ -3036,20 +3992,29 @@ default_mode = "off"
         assert!(rendered.contains("time_trigger = \"AT\""));
         assert!(rendered.contains("date_format = \"DD/MM/YYYY\""));
         assert!(rendered.contains("time_format = \"HH:mm:ss\""));
+        assert!(rendered.contains("date_display_format = \"ddd DD MMM\""));
         assert!(rendered.contains("link_date_to_daily_note = true"));
-        assert!(rendered.contains("metadata_keys = ["));
-        assert!(rendered.contains("\"status\""));
-        assert!(rendered.contains("\"owner\""));
+        assert!(rendered.contains("[[kanban.metadata_keys]]"));
+        assert!(rendered.contains("metadata_key = \"status\""));
+        assert!(rendered.contains("should_hide_label = true"));
+        assert!(rendered.contains("contains_markdown = true"));
+        assert!(rendered.contains("metadata_key = \"owner\""));
         assert!(rendered.contains("archive_with_date = true"));
         assert!(rendered.contains("append_archive_date = true"));
         assert!(rendered.contains("archive_date_format = \"DD/MM/YYYY HH:mm:ss\""));
+        assert!(rendered.contains("archive_date_separator = \" :: \""));
         assert!(rendered.contains("new_card_insertion_method = \"prepend\""));
+        assert!(rendered.contains("new_line_trigger = \"enter\""));
         assert!(rendered.contains("hide_card_count = true"));
         assert!(rendered.contains("hide_tags_in_title = true"));
         assert!(rendered.contains("hide_tags_display = true"));
         assert!(rendered.contains("lane_width = 320"));
         assert!(rendered.contains("max_archive_size = 50"));
         assert!(rendered.contains("show_checkboxes = true"));
+        assert!(rendered.contains("show_search = false"));
+        assert!(rendered.contains("tag_action = \"kanban\""));
+        assert!(rendered.contains("[[kanban.tag_colors]]"));
+        assert!(rendered.contains("tag_key = \"#urgent\""));
 
         let second_report =
             import_kanban_plugin_config(&paths).expect("second import should succeed");

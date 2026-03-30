@@ -112,11 +112,19 @@ fn config_import_kanban_json_output_reports_mappings() {
           "time-trigger": "AT",
           "date-format": "DD/MM/YYYY",
           "time-format": "HH:mm:ss",
+          "date-display-format": "ddd DD MMM",
           "metadata-keys": [
-            { "metadataKey": "status", "label": "Status" }
+            {
+              "metadataKey": "status",
+              "label": "Status",
+              "shouldHideLabel": true,
+              "containsMarkdown": true
+            }
           ],
           "archive-with-date": true,
-          "new-card-insertion-method": "prepend"
+          "archive-date-separator": " :: ",
+          "new-card-insertion-method": "prepend",
+          "show-search": false
         }"#,
     )
     .expect("kanban plugin config should be written");
@@ -150,7 +158,13 @@ fn config_import_kanban_json_output_reports_mappings() {
         fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
     assert!(config.contains("[kanban]"));
     assert!(config.contains("date_trigger = \"DUE\""));
-    assert!(config.contains("metadata_keys = [\"status\"]"));
+    assert!(config.contains("date_display_format = \"ddd DD MMM\""));
+    assert!(config.contains("[[kanban.metadata_keys]]"));
+    assert!(config.contains("metadata_key = \"status\""));
+    assert!(config.contains("should_hide_label = true"));
+    assert!(config.contains("contains_markdown = true"));
+    assert!(config.contains("archive_date_separator = \" :: \""));
+    assert!(config.contains("show_search = false"));
 }
 
 #[test]
