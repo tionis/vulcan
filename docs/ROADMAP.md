@@ -2932,9 +2932,11 @@ scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
 - [ ] Respect `robots.txt` (best effort)
 - [ ] User-Agent header identifying Vulcan
 
-#### 9.18.7 Integrated documentation (`help` command)
+#### 9.18.7 Integrated documentation, describe, and external harness support
 
 **Depends on:** None (can be developed independently). Content grows as other 9.18 sub-phases land.
+
+This sub-phase covers three related concerns: human-facing documentation (`help`), machine-facing tool schema export (`describe`), and external LLM harness integration (vault AGENTS.md, default skills, JSON errors).
 
 **`help` command**
 
@@ -2946,8 +2948,31 @@ scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
   - JS API: `help js`, `help js.vault`, `help js.vault.graph`, `help js.vault.note`
   - Guides: `help getting-started`, `help examples`
 - [ ] `vulcan help --search <keyword>` — search across all documentation topics
+- [ ] `vulcan help --output json <topic>` — structured help output for machine consumption (parameter names, types, descriptions, defaults, examples as JSON)
 - [ ] Rendered markdown in terminal with colors/formatting (using `termimad` or similar)
 - [ ] Distinct from `--help` which remains terse and flag-focused
+
+**`describe` command enhancements**
+
+- [ ] `vulcan describe` — compact listing of all commands with one-line descriptions (existing, polish for LLM consumption)
+- [ ] `vulcan describe --format json-schema` — export tool definitions as JSON Schema (default, current behavior)
+- [ ] `vulcan describe --format openai-tools` — export as OpenAI function-calling tool definitions (name, description, parameters as JSON Schema)
+- [ ] `vulcan describe --format mcp` — export as MCP tool definitions for direct integration with Claude Code, Cursor, etc.
+- [ ] Each format includes: command name, description, parameters with types/defaults/required flags, and examples
+- [ ] The embedded agent (9.12) uses `describe` output internally; external harnesses can call it to auto-generate tool configs
+
+**External LLM harness support**
+
+For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a tool provider without the embedded agent:
+
+- [ ] **Vault AGENTS.md template** — shipped with Vulcan, optionally written on `vulcan init`. Contents:
+  - Available Vulcan commands organized by category with brief descriptions
+  - Key conventions: always use `--output json`, `--dry-run` before mutations, note names may be ambiguous
+  - Pointers to the skills directory: "Read `AI/Skills/*.md` for detailed usage patterns and examples"
+  - Common pitfalls: `note patch` fails on multiple matches (safety), property types are lenient, etc.
+- [ ] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault on `vulcan init` or `vulcan assistant init`. See 9.12.7 for the full skill list. These serve external harnesses identically: Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API.
+- [ ] **Consistent JSON error output** — all commands in `--output json` mode return structured errors: `{"error": "<message>", "code": "<error_code>"}` rather than unstructured stderr text. Error codes are stable and documented.
+- [ ] **Non-interactive guarantee** — all commands detect non-TTY mode and never prompt. Ambiguous note matches return an error with candidates rather than opening a picker.
 
 **Documentation source**
 
@@ -3053,8 +3078,6 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.11 (Kanban)       ← 9.8.2, 7.1        │   (after their prerequisites)
 9.16 (Periodic)     ← 1, 9.7            │
                                         │
-9.12 (AI assistant) ← 5, 7.12, 9.6      │── independent of 9.9–9.11
-  9.12.8 (chat platforms) ← 9.12.1-7    │── after core assistant
 9.15 (TaskNotes)    ← 4, 9.8, 4.5.1     │── independent of 9.9–9.12
                                         │
 9.13 (QuickAdd)     ← investigation     │── can start anytime
@@ -3066,30 +3089,41 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.17.6 (batch commands)  ← 9.17.1      │── Wave 3
 9.17.7 (init integration)← 9.17.6      │── Wave 3+
                                         │
-9.18.1 (cmd reorg)       ← 7           │── Wave 5+ (after commands exist)
-9.18.2 (note CRUD)       ← 7, 2        │── Wave 5 (parallel with 9.12)
+--- AI path (CLI first, then agent, then chat) ---
+9.18.2 (note CRUD)       ← 7, 2        │── Wave 5 (CLI for LLMs)
 9.18.3 (query enhance)   ← 7.12        │── Wave 5
-9.18.4 (refactor group)  ← 7           │── Wave 5 (with 9.18.1)
-9.18.5 (JS runtime/REPL) ← 9.8.8       │── Wave 5+ (after DataviewJS)
-9.18.6 (web tools)       ← standalone  │── Wave 5 (parallel)
-9.18.7 (help/docs)       ← standalone  │── Wave 5 (parallel)
-9.18.8 (git ops)         ← 9.3         │── Wave 5 (parallel)
-9.18.9 (task mutations)  ← 9.10        │── Wave 5+ (after Tasks)
+9.18.6 (web tools)       ← standalone  │── Wave 5
+9.18.7 (help/docs/describe)← standalone│── Wave 5
+9.18.8 (git ops)         ← 9.3         │── Wave 5
++ default skills, vault AGENTS.md      │── Wave 5 deliverables
+                                        │
+9.12.1-7 (embedded agent)← 9.18.2,5,9.6│── Wave 6 (after CLI tools)
+                                        │
+9.12.8 (chat platforms)  ← 9.12.1-7    │── Wave 7 (after agent)
+                                        │
+9.18.4 (refactor group)  ← 7           │── Wave 6+ (with 9.18.1)
+9.18.5 (JS runtime/REPL) ← 9.8.8       │── Wave 6+ (after DataviewJS)
+9.18.9 (task mutations)  ← 9.10        │── Wave 6+ (after Tasks)
+9.18.1 (cmd reorg)       ← 7           │── last (after commands exist)
 ```
 
 **Recommended implementation order:**
+
+The key sequencing principle for AI-related work: **CLI tool surface first** (usable by external harnesses immediately), **then the embedded agent** (full vault-native experience), **then chat platforms** (mobile/messaging interface). Each phase is independently valuable.
 
 1. **Wave 1 (parallel):** 9.1–9.5 — CLI foundation. These are largely complete and independent.
 2. **Wave 2 (parallel):** 9.6 (search), 9.7 (templates), **9.17.1–9.17.4 (import infrastructure + core importer)** — the import infrastructure only depends on 9.5 (already complete). Core importer depends only on 9.17.1.
 3. **Wave 3 (sequential + parallel):** 9.8.1 → 9.8.2 → 9.8.3 → 9.8.4 → 9.8.5 → 9.8.6 → 9.8.7 → 9.8.8 → 9.8.9 — Dataview, the largest sub-phase. Internal ordering is sequential. **9.17.5 (dataview importer) slots in after 9.8.9. 9.17.6 (batch commands) can proceed as soon as 9.17.4 + any existing importer are on the trait.** Refactor existing importers (9.9.4, 9.10.5, 9.11.4) to `PluginImporter` trait.
 4. **Wave 4 (parallel):** 9.9 (Templater), 9.10 (Tasks), 9.11 (Kanban), 9.16 (Periodic notes) — all have their prerequisites met after Wave 3. Can proceed in parallel. Each plugin's settings import uses `PluginImporter` from the start.
-5. **Wave 5 (parallel):** 9.12.1–9.12.7 (AI assistant core), 9.15 (TaskNotes), **9.18.1–9.18.4 (command reorg, note CRUD, query enhancements, refactor group)**, **9.18.6 (web tools)**, **9.18.7 (help/docs)**, **9.18.8 (git ops)** — 9.18.2 (note CRUD) and 9.18.3 (query) only need Phase 7; 9.18.6–9.18.8 are standalone or depend on early phases. These provide the tool surface that 9.12 (AI assistant) consumes. Can proceed in parallel with Wave 4.
-6. **Wave 5+ (sequential after Wave 5 prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10; **9.12.8 (chat platform integrations)** ← requires 9.12.1–9.12.7 core assistant. These need specific Wave 3/4/5 outputs.
-7. **Wave 6:** 9.13 (QuickAdd) — investigation phase, can start anytime but benefits from seeing 9.9 and 9.12 patterns first. QuickAdd importer (9.13.3) uses `PluginImporter`.
-8. **9.17.7 (init integration)** can land anytime after 9.17.6.
-9. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
+5. **Wave 5 — CLI for LLMs (parallel):** **9.18.2 (note CRUD)**, **9.18.3 (query enhancements)**, **9.18.6 (web tools)**, **9.18.7 (help/describe polish)**, **9.18.8 (git ops)**, 9.15 (TaskNotes). This wave makes the CLI usable as a tool surface by any LLM harness (Claude Code, Codex, Gemini CLI, etc.) without the embedded agent. Deliverables include: note CRUD commands, `describe --format` for tool schema export, `help --output json` for structured command docs, default skills (bundled), vault AGENTS.md template, and consistent JSON error output. Can proceed in parallel with Wave 4.
+6. **Wave 6 — Embedded agent (sequential):** **9.12.1–9.12.7 as one coherent deliverable.** Inference backend → tool dispatch (full set, tiered exposure) → vault-aware system prompt + context injection → conversation persistence as vault notes → context budgeting → prompts → skills. Each step makes the agent incrementally more useful during development. Depends on Wave 5 for the tool surface.
+7. **Wave 6+ (sequential after prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10; **9.18.4 (refactor group)** ← with 9.18.1.
+8. **Wave 7 — Chat platforms:** **9.12.8 (Telegram first, then other platforms)** ← requires 9.12.1–9.12.7 core assistant from Wave 6. Internal to Vulcan, behind cargo feature flags.
+9. **Wave 8:** 9.13 (QuickAdd) — investigation phase, can start anytime but benefits from seeing 9.9 and 9.12 patterns first. QuickAdd importer (9.13.3) uses `PluginImporter`.
+10. **9.17.7 (init integration)** can land anytime after 9.17.6.
+11. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
 
-**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For 9.18, the critical path is 9.8.8 → 9.18.5 (JS runtime) and 9.10 → 9.18.9 (task mutations).
+**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the AI path, the critical chain is: 9.18.2 (note CRUD) → 9.12.1–9.12.7 (embedded agent) → 9.12.8 (chat platforms). For JS runtime: 9.8.8 → 9.18.5.
 
 **Note on 9.8.3 and 9.16:** The `file.day` metadata field in 9.8.3 depends on periodic note configuration from 9.16. However, `file.day` can be stubbed initially (return null when no periodic config exists) and filled in when 9.16 lands. This avoids blocking all of 9.8 on 9.16.
 
