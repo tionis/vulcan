@@ -623,11 +623,11 @@ Supported shells:
 
 ## Planned commands
 
-### CLI Redesign (Roadmap Phase 9.18)
+### Phase A: CLI for LLMs (Roadmap Wave 5)
 
-The CLI will be restructured into a two-level command hierarchy. This is a pre-alpha clean break. See `docs/ROADMAP.md` Phase 9.18 for full details.
+The highest-priority CLI additions make Vulcan usable as a tool surface for any LLM harness (Claude Code, Codex, Gemini CLI, etc.) without the embedded agent. See `docs/ROADMAP.md` Phase 9.18 for full details.
 
-**New command groups:**
+**Note CRUD (9.18.2):**
 
 ```
 vulcan note get <note> [--heading|--block-ref|--lines|--match|--context N|--no-frontmatter|--raw]
@@ -636,32 +636,73 @@ vulcan note create <path> [--template|--frontmatter k=v|--check]
 vulcan note append <note> <text> [--heading|--check]
 vulcan note patch <note> --find <str|regex> --replace <str> [--all|--check|--dry-run]
 vulcan note doctor|links|backlinks|diff <note>
+```
 
+**Tool discovery for LLMs (9.18.7):**
+
+```
+vulcan describe                              # compact command listing with one-liners
+vulcan describe --format openai-tools        # tool definitions for function calling
+vulcan describe --format mcp                 # MCP tool definitions
+vulcan help <topic> --output json            # structured help for machine consumption
+```
+
+**Other Wave 5 commands:**
+
+```
 vulcan query '...' [--format table|paths|detail|count] [--glob ...]
 vulcan search '...' [--regex <pattern>]
-
-vulcan refactor rename-alias|rename-heading|rename-block-ref|rename-property|merge-tags|rewrite|move|link-mentions
-vulcan refactor suggest mentions|duplicates
-
-vulcan ls [--glob ...] [--where ...] [--tag ...]   # alias for query with --format paths
-vulcan daily today|show|list|append
-vulcan run <script.js|script-name> [--sandbox strict|fs|net|none] [--timeout 30s]
-vulcan run                          # REPL mode (no args)
 vulcan web search|fetch
 vulcan git status|log|diff|commit|blame
+vulcan daily today|show|list|append
 vulcan help [<topic>]
+```
 
+**External harness deliverables:** vault AGENTS.md template (written on `vulcan init`), default skills in `AI/Skills/` (bundled, written on `vulcan init` or `vulcan assistant init`), consistent JSON error output on all commands.
+
+### Phase B: Embedded Agent (Roadmap Wave 6)
+
+The full vault-native AI assistant with tiered tool exposure, vault-aware system prompt, conversation persistence, prompts, and skills.
+
+```
+vulcan assistant <prompt>                    # one-shot prompt
+vulcan assistant --chat                      # multi-turn conversation
+vulcan assistant --file <note> <prompt>      # prompt about a specific note
+vulcan assistant --prompt <name>             # use a named prompt
+vulcan assistant --skill <name>              # invoke a skill
+vulcan assistant --resume <session>          # resume a conversation
+vulcan assistant sessions                    # list saved sessions
+vulcan assistant prompts                     # list available prompts
+vulcan assistant skills                      # list available skills
+vulcan assistant init                        # write default skills + vault AGENTS.md
+```
+
+### Phase C: Chat Platforms (Roadmap Wave 7)
+
+```
+vulcan assistant serve [--platform telegram|all]
+vulcan assistant platforms                   # list configured platforms
+vulcan assistant memory <platform> <user-id> # show user memory
+```
+
+### CLI Redesign — Command Reorganization (Roadmap 9.18.1, lands last)
+
+The full two-level command hierarchy. This is a pre-alpha clean break that restructures the flat command layout.
+
+```
+vulcan refactor rename-alias|rename-heading|rename-block-ref|rename-property|merge-tags|rewrite|move|link-mentions
+vulcan refactor suggest mentions|duplicates
+vulcan ls [--glob ...] [--where ...] [--tag ...]   # alias for query with --format paths
+vulcan run <script.js|script-name> [--sandbox strict|fs|net|none] [--timeout 30s]
+vulcan run                          # REPL mode (no args)
 vulcan tasks create|complete|reschedule  # new mutations
-
-vulcan assistant serve [--platform telegram|discord|...] [--config <path>]
-vulcan assistant status
 ```
 
 **Key changes from current layout:**
 - `links`, `backlinks` → `note links`, `note backlinks`
 - `rename-*`, `merge-tags`, `rewrite`, `move`, `link-mentions`, `suggest` → `refactor *`
 - `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
-- New: `note get/set/create/append/patch`, `run` (JS runtime + REPL), `web search/fetch`, `git *`, `help`, `daily *`, `assistant serve/status`
+- New: `note get/set/create/append/patch`, `run` (JS runtime + REPL), `web search/fetch`, `git *`, `help`, `daily *`, `assistant *`
 
 ### `canvas` (Roadmap Phase 18)
 
