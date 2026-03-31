@@ -1823,7 +1823,163 @@ Skills are Markdown-defined capabilities that combine a prompt with specific too
 - [ ] Skills can define `output_file` to automatically save results to a vault note
 - [ ] Skills can be chained: a skill's output can reference another skill
 
-#### 9.12.8 Settings import
+#### 9.12.8 Chat platform integrations (personal assistant mode)
+
+**Goal:** Expose the AI assistant as a conversational personal assistant over messaging platforms. Telegram first, modular for future platforms (Signal, Matrix, Discord, Slack, etc.). The assistant has full vault tool access with per-user/per-platform permission limits, persistent memory per user/group, and integrates with git versioning for all vault mutations.
+
+**Depends on:** 9.12.1–9.12.7 (core assistant infrastructure must exist first). Does not require the daemon (Phase 10) — runs as a long-lived `vulcan assistant serve` process.
+
+**Design principles:**
+- **The assistant core is platform-agnostic.** Chat platforms are transport adapters, not separate assistant implementations. A `ChatPlatform` trait defines how messages arrive and responses are sent; the assistant loop (system prompt → user message → tool calls → response) is shared.
+- **Memory is stored in the vault as notes.** Per-user and per-group memory files are regular vault notes that the assistant reads/writes via its existing tools. No separate memory database — everything is searchable, versioned, and backed up with the vault.
+- **Context is managed aggressively.** Chat messages are typically short and frequent. The assistant must stay within context limits without losing continuity. Strategy: summarize older turns, rely on memory files for long-term state, inject only relevant vault context per turn.
+
+**`ChatPlatform` trait:**
+
+- [ ] Platform adapter trait in `vulcan-core::assistant`:
+  ```rust
+  trait ChatPlatform {
+      fn name(&self) -> &str;
+      fn poll_messages(&mut self) -> Result<Vec<IncomingMessage>>;
+      fn send_response(&self, chat_id: &str, response: AssistantResponse) -> Result<()>;
+      fn platform_user_id(&self, msg: &IncomingMessage) -> String;
+  }
+  ```
+- [ ] `IncomingMessage` struct: `chat_id`, `user_id`, `user_display_name`, `text`, `reply_to_message_id` (for threading), `platform_metadata` (JSON)
+- [ ] `AssistantResponse` struct: `text`, `format` (plain/markdown), `reply_to` (optional)
+- [ ] Platform adapters registered at startup based on config
+
+**Telegram adapter (first implementation):**
+
+- [ ] Uses `teloxide` or `frankenstein` crate for Telegram Bot API
+- [ ] Configuration in `.vulcan/config.toml`:
+  ```toml
+  [assistant.platforms.telegram]
+  enabled = true
+  bot_token_env = "TELEGRAM_BOT_TOKEN"    # env var, not the token itself
+  allowed_users = [123456789, 987654321]  # Telegram user IDs (allowlist)
+  allowed_groups = [-100123456]           # group chat IDs (optional)
+  admin_users = [123456789]              # users who can change assistant config
+  max_response_length = 4096             # Telegram message limit
+  ```
+- [ ] Bot commands: `/start`, `/new` (new session), `/memory` (show memory summary), `/status` (vault stats)
+- [ ] All other messages are treated as assistant prompts
+- [ ] Support Telegram's reply-to-message for threading context
+- [ ] Markdown formatting in responses (Telegram MarkdownV2)
+- [ ] Long responses split across multiple messages
+- [ ] File attachments: images/documents sent to the bot can be fetched and saved to vault via `web fetch` → `note create`
+
+**Session and context management:**
+
+- [ ] **Reply chains as sessions:** A reply to a bot message continues the same session. A new message (not a reply) starts a new session. `/new` explicitly starts a fresh session.
+- [ ] **Session storage:** Sessions are persisted as vault notes using the gemini-scribe format from 9.12.5, stored in a platform-specific subfolder:
+  ```
+  AI/Sessions/telegram/<chat_id>/<session_ulid>.md
+  ```
+- [ ] **Context window strategy** (aggressive, for high-frequency chat):
+  1. System prompt (compact: vault name, user identity, memory summary, tool list)
+  2. Memory file content for the current user (injected once, refreshed on change)
+  3. Last N messages from the current session (configurable, default: 20 turns)
+  4. Older messages summarized by the assistant into a "session context" block
+  5. Vault context only injected on-demand (when assistant uses search/query tools)
+- [ ] **Auto-summarization:** When a session exceeds the context budget, the assistant is asked to summarize older turns into a concise context block. The full history remains in the session file but only the summary is loaded into context.
+- [ ] **Session timeout:** Sessions expire after configurable inactivity (default: 4 hours). Next message starts a new session with memory carried over.
+
+**Per-user memory (vault-native):**
+
+- [ ] Memory stored as vault notes in a configurable folder:
+  ```
+  AI/Memory/users/<platform>/<user_id>.md
+  AI/Memory/groups/<platform>/<group_id>.md
+  ```
+- [ ] Memory file format — Markdown with YAML frontmatter:
+  ```yaml
+  ---
+  type: assistant_memory
+  platform: telegram
+  user_id: "123456789"
+  display_name: "Alice"
+  last_updated: <ISO 8601>
+  ---
+
+  ## Facts
+  - Prefers short responses
+  - Works on Project Alpha (deadline: 2026-05-01)
+  - Timezone: Europe/Berlin
+
+  ## Preferences
+  - Wants daily standup summaries at 09:00
+  - Interested in #research tagged notes
+  ```
+- [ ] The system prompt instructs the assistant to:
+  - Read the user's memory file at session start
+  - Use `note_patch` / `note_append` to update memory when learning new facts
+  - Use `note_create` to create the memory file on first interaction
+  - Distinguish between ephemeral conversation context and durable facts worth remembering
+- [ ] Memory files are regular vault notes — searchable, linkable, versioned by git, visible in the graph
+- [ ] Group memory files track group-level context (shared projects, group conventions, active topics)
+
+**Group chat support:**
+
+- [ ] In group chats, the bot responds when:
+  - Mentioned by name or `@botname`
+  - Replying to a bot message
+  - A message starts with a configurable trigger prefix (default: `/ask`)
+- [ ] Each group member has their own user memory file; the group also has a shared memory file
+- [ ] The assistant sees: `[Alice] message text` format for multi-user context
+- [ ] Group-level tool permissions can be more restrictive than DM permissions:
+  ```toml
+  [assistant.platforms.telegram.group_permissions]
+  allow_write = false         # read-only in groups by default
+  allowed_tools = ["search", "query", "note_get", "daily_list"]
+  ```
+- [ ] Per-user overrides possible for admin users even in group context
+
+**Tool permissions and security:**
+
+- [ ] Per-platform tool permission configuration:
+  ```toml
+  [assistant.platforms.telegram.permissions]
+  allow_write = true                    # master switch for mutation tools
+  allowed_tools = ["*"]                 # all tools, or explicit list
+  denied_tools = ["git_commit"]         # deny specific tools
+  require_confirmation = false          # no interactive confirmation in chat
+  max_daily_mutations = 100             # rate limit on write operations per user
+  max_daily_messages = 500              # rate limit on total messages per user
+  ```
+- [ ] User allowlist is mandatory — the bot ignores messages from unknown users/groups
+- [ ] Tool calls logged to session files (metadata callouts) for auditability
+- [ ] Sensitive operations (git commit, note delete) can require admin-user approval
+
+**Git integration:**
+
+- [ ] Vault mutations from chat platforms auto-commit with descriptive messages:
+  ```
+  assistant(telegram/alice): Update Project Alpha status
+  ```
+- [ ] Commit author set to the platform user identity where possible
+- [ ] Batch commits: rapid sequences of tool calls within a single response are grouped into one commit
+- [ ] `git_commit` tool available for explicit commits with custom messages
+
+**CLI surface:**
+
+- [ ] `vulcan assistant serve [--platform telegram|all]` — start the chat platform listener(s)
+- [ ] `vulcan assistant serve --dry-run` — validate config, connect to platforms, but don't process messages
+- [ ] `vulcan assistant platforms` — list configured platforms and their status
+- [ ] `vulcan assistant memory <platform> <user-id>` — show a user's memory file
+- [ ] Runs as a long-lived process; can be managed by systemd/launchd/supervisor
+- [ ] Graceful shutdown: finish processing in-flight messages, flush sessions
+
+**Future platforms (modular via `ChatPlatform` trait):**
+
+- [ ] Signal (via signal-cli or linked device API)
+- [ ] Matrix (matrix-rust-sdk)
+- [ ] Discord (serenity crate)
+- [ ] Slack (Slack Events API)
+- [ ] Each platform adapter implements `ChatPlatform` and adds a `[assistant.platforms.<name>]` config section
+- [ ] Platform-specific quirks (message length limits, formatting dialects, threading models) are handled in the adapter, not the core
+
+#### 9.12.9 Settings import
 
 - [ ] No direct plugin equivalent to import — this is a Vulcan-native feature
 - [ ] Migration helper: if `AGENTS.md` or prompt/skill-like files are detected in common locations (e.g., gemini-scribe folders), offer to import/symlink them into Vulcan's configured folders
@@ -2834,6 +2990,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.16 (Periodic)     ← 1, 9.7            │
                                         │
 9.12 (AI assistant) ← 5, 7.12, 9.6      │── independent of 9.9–9.11
+  9.12.8 (chat platforms) ← 9.12.1-7    │── after core assistant
 9.15 (TaskNotes)    ← 4, 9.8, 4.5.1     │── independent of 9.9–9.12
                                         │
 9.13 (QuickAdd)     ← investigation     │── can start anytime
@@ -2862,8 +3019,8 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 2. **Wave 2 (parallel):** 9.6 (search), 9.7 (templates), **9.17.1–9.17.4 (import infrastructure + core importer)** — the import infrastructure only depends on 9.5 (already complete). Core importer depends only on 9.17.1.
 3. **Wave 3 (sequential + parallel):** 9.8.1 → 9.8.2 → 9.8.3 → 9.8.4 → 9.8.5 → 9.8.6 → 9.8.7 → 9.8.8 → 9.8.9 — Dataview, the largest sub-phase. Internal ordering is sequential. **9.17.5 (dataview importer) slots in after 9.8.9. 9.17.6 (batch commands) can proceed as soon as 9.17.4 + any existing importer are on the trait.** Refactor existing importers (9.9.4, 9.10.5, 9.11.4) to `PluginImporter` trait.
 4. **Wave 4 (parallel):** 9.9 (Templater), 9.10 (Tasks), 9.11 (Kanban), 9.16 (Periodic notes) — all have their prerequisites met after Wave 3. Can proceed in parallel. Each plugin's settings import uses `PluginImporter` from the start.
-5. **Wave 5 (parallel):** 9.12 (AI assistant), 9.15 (TaskNotes), **9.18.1–9.18.4 (command reorg, note CRUD, query enhancements, refactor group)**, **9.18.6 (web tools)**, **9.18.7 (help/docs)**, **9.18.8 (git ops)** — 9.18.2 (note CRUD) and 9.18.3 (query) only need Phase 7; 9.18.6–9.18.8 are standalone or depend on early phases. These provide the tool surface that 9.12 (AI assistant) consumes. Can proceed in parallel with Wave 4.
-6. **Wave 5+ (sequential after Wave 5 prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10. These need specific Wave 3/4 outputs.
+5. **Wave 5 (parallel):** 9.12.1–9.12.7 (AI assistant core), 9.15 (TaskNotes), **9.18.1–9.18.4 (command reorg, note CRUD, query enhancements, refactor group)**, **9.18.6 (web tools)**, **9.18.7 (help/docs)**, **9.18.8 (git ops)** — 9.18.2 (note CRUD) and 9.18.3 (query) only need Phase 7; 9.18.6–9.18.8 are standalone or depend on early phases. These provide the tool surface that 9.12 (AI assistant) consumes. Can proceed in parallel with Wave 4.
+6. **Wave 5+ (sequential after Wave 5 prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10; **9.12.8 (chat platform integrations)** ← requires 9.12.1–9.12.7 core assistant. These need specific Wave 3/4/5 outputs.
 7. **Wave 6:** 9.13 (QuickAdd) — investigation phase, can start anytime but benefits from seeing 9.9 and 9.12 patterns first. QuickAdd importer (9.13.3) uses `PluginImporter`.
 8. **9.17.7 (init integration)** can land anytime after 9.17.6.
 9. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
@@ -3191,7 +3348,9 @@ trait SyncBackend: Send + Sync {
 
 ### 15.2 Telegram bot integration
 
-- [ ] Per-vault Telegram bot configuration:
+**Note:** The full conversational AI assistant over Telegram (with memory, group chats, tool access) is defined in Phase 9.12.8 and runs independently of the daemon. Phase 15.2 covers the daemon-hosted webhook variant for simpler notification/command use cases that benefit from the daemon's event system.
+
+- [ ] Per-vault Telegram bot configuration (daemon mode):
   ```toml
   [vault.telegram]
   bot_token_env = "TELEGRAM_BOT_TOKEN"
@@ -3202,6 +3361,8 @@ trait SyncBackend: Send + Sync {
 - [ ] `/inbox <text>` — append to inbox note
 - [ ] `/daily` — create or open today's daily note
 - [ ] Implemented as a daemon plugin module
+- [ ] Webhook-driven notifications: vault events (note changed, scan complete) pushed to Telegram chat
+- [ ] Coexistence: daemon webhook bot and 9.12.8 assistant bot can use the same or different bot tokens
 
 ### 15.3 Custom API endpoints
 
@@ -3772,7 +3933,7 @@ Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and adds the Tasks DSL parser, recurring task expansion, dependency graph, and custom status types. Independent of 9.9.
 Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.
-Phase 9.12 (AI assistant) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. Requires an external inference API. The tool interface (9.12.2) is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands.
+Phase 9.12 (AI assistant) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. Requires an external inference API. The tool interface (9.12.2) is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands. Phase 9.12.8 (chat platform integrations) depends on 9.12.1–9.12.7 being complete and adds Telegram (first) with a modular `ChatPlatform` trait for future platforms. It runs independently of the daemon (Phase 10) as `vulcan assistant serve`. Memory is stored as vault notes, sessions use gemini-scribe format, and group chats have per-user + per-group memory files.
 Phase 9.18 (CLI redesign) has varying sub-phase dependencies: 9.18.1 (reorg) and 9.18.2 (note CRUD) can start after Phase 7; 9.18.3 (query enhancements) after 7.12; 9.18.5 (JS runtime) after 9.8.8; 9.18.6 (web tools) is standalone; 9.18.7 (docs) is standalone; 9.18.8 (git) after 9.3; 9.18.9 (task mutations) after 9.10. The command tree reorganization (9.18.1) should land last — build new commands first, then rename in one pass.
 Phase 9.13 (QuickAdd) is an investigation phase — scope depends on CLI applicability findings. May be deferred or replaced by a Vulcan-native automation DSL.
 Phase 9.15 (TaskNotes) builds on Phase 4 (properties/Bases, including 4.5.1 custom source types) and Phase 9.8 (Dataview metadata). It complements Phase 9.10 (Tasks plugin) — TaskNotes uses task-as-note files with rich frontmatter and Bases views, while Tasks plugin operates on inline checkboxes. Calendar sync (9.15.10) is behind a `calendar-sync` feature flag. HTTP API compatibility (9.15.12) depends on Phase 10 (daemon).
@@ -3808,6 +3969,7 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `automerge` | CRDT document model for collaborative editing | 14 |
 | `rust-embed` or `include_dir` | Embed static WebUI assets | 13 |
 | `openidconnect` | OIDC client for SSO integration | 17.6 |
+| `teloxide` or `frankenstein` | Telegram Bot API client | 9.12.8 |
 | `regex` | Regex matching in note patch and query predicates | 9.18.2, 9.18.3 |
 | `rquickjs` | QuickJS JS engine bindings (sandboxed runtime) | 9.18.5 (also 9.8.8) |
 | `reqwest` | HTTP client for web search/fetch | 9.18.6 |

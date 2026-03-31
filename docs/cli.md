@@ -652,13 +652,16 @@ vulcan git status|log|diff|commit|blame
 vulcan help [<topic>]
 
 vulcan tasks create|complete|reschedule  # new mutations
+
+vulcan assistant serve [--platform telegram|discord|...] [--config <path>]
+vulcan assistant status
 ```
 
 **Key changes from current layout:**
 - `links`, `backlinks` → `note links`, `note backlinks`
 - `rename-*`, `merge-tags`, `rewrite`, `move`, `link-mentions`, `suggest` → `refactor *`
 - `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
-- New: `note get/set/create/append/patch`, `run` (JS runtime + REPL), `web search/fetch`, `git *`, `help`, `daily *`
+- New: `note get/set/create/append/patch`, `run` (JS runtime + REPL), `web search/fetch`, `git *`, `help`, `daily *`, `assistant serve/status`
 
 ### `canvas` (Roadmap Phase 18)
 
