@@ -56,15 +56,23 @@ Phases 1–8 and 9.1–9.7 are complete. The codebase has:
 
 See "Phase 9 implementation order" in `docs/ROADMAP.md` for the full dependency graph. Summary:
 
+**Plugin compatibility (Waves 3–4):**
 1. **9.8 Dataview** (largest) — Inline fields, type inference, `file.*` metadata, DQL parser/evaluator, ~60 built-in functions, DataviewJS sandbox (behind `js_runtime` feature flag)
 2. **9.9 Templater** — `<% %>` template syntax, `tp.*` API modules, reuses DataviewJS sandbox for JS
 3. **9.10 Tasks plugin** — `tasks` code block DSL, recurring tasks (RRULE), dependencies, custom statuses
 4. **9.11 Kanban** — Board parsing, configurable date/time triggers, archive, CLI commands
-5. **9.12 AI assistant** — OpenAI-compatible inference, vault tool interface, conversation persistence (gemini-scribe callout format), prompts and skills as markdown files
+5. **9.16 Periodic notes** — Daily/weekly/monthly note infrastructure (shared dependency for many plugins)
+
+**CLI for LLMs (Wave 5):** Note CRUD (`note get/set/create/append/patch`), query enhancements, web tools, git ops, polished `describe` with `--format mcp|openai-tools` for tool schema export, `help --output json` for machine consumption, default skills shipped with Vulcan, vault AGENTS.md template. This wave makes the CLI usable as a tool surface by any LLM harness (Claude Code, Codex, Gemini CLI) without the embedded agent.
+
+**Embedded AI assistant (Wave 6):** Full vault-native agent — OpenAI-compatible inference, tiered tool exposure (core tools always in prompt, rest via gradual discovery through `describe`/`help`), vault-aware system prompt, conversation persistence as vault notes (gemini-scribe callout format), context budgeting, prompts and skills as executable knowledge (markdown files that teach the LLM how to use Vulcan).
+
+**Chat platform adapters (Wave 7):** Telegram first (internal, behind cargo feature flag), then Discord/Signal/Matrix. Chat platforms become mobile interfaces to the vault with per-user/per-platform sandboxed tool permissions.
+
+**Other:**
 6. **9.13 QuickAdd** — Investigation phase for macro/capture automation
-7. **9.15 TaskNotes** — Task-as-note files, NLP creation, Bases view integration (requires 4.5.1 custom source types), time tracking, pomodoro
-8. **9.16 Periodic notes** — Daily/weekly/monthly note infrastructure (shared dependency for many plugins)
-9. **9.17 Unified import** — `vulcan config import --all` for all plugin settings
+7. **9.15 TaskNotes** — Task-as-note files, NLP creation, Bases view integration
+8. **9.17 Unified import** — `vulcan config import --all` for all plugin settings
 
 Each plugin phase includes a settings importer reading from `.obsidian/plugins/<plugin>/data.json`.
 
