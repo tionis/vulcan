@@ -630,7 +630,7 @@ The CLI will be restructured into a two-level command hierarchy. This is a pre-a
 **New command groups:**
 
 ```
-vulcan note get <note> [--heading|--block-ref|--lines|--match|--no-frontmatter|--raw]
+vulcan note get <note> [--heading|--block-ref|--lines|--match|--context N|--no-frontmatter|--raw]
 vulcan note set <note> [--file|--no-frontmatter|--check]
 vulcan note create <path> [--template|--frontmatter k=v|--check]
 vulcan note append <note> <text> [--heading|--check]
