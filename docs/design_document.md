@@ -996,6 +996,77 @@ The implementation agent should explicitly accept these constraints:
 
 The product should fail loud, explain clearly, and repair cheaply.
 
+## 17b. CLI command hierarchy and agent tool surface
+
+The CLI serves two audiences simultaneously: human users in the terminal and the AI assistant (9.12) calling commands as tools. The design must satisfy both.
+
+### Command hierarchy
+
+Commands are organized into a two-level hierarchy using clap nested subcommand enums. This is a pre-alpha clean break — no backwards compatibility aliases.
+
+**Grouping principles:**
+- **`note`** groups single-note CRUD operations (get, set, create, append, patch) and single-note inspection (doctor, links, backlinks, diff). These are the primary tools for the AI assistant.
+- **`refactor`** groups cross-vault mutations (rename-*, merge-tags, rewrite, move, link-mentions, suggest). These are high-impact operations that benefit from `--dry-run`.
+- **`query`** and **`search`** remain top-level as the primary multi-note read operations. `query` is structural (metadata/properties), `search` is content-oriented (full-text/regex).
+- **`daily`** is top-level for ergonomics (frequent human use). It extends the periodic notes infrastructure (9.16) with structured event parsing.
+- **`web`**, **`git`**, **`run`**, **`help`** are top-level groups for external data, git ops, JS runtime, and documentation respectively.
+
+**Output contracts:** Every command supports `--output json` for machine consumption. The `describe` command provides runtime-discoverable schema for all commands and their arguments. The `query` command adds `--format table|paths|detail|count` for output shape control.
+
+### Single-note CRUD design
+
+The `note` command group fills the gap of having no way to read or write individual note content from the CLI. Key design decisions:
+
+- **`note get`** replaces `cat | grep | head | tail` for notes. Selectors (`--heading`, `--block-ref`, `--lines`, `--match`) are composable and work with `--output json`.
+- **`note patch`** fails on multiple matches by default (safety against unintended bulk edits). `--all` opts into replacing all occurrences. This reuses the `bulk_replace` infrastructure.
+- **`--check`** on write commands runs doctor-like diagnostics after writing. Non-blocking (writes succeed, warnings printed to stderr).
+
+### Regex support
+
+Both `query` (where predicates) and `search` (content) gain regex support via the `regex` crate:
+- Query: `from notes where file.name matches "^\d{4}-\d{2}-\d{2}"` — structural metadata filtering
+- Search: `vulcan search --regex <pattern>` — content grep with context
+
+### Daily note events
+
+Daily notes can contain structured event syntax under a configurable heading (e.g., `## Schedule`). Events are parsed during `scan` and stored in an `events` cache table, queryable via `daily list`, the JS API (`vault.events()`), and future calendar UI. Event syntax: `- [time[-end]] title [@key(value)...] [#tag...]`. The parser is lenient — non-matching lines are regular list items.
+
+## 17c. JavaScript runtime architecture
+
+The JS runtime (rquickjs/QuickJS) serves three purposes: DataviewJS compatibility (9.8.8), general vault scripting (`vulcan run`), and an interactive REPL (`vulcan run` with no args).
+
+### Engine choice: rquickjs (QuickJS)
+
+Selected over Boa (pure Rust) and deno_core (V8) based on:
+- **Binary size:** ~300KB vs ~15MB (Boa) vs ~40MB (V8). Critical for a CLI tool.
+- **Startup:** <300µs. No JIT warmup penalty on short-lived scripts.
+- **Sandboxing:** Built-in `set_memory_limit()`, `set_max_stack_size()`, `set_interrupt_handler()`. No default I/O — you expose exactly what you choose.
+- **ES2023 compliance:** Near 100% of Test262. Sufficient for vault automation scripts.
+- **Production-proven:** Used by Svix, who migrated from V8 for exactly this use case (short-lived script execution).
+
+### Sandbox levels
+
+| Level | Read vault | Write vault | Network | Resource limits |
+|-------|-----------|-------------|---------|-----------------|
+| `strict` (default) | Yes | No | No | Yes |
+| `fs` | Yes | Yes | No | Yes |
+| `net` | Yes | Yes | Yes | Yes |
+| `none` | Yes | Yes | Yes | No |
+
+Resource limits: configurable memory cap (default 64MB), stack limit (default 256KB), CPU timeout via interrupt handler.
+
+### API design
+
+The JS API binds directly to vulcan-core structs (not CLI wrappers). The `vault` global object exposes note objects with rich properties (frontmatter, tags, headings, blocks, tasks, links), graph traversal, collection operations with chainable `.where().sortBy().limit()`, vector/semantic queries, and daily note/event access. Write operations are gated by sandbox level. `vault.transaction()` provides atomic batch mutations.
+
+### REPL
+
+`vulcan run` with no args drops into an interactive REPL with persistent context, tab completion for API namespaces, multi-line input, pretty-printed results, and `help(obj)` for inline API documentation. History persists in `.vulcan/repl_history`.
+
+## 17d. Web tools and external data
+
+Web search and fetch capabilities serve the AI assistant and JS runtime. Search uses a pluggable `SearchBackend` trait (Kagi first). Fetch supports multiple output modes (markdown, HTML, raw) with readability-style article extraction.
+
 ## 18. Recommended phased delivery plan
 
 Phases are listed in recommended order. Dependency edges are noted explicitly so that parallelizable work is visible.
@@ -1038,7 +1109,7 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), AI assistant with conversation persistence and prompts/skills (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes infrastructure (9.16), unified plugin settings import (9.17)
+- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), AI assistant with conversation persistence and prompts/skills (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**
 - **Phase 10:** Multi-vault daemon with REST API (depends on Phase 9 foundation work being well-advanced)
 - **Phase 11:** Git auto-versioning at the daemon level
 - **Phase 12:** Sync integration
@@ -1081,8 +1152,11 @@ Maintain a set of test vaults in the repository (e.g., `tests/fixtures/vaults/`)
 - **`tasknotes/`**: TaskNotes task files with rich YAML frontmatter (status, priority, due, scheduled, contexts, projects, recurrence, blockedBy, timeEntries, reminders), custom user fields, and `.base` view files with filter/sort/group/formula configs. Tests task file parsing, field mapping, NLP input parsing, dependency graph construction, and Bases view evaluation with custom source types. See Roadmap Phase 9.15.
 - **`periodic/`**: Daily, weekly, and monthly note folders with date-formatted filenames, testing periodic note discovery, reverse date resolution, `file.day` integration, and gap detection. See Roadmap Phase 9.16.
 - **`ai-sessions/`**: Sample AI assistant conversation files in gemini-scribe callout format (YAML frontmatter with session metadata, `> [!user]+`/`> [!assistant]+`/`> [!metadata]-` callouts), prompt files, and skill files. Tests session parsing, resume, and prompt/skill discovery. See Roadmap Phase 9.12.
+- **`daily-events/`**: Daily notes with structured event syntax under `## Schedule` headings (`- 09:00-10:00 Meeting @location(Zoom) #work`, `- all-day Holiday`). Tests event parsing, time range extraction, metadata (@key(value)) and tag parsing, lenient handling of non-event list items, and `events` cache table population. See Roadmap Phase 9.16.3.
+- **`note-crud/`**: Notes for testing single-note CRUD operations: `note get` with heading/block-ref/lines/match selectors, `note set` with frontmatter preservation, `note create` with templates, `note append` under headings, `note patch` with single-match safety and regex patterns, and `--check` post-write diagnostics. See Roadmap 9.18.2.
+- **`js-runtime/`**: JS scripts testing the vault API: `vault.note()` properties, `vault.graph` traversal, `vault.notes().where().sortBy()` collection operations, `vault.transaction()` atomicity, sandbox enforcement (memory/CPU limits, tier access restrictions), and `help()` introspection. See Roadmap 9.18.5.
 
-Integration tests should run the full indexing pipeline against these vaults and assert on the resulting database state: row counts, resolved link targets, diagnostic entries, property types, etc.
+Integration tests should run the full indexing pipeline against these vaults and assert on the resulting database state: row counts, resolved link targets, diagnostic entries, property types, event records, etc.
 
 ### Roundtrip and idempotency tests
 
@@ -1131,6 +1205,11 @@ The implementation agent should treat the following as mandatory:
 - **Chunk-level embeddings** — **P1** — Whole-note vectors are too coarse for many use cases.
 - **Backend abstraction for vector store** — **P1** — Necessary because `sqlite-vec` is still pre-v1.
 - **Doctor/verify command** — **P1** — Operational quality feature, not optional tooling.
+- **Two-level command hierarchy** — **P1** — Clean grouping (`note`, `refactor`, `daily`, `web`, `run`, `git`, `help`) for both human discoverability and agent tool mapping.
+- **Single-note CRUD (`note get/set/create/append/patch`)** — **P1** — Required for AI assistant to read/write individual notes without shell access.
+- **`note patch` single-match safety** — **P1** — Fail on multiple matches by default to prevent unintended bulk edits from agent tool calls.
+- **JS runtime sandbox enforcement** — **P1** — Tiered sandbox (strict/fs/net/none) with resource limits must be correct and tested.
+- **CLI-to-tool 1:1 mapping** — **P1** — Every AI assistant tool (9.12.2) maps to a CLI command. Same behavior, same output format.
 
 ## References
 
