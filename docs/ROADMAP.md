@@ -1688,33 +1688,48 @@ These require the sandboxed JS runtime and are only available when `--features j
 
 #### 9.12.2 Tool interface
 
-The assistant has access to Vulcan's CLI commands as tools, aligned with the 9.18 command tree reorganization:
+The assistant uses a tiered tool exposure model: core tools are always available with full schemas in the system prompt, while the full command surface is accessible via gradual discovery. See §17b in the design document for the full rationale.
 
-**Read-only tools:**
-- [ ] `search(query)` — full-text, semantic, and hybrid search (`vulcan search`)
-- [ ] `query(dsl)` — structured vault query (`vulcan query`)
+**Core tools (always in system prompt, ~10):**
+
+These tools have full schemas included in the system prompt. They cover the vast majority of vault interactions:
+
 - [ ] `note_get(path, opts?)` — read note content with selectors: heading, block-ref, lines, match/regex, no-frontmatter (`vulcan note get`)
-- [ ] `note_links(path)` — outgoing links (`vulcan note links`)
-- [ ] `note_backlinks(path)` — inbound links (`vulcan note backlinks`)
-- [ ] `note_doctor(path)` — diagnostics for a single note (`vulcan note doctor`)
-- [ ] `similar(path)` — find semantically similar notes (requires vectors)
-- [ ] `daily_list(from?, to?)` — list daily notes and events in range (`vulcan daily list`)
-- [ ] `git_status()`, `git_log(limit?)`, `git_diff(path?)`, `git_blame(path)` — sandboxed git queries (`vulcan git`)
-- [ ] `web_search(query)` — web search via configured backend (`vulcan web search`)
-- [ ] `web_fetch(url, mode?)` — fetch URL as markdown/html/raw (`vulcan web fetch`)
-
-**Mutation tools (require `--allow-write` flag, read-only by default):**
 - [ ] `note_create(path, content?, template?, frontmatter?)` — create a new note (`vulcan note create`)
 - [ ] `note_set(path, content)` — replace note content (`vulcan note set`)
 - [ ] `note_append(path, text, heading?)` — append text to a note (`vulcan note append`)
 - [ ] `note_patch(path, find, replace)` — find & replace in a note, fails on multiple matches (`vulcan note patch`)
+- [ ] `search(query)` — full-text, semantic, and hybrid search (`vulcan search`)
+- [ ] `query(dsl)` — structured vault query (`vulcan query`)
 - [ ] `update_property(path, key, value)` — set a frontmatter property (`vulcan update`)
 - [ ] `unset_property(path, key)` — remove a frontmatter property (`vulcan unset`)
 - [ ] `inbox(text)` — append to configured inbox note (`vulcan inbox`)
-- [ ] `daily_append(text, heading?, date?)` — append to daily note (`vulcan daily append`)
-- [ ] `git_commit(message)` — create a git commit (`vulcan git commit`)
 
-Tool calls map 1:1 to CLI commands from 9.18, ensuring consistent behavior and output formats.
+Mutation tools require `--allow-write` flag (read-only by default).
+
+**Discovery meta-tools (always available):**
+
+- [ ] `describe()` — compact listing of all commands with one-line descriptions. The LLM calls this to see what tools exist beyond the core set.
+- [ ] `help(command)` — full schema for a specific command: parameters, types, defaults, examples. The LLM reads this right before calling an unfamiliar tool.
+- [ ] `run_js(code, sandbox?)` — execute JavaScript in the sandboxed QuickJS runtime with the full vault API. Escape hatch for complex multi-step operations, loops, conditionals, and batch work.
+- [ ] `skill_list()` — returns all available skills with names and descriptions.
+- [ ] `skill_get(name)` — returns the full skill content (prompt, tool list, examples, patterns).
+
+**Discoverable tools (callable by name after discovery via describe/help):**
+
+All remaining CLI commands are callable by the agent but their schemas are not in the initial system prompt. The LLM discovers them via `describe` → `help` → call:
+
+- [ ] `note_links(path)`, `note_backlinks(path)`, `note_doctor(path)` — single-note inspection
+- [ ] `similar(path)` — find semantically similar notes (requires vectors)
+- [ ] `daily_list(from?, to?)`, `daily_append(text, heading?, date?)` — periodic notes
+- [ ] `git_status()`, `git_log(limit?)`, `git_diff(path?)`, `git_blame(path)`, `git_commit(message)` — sandboxed git
+- [ ] `web_search(query)`, `web_fetch(url, mode?)` — external data
+- [ ] Graph tools: `graph_path`, `graph_hubs`, `graph_components`, `graph_dead_ends`
+- [ ] Refactoring: `rename_alias`, `rename_heading`, `merge_tags`, `rewrite`, `move`, `link_mentions`
+
+**Discovery flow:** LLM needs something not in core tools → calls `describe` to see categories → calls `help("graph path")` for full schema → calls the tool. Alternatively, the LLM calls `skill_get("graph-exploration")` to learn patterns and common usage, then uses the tools or `run_js` directly.
+
+Tool calls dispatch to the same command handlers as the CLI, ensuring consistent behavior and output formats.
 
 #### 9.12.3 CLI surface
 
@@ -1731,11 +1746,21 @@ Tool calls map 1:1 to CLI commands from 9.18, ensuring consistent behavior and o
 
 #### 9.12.4 System prompt and vault awareness
 
-- [ ] Auto-generated system prompt includes: vault name, note count, tag summary, property catalog summary
+The system prompt is auto-generated and composed from multiple layers to give the LLM full vault awareness without overwhelming the context budget.
+
+**System prompt layers:**
+- [ ] **Vault context:** vault name, note count, tag summary (top N tags with counts), property catalog summary (common property keys and types)
+- [ ] **Core tool schemas:** full parameter definitions for the ~10 core tools (note CRUD, search, query, properties, inbox)
+- [ ] **Discovery meta-tool schemas:** schemas for `describe`, `help`, `run_js`, `skill_list`, `skill_get`
+- [ ] **Tool category summary:** one-liner per command group (graph, daily, git, web, refactor, etc.) so the LLM knows what's discoverable without seeing full schemas — e.g., "Graph tools: find paths between notes, identify hubs, dead ends, connected components. Use `help('graph path')` for details."
+- [ ] **Skill directory:** list of all available skills with names and one-line descriptions. The LLM can call `skill_get(name)` to load any skill as executable knowledge.
+- [ ] **`AGENTS.md` context file:** if present in vault root, included as additional system context (vault-specific metadata, conventions, instructions for the assistant)
+- [ ] **Active prompt/skill context:** if invoked with `--prompt` or `--skill`, the prompt/skill content is appended
+
+**Context injection and management:**
 - [ ] Vault context injection: relevant notes retrieved via search and injected into context window
 - [ ] Context window management: truncate long note contents, prioritize recent/relevant sections
 - [ ] `vulcan assistant --context <dql>` — pre-filter vault context with a DQL query before prompting
-- [ ] `AGENTS.md` context file: if present in vault root, include as additional system context (vault-specific metadata, conventions, instructions for the assistant)
 
 #### 9.12.5 Conversation persistence (gemini-scribe format)
 
@@ -1799,7 +1824,9 @@ Prompts are reusable Markdown files that define pre-configured assistant behavio
 
 #### 9.12.7 Skills system
 
-Skills are Markdown-defined capabilities that combine a prompt with specific tool permissions and workflows. Directory reserved for future expansion.
+Skills are executable knowledge — Markdown files that teach the LLM how to use Vulcan effectively. They combine reference documentation, usage patterns, examples, and tool permissions. Skills serve double duty: the embedded agent loads them via `skill_get`, and external harnesses (Claude Code, Codex) read them as reference material from the vault.
+
+**Skill infrastructure:**
 
 - [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `AI/Skills/`)
 - [ ] Skill file format — Markdown with YAML frontmatter:
@@ -1807,27 +1834,64 @@ Skills are Markdown-defined capabilities that combine a prompt with specific too
   ---
   name: daily-review
   description: Review today's notes and create a daily summary
-  enabled_tools:
+  tools:
     - search
-    - read_note
-    - create_note
+    - note_get
+    - note_create
     - query
+    - daily_list
   require_confirmation: false
   output_file: "Reviews/{{date}}-daily-review.md"
   ---
 
-  Search for all notes modified today. Read each one and create a summary note...
+  ## When to use
+  Use this skill to review and summarize the day's work...
+
+  ## Core patterns
+  ...examples and tool call sequences...
+
+  ## Common mistakes
+  - Don't forget to check daily notes, not just modified notes
+  - Always use --dry-run before creating summary notes in new locations
   ```
 - [ ] `vulcan assistant --skill <name>` — invoke a skill (loads prompt + tool config + runs to completion)
 - [ ] `vulcan assistant skills` — list available skills (name, description, tools used)
 - [ ] Skills can define `output_file` to automatically save results to a vault note
 - [ ] Skills can be chained: a skill's output can reference another skill
+- [ ] The `tools` field in frontmatter tells the agent which tools are relevant — it can call `help` on them for full schemas
+- [ ] Skill directory included in system prompt (names + one-line descriptions only, not full content)
+
+**Skill tools for the agent:**
+
+- [ ] `skill_list()` — returns all available skills (default + user-defined) with names and descriptions
+- [ ] `skill_get(name)` — returns the full skill content: frontmatter metadata + markdown body
+
+**Default skills (shipped with Vulcan):**
+
+Vulcan ships a standard library of skills that teach the LLM to use the tool surface effectively. These are bundled in the binary (via `include_str!`) and optionally written to the vault on `vulcan init` or `vulcan assistant init`.
+
+- [ ] **note-operations** — reading, creating, editing notes. Covers `note get` selectors (heading, block-ref, lines, match), `note append` under headings, `note patch` find/replace safety (fails on multiple matches), frontmatter conventions. Common mistake: using `note set` when `note patch` or `note append` is safer.
+- [ ] **vault-query** — query DSL usage, filter expressions, property operators, sorting, `search` vs `query` guidance (search for content, query for metadata). Common mistake: using search when a property query is more precise.
+- [ ] **js-api-guide** — vault JS API patterns. `vault.note()`, `vault.notes().where().sortBy()`, `vault.query()`, `vault.graph`, `vault.transaction()` for atomic batch mutations. Examples for common operations: bulk property updates, cross-note analysis, generating summary tables.
+- [ ] **graph-exploration** — links, backlinks, shortest paths, hubs, dead ends, connected components. When to use graph traversal vs search. Common mistake: traversing large graphs without limiting depth.
+- [ ] **daily-notes** — periodic note workflow: appending entries, reviewing date ranges, event syntax (`- [time] title [@key(value)] [#tag]`), querying events. Common mistake: creating duplicate daily notes instead of appending.
+- [ ] **properties-and-tags** — metadata management with `update_property`/`unset_property`. Property types, tag conventions, querying by metadata via `query where`. Common mistake: setting properties on the wrong note when names are ambiguous.
+- [ ] **refactoring** — rename aliases/headings/properties, merge tags, rewrite content, move notes. Always `--dry-run` first. Safety patterns for bulk operations. Common mistake: not checking backlinks before renaming.
+- [ ] **web-research** — `web search` for finding information, `web fetch` for extracting article content. Combining web content with vault notes. Output modes (markdown vs raw).
+- [ ] **git-workflow** — checking changes with `git status`/`git diff`, committing with descriptive messages, reviewing history with `git log`/`git blame`. Auto-commit behavior and `--no-commit` flag.
+- [ ] **task-management** — task syntax in notes, querying tasks by status/priority/due date, creating and completing tasks. Task dependencies and recurring tasks.
+
+**User-defined skills:**
+
+User skills live in the vault's skills folder (e.g., `AI/Skills/weekly-review.md`, `AI/Skills/session-prep.md`) and appear alongside defaults in `skill_list`. A GM might create a "session-prep" skill that pulls NPCs, locations, and plot threads for an RPG campaign. A researcher might create a "literature-review" skill that searches for related notes and generates a synthesis.
 
 #### 9.12.8 Chat platform integrations (personal assistant mode)
 
 **Goal:** Expose the AI assistant as a conversational personal assistant over messaging platforms. Telegram first, modular for future platforms (Signal, Matrix, Discord, Slack, etc.). The assistant has full vault tool access with per-user/per-platform permission limits, persistent memory per user/group, and integrates with git versioning for all vault mutations.
 
 **Depends on:** 9.12.1–9.12.7 (core assistant infrastructure must exist first). Does not require the daemon (Phase 10) — runs as a long-lived `vulcan assistant serve` process.
+
+**Integration model:** Chat platform adapters are internal to Vulcan, not separate projects. This is deliberate — in-process integration provides granular tool sandboxing (per-user/per-platform permissions enforced by the same code that dispatches tools), eliminates the need for an IPC protocol, and simplifies distribution (single binary). Platform-specific dependencies are behind cargo feature flags (e.g., `feature = "telegram"`, `feature = "discord"`) so they don't increase binary size for users who don't need them. User identities use platform-scoped IDs (e.g., `telegram/123456`, `discord/789012`) for permissions, memory paths, and audit trails.
 
 **Design principles:**
 - **The assistant core is platform-agnostic.** Chat platforms are transport adapters, not separate assistant implementations. A `ChatPlatform` trait defines how messages arrive and responses are sent; the assistant loop (system prompt → user message → tool calls → response) is shared.
