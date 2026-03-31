@@ -1067,6 +1067,71 @@ The JS API binds directly to vulcan-core structs (not CLI wrappers). The `vault`
 
 Web search and fetch capabilities serve the AI assistant and JS runtime. Search uses a pluggable `SearchBackend` trait (Kagi first). Fetch supports multiple output modes (markdown, HTML, raw) with readability-style article extraction.
 
+## 17e. Chat platform integrations (personal assistant)
+
+The AI assistant (Phase 9.12) extends to external chat platforms, starting with Telegram. The design prioritizes modularity so additional platforms (Discord, Slack, Matrix, etc.) can be added without changing the core assistant logic.
+
+### Architecture
+
+A `ChatPlatform` trait abstracts platform-specific I/O:
+
+```
+trait ChatPlatform {
+    fn poll_messages(&mut self) -> Vec<IncomingMessage>;
+    fn send_response(&self, chat_id: &str, text: &str, reply_to: Option<&str>);
+    fn platform_id(&self) -> &str;  // "telegram", "discord", etc.
+}
+```
+
+The assistant core (prompt construction, tool dispatch, memory management) is platform-agnostic. Each adapter handles authentication, message polling, formatting, and platform-specific features (e.g., Telegram's reply chains, Discord's threads).
+
+### Session and context management
+
+Sessions map to reply chains (Telegram) or threads (Discord). A new top-level message starts a new session. Context is managed in 5 layers to avoid bloat:
+
+1. **Compact system prompt** — vault summary, available tools, user preferences
+2. **User memory** — loaded from vault note (`AI/Memory/users/<platform>/<user_id>.md`)
+3. **Recent turns** — last N messages from the session
+4. **Auto-summarized history** — older turns compressed to bullet points
+5. **On-demand vault context** — retrieved via query/search tools as needed
+
+Sessions are persisted as vault notes: `AI/Sessions/<platform>/<chat_id>/<session_ulid>.md`.
+
+### Per-user and per-group memory
+
+Memory files live in the vault as regular notes, making them searchable, versioned (git), and part of the graph:
+
+- **User memory:** `AI/Memory/users/<platform>/<user_id>.md` — preferences, context, history
+- **Group memory:** `AI/Memory/groups/<platform>/<group_id>.md` — shared context, conventions
+
+The LLM is instructed to read/update these files using the standard note CRUD tools.
+
+### Security and tool permissions
+
+Tool access is configured per-platform and per-chat type:
+
+```toml
+[assistant.telegram]
+token_env = "VULCAN_TELEGRAM_TOKEN"
+allowed_users = ["user_id_1"]
+dm_tools = ["note.*", "query", "search", "tasks.*", "daily.*"]
+group_tools = ["query", "search"]
+mutation_require_confirm = true
+```
+
+Group chats default to read-only tools. Direct messages allow the full configured tool set. Mutations can require explicit user confirmation.
+
+### Git integration
+
+Chat-driven mutations are auto-committed with metadata:
+
+```
+vulcan: append to "Inbox" via telegram/user_id
+Session: 01JQXYZ...
+```
+
+This provides an audit trail and easy rollback.
+
 ## 18. Recommended phased delivery plan
 
 Phases are listed in recommended order. Dependency edges are noted explicitly so that parallelizable work is visible.
@@ -1109,13 +1174,13 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), AI assistant with conversation persistence and prompts/skills (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**
+- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), AI assistant with conversation persistence, prompts/skills, and chat platform integrations (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**
 - **Phase 10:** Multi-vault daemon with REST API (depends on Phase 9 foundation work being well-advanced)
 - **Phase 11:** Git auto-versioning at the daemon level
 - **Phase 12:** Sync integration
 - **Phase 13:** WebUI — admin panel and vault browser
 - **Phase 14:** WebUI — note editor with Automerge CRDT sessions, advanced table editing (Advanced Tables-style)
-- **Phase 15:** Extensibility and integrations (webhooks, Telegram, custom endpoints)
+- **Phase 15:** Extensibility and integrations (webhooks, custom endpoints; Telegram adapter bootstrapped in 9.12.8, Phase 15 adds advanced features)
 - **Phase 16:** Wiki mode with live collaborative editing
 - **Phase 17:** User management, group-based ACLs, document-level secrets, share links
 - **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor) and Excalidraw support (18.8)
