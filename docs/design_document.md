@@ -1017,7 +1017,7 @@ Commands are organized into a two-level hierarchy using clap nested subcommand e
 
 The `note` command group fills the gap of having no way to read or write individual note content from the CLI. Key design decisions:
 
-- **`note get`** replaces `cat | grep | head | tail` for notes. Selectors (`--heading`, `--block-ref`, `--lines`, `--match`) are composable and work with `--output json`.
+- **`note get`** replaces `cat | grep | head | tail` for notes. Selectors (`--heading`, `--block-ref`, `--lines`, `--match`, `--context`, `--no-frontmatter`, `--raw`) are composable and work with `--output json`.
 - **`note patch`** fails on multiple matches by default (safety against unintended bulk edits). `--all` opts into replacing all occurrences. This reuses the `bulk_replace` infrastructure.
 - **`--check`** on write commands runs doctor-like diagnostics after writing. Non-blocking (writes succeed, warnings printed to stderr).
 

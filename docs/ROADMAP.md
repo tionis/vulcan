@@ -2215,6 +2215,8 @@ schedule_heading = "Schedule"   # heading to parse events from (optional)
 - [ ] `--output json` on all subcommands
 - [ ] Auto-commit if enabled
 
+**Note:** The `daily` commands listed above will be reorganized under the top-level `daily` command group in Phase 9.18.1 (command tree reorganization).
+
 #### 9.16.4 Settings import
 
 - [ ] Import from Obsidian Daily Notes core plugin: `.obsidian/daily-notes.json`
@@ -2654,6 +2656,17 @@ web.fetch(url, opts)      // fetch URL, opts.mode: "markdown"|"html"|"raw"
 - `Runtime::set_memory_limit()` — hard memory cap (configurable, default 64MB)
 - `Runtime::set_max_stack_size()` — stack limit (default 256KB)
 - `Runtime::set_interrupt_handler()` — periodic check for CPU time limit and `--timeout`
+
+**Configuration in `.vulcan/config.toml`:**
+
+```toml
+[js_runtime]
+memory_limit_mb = 64        # max JS heap (default 64MB)
+stack_limit_kb = 256         # max stack size (default 256KB)
+default_timeout_seconds = 30 # default --timeout value
+default_sandbox = "strict"   # default --sandbox level
+scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
+```
 
 - [ ] Implement `vault` global object with note(), notes(), query(), search() methods
 - [ ] Implement `Note` JS class wrapping `NoteIndex`/`NoteRecord` core structs
@@ -3795,6 +3808,7 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `automerge` | CRDT document model for collaborative editing | 14 |
 | `rust-embed` or `include_dir` | Embed static WebUI assets | 13 |
 | `openidconnect` | OIDC client for SSO integration | 17.6 |
+| `regex` | Regex matching in note patch and query predicates | 9.18.2, 9.18.3 |
 | `rquickjs` | QuickJS JS engine bindings (sandboxed runtime) | 9.18.5 (also 9.8.8) |
 | `reqwest` | HTTP client for web search/fetch | 9.18.6 |
 | `htmd` or `readability` | HTML-to-markdown conversion for web fetch | 9.18.6 |
