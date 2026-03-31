@@ -623,6 +623,43 @@ Supported shells:
 
 ## Planned commands
 
+### CLI Redesign (Roadmap Phase 9.18)
+
+The CLI will be restructured into a two-level command hierarchy. This is a pre-alpha clean break. See `docs/ROADMAP.md` Phase 9.18 for full details.
+
+**New command groups:**
+
+```
+vulcan note get <note> [--heading|--block-ref|--lines|--match|--no-frontmatter|--raw]
+vulcan note set <note> [--file|--no-frontmatter|--check]
+vulcan note create <path> [--template|--frontmatter k=v|--check]
+vulcan note append <note> <text> [--heading|--check]
+vulcan note patch <note> --find <str|regex> --replace <str> [--all|--check|--dry-run]
+vulcan note doctor|links|backlinks|diff <note>
+
+vulcan query '...' [--format table|paths|detail|count] [--glob ...]
+vulcan search '...' [--regex <pattern>]
+
+vulcan refactor rename-alias|rename-heading|rename-block-ref|rename-property|merge-tags|rewrite|move|link-mentions
+vulcan refactor suggest mentions|duplicates
+
+vulcan ls [--glob ...] [--where ...] [--tag ...]   # alias for query with --format paths
+vulcan daily today|show|list|append
+vulcan run <script.js|script-name> [--sandbox strict|fs|net|none] [--timeout 30s]
+vulcan run                          # REPL mode (no args)
+vulcan web search|fetch
+vulcan git status|log|diff|commit|blame
+vulcan help [<topic>]
+
+vulcan tasks create|complete|reschedule  # new mutations
+```
+
+**Key changes from current layout:**
+- `links`, `backlinks` → `note links`, `note backlinks`
+- `rename-*`, `merge-tags`, `rewrite`, `move`, `link-mentions`, `suggest` → `refactor *`
+- `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
+- New: `note get/set/create/append/patch`, `run` (JS runtime + REPL), `web search/fetch`, `git *`, `help`, `daily *`
+
 ### `canvas` (Roadmap Phase 18)
 
 Canvas support will add CLI commands for inspecting and validating Obsidian JSON Canvas files (`.canvas`):

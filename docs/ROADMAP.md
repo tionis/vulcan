@@ -733,7 +733,7 @@ Investigate and apply remaining SQLite tuning for bulk insert workloads.
 
 ## Phase 9: CLI Refinements
 
-**Goal:** Improve the interactive CLI experience with direct note editing, a persistent browser TUI, auto-commit integration, and quality-of-life commands. These features make vulcan a practical daily-driver tool for vault maintenance, not just a query/analysis engine.
+**Goal:** Improve the interactive CLI experience with direct note editing, a persistent browser TUI, auto-commit integration, and quality-of-life commands. Later sub-phases (9.18) restructure the entire command surface into a two-level hierarchy, add single-note CRUD, a general-purpose JS runtime with REPL, web/git tools for agent use, and integrated documentation. These features make vulcan a practical daily-driver tool for vault maintenance and the foundation for the AI assistant's tool interface.
 
 **Depends on:** Phase 7 complete.
 **Design refs:** Existing `note_picker.rs` (fuzzy picker), `bases_tui.rs` (TUI infrastructure + `open_in_editor` + `with_terminal_suspended`), `serve.rs` (watcher integration).
@@ -1345,10 +1345,10 @@ Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript
 
 **JS runtime integration (behind `js_runtime` feature):**
 - [x] Add `js_runtime` feature flag to `vulcan-core/Cargo.toml` and `vulcan-cli/Cargo.toml`
-- [ ] Embed JS runtime: Boa (pure Rust, preferred for build simplicity) or rquickjs/QuickJS bindings (alternative if performance requires it)
+- [ ] Embed JS runtime: rquickjs (QuickJS) — chosen for binary size (~300KB vs ~15MB Boa vs ~40MB V8), sub-millisecond startup, built-in sandboxing primitives (`set_memory_limit()`, `set_max_stack_size()`, `set_interrupt_handler()`), and ES2023 compliance. See 9.18.5 for the full JS runtime design including REPL, vault API, and sandbox levels.
 - [ ] Sandbox constraints: no filesystem access, no network access, no `eval` of external scripts
 - [ ] Execution timeout: configurable via `.vulcan/config.toml` (default 5 seconds per block)
-- [ ] Memory limit: cap JS heap allocation to prevent runaway scripts
+- [ ] Memory limit: cap JS heap allocation via `Runtime::set_memory_limit()` to prevent runaway scripts
 
 **`dv` API object — query methods:**
 - [ ] `dv.pages(source?)` — return DataArray of page objects matching a DQL FROM source (or all pages)
@@ -1688,20 +1688,33 @@ These require the sandboxed JS runtime and are only available when `--features j
 
 #### 9.12.2 Tool interface
 
-The assistant has access to Vulcan's query and mutation tools:
+The assistant has access to Vulcan's CLI commands as tools, aligned with the 9.18 command tree reorganization:
 
-- [ ] `search(query)` — full-text, semantic, and hybrid search
-- [ ] `read_note(path)` — read a note's content
-- [ ] `list_notes(filter?)` — list notes with optional property filter
-- [ ] `query(dql)` — execute a DQL query
-- [ ] `note_metadata(path)` — get frontmatter, inline fields, tags, links, tasks
-- [ ] `backlinks(path)` — get notes linking to a given note
+**Read-only tools:**
+- [ ] `search(query)` — full-text, semantic, and hybrid search (`vulcan search`)
+- [ ] `query(dsl)` — structured vault query (`vulcan query`)
+- [ ] `note_get(path, opts?)` — read note content with selectors: heading, block-ref, lines, match/regex, no-frontmatter (`vulcan note get`)
+- [ ] `note_links(path)` — outgoing links (`vulcan note links`)
+- [ ] `note_backlinks(path)` — inbound links (`vulcan note backlinks`)
+- [ ] `note_doctor(path)` — diagnostics for a single note (`vulcan note doctor`)
 - [ ] `similar(path)` — find semantically similar notes (requires vectors)
-- [ ] `create_note(path, content)` — create a new note
-- [ ] `update_note(path, content)` — update a note's content
-- [ ] `update_property(path, key, value)` — set a frontmatter property
-- [ ] `append_to_note(path, text)` — append text to a note
-- [ ] Tool calls require `--allow-write` flag for mutation tools (read-only by default)
+- [ ] `daily_list(from?, to?)` — list daily notes and events in range (`vulcan daily list`)
+- [ ] `git_status()`, `git_log(limit?)`, `git_diff(path?)`, `git_blame(path)` — sandboxed git queries (`vulcan git`)
+- [ ] `web_search(query)` — web search via configured backend (`vulcan web search`)
+- [ ] `web_fetch(url, mode?)` — fetch URL as markdown/html/raw (`vulcan web fetch`)
+
+**Mutation tools (require `--allow-write` flag, read-only by default):**
+- [ ] `note_create(path, content?, template?, frontmatter?)` — create a new note (`vulcan note create`)
+- [ ] `note_set(path, content)` — replace note content (`vulcan note set`)
+- [ ] `note_append(path, text, heading?)` — append text to a note (`vulcan note append`)
+- [ ] `note_patch(path, find, replace)` — find & replace in a note, fails on multiple matches (`vulcan note patch`)
+- [ ] `update_property(path, key, value)` — set a frontmatter property (`vulcan update`)
+- [ ] `unset_property(path, key)` — remove a frontmatter property (`vulcan unset`)
+- [ ] `inbox(text)` — append to configured inbox note (`vulcan inbox`)
+- [ ] `daily_append(text, heading?, date?)` — append to daily note (`vulcan daily append`)
+- [ ] `git_commit(message)` — create a git commit (`vulcan git commit`)
+
+Tool calls map 1:1 to CLI commands from 9.18, ensuring consistent behavior and output formats.
 
 #### 9.12.3 CLI surface
 
@@ -2150,12 +2163,51 @@ When the daemon is running (Phase 10+), expose TaskNotes-compatible REST endpoin
 - [ ] Date-to-note linking: provide a lookup function for other phases (Kanban `link-date-to-daily-note`, TaskNotes calendar integration)
 - [ ] Index periodic notes in cache: add `periodic_type` and `periodic_date` columns to documents table (nullable, populated during scan for notes matching periodic patterns)
 
-#### 9.16.3 CLI surface
+#### 9.16.3 Structured events in daily notes
 
-- [ ] `vulcan daily [date]` — open or create today's daily note (or specified date)
+Daily notes can contain structured event syntax under a configurable heading. Events are parsed during `scan` (similar to how tasks are extracted from markdown) and stored as structured `Event` records in the cache.
+
+**Event syntax (list under configured heading):**
+
+```markdown
+## Schedule
+- 09:00 Team standup
+- 09:00-10:00 Team standup @location(Zoom)
+- 14:00-15:30 Dentist #personal
+- all-day Company offsite
+```
+
+Format: `- [time[-end]] title [@key(value)...] [#tag...]`
+Lines under the schedule heading that don't match the time pattern are treated as regular list items (lenient parser).
+
+**Configuration:**
+
+```toml
+[periodic.daily]
+schedule_heading = "Schedule"   # heading to parse events from (optional)
+```
+
+**Cache schema:**
+
+- [ ] `events` table: `id`, `document_id`, `start_time` (TEXT, "HH:MM" or "all-day"), `end_time` (TEXT, nullable), `title`, `metadata` (JSON for @key(value) pairs), `tags` (JSON array), `byte_offset`
+- [ ] Index on `document_id` for per-note queries, index on `start_time` for range queries
+- [ ] Events extracted during scan via `extract_events(content, schedule_heading) -> Vec<Event>`
+
+**Queryable via:**
+
+- [ ] `vulcan daily list` aggregates events across daily notes in a date range
+- [ ] JS runtime: `vault.daily.today().events`, `vault.events({ from, to })` (see 9.18.5)
+- [ ] Future: calendar UI rendering, one-way `.ics` export
+
+#### 9.16.4 CLI surface
+
+- [ ] `vulcan daily today` — open or create today's daily note
   - [ ] If note exists: open in `$EDITOR`
   - [ ] If note doesn't exist: create from template, then open
   - [ ] `--no-edit` flag: create only, don't open
+- [ ] `vulcan daily show [date]` — display a daily note's content (default: today)
+- [ ] `vulcan daily list [--from <date>] [--to <date>]` — list daily notes in range, with aggregated events (also `--week`, `--month` shorthand)
+- [ ] `vulcan daily append <text> [--heading <name>] [--date <date>]` — append text to a daily note (default: today)
 - [ ] `vulcan weekly [date]`, `vulcan monthly [date]` — same pattern for other periods
 - [ ] `vulcan periodic <type> [date]` — generic command for any configured period type
 - [ ] `vulcan periodic list [--type daily|weekly|monthly|...]` — list periodic notes, optionally filtered by type
@@ -2321,6 +2373,423 @@ Parity with the other plugin importers. Dataview settings are currently auto-loa
 - [ ] `vulcan init --no-import` — suppress the detection summary (for scripted use)
 - [ ] Default behavior (no flag): detect and print the suggestion, do not auto-import
 
+### 9.18 CLI redesign — command reorganization, note CRUD, JS runtime, and agent tools
+
+**Goal:** Restructure the CLI command surface into a clean two-level hierarchy, add single-note CRUD operations, extend the query system, implement a general-purpose JS runtime with REPL, add web/git tools for agent use, and embed integrated documentation. This is a pre-alpha clean break — no backwards compatibility with the current flat command layout.
+
+**Design principle:** The CLI is simultaneously a human-facing tool and the tool interface for the AI assistant (9.12). Every command should have clean `--output json` support, deterministic behavior, and stable output contracts. The reorganization groups related commands under two-level subcommand namespaces for discoverability without sacrificing ergonomics.
+
+#### 9.18.1 Command tree reorganization
+
+Restructure all existing commands into logical groups. This is a clean break — old command names are removed, not aliased.
+
+**Depends on:** Phase 7 (all commands that are being moved must exist first)
+
+**New command groups:**
+
+| Group | Purpose | Commands |
+|-------|---------|----------|
+| `note` | Single-note CRUD and inspection | `get`, `set`, `create`, `append`, `patch`, `doctor`, `links`, `backlinks`, `diff` |
+| `query` | Multi-note structured queries | (existing, enhanced) |
+| `search` | Full-text content search | (existing, enhanced) |
+| `refactor` | Cross-vault mutations | `rename-alias`, `rename-heading`, `rename-block-ref`, `rename-property`, `merge-tags`, `rewrite`, `move`, `link-mentions`, `suggest` |
+| `web` | External data fetching (agent tools) | `search`, `fetch` |
+| `run` | JS runtime execution and REPL | (new) |
+| `help` | Integrated documentation | (new) |
+| `daily` | Daily note operations | `today`, `show`, `list`, `append` (extends 9.16) |
+| `git` | Sandboxed git operations | `status`, `log`, `diff`, `commit`, `blame` |
+| `graph` | Graph analytics | (existing) |
+| `vectors` | Vector/semantic operations | (existing) |
+| `tasks` | Task queries and mutations | (existing, extended) |
+| `kanban` | Kanban board operations | (existing) |
+| `bases` | Bases view operations | (existing) |
+| `dataview` | Dataview evaluation | (existing) |
+| `index` | Indexing infrastructure | `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` |
+| `saved` | Saved reports | (existing) |
+| `config` | Plugin settings import | (existing) |
+| `cache` | Cache maintenance | (existing) |
+
+**Top-level commands (not grouped):** `doctor` (vault-wide), `diff` (vault-wide), `inbox`, `ls`, `describe`, `completions`, `checkpoint`, `changes`, `batch`, `automation`, `export`, `browse`
+
+- [ ] Restructure `Command` enum in `cli.rs` to use nested subcommand enums for each group
+- [ ] Move existing commands into their new groups:
+  - `links`, `backlinks` → `note links`, `note backlinks`
+  - `rename-alias`, `rename-heading`, `rename-block-ref`, `rename-property`, `merge-tags`, `rewrite`, `move`, `link-mentions` → `refactor *`
+  - `suggest` → `refactor suggest`
+  - `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
+- [ ] Alias commands that appear in both group and top-level: `note doctor` → `doctor <note>`, `note diff` → `diff <note>`
+- [ ] Update `describe` command output to reflect new hierarchy
+- [ ] Update shell completion generation
+- [ ] Update all integration tests
+- [ ] Update `docs/cli.md` with new command reference
+
+#### 9.18.2 Note CRUD commands (`note` group)
+
+**Depends on:** Phase 7 (mutation infrastructure), Phase 2 (links/backlinks)
+
+**`note get` — Read note content with selectors**
+
+- [ ] `vulcan note get <note>` — print full note content
+- [ ] `--heading <name>` — extract section under heading (inclusive of subheadings until next heading at same or higher level)
+- [ ] `--block-ref <id>` — extract block by reference ID
+- [ ] `--lines <range>` — extract line range (syntax: `1-10`, `50-`, `-5` for last 5 lines)
+- [ ] `--match <regex>` — grep-like: return matching lines
+- [ ] `--context <n>` — lines of context around `--match` hits (default: 0)
+- [ ] `--no-frontmatter` — strip YAML header from output
+- [ ] `--raw` — no formatting, no line numbers, just content
+- [ ] `--output json` returns structured object with content, frontmatter, metadata
+- [ ] Selectors are composable: `--heading "Section" --match "TODO"` searches within the heading
+
+**`note set` — Replace note content**
+
+- [ ] `vulcan note set <note>` — read new content from stdin
+- [ ] `--file <path>` — read content from a file
+- [ ] `--no-frontmatter` — preserve existing YAML header, only replace body
+- [ ] `--check` — run doctor-like diagnostics after write (broken links, syntax, frontmatter)
+- [ ] Auto-commit if enabled
+- [ ] Incremental rescan after write
+
+**`note create` — Create a new note**
+
+- [ ] `vulcan note create <path>` — create with empty content or from stdin
+- [ ] `--template <name>` — use a template (from 9.7/9.9 template system)
+- [ ] `--frontmatter <key=value>` — set frontmatter properties (repeatable)
+- [ ] `--check` — run diagnostics after creation
+- [ ] Error if note already exists (no silent overwrite)
+- [ ] Auto-commit if enabled
+
+**`note append` — Append text to a note**
+
+- [ ] `vulcan note append <note> <text>` — append text at end (or read from stdin with `-`)
+- [ ] `--heading <name>` — append under a specific heading
+- [ ] `--check` — run diagnostics after append
+- [ ] Auto-commit if enabled
+
+**`note patch` — Find and replace in a single note**
+
+- [ ] `vulcan note patch <note> --find <pattern> --replace <text>`
+- [ ] `--find` accepts literal strings or regex (prefix with `/` for regex: `--find '/\d{4}-\d{2}-\d{2}/'`)
+- [ ] **Safety: fails if `--find` matches more than once** (prevents accidental bulk edits)
+- [ ] `--all` flag to allow multiple replacements
+- [ ] `--check` — run diagnostics after patch
+- [ ] `--dry-run` — show planned changes without writing
+- [ ] Reuses `bulk_replace` infrastructure from `vulcan-core::suggestions`
+- [ ] Auto-commit if enabled
+
+**`--check` flag (shared across write commands)**
+
+- [ ] Runs the same diagnostic checks as `doctor` on the single modified file
+- [ ] Reports: broken links, broken block refs, malformed frontmatter, syntax issues
+- [ ] Non-blocking: writes succeed even if checks find issues, but warnings are printed to stderr
+- [ ] `--output json` includes diagnostics in the response object
+
+#### 9.18.3 Query enhancements
+
+**Depends on:** Phase 7.12 (query model)
+
+**Output format modes**
+
+- [ ] `--format table` — current default: columnar table output
+- [ ] `--format paths` — one file path per line, suitable for piping (like `find` or `rg -l`)
+- [ ] `--format detail` — expanded per-note view: path, frontmatter summary, first N lines of content
+- [ ] `--format count` — just the match count (integer)
+- [ ] `--glob <pattern>` — filter results by file path glob (e.g. `--glob "Projects/**"`)
+
+**`ls` alias**
+
+- [ ] `vulcan ls` — thin alias for `vulcan query 'from notes' --format paths`
+- [ ] `--glob <pattern>` — filter by file path glob
+- [ ] `--where <filter>` — property filters (repeatable, AND-combined)
+- [ ] `--tag <tag>` — shorthand tag filter
+- [ ] `--format paths|detail|count` — output format (default: `paths`, unlike `query` which defaults to `table`)
+- [ ] Same underlying implementation as `query` — no new query engine, just different defaults
+
+**Regex operator in predicates**
+
+- [ ] New `QueryOperator::Matches` variant for regex matching in `where` clauses
+- [ ] DSL syntax: `from notes where file.name matches "^\d{4}-\d{2}-\d{2}"`
+- [ ] Uses the `regex` crate
+- [ ] Case-insensitive variant: `matches_i`
+- [ ] Applies to string-valued fields only (property values, `file.path`, `file.name`)
+
+**Regex in search**
+
+- [ ] Extend `search` command with regex support alongside existing `/pattern/` inline syntax
+- [ ] `vulcan search --regex <pattern>` for explicit regex queries
+- [ ] Regex results include line numbers and context (consistent with `--match` in `note get`)
+
+#### 9.18.4 Refactor command group
+
+Move existing mutation commands under `refactor` namespace. No behavioral changes — only the command path changes.
+
+- [ ] `vulcan refactor rename-alias` (was `vulcan rename-alias`)
+- [ ] `vulcan refactor rename-heading` (was `vulcan rename-heading`)
+- [ ] `vulcan refactor rename-block-ref` (was `vulcan rename-block-ref`)
+- [ ] `vulcan refactor rename-property` (was `vulcan rename-property`)
+- [ ] `vulcan refactor merge-tags` (was `vulcan merge-tags`)
+- [ ] `vulcan refactor rewrite` (was `vulcan rewrite`)
+- [ ] `vulcan refactor move` (was `vulcan move`)
+- [ ] `vulcan refactor link-mentions` (was `vulcan link-mentions`)
+- [ ] `vulcan refactor suggest mentions|duplicates` (was `vulcan suggest`)
+
+#### 9.18.5 JS runtime, REPL, and vault scripting
+
+**Depends on:** Phase 9.8.8 (rquickjs integration, `dv` API). This phase extends the DataviewJS sandbox into a general-purpose scripting environment.
+
+**Script execution**
+
+- [ ] `vulcan run <script.js>` — execute a JS file
+- [ ] `vulcan run <script-name>` — look up by name in `.vulcan/scripts/` directory
+- [ ] `--sandbox strict|fs|net|none` — sandbox isolation level (default: `strict`)
+  - `strict`: CPU/memory limits, no I/O beyond read-only vault API
+  - `fs`: adds write access to vault (note CRUD, frontmatter mutations, refactors)
+  - `net`: adds network access (`web.search()`, `web.fetch()`)
+  - `none`: drops resource limits (CPU/memory), retains all API access
+- [ ] `--timeout <duration>` — execution timeout (default: 30s), enforced via `Runtime::set_interrupt_handler()`
+- [ ] `console.log()` output to stdout at all sandbox levels
+- [ ] Script exit code: 0 on success, non-zero on error
+- [ ] `--output json` wraps script output in structured JSON
+
+**REPL**
+
+- [ ] `vulcan run` (no arguments) — drops into interactive JS REPL
+- [ ] Persistent `Context` across evaluations (variables survive between prompts)
+- [ ] Multi-line input: detect incomplete expressions (unmatched `{`, `(`, template literals)
+- [ ] Tab completion for `vault.`, `vault.graph.`, `note.` and other API namespaces
+- [ ] Pretty-printed results: colored JSON for objects, formatted tables for note collections
+- [ ] REPL history saved to `.vulcan/repl_history`
+- [ ] Sandbox level configurable: `vulcan run --sandbox fs` then REPL has write access
+
+**Deep vault JS API**
+
+The JS runtime exposes deep access to vault internals, not just CLI wrappers. The API binds directly to vulcan-core structs.
+
+**Tier 1 — Read-only (available at `strict` sandbox level):**
+
+```js
+// Note objects with rich properties
+const note = vault.note("MyNote");
+note.content          // raw markdown
+note.frontmatter      // parsed YAML as JS object
+note.tags             // parsed tags array
+note.aliases          // aliases array
+note.headings         // parsed heading tree
+note.blocks           // block refs
+note.tasks            // parsed task items
+note.dataview_fields  // inline DV fields
+note.links()          // outgoing links as objects
+note.backlinks()      // incoming links
+note.neighbors(2)     // 2-hop neighborhood
+
+// Graph as a first-class object
+const g = vault.graph;
+g.shortestPath("NoteA", "NoteB")
+g.components()
+g.hubs({ limit: 10 })
+g.deadEnds()
+g.neighbors("NoteA", { depth: 3 })
+g.subgraph(["NoteA", "NoteB", "NoteC"])  // induced subgraph
+g.filter(n => n.tags.includes("project")) // filtered graph view
+
+// Collection operations with chainable API
+vault.notes()
+  .where(n => n.frontmatter.status === "active")
+  .sortBy(n => n.mtime)
+  .limit(10)
+  .forEach(n => { ... })
+
+// Query/search
+vault.query("from notes where status = done", { format: "paths" })
+vault.search("search term", { limit: 10 })
+
+// Vectors/semantic
+vault.vectors.similar("MyNote", { limit: 5 })
+vault.vectors.search("concept query", { limit: 10 })
+vault.vectors.cluster({ k: 8 })
+
+// Daily notes / events
+vault.daily.today()
+vault.daily.get("2026-03-31")
+vault.daily.range("2026-03-01", "2026-03-31")
+vault.daily.today().events  // parsed structured events from 9.16.3
+
+// Aggregated events across daily notes
+vault.events({ from: "2026-03-31", to: "2026-04-07" })
+```
+
+**Tier 2 — Write (requires `fs` sandbox or higher):**
+
+```js
+vault.set(path, content, opts)
+vault.create(path, opts)
+vault.append(path, text, opts)
+vault.patch(path, find, replace, opts)
+vault.update(path, key, value)      // set frontmatter property
+vault.unset(path, key)              // remove frontmatter property
+vault.refactor.*                    // rename, rewrite, move, merge-tags
+vault.inbox(text)
+vault.daily.append(text, { heading: "Schedule", date: "2026-04-01" })
+
+// Batch mutations (transactional)
+vault.transaction(tx => {
+  const note = tx.create("NewNote", { frontmatter: { status: "draft" } });
+  tx.append("Index", `- [[${note.name}]]`, { heading: "Recent" });
+  tx.patch("OldNote", { find: "old link", replace: `[[${note.name}]]` });
+}); // atomic commit, doctor check at end
+```
+
+**Tier 3 — External (requires `net` sandbox):**
+
+```js
+web.search(query, opts)   // web search via configured backend
+web.fetch(url, opts)      // fetch URL, opts.mode: "markdown"|"html"|"raw"
+```
+
+**Tier 4 — Unrestricted (`none` sandbox):**
+
+- Drops CPU/memory resource limits but does not add new APIs beyond tiers 1-3
+- `console.log()` available at all tiers
+
+**Sandbox resource limits (applied at `strict`, `fs`, and `net` levels):**
+- `Runtime::set_memory_limit()` — hard memory cap (configurable, default 64MB)
+- `Runtime::set_max_stack_size()` — stack limit (default 256KB)
+- `Runtime::set_interrupt_handler()` — periodic check for CPU time limit and `--timeout`
+
+- [ ] Implement `vault` global object with note(), notes(), query(), search() methods
+- [ ] Implement `Note` JS class wrapping `NoteIndex`/`NoteRecord` core structs
+- [ ] Implement `vault.graph` object wrapping petgraph structure
+- [ ] Implement collection API with `.where()`, `.sortBy()`, `.limit()`, `.forEach()`
+- [ ] Implement `vault.daily` namespace (delegates to 9.16 infrastructure)
+- [ ] Implement `vault.events()` aggregation across daily notes
+- [ ] Implement write methods (Tier 2) with sandbox level checks
+- [ ] Implement `vault.transaction()` for atomic batch mutations
+- [ ] Implement `web.search()` and `web.fetch()` (Tier 3), gated on `net` sandbox
+- [ ] Implement `help(obj)` introspection function (see 9.18.7)
+- [ ] Unit tests: each API method, sandbox enforcement, timeout/memory limits
+- [ ] Integration tests: scripts against test vault, REPL session simulation
+
+#### 9.18.6 Web tools (`web` group)
+
+**Depends on:** None (standalone HTTP client functionality). Primarily consumed by the AI assistant (9.12) and JS runtime (9.18.5).
+
+**`web search`**
+
+- [ ] `vulcan web search <query>` — perform a web search
+- [ ] `--backend kagi|...` — search backend (default from config, Kagi first implementation)
+- [ ] `--limit <n>` — max results (default: 10)
+- [ ] `--output json` returns structured results: `[{ title, url, snippet }]`
+- [ ] Pluggable backend via `SearchBackend` trait: `fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>`
+- [ ] Configuration in `.vulcan/config.toml`:
+  ```toml
+  [web.search]
+  backend = "kagi"
+  api_key_env = "KAGI_API_KEY"
+  ```
+- [ ] Kagi backend implementation using their Search API
+
+**`web fetch`**
+
+- [ ] `vulcan web fetch <url>` — fetch a URL and output content
+- [ ] `--mode markdown` — convert HTML to markdown (readability-style article extraction, default)
+- [ ] `--mode html` — raw HTML
+- [ ] `--mode raw` — raw response body
+- [ ] `--save <path>` — save output to file (for images, PDFs, binary content)
+- [ ] `--extract-article` — use readability algorithm to extract article content (strip nav, ads, etc.)
+- [ ] `--output json` returns `{ url, status, content_type, content }`
+- [ ] Respect `robots.txt` (best effort)
+- [ ] User-Agent header identifying Vulcan
+
+#### 9.18.7 Integrated documentation (`help` command)
+
+**Depends on:** None (can be developed independently). Content grows as other 9.18 sub-phases land.
+
+**`help` command**
+
+- [ ] `vulcan help` — overview and topic index
+- [ ] `vulcan help <topic>` — display documentation for a topic
+- [ ] Topics cover commands, concepts, and API reference:
+  - Commands: `help note get`, `help query`, `help refactor`, `help daily`, etc.
+  - Concepts: `help filters`, `help query-dsl`, `help scripting`, `help sandbox`
+  - JS API: `help js`, `help js.vault`, `help js.vault.graph`, `help js.vault.note`
+  - Guides: `help getting-started`, `help examples`
+- [ ] `vulcan help --search <keyword>` — search across all documentation topics
+- [ ] Rendered markdown in terminal with colors/formatting (using `termimad` or similar)
+- [ ] Distinct from `--help` which remains terse and flag-focused
+
+**Documentation source**
+
+- [ ] Docs stored as markdown files in `docs/` directory in the repo
+- [ ] Organization:
+  ```
+  docs/
+    guide/
+      getting-started.md
+      query-dsl.md
+      filters.md
+      scripting.md
+      sandbox.md
+    reference/
+      commands/
+        note-get.md
+        query.md
+        refactor.md
+        daily.md
+        ...
+      js-api/
+        vault.md
+        graph.md
+        note-object.md
+        collections.md
+        ...
+    examples/
+      recipes.md
+  ```
+- [ ] Compiled into binary via `include_str!` or build script generating a `HashMap<&str, &str>`
+- [ ] Docs are versioned with the code — never out of sync
+
+**`help()` in JS REPL**
+
+- [ ] `help(obj)` function available in the JS runtime
+- [ ] Displays function signature, parameter descriptions, return type, examples, and cross-references
+- [ ] Each Rust function exposed to JS carries its docstring as metadata
+- [ ] Example:
+  ```
+  vulcan> help(vault.query)
+  vault.query(dsl: string, opts?: QueryOpts): NoteResult[]
+
+  Run a query DSL string against the vault.
+    dsl   - Query in Vulcan DSL syntax
+    opts  - { format: "table"|"paths"|"detail"|"count", limit: number }
+
+  Example:
+    vault.query("from notes where file.path starts_with Projects/", { limit: 5 })
+
+  See also: vault.notes(), vault.search()
+  ```
+
+#### 9.18.8 Git operations (`git` group)
+
+**Depends on:** Phase 9.3 (git module). Provides sandboxed git access for the AI assistant (9.12) without requiring full shell access.
+
+- [ ] `vulcan git status` — working tree status (staged, modified, untracked)
+- [ ] `vulcan git log [--limit <n>]` — recent commit history (default: 10)
+- [ ] `vulcan git diff [<path>]` — show diff (optionally scoped to a note)
+- [ ] `vulcan git commit -m <message>` — create a commit (stages vault files only, not `.vulcan/`)
+- [ ] `vulcan git blame <path>` — per-line blame for a note
+- [ ] `--output json` on all subcommands
+- [ ] Implementation: shell out to `git` binary with controlled arguments (no arbitrary command injection)
+- [ ] Validation: refuse dangerous operations (force push, reset --hard, etc.)
+
+#### 9.18.9 Task mutations (extend existing `tasks` group)
+
+**Depends on:** Phase 9.10 (Tasks plugin compatibility)
+
+- [ ] `vulcan tasks create <text> [--in <note>] [--due <date>] [--priority <p>]` — create a task item in a note
+- [ ] `vulcan tasks complete <task-id-or-description>` — mark a task as complete
+- [ ] `vulcan tasks reschedule <task-id> --due <date>` — change task due date
+- [ ] Task mutations modify note content using `note patch` infrastructure (9.18.2)
+- [ ] Auto-commit if enabled
+
 ### Phase 9 implementation order
 
 The Phase 9 sub-phases have both sequential dependencies and parallelization opportunities. This section consolidates the dependency edges into a recommended implementation order.
@@ -2362,6 +2831,16 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.17.5 (dataview import) ← 9.17.1,9.8.9│── Wave 3
 9.17.6 (batch commands)  ← 9.17.1      │── Wave 3
 9.17.7 (init integration)← 9.17.6      │── Wave 3+
+                                        │
+9.18.1 (cmd reorg)       ← 7           │── Wave 5+ (after commands exist)
+9.18.2 (note CRUD)       ← 7, 2        │── Wave 5 (parallel with 9.12)
+9.18.3 (query enhance)   ← 7.12        │── Wave 5
+9.18.4 (refactor group)  ← 7           │── Wave 5 (with 9.18.1)
+9.18.5 (JS runtime/REPL) ← 9.8.8       │── Wave 5+ (after DataviewJS)
+9.18.6 (web tools)       ← standalone  │── Wave 5 (parallel)
+9.18.7 (help/docs)       ← standalone  │── Wave 5 (parallel)
+9.18.8 (git ops)         ← 9.3         │── Wave 5 (parallel)
+9.18.9 (task mutations)  ← 9.10        │── Wave 5+ (after Tasks)
 ```
 
 **Recommended implementation order:**
@@ -2370,11 +2849,13 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 2. **Wave 2 (parallel):** 9.6 (search), 9.7 (templates), **9.17.1–9.17.4 (import infrastructure + core importer)** — the import infrastructure only depends on 9.5 (already complete). Core importer depends only on 9.17.1.
 3. **Wave 3 (sequential + parallel):** 9.8.1 → 9.8.2 → 9.8.3 → 9.8.4 → 9.8.5 → 9.8.6 → 9.8.7 → 9.8.8 → 9.8.9 — Dataview, the largest sub-phase. Internal ordering is sequential. **9.17.5 (dataview importer) slots in after 9.8.9. 9.17.6 (batch commands) can proceed as soon as 9.17.4 + any existing importer are on the trait.** Refactor existing importers (9.9.4, 9.10.5, 9.11.4) to `PluginImporter` trait.
 4. **Wave 4 (parallel):** 9.9 (Templater), 9.10 (Tasks), 9.11 (Kanban), 9.16 (Periodic notes) — all have their prerequisites met after Wave 3. Can proceed in parallel. Each plugin's settings import uses `PluginImporter` from the start.
-5. **Wave 5 (parallel):** 9.12 (AI assistant), 9.15 (TaskNotes) — independent of Wave 4. Can start as early as after Wave 3, or run in parallel with Wave 4. TaskNotes importer (9.15.11) uses `PluginImporter`.
-6. **Wave 6:** 9.13 (QuickAdd) — investigation phase, can start anytime but benefits from seeing 9.9 and 9.12 patterns first. QuickAdd importer (9.13.3) uses `PluginImporter`.
-7. **9.17.7 (init integration)** can land anytime after 9.17.6.
+5. **Wave 5 (parallel):** 9.12 (AI assistant), 9.15 (TaskNotes), **9.18.1–9.18.4 (command reorg, note CRUD, query enhancements, refactor group)**, **9.18.6 (web tools)**, **9.18.7 (help/docs)**, **9.18.8 (git ops)** — 9.18.2 (note CRUD) and 9.18.3 (query) only need Phase 7; 9.18.6–9.18.8 are standalone or depend on early phases. These provide the tool surface that 9.12 (AI assistant) consumes. Can proceed in parallel with Wave 4.
+6. **Wave 5+ (sequential after Wave 5 prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10. These need specific Wave 3/4 outputs.
+7. **Wave 6:** 9.13 (QuickAdd) — investigation phase, can start anytime but benefits from seeing 9.9 and 9.12 patterns first. QuickAdd importer (9.13.3) uses `PluginImporter`.
+8. **9.17.7 (init integration)** can land anytime after 9.17.6.
+9. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
 
-**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features.
+**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For 9.18, the critical path is 9.8.8 → 9.18.5 (JS runtime) and 9.10 → 9.18.9 (task mutations).
 
 **Note on 9.8.3 and 9.16:** The `file.day` metadata field in 9.8.3 depends on periodic note configuration from 9.16. However, `file.day` can be stubbed initially (return null when no periodic config exists) and filled in when 9.16 lands. This avoids blocking all of 9.8 on 9.16.
 
@@ -3278,7 +3759,8 @@ Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and adds the Tasks DSL parser, recurring task expansion, dependency graph, and custom status types. Independent of 9.9.
 Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.
-Phase 9.12 (AI assistant) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. Requires an external inference API.
+Phase 9.12 (AI assistant) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. Requires an external inference API. The tool interface (9.12.2) is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands.
+Phase 9.18 (CLI redesign) has varying sub-phase dependencies: 9.18.1 (reorg) and 9.18.2 (note CRUD) can start after Phase 7; 9.18.3 (query enhancements) after 7.12; 9.18.5 (JS runtime) after 9.8.8; 9.18.6 (web tools) is standalone; 9.18.7 (docs) is standalone; 9.18.8 (git) after 9.3; 9.18.9 (task mutations) after 9.10. The command tree reorganization (9.18.1) should land last — build new commands first, then rename in one pass.
 Phase 9.13 (QuickAdd) is an investigation phase — scope depends on CLI applicability findings. May be deferred or replaced by a Vulcan-native automation DSL.
 Phase 9.15 (TaskNotes) builds on Phase 4 (properties/Bases, including 4.5.1 custom source types) and Phase 9.8 (Dataview metadata). It complements Phase 9.10 (Tasks plugin) — TaskNotes uses task-as-note files with rich frontmatter and Bases views, while Tasks plugin operates on inline checkboxes. Calendar sync (9.15.10) is behind a `calendar-sync` feature flag. HTTP API compatibility (9.15.12) depends on Phase 10 (daemon).
 Phase 9.16 (Periodic notes) builds on Phase 1 (document indexing) and Phase 9.7 (template variables). It provides shared infrastructure for `file.day` resolution (9.8.3), Kanban date linking (9.11), QuickAdd daily note capture (9.13), and TaskNotes pomodoro storage (9.15). Can start as early as Wave 2 but `file.day` can be stubbed pending its completion.
@@ -3313,3 +3795,8 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `automerge` | CRDT document model for collaborative editing | 14 |
 | `rust-embed` or `include_dir` | Embed static WebUI assets | 13 |
 | `openidconnect` | OIDC client for SSO integration | 17.6 |
+| `rquickjs` | QuickJS JS engine bindings (sandboxed runtime) | 9.18.5 (also 9.8.8) |
+| `reqwest` | HTTP client for web search/fetch | 9.18.6 |
+| `htmd` or `readability` | HTML-to-markdown conversion for web fetch | 9.18.6 |
+| `termimad` | Terminal markdown rendering for `help` command | 9.18.7 |
+| `rustyline` | REPL line editing, history, and tab completion | 9.18.5 |
