@@ -998,7 +998,7 @@ The product should fail loud, explain clearly, and repair cheaply.
 
 ## 17b. CLI command hierarchy and agent tool surface
 
-The CLI serves two audiences simultaneously: human users in the terminal and the AI assistant (9.12) calling commands as tools. The design must satisfy both.
+The CLI serves three audiences simultaneously: human users in the terminal, the embedded AI assistant (9.12) calling commands as tools, and external LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) using Vulcan as a tool provider. The design must satisfy all three.
 
 ### Command hierarchy
 
@@ -1012,6 +1012,52 @@ Commands are organized into a two-level hierarchy using clap nested subcommand e
 - **`web`**, **`git`**, **`run`**, **`help`** are top-level groups for external data, git ops, JS runtime, and documentation respectively.
 
 **Output contracts:** Every command supports `--output json` for machine consumption. The `describe` command provides runtime-discoverable schema for all commands and their arguments. The `query` command adds `--format table|paths|detail|count` for output shape control.
+
+### Tool exposure model (embedded agent and external harnesses)
+
+The CLI's tool surface is designed for gradual discovery rather than loading all tool definitions upfront. This keeps context budgets manageable while making the full command surface accessible.
+
+**Core tools (always in system prompt, ~10):** The embedded agent's system prompt includes full schemas for the most frequently used tools: `note_get`, `note_create`, `note_set`, `note_append`, `note_patch`, `search`, `query`, `update_property`, `unset_property`, `inbox`. These cover the vast majority of vault interactions.
+
+**Discovery meta-tools (always available):**
+- **`describe`** — returns a compact listing of all commands with one-line descriptions. Cheap to call, gives the LLM a map of what exists.
+- **`help <command>`** — returns the full schema for a specific command: parameters, types, defaults, examples. The LLM reads this right before calling an unfamiliar tool.
+- **`run_js`** — executes JavaScript in the sandboxed QuickJS runtime with the full vault API. Serves as an escape hatch for complex multi-step operations.
+- **`skill_list`** — returns all available skills with names and descriptions.
+- **`skill_get <name>`** — returns the full skill content (prompt, tool list, examples, patterns).
+
+**Gradual discovery flow:** When the LLM needs to do something not covered by core tools, it calls `describe` to see what's available, then `help("graph path")` to get the full parameter schema, then calls the tool by name. This mirrors how humans use a CLI: know the basics, run `--help` when you need something else, write a script when it gets complex.
+
+**All tools callable by name:** Discovered tools don't need to be "loaded" — the agent dispatches by command name regardless. The schema just isn't in the initial prompt to save context budget. A strong model discovers and uses advanced tools fluidly; a weaker model sticks to core tools + `run_js` and still gets work done.
+
+### Skills as executable knowledge
+
+Skills (9.12.7) serve double duty: they teach the embedded agent how to use Vulcan effectively, and they serve as reference material for external harnesses. The system prompt includes a skill directory (names + one-line descriptions) so the LLM knows what knowledge is available.
+
+**Default skills shipped with Vulcan** (standard library):
+- **note-operations** — reading, creating, editing notes; `note get` selectors, frontmatter conventions, `note patch` safety
+- **vault-query** — query DSL, filter expressions, property operators, `search` vs `query` guidance
+- **js-api-guide** — vault JS API patterns, `vault.note()`, `vault.query()`, collection chains, `vault.transaction()`
+- **graph-exploration** — links, backlinks, graph paths, hubs, dead ends, when to use graph vs search
+- **daily-notes** — periodic note workflow, appending entries, reviewing date ranges, event syntax
+- **properties-and-tags** — metadata management, property types, tag conventions, querying by metadata
+- **refactoring** — rename, merge tags, rewrite, move — always `--dry-run` first, safety patterns
+- **web-research** — `web search`, `web fetch`, article extraction, combining web + vault content
+- **git-workflow** — checking changes, committing, reviewing diffs, auto-commit behavior
+- **task-management** — task syntax, querying tasks, creating/completing, priorities
+
+Each skill includes: when to use it, core patterns with examples, common mistakes to avoid, and example interactions (input → tool calls → result). The "common mistakes" section encodes knowledge that otherwise takes multiple failed tool calls to learn.
+
+### External harness support
+
+For LLM harnesses that use Vulcan as a tool provider (Claude Code via CLAUDE.md/AGENTS.md, Codex, Gemini CLI, etc.):
+
+- **`describe --format mcp|openai-tools|json-schema`** — exports tool definitions in standard formats for direct integration with harness tool-calling protocols.
+- **`help --output json <command>`** — structured help output that a harness can parse to build tool definitions dynamically.
+- **Vault AGENTS.md template** — shipped with Vulcan and optionally written on `vulcan init`. Teaches external harnesses: available commands, conventions, what not to do, and points to the skills directory for reference material.
+- **Consistent JSON error output** — all commands return structured errors in JSON mode (`{"error": "...", "code": "..."}`) rather than unstructured stderr text.
+
+The default skills serve external harnesses identically to the embedded agent — Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API the same way the embedded agent would call `skill_get("js-api-guide")`.
 
 ### Single-note CRUD design
 
@@ -1070,6 +1116,8 @@ Web search and fetch capabilities serve the AI assistant and JS runtime. Search 
 ## 17e. Chat platform integrations (personal assistant)
 
 The AI assistant (Phase 9.12) extends to external chat platforms, starting with Telegram. The design prioritizes modularity so additional platforms (Discord, Slack, Matrix, etc.) can be added without changing the core assistant logic.
+
+**Integration model:** Chat platform adapters are internal to Vulcan, not separate projects. This is deliberate — keeping adapters in-process provides granular sandboxing (per-user/per-platform tool permissions enforced by the same code that dispatches tools) and simplifies distribution (single binary). Platform-specific dependencies are behind cargo feature flags (e.g., `telegram`, `discord`) so they don't bloat the binary for users who don't need them.
 
 ### Architecture
 
