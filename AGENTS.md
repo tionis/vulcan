@@ -65,7 +65,7 @@ See "Phase 9 implementation order" in `docs/ROADMAP.md` for the full dependency 
 
 **CLI for LLMs (Wave 5):** Note CRUD (`note get/set/create/append/patch`), query enhancements, web tools, git ops, polished `describe` with `--format mcp|openai-tools` for tool schema export, `help --output json` for machine consumption, default skills shipped with Vulcan, vault AGENTS.md template. This wave makes the CLI usable as a tool surface by any LLM harness (Claude Code, Codex, Gemini CLI) without the embedded agent.
 
-**Embedded AI assistant (Wave 6):** Full vault-native agent — OpenAI-compatible inference, tiered tool exposure (core tools always in prompt, rest via gradual discovery through `describe`/`help`), vault-aware system prompt, conversation persistence as vault notes (gemini-scribe callout format), context budgeting, prompts and skills as executable knowledge (markdown files that teach the LLM how to use Vulcan).
+**Embedded AI assistant (Wave 6):** Full vault-native agent — OpenAI-compatible inference, tiered tool exposure (core tools always in prompt, rest via gradual discovery through `describe`/`help`), vault-aware system prompt, conversation persistence as vault notes (gemini-scribe callout format), context budgeting, prompts and skills as executable knowledge (markdown files that teach the LLM how to use Vulcan). Advanced skills can include executable JS scripts with `#!/usr/bin/env -S vulcan run --script` shebangs — these are runnable by external harnesses as plain executables.
 
 **Chat platform adapters (Wave 7):** Telegram first (internal, behind cargo feature flag), then Discord/Signal/Matrix. Chat platforms become mobile interfaces to the vault with per-user/per-platform sandboxed tool permissions.
 
