@@ -1887,6 +1887,20 @@ Vulcan ships a standard library of skills that teach the LLM to use the tool sur
 
 User skills live in the vault's skills folder (e.g., `AI/Skills/weekly-review.md`, `AI/Skills/session-prep.md`) and appear alongside defaults in `skill_list`. A GM might create a "session-prep" skill that pulls NPCs, locations, and plot threads for an RPG campaign. A researcher might create a "literature-review" skill that searches for related notes and generates a synthesis.
 
+**Executable skill scripts:**
+
+Advanced skills may include JavaScript scripts that expose functionality beyond what Markdown skill files can express — complex data transformations, API integrations, or multi-step vault operations. These scripts use the full vault JS API (see 9.18.5) and can be made directly executable with a shebang:
+
+```bash
+#!/usr/bin/env -S vulcan run --script
+// AI/Skills/session-prep/prepare.js
+const npcs = vault.notes().where(n => n.tags.includes("npc") && n.frontmatter.campaign === "current");
+const locations = vault.query("from notes where type = location and status = active");
+console.log(JSON.stringify({ npcs: npcs.map(n => n.name), locations: locations.map(n => n.name) }));
+```
+
+This makes skill scripts runnable by external agent harnesses (Claude Code, Codex, Gemini CLI) as plain executables — the harness does not need to know about Vulcan's JS runtime. The same shebang pattern works for user scripts in `.vulcan/scripts/` and general CLI integration.
+
 #### 9.12.8 Chat platform integrations (personal assistant mode)
 
 **Goal:** Expose the AI assistant as a conversational personal assistant over messaging platforms. Telegram first, modular for future platforms (Signal, Matrix, Discord, Slack, etc.). The assistant has full vault tool access with per-user/per-platform permission limits, persistent memory per user/group, and integrates with git versioning for all vault mutations.
@@ -2742,8 +2756,9 @@ Move existing mutation commands under `refactor` namespace. No behavioral change
 
 **Script execution**
 
-- [ ] `vulcan run <script.js>` — execute a JS file
-- [ ] `vulcan run <script-name>` — look up by name in `.vulcan/scripts/` directory
+- [ ] `vulcan run <script.js>` — execute a JS file (strips `#!` shebang line if present)
+- [ ] `vulcan run <script-name>` — look up by name in `.vulcan/scripts/` directory (strips `#!` shebang line if present)
+- [ ] `vulcan run --script` — shebang entry point: identical to `vulcan run <script.js>` but designed for use in shebang lines (`#!/usr/bin/env -S vulcan run --script`). Makes JS scripts directly executable by the OS, external agent harnesses (Claude Code, Codex, Gemini CLI), and shell pipelines without knowing they are Vulcan JS.
 - [ ] `--sandbox strict|fs|net|none` — sandbox isolation level (default: `strict`)
   - `strict`: CPU/memory limits, no I/O beyond read-only vault API
   - `fs`: adds write access to vault (note CRUD, frontmatter mutations, refactors)

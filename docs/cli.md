@@ -693,7 +693,8 @@ The full two-level command hierarchy. This is a pre-alpha clean break that restr
 vulcan refactor rename-alias|rename-heading|rename-block-ref|rename-property|merge-tags|rewrite|move|link-mentions
 vulcan refactor suggest mentions|duplicates
 vulcan ls [--glob ...] [--where ...] [--tag ...]   # alias for query with --format paths
-vulcan run <script.js|script-name> [--sandbox strict|fs|net|none] [--timeout 30s]
+vulcan run <script.js|script-name> [--sandbox strict|fs|net|none] [--timeout 30s]  # strips #! shebang if present
+vulcan run --script <file>          # shebang entry point (for #!/usr/bin/env -S vulcan run --script)
 vulcan run                          # REPL mode (no args)
 vulcan tasks create|complete|reschedule  # new mutations
 ```
