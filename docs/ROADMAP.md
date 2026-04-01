@@ -2610,6 +2610,11 @@ Restructure all existing commands into logical groups. This is a clean break —
 
 **Top-level commands (not grouped):** `doctor` (vault-wide), `diff` (vault-wide), `inbox`, `ls`, `describe`, `completions`, `checkpoint`, `changes`, `batch`, `automation`, `export`, `browse`
 
+- [ ] **Split `vulcan-cli/src/lib.rs` into per-group modules.** The current `lib.rs` is ~10,400 lines containing the dispatch match, ~95 `print_*`/`render_*` functions, and command-specific logic in a single file. As part of this reorganization, split into:
+  - `commands/note.rs`, `commands/graph.rs`, `commands/tasks.rs`, `commands/refactor.rs`, etc. — each module owns its dispatch arm and print functions
+  - `output.rs` — shared output utilities (color, pagination, JSON helpers, `ListOutputControls`)
+  - `resolve.rs` — note resolution and interactive selection helpers
+  - `lib.rs` retains only top-level dispatch routing and shared setup
 - [ ] Restructure `Command` enum in `cli.rs` to use nested subcommand enums for each group
 - [ ] Move existing commands into their new groups:
   - `links`, `backlinks` → `note links`, `note backlinks`
