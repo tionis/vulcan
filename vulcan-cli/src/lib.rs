@@ -960,39 +960,26 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Diff { .. }
         | Command::LinkMentions { .. }
         | Command::Rewrite { .. }
-        | Command::Related { .. } => true,
+        | Command::Related { .. }
+        | Command::Suggest { .. }
+        | Command::Checkpoint { .. } => true,
         Command::Edit { new, .. } => !new,
-        Command::Browse { .. } => false,
         Command::Bases { command } => matches!(
             command,
             BasesCommand::Eval { .. } | BasesCommand::Tui { .. }
         ),
-        Command::Suggest { .. } => true,
         Command::Saved { command } => matches!(command, SavedCommand::Run { .. }),
-        Command::Checkpoint { .. } => true,
         Command::Export { command } => matches!(command, ExportCommand::SearchIndex { .. }),
-        Command::Config { .. } => false,
         Command::Vectors { command } => matches!(
             command,
             VectorsCommand::Related { .. }
                 | VectorsCommand::Neighbors { .. }
                 | VectorsCommand::Duplicates { .. }
         ),
-        Command::Init
-        | Command::Rebuild { .. }
-        | Command::Repair { .. }
-        | Command::Serve { .. }
-        | Command::Watch { .. }
-        | Command::Completions { .. }
-        | Command::Describe
-        | Command::Cache { .. }
-        | Command::Inbox { .. }
-        | Command::Batch { .. }
-        | Command::Automation { .. }
-        | Command::Scan { .. } => false,
         Command::Template { command, .. } => {
             matches!(command, Some(TemplateSubcommand::Insert { .. }))
         }
+        _ => false,
     }
 }
 
@@ -1119,7 +1106,7 @@ fn run_diff_command(
         return diff_report_from_change_anchor(
             paths,
             &resolved.path,
-            ChangeAnchor::Checkpoint(checkpoint.to_string()),
+            &ChangeAnchor::Checkpoint(checkpoint.to_string()),
             format!("checkpoint:{checkpoint}"),
         );
     }
@@ -1131,7 +1118,7 @@ fn run_diff_command(
     diff_report_from_change_anchor(
         paths,
         &resolved.path,
-        ChangeAnchor::LastScan,
+        &ChangeAnchor::LastScan,
         "last_scan".to_string(),
     )
 }
@@ -1154,9 +1141,11 @@ fn diff_report_from_git(paths: &VaultPaths, path: &str) -> Result<DiffReport, Cl
             "unchanged".to_string()
         },
         changed,
-        changed_kinds: changed
-            .then(|| vec!["note".to_string()])
-            .unwrap_or_default(),
+        changed_kinds: if changed {
+            vec!["note".to_string()]
+        } else {
+            Vec::new()
+        },
         diff: changed.then_some(diff),
     })
 }
@@ -1164,10 +1153,10 @@ fn diff_report_from_git(paths: &VaultPaths, path: &str) -> Result<DiffReport, Cl
 fn diff_report_from_change_anchor(
     paths: &VaultPaths,
     path: &str,
-    anchor: ChangeAnchor,
+    anchor: &ChangeAnchor,
     anchor_label: String,
 ) -> Result<DiffReport, CliError> {
-    let report = query_change_report(paths, &anchor).map_err(CliError::operation)?;
+    let report = query_change_report(paths, anchor).map_err(CliError::operation)?;
     let mut changed_kinds = Vec::new();
     let note_status = report
         .notes
@@ -1190,10 +1179,15 @@ fn diff_report_from_change_anchor(
 
     let status = match note_status {
         Some(ChangeKindStatus::Added) => "new",
-        Some(ChangeKindStatus::Updated) => "changed",
         Some(ChangeKindStatus::Deleted) => "deleted",
-        None if changed_kinds.is_empty() => "unchanged",
-        None => "changed",
+        Some(ChangeKindStatus::Updated) => "changed",
+        None => {
+            if changed_kinds.is_empty() {
+                "unchanged"
+            } else {
+                "changed"
+            }
+        }
     }
     .to_string();
 
@@ -1246,8 +1240,7 @@ fn run_dataview_eval_command(
     let blocks = load_dataview_blocks(paths, file, block).map_err(CliError::operation)?;
     let file = blocks
         .first()
-        .map(|block| block.file.clone())
-        .unwrap_or_else(|| file.to_string());
+        .map_or_else(|| file.to_string(), |block| block.file.clone());
     let mut reports = Vec::with_capacity(blocks.len());
 
     for block in blocks {
@@ -1304,8 +1297,7 @@ fn run_tasks_eval_command(
     let blocks = load_tasks_blocks(paths, file, block).map_err(CliError::operation)?;
     let file = blocks
         .first()
-        .map(|block| block.file.clone())
-        .unwrap_or_else(|| file.to_string());
+        .map_or_else(|| file.to_string(), |block| block.file.clone());
     let mut reports = Vec::with_capacity(blocks.len());
 
     for block in blocks {
@@ -1347,7 +1339,7 @@ fn run_tasks_list_command(
 
     match parse_tasks_query(filter) {
         Ok(_) => run_tasks_query_command(paths, filter),
-        Err(tasks_error) => run_tasks_list_dql_filter(paths, filter, tasks_error, &config),
+        Err(tasks_error) => run_tasks_list_dql_filter(paths, filter, &tasks_error, &config),
     }
 }
 
@@ -1395,7 +1387,7 @@ fn run_tasks_next_command(
 fn run_tasks_list_dql_filter(
     paths: &VaultPaths,
     filter: &str,
-    tasks_error: String,
+    tasks_error: &str,
     config: &vulcan_core::config::TasksConfig,
 ) -> Result<TasksQueryResult, CliError> {
     let expression_source = tasks_dql_filter_expression(config, filter);
@@ -1456,8 +1448,10 @@ fn resolve_tasks_reference_date(from: Option<&str>) -> Result<(String, i64), Cli
     let reference_date = from
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| TemplateTimestamp::current().default_date_string());
+        .map_or_else(
+            || TemplateTimestamp::current().default_date_string(),
+            ToOwned::to_owned,
+        );
     let reference_ms = parse_date_like_string(&reference_date).ok_or_else(|| {
         CliError::operation(format!(
             "failed to parse recurrence reference date: {reference_date}"
@@ -1552,8 +1546,7 @@ fn strip_task_global_filter(task: &mut Value, raw_tag: &str, normalized_tag: &st
     if let Some(Value::Array(tags)) = object.get_mut("tags") {
         tags.retain(|tag| {
             tag.as_str()
-                .map(|tag| normalize_tag_name(tag) != normalized_tag)
-                .unwrap_or(true)
+                .map_or(true, |tag| normalize_tag_name(tag) != normalized_tag)
         });
     }
 
@@ -1807,8 +1800,7 @@ fn task_dependency_key(task: &Value) -> Option<String> {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|id| !id.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| format!("{path}:{line}")),
+            .map_or_else(|| format!("{path}:{line}"), ToOwned::to_owned),
     )
 }
 
@@ -2016,12 +2008,9 @@ fn run_template_insert_command(
         &template_variables_for_path(&target_path, TemplateTimestamp::current()),
         &config.templates,
     );
-    let updated = apply_template_insertion_mode(
-        prepare_template_insertion(&target_source, &rendered_template)
-            .map_err(CliError::operation)?,
-        mode,
-    )
-    .map_err(CliError::operation)?;
+    let prepared = prepare_template_insertion(&target_source, &rendered_template)
+        .map_err(CliError::operation)?;
+    let updated = apply_template_insertion_mode(&prepared, mode).map_err(CliError::operation)?;
     fs::write(&target_absolute, updated).map_err(CliError::operation)?;
 
     run_incremental_scan(paths, OutputFormat::Human, false)?;
@@ -2053,7 +2042,7 @@ fn discover_templates(
 ) -> Result<TemplateDiscovery, CliError> {
     let mut warnings = Vec::new();
     let mut templates = list_templates_in_directory(
-        paths.vulcan_dir().join("templates"),
+        &paths.vulcan_dir().join("templates"),
         ".vulcan/templates",
         "vulcan",
     )?;
@@ -2090,7 +2079,7 @@ fn merge_template_source(
         .filter(|folder| !folder.as_os_str().is_empty())
         .map(|folder| {
             list_templates_in_directory(
-                paths.vault_root().join(folder),
+                &paths.vault_root().join(folder),
                 &folder.to_string_lossy(),
                 source,
             )
@@ -2147,7 +2136,7 @@ fn resolve_template_file(
 }
 
 fn list_templates_in_directory(
-    template_dir: PathBuf,
+    template_dir: &Path,
     display_root: &str,
     source: &'static str,
 ) -> Result<Vec<TemplateCandidate>, CliError> {
@@ -2155,7 +2144,7 @@ fn list_templates_in_directory(
         return Ok(Vec::new());
     }
 
-    let mut templates = fs::read_dir(&template_dir)
+    let mut templates = fs::read_dir(template_dir)
         .map_err(CliError::operation)?
         .filter_map(|entry| {
             let entry = entry.ok()?;
@@ -2188,7 +2177,7 @@ fn template_output_path(
         path.to_string()
     } else {
         let date = now.default_date_string();
-        format!("{date}-{}", template_file)
+        format!("{date}-{template_file}")
     };
 
     normalize_relative_input_path(
@@ -2232,7 +2221,7 @@ fn parse_frontmatter_document(
             TemplateInsertionError::NoteFrontmatterParse(error)
         }
     })?;
-    let mapping = value.as_mapping().cloned().ok_or_else(|| {
+    let mapping = value.as_mapping().cloned().ok_or({
         if template_document {
             TemplateInsertionError::TemplateFrontmatterNotMapping
         } else {
@@ -2277,7 +2266,7 @@ fn merge_template_property_value(existing: &mut YamlValue, template: &YamlValue)
 }
 
 fn render_note_from_parts(
-    frontmatter: &Option<YamlMapping>,
+    frontmatter: Option<&YamlMapping>,
     body: &str,
 ) -> Result<String, TemplateInsertionError> {
     let mut rendered = String::new();
@@ -2289,7 +2278,7 @@ fn render_note_from_parts(
 }
 
 fn apply_template_insertion_mode(
-    prepared: PreparedTemplateInsertion,
+    prepared: &PreparedTemplateInsertion,
     mode: TemplateInsertMode,
 ) -> Result<String, TemplateInsertionError> {
     let body = match mode {
@@ -2301,7 +2290,7 @@ fn apply_template_insertion_mode(
         }
     };
 
-    render_note_from_parts(&prepared.merged_frontmatter, &body)
+    render_note_from_parts(prepared.merged_frontmatter.as_ref(), &body)
 }
 
 fn append_template_body(target_body: &str, template_body: &str) -> String {
@@ -2490,7 +2479,9 @@ impl TemplateTimestamp {
         let seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs() as i64;
+            .as_secs()
+            .try_into()
+            .unwrap_or(i64::MAX);
         let days_since_epoch = seconds.div_euclid(86_400);
         let seconds_of_day = seconds.rem_euclid(86_400);
         let hour = seconds_of_day / 3_600;
@@ -2539,7 +2530,7 @@ impl TemplateTimestamp {
         let mut remaining = format;
 
         while !remaining.is_empty() {
-            if let Some(token) = self.next_obsidian_token(remaining) {
+            if let Some(token) = Self::next_obsidian_token(remaining) {
                 rendered.push_str(&self.token_value(token));
                 remaining = &remaining[token.len()..];
             } else if let Some(character) = remaining.chars().next() {
@@ -2553,7 +2544,7 @@ impl TemplateTimestamp {
         rendered
     }
 
-    fn next_obsidian_token<'a>(self, input: &'a str) -> Option<&'static str> {
+    fn next_obsidian_token(input: &str) -> Option<&'static str> {
         const TOKENS: [&str; 19] = [
             "YYYY", "dddd", "MMMM", "MMM", "ddd", "Do", "YY", "MM", "DD", "dd", "HH", "hh", "mm",
             "ss", "M", "D", "H", "h", "A",
@@ -2628,7 +2619,7 @@ impl TemplateTimestamp {
             "dd" => WEEKDAY_SHORT[weekday_index].to_string(),
             "HH" => format!("{:02}", self.hour),
             "H" => self.hour.to_string(),
-            "hh" => format!("{:02}", hour_12),
+            "hh" => format!("{hour_12:02}"),
             "h" => hour_12.to_string(),
             "mm" => format!("{:02}", self.minute),
             "m" => self.minute.to_string(),
@@ -2693,7 +2684,7 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let mp = (5 * doy + 2) / 153;
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = mp + if mp < 10 { 3 } else { -9 };
-    let year = y + if month <= 2 { 1 } else { 0 };
+    let year = y + i64::from(month <= 2);
     (year, month, day)
 }
 
@@ -7110,7 +7101,7 @@ fn print_dataview_block_result_human(result: &DataviewBlockResult, show_result_c
     match result {
         DataviewBlockResult::Dql(result) => print_dql_query_result_human(result, show_result_count),
         DataviewBlockResult::Js(result) => {
-            print_dataview_js_result_human(result, show_result_count)
+            print_dataview_js_result_human(result, show_result_count);
         }
     }
 }
@@ -7234,7 +7225,7 @@ fn print_dql_task_human(result: &DqlQueryResult, show_result_count: bool) {
         return;
     }
 
-    let file_column = result.columns.first().map(String::as_str).unwrap_or("File");
+    let file_column = result.columns.first().map_or("File", String::as_str);
     let mut current_file: Option<&str> = None;
     for row in &result.rows {
         let file = row[file_column].as_str().unwrap_or_default();
@@ -7257,7 +7248,7 @@ fn print_dql_calendar_human(result: &DqlQueryResult) {
         return;
     }
 
-    let file_column = result.columns.get(1).map(String::as_str).unwrap_or("File");
+    let file_column = result.columns.get(1).map_or("File", String::as_str);
     let mut current_date: Option<&str> = None;
     for row in &result.rows {
         let date = row["date"].as_str().unwrap_or_default();
@@ -9564,8 +9555,9 @@ mod tests {
         )
         .expect("template insertion should be prepared");
 
-        let rendered = render_note_from_parts(&prepared.merged_frontmatter, &prepared.target_body)
-            .expect("note should render");
+        let rendered =
+            render_note_from_parts(prepared.merged_frontmatter.as_ref(), &prepared.target_body)
+                .expect("note should render");
         assert!(rendered.starts_with("---\nstatus: backlog\n---\n# Existing\n"));
         assert_eq!(prepared.template_body, "Template body\n");
     }

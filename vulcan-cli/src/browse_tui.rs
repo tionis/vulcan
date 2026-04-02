@@ -15,6 +15,7 @@ use ratatui::{Frame, Terminal};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -66,6 +67,7 @@ fn load_notes(paths: &VaultPaths) -> Result<Vec<NoteIdentity>, String> {
     list_note_identities(paths).map_err(|error| error.to_string())
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_event_loop(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     state: &mut BrowseState,
@@ -244,6 +246,7 @@ fn prepare_browse_refresh(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
     let area = frame.area();
     if area.height < 7 || area.width < 32 {
@@ -283,11 +286,7 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
         } else {
             Direction::Horizontal
         })
-        .constraints(if area.width < 90 {
-            [Constraint::Percentage(52), Constraint::Percentage(48)]
-        } else {
-            [Constraint::Percentage(52), Constraint::Percentage(48)]
-        })
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
         .split(layout[1]);
 
     let query = Paragraph::new(state.query().to_string()).block(
@@ -504,6 +503,7 @@ struct BrowseState {
 }
 
 impl BrowseState {
+    #[allow(clippy::needless_pass_by_value)]
     fn new(paths: VaultPaths, notes: Vec<NoteIdentity>) -> Result<Self, String> {
         let tags = if paths.cache_db().exists() {
             list_tags(&paths).map_err(|error| error.to_string())?
@@ -531,6 +531,7 @@ impl BrowseState {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_key(&mut self, key: KeyEvent) -> BrowseAction {
         if self.new_note_prompt.is_some() {
             return self.handle_new_note_prompt_key(key.code);
@@ -553,7 +554,7 @@ impl BrowseState {
 
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('e') | KeyCode::Char('E') => {
+                KeyCode::Char('e' | 'E') => {
                     self.clear_status();
                     if self.mode == BrowseMode::FullText {
                         if let Err(error) = self.handle_mode_key(key) {
@@ -563,59 +564,59 @@ impl BrowseState {
                     }
                     return self.edit_selected_path();
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') => {
+                KeyCode::Char('n' | 'N') => {
                     self.clear_status();
                     self.new_note_prompt = Some(NewNotePrompt::default());
                     return BrowseAction::Continue;
                 }
-                KeyCode::Char('r') | KeyCode::Char('R') => {
+                KeyCode::Char('r' | 'R') => {
                     self.clear_status();
                     self.open_move_prompt();
                     return BrowseAction::Continue;
                 }
-                KeyCode::Char('b') | KeyCode::Char('B') => {
+                KeyCode::Char('b' | 'B') => {
                     self.clear_status();
                     if let Err(error) = self.open_backlinks_view() {
                         self.set_status(error);
                     }
                     return BrowseAction::Continue;
                 }
-                KeyCode::Char('o') | KeyCode::Char('O') => {
+                KeyCode::Char('o' | 'O') => {
                     self.clear_status();
                     if let Err(error) = self.open_links_view() {
                         self.set_status(error);
                     }
                     return BrowseAction::Continue;
                 }
-                KeyCode::Char('d') | KeyCode::Char('D') => {
+                KeyCode::Char('d' | 'D') => {
                     self.clear_status();
                     if let Err(error) = self.open_doctor_view() {
                         self.set_status(error);
                     }
                     return BrowseAction::Continue;
                 }
-                KeyCode::Char('g') | KeyCode::Char('G') => {
+                KeyCode::Char('g' | 'G') => {
                     self.clear_status();
                     if let Err(error) = self.open_git_view() {
                         self.set_status(error);
                     }
                     return BrowseAction::Continue;
                 }
-                KeyCode::Char('f') | KeyCode::Char('F') => {
+                KeyCode::Char('f' | 'F') => {
                     self.clear_status();
                     if let Err(error) = self.switch_mode(BrowseMode::FullText) {
                         self.set_status(error);
                     }
                     return BrowseAction::Continue;
                 }
-                KeyCode::Char('t') | KeyCode::Char('T') => {
+                KeyCode::Char('t' | 'T') => {
                     self.clear_status();
                     if let Err(error) = self.switch_mode(BrowseMode::Tag) {
                         self.set_status(error);
                     }
                     return BrowseAction::Continue;
                 }
-                KeyCode::Char('p') | KeyCode::Char('P') => {
+                KeyCode::Char('p' | 'P') => {
                     self.clear_status();
                     if let Err(error) = self.switch_mode(BrowseMode::Property) {
                         self.set_status(error);
@@ -845,7 +846,8 @@ impl BrowseState {
                 .handle_key(&self.paths, &self.all_notes, key.code),
             BrowseMode::Property => {
                 self.property_filter
-                    .handle_key(&self.paths, &self.all_notes, key.code)
+                    .handle_key(&self.paths, &self.all_notes, key.code);
+                Ok(())
             }
         }
     }
@@ -876,7 +878,7 @@ impl BrowseState {
 
     fn reload_after_edit(&mut self) -> Result<(), String> {
         let notes = load_notes(&self.paths)?;
-        self.all_notes = notes.clone();
+        self.all_notes.clone_from(&notes);
         self.picker.replace_notes_preserve_selection(notes);
         self.full_text.refresh_results(&self.paths)?;
         self.tag_filter
@@ -938,7 +940,7 @@ impl BrowseState {
 
     fn reload_after_new_note(&mut self, path: &str) -> Result<(), String> {
         let notes = load_notes(&self.paths)?;
-        self.all_notes = notes.clone();
+        self.all_notes.clone_from(&notes);
         self.picker.replace_notes_preserve_selection(notes);
         self.picker.select_path(path);
         self.full_text.refresh_results(&self.paths)?;
@@ -1941,7 +1943,7 @@ impl OutgoingLinksViewState {
             Line::from(format!("Target: {}", outgoing_link_target_label(link))),
             Line::from(format!(
                 "Status: {}",
-                resolution_status_label(link.resolution_status.clone())
+                resolution_status_label(&link.resolution_status)
             )),
         ];
         if let Some(context) = link.context.as_ref() {
@@ -1964,7 +1966,7 @@ impl OutgoingLinksViewState {
                             "{} [{} {}]",
                             outgoing_link_target_label(link),
                             link.link_kind,
-                            resolution_status_label(link.resolution_status.clone())
+                            resolution_status_label(&link.resolution_status)
                         )
                     },
                     |context| {
@@ -1972,7 +1974,7 @@ impl OutgoingLinksViewState {
                             "{} [{} {} line {}]",
                             outgoing_link_target_label(link),
                             link.link_kind,
-                            resolution_status_label(link.resolution_status.clone()),
+                            resolution_status_label(&link.resolution_status),
                             context.line
                         )
                     },
@@ -2024,7 +2026,7 @@ fn short_commit(commit: &str) -> &str {
     commit.get(..7).unwrap_or(commit)
 }
 
-fn resolution_status_label(status: ResolutionStatus) -> &'static str {
+fn resolution_status_label(status: &ResolutionStatus) -> &'static str {
     match status {
         ResolutionStatus::Resolved => "resolved",
         ResolutionStatus::Unresolved => "unresolved",
@@ -2033,7 +2035,10 @@ fn resolution_status_label(status: ResolutionStatus) -> &'static str {
 }
 
 fn is_base_path(path: &str) -> bool {
-    path.ends_with(".base")
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("base"))
 }
 
 fn last_scan_label(paths: &VaultPaths) -> String {
@@ -2106,11 +2111,11 @@ impl FullTextState {
     fn handle_key(&mut self, paths: &VaultPaths, key: KeyEvent) -> Result<(), String> {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('s') | KeyCode::Char('S') => {
+                KeyCode::Char('s' | 'S') => {
                     self.sort = next_search_sort(self.sort);
                     self.refresh_results(paths)?;
                 }
-                KeyCode::Char('e') | KeyCode::Char('E') => {
+                KeyCode::Char('e' | 'E') => {
                     self.show_explain = !self.show_explain;
                     self.explain_scroll = 0;
                     self.refresh_results(paths)?;
@@ -2120,8 +2125,7 @@ impl FullTextState {
             return Ok(());
         }
 
-        if key.modifiers.contains(KeyModifiers::ALT)
-            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+        if key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Char('c' | 'C'))
         {
             self.match_case = !self.match_case;
             self.explain_scroll = 0;
@@ -2506,32 +2510,23 @@ impl PropertyFilterState {
             .collect()
     }
 
-    fn handle_key(
-        &mut self,
-        paths: &VaultPaths,
-        all_notes: &[NoteIdentity],
-        code: KeyCode,
-    ) -> Result<(), String> {
+    fn handle_key(&mut self, paths: &VaultPaths, all_notes: &[NoteIdentity], code: KeyCode) {
         match code {
             KeyCode::Up => {
                 self.picker.move_selection(-1);
-                Ok(())
             }
             KeyCode::Down => {
                 self.picker.move_selection(1);
-                Ok(())
             }
             KeyCode::Backspace => {
                 self.query.pop();
                 self.refresh_results(paths, all_notes);
-                Ok(())
             }
             KeyCode::Char(character) => {
                 self.query.push(character);
                 self.refresh_results(paths, all_notes);
-                Ok(())
             }
-            _ => Ok(()),
+            _ => {}
         }
     }
 

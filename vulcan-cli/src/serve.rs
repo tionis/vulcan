@@ -187,6 +187,7 @@ fn run_server_loop(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn route_request(
     paths: &VaultPaths,
     options: &ServeOptions,
