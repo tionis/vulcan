@@ -1167,14 +1167,14 @@ Extract **all** list items (not just tasks) as structured data, matching Datavie
 - [x] Index on `tasks(document_id)`, `tasks(status_char)`, `task_properties(task_id)`, `task_properties(key)`
 - [x] Task completion state mapping: `x` = done, ` ` = todo, `/` = in-progress, `-` = cancelled; configurable custom status characters via `.vulcan/config.toml`
 - [x] Synthesize Dataview task fields at query time: `status` (char in brackets), `checked` (status is non-empty), `completed` (status is `x`), `fullyCompleted` (recursive subtree check), `visual` (rendered display text, defaults to `text`)
-- [ ] Nested task query semantics: when a TASK query matches a parent, include child tasks in results even if children don't independently match the WHERE clause. Task hierarchy is preserved in output.
+- [x] Nested task query semantics: when a TASK query matches a parent, include child tasks in results even if children don't independently match the WHERE clause. Task hierarchy is preserved in output.
 - [x] Tasks inherit page-level fields (frontmatter, inline fields) from their containing note
 - [x] Tasks plugin emoji shorthand: detect `🗓️` (due), `✅` (completion), `➕` (created), `🛫` (start), `⏳` (scheduled) date annotations in task text and store as task properties with auto-parsed Date type
 - [x] Tasks plugin priority levels: detect `⏫` (highest), `🔺` (high), `🔼` (medium), `🔽` (low), `⏬` (lowest) and store as `priority` task property
 - [x] Tasks plugin recurrence notation: detect `🔁 every <pattern>` in task text and store as `recurrence` task property (parsing the RRULE pattern is deferred to §9.10)
 - [x] Tasks plugin dependency notation: detect `⛔ <id>` (blocked by) and `🆔 <id>` (task ID) and store as task properties (dependency resolution deferred to §9.10)
 - [x] Unit tests: basic tasks, nested tasks, tasks with inline fields, custom status characters
-- [ ] Unit tests: `fullyCompleted` recursive check, nested task inclusion semantics, emoji shorthand date parsing, priority levels
+- [x] Unit tests: `fullyCompleted` recursive check, nested task inclusion semantics, emoji shorthand date parsing, priority levels
 - [x] Integration test: vault with varied task items, verify task extraction and property association
 
 **Note:** The Obsidian Tasks plugin has a richer feature set beyond what Dataview extracts (its own query DSL in `` ```tasks `` blocks, recurring task expansion, task dependencies, custom status types). Full Tasks plugin compatibility is tracked in §9.10.
@@ -1203,9 +1203,9 @@ Implement the full `file.*` implicit metadata namespace that Dataview exposes on
 - [x] `file.day` — date extracted from filename (`yyyy-mm-dd` or `yyyymmdd` patterns), null if no date pattern
 - [x] `file.starred` — bookmarked status (from `.obsidian/` bookmarks data if available, false otherwise)
 - [x] `file.day` resolution: populated from filename date pattern (`yyyy-mm-dd`, `yyyymmdd`) OR from a frontmatter `Date` field; null otherwise
-- [ ] Subtag inheritance in FROM sources: `FROM #A` matches notes with `#A`, `#A/B`, `#A/B/C`, etc.
+- [x] Subtag inheritance in FROM sources: `FROM #A` matches notes with `#A`, `#A/B`, `#A/B/C`, etc.
 - [x] Unit tests: each `file.*` field resolves correctly from cache data
-- [ ] Integration test: DQL queries using `file.*` fields produce expected results
+- [x] Integration test: DQL queries using `file.*` fields produce expected results
 
 #### 9.8.4 Data type system and expression evaluator
 
@@ -1230,9 +1230,9 @@ Extend the expression evaluator to support Dataview's full type system and expre
 - [x] Link indexing: `[[Note]].field` — cross-note field access (join against linked page's metadata); returns `null` if target note doesn't exist; follows Vulcan's link resolution (shortest-path, alias matching)
 - [x] Array/DataArray swizzling: `array.field` auto-maps and flattens; chained swizzling (`array.field.subfield`) maps through nested objects; null propagation through swizzles
 - [x] Lambda expressions: `(arg1, arg2) => expression` for use in higher-order functions
-- [ ] Column aliases: `field AS "Display Name"` in TABLE/LIST projections
-- [ ] `WITHOUT ID` modifier for TABLE and LIST queries
-- [ ] Keyword-escaped field access: `row["where"]` for reserved word collision (all DQL keywords must be escapable)
+- [x] Column aliases: `field AS "Display Name"` in TABLE/LIST projections
+- [x] `WITHOUT ID` modifier for TABLE and LIST queries
+- [x] Keyword-escaped field access: `row["where"]` for reserved word collision (all DQL keywords must be escapable)
 - [x] Field name normalization: case-insensitive, spaces/punctuation → hyphens, Markdown formatting stripped
 - [x] Unit tests: each operator, type coercion rule, field access pattern, lambda evaluation, swizzling, link indexing (including missing target)
 
@@ -1272,7 +1272,7 @@ Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's i
 
 - [x] Detect `` ```dataview `` fenced code blocks during parsing; store raw DQL text as block metadata
 - [x] DQL tokenizer: keywords (`TABLE`, `LIST`, `TASK`, `CALENDAR`, `FROM`, `WHERE`, `SORT`, `GROUP BY`, `FLATTEN`, `LIMIT`, `ASC`, `DESC`, `ASCENDING`, `DESCENDING`, `AND`, `OR`, `NOT`, `WITHOUT`, `ID`, `AS`), identifiers, string literals, numbers, date/duration literals, operators, parentheses, links (`[[...]]`)
-- [ ] DQL parser: recursive descent parser producing the internal query AST
+- [x] DQL parser: recursive descent parser producing the internal query AST
   - [x] Query type: `TABLE`, `LIST`, `TASK`, `CALENDAR`
   - [x] `WITHOUT ID` modifier for TABLE and LIST
   - [x] Column/display expressions with `AS "alias"` support
@@ -1291,7 +1291,7 @@ Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's i
 - [x] Computed FLATTEN: `FLATTEN (expr) AS name` assigns flattened result to a new field; if expression returns non-array, treat as single-element array
 - [x] Multiple blocks per note: a note can contain multiple `` ```dataview `` blocks; `--block <n>` selects by 0-based index, default evaluates all
 - [ ] Error recovery: malformed DQL produces diagnostics, not panics
-- [ ] Unit tests: parse each clause type, boolean FROM combinations, nested WHERE expressions, lambda expressions, link indexing, `WITHOUT ID`, `AS` aliases, computed GROUP BY/FLATTEN, multiple data commands, malformed input
+- [x] Unit tests: parse each clause type, boolean FROM combinations, nested WHERE expressions, lambda expressions, link indexing, `WITHOUT ID`, `AS` aliases, computed GROUP BY/FLATTEN, multiple data commands, malformed input
 - [x] Integration test: round-trip DQL parse → AST → evaluation against a test vault
 
 #### 9.8.6 DQL evaluation and CLI surface
@@ -1300,10 +1300,10 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 
 - [x] `vulcan dataview eval <file> [--block <n>]` — evaluate a DQL code block from a specific note (by block index or the first/only block)
 - [x] `vulcan dataview query <dql-string>` — evaluate a DQL query string directly from the command line
-- [ ] TABLE output: columnar table in human mode, array-of-objects in `--output json`; `WITHOUT ID` suppresses file link column
-- [ ] LIST output: note list with optional expression values; `WITHOUT ID` shows only the expression value
-- [ ] TASK output: task items grouped by source note, with status, text, `visual`, and all task metadata fields (`checked`, `completed`, `fullyCompleted`); nested task inclusion semantics (children included when parent matches)
-- [ ] CALENDAR output: JSON with date-keyed entries (human mode shows a flat date-grouped list; calendar rendering is a WebUI concern)
+- [x] TABLE output: columnar table in human mode, array-of-objects in `--output json`; `WITHOUT ID` suppresses file link column
+- [x] LIST output: note list with optional expression values; `WITHOUT ID` shows only the expression value
+- [x] TASK output: task items grouped by source note, with status, text, `visual`, and all task metadata fields (`checked`, `completed`, `fullyCompleted`); nested task inclusion semantics (children included when parent matches)
+- [x] CALENDAR output: JSON with date-keyed entries (human mode shows a flat date-grouped list; calendar rendering is a WebUI concern)
 - [x] GROUP BY support: produces `{ key, rows }` objects; `rows.field` extracts list of values; aggregation functions (`sum(rows.field)`, `length(rows)`, etc.) work over grouped rows
 - [x] FLATTEN support: list expansion into individual result rows; multiple FLATTEN clauses compose sequentially; `FLATTEN expr AS name` assigns to a new field
 - [x] LIMIT support: cap result count (applied after all other data commands)
@@ -1313,9 +1313,9 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 - [ ] Diagnostics for unsupported DQL features surfaced in output
 - [x] `--output json` on all subcommands
 - [x] Empty result handling: TABLE with 0 results shows headers + result count; LIST with 0 results shows empty; TASK with 0 results shows nothing
-- [ ] Result count display: configurable via Dataview settings (`displayResultCount`); show count in TABLE/TASK headers by default
+- [x] Result count display: configurable via Dataview settings (`displayResultCount`); show count in TABLE/TASK headers by default
 - [x] Configurable column names: `primaryColumnName` (default `"File"`), `groupColumnName` (default `"Group"`) from Dataview settings
-- [ ] Integration tests: TABLE, LIST, TASK, CALENDAR queries; GROUP BY with aggregation and null keys; FLATTEN with nested arrays and non-array expressions; multi-clause queries; `WITHOUT ID`; link indexing; empty results; all against test vault with known results
+- [x] Integration tests: TABLE, LIST, TASK, CALENDAR queries; GROUP BY with aggregation and null keys; FLATTEN with nested arrays and non-array expressions; multi-clause queries; `WITHOUT ID`; link indexing; empty results; all against test vault with known results
 
 #### 9.8.7 Inline expression evaluation
 
@@ -1413,7 +1413,7 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 #### 9.8.10 Cross-cutting integration
 
 - [x] **Search:** DQL code blocks and inline expressions are stored as metadata but excluded from FTS content indexing (they are queries, not prose). Inline field *values* are included in FTS.
-- [ ] **Doctor:** Report notes with DQL blocks that fail to parse. Report inline fields with type inconsistencies against the property catalog. Report DataviewJS blocks (diagnosed when feature not compiled in).
+- [x] **Doctor:** Report notes with DQL blocks that fail to parse. Report inline fields with type inconsistencies against the property catalog. Report DataviewJS blocks (diagnosed when feature not compiled in).
 - [ ] **Browse TUI:** Notes with DQL blocks could show evaluated query results in a detail pane (future enhancement, not required for initial implementation).
 - [ ] **HTTP API:** `GET /{id}/dataview/eval` endpoint accepts a DQL string and returns structured results. Inline expression evaluation available via note render endpoints.
 - [x] **Property queries:** Inline fields and `file.*` fields are queryable via the existing `--where` filter surface. `vulcan notes --where "due < date(today)"` finds notes where the `due` inline field is in the past. `vulcan notes --where "file.size > 10000"` finds large notes.
