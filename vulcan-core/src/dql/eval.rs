@@ -1337,10 +1337,7 @@ FROM #project/list"#,
         )
         .expect("tag expansion query should evaluate");
 
-        assert_eq!(
-            tags.rows,
-            vec![serde_json::json!({ "page": "Dashboard" })]
-        );
+        assert_eq!(tags.rows, vec![serde_json::json!({ "page": "Dashboard" })]);
 
         let computed = evaluate_dql(
             &paths,

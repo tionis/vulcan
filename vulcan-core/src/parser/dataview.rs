@@ -30,26 +30,23 @@ pub fn extract_dataview_metadata(
 
     for block in semantic_blocks {
         if let Some(language) = query_block_language(block) {
-            match language {
-                "tasks" => {
-                    extraction.tasks_blocks.push(RawTasksBlock {
-                        text: block.text.clone(),
-                        block_index: tasks_block_index,
-                        byte_range: block.byte_offset_start..block.byte_offset_end,
-                        line_number: line_number_for_offset(source, block.byte_offset_start),
-                    });
-                    tasks_block_index += 1;
-                }
-                _ => {
-                    extraction.dataview_blocks.push(RawDataviewBlock {
-                        language: language.to_string(),
-                        text: block.text.clone(),
-                        block_index: dataview_block_index,
-                        byte_range: block.byte_offset_start..block.byte_offset_end,
-                        line_number: line_number_for_offset(source, block.byte_offset_start),
-                    });
-                    dataview_block_index += 1;
-                }
+            if language == "tasks" {
+                extraction.tasks_blocks.push(RawTasksBlock {
+                    text: block.text.clone(),
+                    block_index: tasks_block_index,
+                    byte_range: block.byte_offset_start..block.byte_offset_end,
+                    line_number: line_number_for_offset(source, block.byte_offset_start),
+                });
+                tasks_block_index += 1;
+            } else {
+                extraction.dataview_blocks.push(RawDataviewBlock {
+                    language: language.to_string(),
+                    text: block.text.clone(),
+                    block_index: dataview_block_index,
+                    byte_range: block.byte_offset_start..block.byte_offset_end,
+                    line_number: line_number_for_offset(source, block.byte_offset_start),
+                });
+                dataview_block_index += 1;
             }
             continue;
         }
@@ -389,16 +386,11 @@ fn visible_line_text(
     visible_subranges(line_start..(line_start + line_len), comment_regions)
         .into_iter()
         .map(|range| source[range].to_string())
-        .collect::<Vec<_>>()
-        .join("")
+        .collect::<String>()
 }
 
 fn line_number_for_offset(source: &str, offset: usize) -> usize {
-    1 + source[..offset]
-        .as_bytes()
-        .iter()
-        .filter(|byte| **byte == b'\n')
-        .count()
+    1 + source[..offset].matches('\n').count()
 }
 
 fn list_item_line_regex() -> &'static Regex {

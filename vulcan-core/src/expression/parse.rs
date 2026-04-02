@@ -196,17 +196,10 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 Ok(Expr::Number(n))
             }
-            Token::Str(s) => {
-                let s = s.clone();
-                self.advance()?;
-                Ok(Expr::Str(s))
-            }
-            Token::Wikilink(s) => {
-                let s = s.clone();
-                self.advance()?;
-                Ok(Expr::Str(s))
-            }
-            Token::DateLiteral(s) | Token::DurationLiteral(s) => {
+            Token::Str(s)
+            | Token::Wikilink(s)
+            | Token::DateLiteral(s)
+            | Token::DurationLiteral(s) => {
                 let s = s.clone();
                 self.advance()?;
                 Ok(Expr::Str(s))

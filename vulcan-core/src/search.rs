@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write};
 
 #[derive(Debug)]
 pub enum SearchError {
@@ -483,7 +483,8 @@ fn keyword_search_hits(
     let use_fts = !full_scan_for_regex && !candidate_query.trim().is_empty();
     let mut sql = filter_sql.cte;
     if use_fts {
-        sql.push_str(&format!(
+        let _ = write!(
+            sql,
             "SELECT
                 documents.path,
                 chunks.id,
@@ -500,7 +501,7 @@ fn keyword_search_hits(
             JOIN documents ON documents.id = search_chunk_content.document_id
             WHERE search_chunks_fts MATCH ?",
             context_size = query.context_size
-        ));
+        );
     } else {
         sql.push_str(
             "SELECT
@@ -692,9 +693,7 @@ fn apply_scope_filters(
 fn expression_contains_scope(expression: &SearchExpr) -> bool {
     match expression {
         SearchExpr::Scoped { .. } => true,
-        SearchExpr::BracketFilter(_) => false,
-        SearchExpr::Regex(_) => false,
-        SearchExpr::Term(_) => false,
+        SearchExpr::BracketFilter(_) | SearchExpr::Regex(_) | SearchExpr::Term(_) => false,
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             children.iter().any(expression_contains_scope)
         }
@@ -747,9 +746,7 @@ fn expression_contains_section_scope(expression: &SearchExpr) -> bool {
             ..
         } => true,
         SearchExpr::Scoped { expression, .. } => expression_contains_section_scope(expression),
-        SearchExpr::BracketFilter(_) => false,
-        SearchExpr::Regex(_) => false,
-        SearchExpr::Term(_) => false,
+        SearchExpr::BracketFilter(_) | SearchExpr::Regex(_) | SearchExpr::Term(_) => false,
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             children.iter().any(expression_contains_section_scope)
         }
@@ -776,8 +773,7 @@ fn candidate_matches_scope_filters(
     default_case_sensitive: bool,
 ) -> bool {
     match expression {
-        SearchExpr::Term(_) => true,
-        SearchExpr::BracketFilter(_) => true,
+        SearchExpr::Term(_) | SearchExpr::BracketFilter(_) => true,
         SearchExpr::Regex(regex) => regex_matches_candidate(regex, candidate),
         SearchExpr::Scoped { scope, expression } => {
             if *scope == SearchScope::Section {
@@ -826,7 +822,7 @@ fn scoped_expression_matches(
         .any(|segment| text_expression_matches(expression, segment, default_case_sensitive))
 }
 
-fn split_scope_segments<'a>(scope: SearchScope, content: &'a str) -> Vec<&'a str> {
+fn split_scope_segments(scope: SearchScope, content: &str) -> Vec<&str> {
     match scope {
         SearchScope::Line => content.lines().collect(),
         SearchScope::Block => content.split("\n\n").collect(),
@@ -848,9 +844,7 @@ fn load_document_section_contexts(
         return Ok(HashMap::new());
     }
 
-    let placeholders = std::iter::repeat_n("?", document_paths.len())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let placeholders = vec!["?"; document_paths.len()].join(", ");
     let sql = format!(
         "
         SELECT
@@ -1155,18 +1149,19 @@ fn line_matches_positive_expression_part(
             &term.text,
             term_case_sensitive(term, default_case_sensitive),
         ),
-        SearchExpr::BracketFilter(_) => false,
-        SearchExpr::Regex(regex) => match regex.target {
-            SearchRegexTarget::Content => regex.regex.is_match(line),
-            SearchRegexTarget::Path => false,
-        },
+        SearchExpr::BracketFilter(_)
+        | SearchExpr::Regex(SearchRegexTerm {
+            target: SearchRegexTarget::Path,
+            ..
+        })
+        | SearchExpr::Not(_) => false,
+        SearchExpr::Regex(regex) => regex.regex.is_match(line),
         SearchExpr::Scoped { expression, .. } => {
             line_matches_positive_expression_part(expression, line, default_case_sensitive)
         }
         SearchExpr::And(children) | SearchExpr::Or(children) => children.iter().any(|child| {
             line_matches_positive_expression_part(child, line, default_case_sensitive)
         }),
-        SearchExpr::Not(_) => false,
     }
 }
 
@@ -1401,9 +1396,7 @@ fn load_hit_file_mtimes(
         return Ok(HashMap::new());
     }
 
-    let placeholders = std::iter::repeat_n("?", document_paths.len())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let placeholders = vec!["?"; document_paths.len()].join(", ");
     let sql = format!("SELECT path, file_mtime FROM documents WHERE path IN ({placeholders})");
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(params_from_iter(document_paths.iter()), |row| {
@@ -1617,9 +1610,7 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
     let expression = filtered_expression;
     let base_query = expression
         .as_ref()
-        .map(|expr| compose_optional_fts_query(expr, &HashMap::new()))
-        .transpose()?
-        .flatten();
+        .and_then(|expr| compose_optional_fts_query(expr, &HashMap::new()));
     let content_query = render_content_filters(&filter_state.content_terms);
     let effective_query = combine_fts_clauses(base_query.as_deref(), content_query.as_deref());
     let mut semantic_parts = expression
@@ -2083,6 +2074,7 @@ fn is_or_token(token: &LexedToken) -> bool {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn extract_inline_filters(
     expression: SearchExpr,
     state: &mut InlineFilterState,
@@ -2240,8 +2232,7 @@ fn render_fts_expression(
 ) -> String {
     let (rendered, precedence) = match expression {
         SearchExpr::Term(term) => (render_fts_term(term, fuzzy_map), 4),
-        SearchExpr::BracketFilter(_) => (String::new(), 4),
-        SearchExpr::Regex(_) => (String::new(), 4),
+        SearchExpr::BracketFilter(_) | SearchExpr::Regex(_) => (String::new(), 4),
         SearchExpr::Scoped { expression, .. } => (
             render_fts_expression(expression, fuzzy_map, parent_precedence),
             4,
@@ -2286,8 +2277,7 @@ fn render_candidate_fts_expression(
 ) -> String {
     let (rendered, precedence) = match expression {
         SearchExpr::Term(term) => (render_fts_term(term, fuzzy_map), 4),
-        SearchExpr::BracketFilter(_) => (String::new(), 4),
-        SearchExpr::Regex(_) => (String::new(), 4),
+        SearchExpr::BracketFilter(_) | SearchExpr::Regex(_) => (String::new(), 4),
         SearchExpr::Scoped { scope, expression } => {
             if *scope == SearchScope::Section {
                 (render_section_scope_terms(expression, fuzzy_map), 4)
@@ -2446,9 +2436,7 @@ fn collect_semantic_terms_vec(expression: &SearchExpr) -> Vec<String> {
 fn collect_semantic_terms(expression: &SearchExpr, negated: bool, terms: &mut Vec<String>) {
     match expression {
         SearchExpr::Term(term) if !negated => terms.push(term.text.clone()),
-        SearchExpr::Term(_) => {}
-        SearchExpr::BracketFilter(_) => {}
-        SearchExpr::Regex(_) => {}
+        SearchExpr::Term(_) | SearchExpr::BracketFilter(_) | SearchExpr::Regex(_) => {}
         SearchExpr::Scoped { expression, .. } => collect_semantic_terms(expression, negated, terms),
         SearchExpr::And(children) | SearchExpr::Or(children) => {
             for child in children {
@@ -2466,9 +2454,7 @@ fn collect_positive_search_terms(
 ) {
     match expression {
         SearchExpr::Term(term) if !negated => terms.push(term.clone()),
-        SearchExpr::Term(_) => {}
-        SearchExpr::BracketFilter(_) => {}
-        SearchExpr::Regex(_) => {}
+        SearchExpr::Term(_) | SearchExpr::BracketFilter(_) | SearchExpr::Regex(_) => {}
         SearchExpr::Scoped { expression, .. } => {
             collect_positive_search_terms(expression, negated, terms);
         }
@@ -2649,13 +2635,13 @@ fn fuzzy_expansion_map(expansions: &[SearchFuzzyExpansion]) -> HashMap<String, V
 fn compose_optional_fts_query(
     expression: &SearchExpr,
     fuzzy_map: &HashMap<String, Vec<String>>,
-) -> Result<Option<String>, SearchError> {
+) -> Option<String> {
     let rendered = render_fts_expression(expression, fuzzy_map, 0);
     if rendered.trim().is_empty() {
-        return Ok(None);
+        return None;
     }
 
-    Ok(Some(rendered))
+    Some(rendered)
 }
 
 fn fuzzy_expansions(
@@ -2695,9 +2681,7 @@ fn collect_fuzzy_expansions(
                 });
             }
         }
-        SearchExpr::Term(_) => {}
-        SearchExpr::BracketFilter(_) => {}
-        SearchExpr::Regex(_) => {}
+        SearchExpr::Term(_) | SearchExpr::BracketFilter(_) | SearchExpr::Regex(_) => {}
         SearchExpr::Scoped { expression, .. } => {
             collect_fuzzy_expansions(expression, seen, expansions, vocabulary, negated);
         }
@@ -2831,13 +2815,12 @@ impl PreparedSearchQuery {
                 )
             })
             .collect::<HashMap<_, _>>();
-        let base_query = self.expression.as_ref().map(|expression| {
-            compose_optional_fts_query(expression, &fuzzy_map)
-                .expect("prepared query should remain valid after fuzzy expansion")
-        });
+        let base_query = self
+            .expression
+            .as_ref()
+            .and_then(|expression| compose_optional_fts_query(expression, &fuzzy_map));
         let content_query = render_content_filters(&self.content_terms);
-        self.effective_query =
-            combine_fts_clauses(base_query.flatten().as_deref(), content_query.as_deref());
+        self.effective_query = combine_fts_clauses(base_query.as_deref(), content_query.as_deref());
         self.fuzzy_fallback_used = true;
         self.fuzzy_expansions = expansions;
     }

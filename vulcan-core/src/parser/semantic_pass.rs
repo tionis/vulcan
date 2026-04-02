@@ -730,17 +730,13 @@ fn code_block_language(kind: CodeBlockKind<'_>) -> Option<String> {
         CodeBlockKind::Fenced(info) => info
             .split_ascii_whitespace()
             .next()
-            .map(|value| value.to_ascii_lowercase()),
+            .map(str::to_ascii_lowercase),
         CodeBlockKind::Indented => None,
     }
 }
 
 fn line_number_for_offset(source: &str, offset: usize) -> usize {
-    1 + source[..offset]
-        .as_bytes()
-        .iter()
-        .filter(|byte| **byte == b'\n')
-        .count()
+    1 + source[..offset].matches('\n').count()
 }
 
 fn dedupe_tags(values: Vec<crate::parser::types::RawTag>) -> Vec<crate::parser::types::RawTag> {
