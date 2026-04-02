@@ -1345,58 +1345,58 @@ Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript
 
 **JS runtime integration (behind `js_runtime` feature):**
 - [x] Add `js_runtime` feature flag to `vulcan-core/Cargo.toml` and `vulcan-cli/Cargo.toml`
-- [ ] Embed JS runtime: rquickjs (QuickJS) — chosen for binary size (~300KB vs ~15MB Boa vs ~40MB V8), sub-millisecond startup, built-in sandboxing primitives (`set_memory_limit()`, `set_max_stack_size()`, `set_interrupt_handler()`), and ES2023 compliance. See 9.18.5 for the full JS runtime design including REPL, vault API, and sandbox levels.
+- [x] Embed JS runtime: rquickjs (QuickJS) — chosen for binary size (~300KB vs ~15MB Boa vs ~40MB V8), sub-millisecond startup, built-in sandboxing primitives (`set_memory_limit()`, `set_max_stack_size()`, `set_interrupt_handler()`), and ES2023 compliance. See 9.18.5 for the full JS runtime design including REPL, vault API, and sandbox levels.
 - [ ] Sandbox constraints: no filesystem access, no network access, no `eval` of external scripts
-- [ ] Execution timeout: configurable via `.vulcan/config.toml` (default 5 seconds per block)
-- [ ] Memory limit: cap JS heap allocation via `Runtime::set_memory_limit()` to prevent runaway scripts
+- [x] Execution timeout: configurable via `.vulcan/config.toml` (default 5 seconds per block)
+- [x] Memory limit: cap JS heap allocation via `Runtime::set_memory_limit()` to prevent runaway scripts
 
 **`dv` API object — query methods:**
-- [ ] `dv.pages(source?)` — return DataArray of page objects matching a DQL FROM source (or all pages)
-- [ ] `dv.page(path)` — return a single page's metadata object
-- [ ] `dv.current()` — return current note's metadata (`this` equivalent)
-- [ ] `dv.query(dql, [file], [settings])` — evaluate DQL, return `{ successful: boolean, value: result }` or `{ successful: false, error: string }`
-- [ ] `dv.tryQuery(dql, [file], [settings])` — like `dv.query()` but throws on failure
-- [ ] `dv.queryMarkdown(dql, [file], [settings])` — evaluate DQL, return rendered Markdown string
-- [ ] `dv.tryQueryMarkdown(dql, [file], [settings])` — like `dv.queryMarkdown()` but throws on failure
-- [ ] `dv.execute(dql)` — shorthand: evaluate DQL and render results directly (reuses 9.8.6 evaluation engine)
-- [ ] Page objects expose frontmatter, inline fields, and full `file.*` namespace — same fields as DQL queries
+- [x] `dv.pages(source?)` — return DataArray of page objects matching a DQL FROM source (or all pages)
+- [x] `dv.page(path)` — return a single page's metadata object
+- [x] `dv.current()` — return current note's metadata (`this` equivalent)
+- [x] `dv.query(dql, [file], [settings])` — evaluate DQL, return `{ successful: boolean, value: result }` or `{ successful: false, error: string }`
+- [x] `dv.tryQuery(dql, [file], [settings])` — like `dv.query()` but throws on failure
+- [x] `dv.queryMarkdown(dql, [file], [settings])` — evaluate DQL, return rendered Markdown string
+- [x] `dv.tryQueryMarkdown(dql, [file], [settings])` — like `dv.queryMarkdown()` but throws on failure
+- [x] `dv.execute(dql)` — shorthand: evaluate DQL and render results directly (reuses 9.8.6 evaluation engine)
+- [x] Page objects expose frontmatter, inline fields, and full `file.*` namespace — same fields as DQL queries
 
 **`dv` API object — render methods:**
-- [ ] `dv.table(headers, rows)` — render table output (CLI: columnar; JSON: array-of-objects)
-- [ ] `dv.list(items)` — render list output
-- [ ] `dv.taskList(tasks, groupByFile?)` — render task list output
-- [ ] `dv.paragraph(text)`, `dv.header(level, text)`, `dv.el(element, text, [attrs])`, `dv.span(text)` — text/element output (map to plain text in CLI)
-- [ ] `dv.container` — reference to output container (CLI: output buffer object; WebUI: DOM element; used for CSS class manipulation)
+- [x] `dv.table(headers, rows)` — render table output (CLI: columnar; JSON: array-of-objects)
+- [x] `dv.list(items)` — render list output
+- [x] `dv.taskList(tasks, groupByFile?)` — render task list output
+- [x] `dv.paragraph(text)`, `dv.header(level, text)`, `dv.el(element, text, [attrs])`, `dv.span(text)` — text/element output (map to plain text in CLI)
+- [x] `dv.container` — reference to output container (CLI: output buffer object; WebUI: DOM element; used for CSS class manipulation)
 
 **`dv` API object — I/O and view methods:**
-- [ ] `dv.io.load(path)` — read a note's content as string (read-only, within vault boundary only)
-- [ ] `dv.io.csv(path, [originFile])` — load and parse a CSV file, return DataArray of row objects
-- [ ] `dv.io.normalize(path, [originFile])` — resolve a vault-relative path
-- [ ] `dv.view(path, [input])` — load and execute an external JS file from the vault; `path` relative to vault root; optional `input` object available to loaded script; vault-boundary enforcement applies. Associated CSS file loading (`<path>.css`) deferred to WebUI phase.
+- [x] `dv.io.load(path)` — read a note's content as string (read-only, within vault boundary only)
+- [x] `dv.io.csv(path, [originFile])` — load and parse a CSV file, return DataArray of row objects
+- [x] `dv.io.normalize(path, [originFile])` — resolve a vault-relative path
+- [x] `dv.view(path, [input])` — load and execute an external JS file from the vault; `path` relative to vault root; optional `input` object available to loaded script; vault-boundary enforcement applies. Associated CSS file loading (`<path>.css`) deferred to WebUI phase.
 
 **`dv` API object — utility methods:**
-- [ ] `dv.date(input)`, `dv.duration(input)` — type constructors matching DQL semantics
-- [ ] `dv.compare(a, b)`, `dv.equal(a, b)` — Dataview comparison/equality semantics
-- [ ] `dv.clone(value)` — deep clone a value
+- [x] `dv.date(input)`, `dv.duration(input)` — type constructors matching DQL semantics
+- [x] `dv.compare(a, b)`, `dv.equal(a, b)` — Dataview comparison/equality semantics
+- [x] `dv.clone(value)` — deep clone a value
 - [ ] `dv.func.*` — namespace exposing all DQL built-in functions (e.g., `dv.func.contains()`)
 - [ ] `dv.luxon` — expose date/time library API (Luxon-compatible or Vulcan equivalent)
 
 **DataArray implementation:**
-- [ ] DataArray wraps query results with chainable methods: `.where(pred)`, `.filter(pred)`, `.map(fn)`, `.flatMap(fn)`, `.sort(key, [dir])`, `.groupBy(key)`, `.unique()`, `.distinct()`, `.limit(n)`, `.slice(start, [end])`, `.concat(other)`, `.indexOf(value)`, `.find(pred)`, `.findIndex(pred)`, `.includes(value)`, `.join(sep)`, `.every(pred)`, `.some(pred)`, `.none(pred)`
-- [ ] Dataview-specific methods: `.sortInPlace(key, [dir])`, `.groupIn(key)` (recursive top-down grouping), `.mutate(fn)` (in-place mutation), `.into(key)` (map without flattening), `.expand(fn)` (recursive expansion), `.forEach(fn)`, `.array()` (convert to plain array), `.values` (raw array access)
-- [ ] Swizzling: `dataArray.field` auto-maps and flattens; chained swizzling works through nested objects
+- [x] DataArray wraps query results with chainable methods: `.where(pred)`, `.filter(pred)`, `.map(fn)`, `.flatMap(fn)`, `.sort(key, [dir])`, `.groupBy(key)`, `.unique()`, `.distinct()`, `.limit(n)`, `.slice(start, [end])`, `.concat(other)`, `.indexOf(value)`, `.find(pred)`, `.findIndex(pred)`, `.includes(value)`, `.join(sep)`, `.every(pred)`, `.some(pred)`, `.none(pred)`
+- [x] Dataview-specific methods: `.sortInPlace(key, [dir])`, `.groupIn(key)` (recursive top-down grouping), `.mutate(fn)` (in-place mutation), `.into(key)` (map without flattening), `.expand(fn)` (recursive expansion), `.forEach(fn)`, `.array()` (convert to plain array), `.values` (raw array access)
+- [x] Swizzling: `dataArray.field` auto-maps and flattens; chained swizzling works through nested objects
 
 **CLI surface:**
-- [ ] `vulcan dataview eval <file> [--block <n>]` evaluates DataviewJS blocks when feature is compiled in (same command as DQL, dispatches by block language)
-- [ ] `vulcan dataview query-js <js-string>` — evaluate a JS snippet directly from the command line
-- [ ] `--output json` on both subcommands
-- [ ] Diagnostics for runtime errors, timeout, and sandbox violations
+- [x] `vulcan dataview eval <file> [--block <n>]` evaluates DataviewJS blocks when feature is compiled in (same command as DQL, dispatches by block language)
+- [x] `vulcan dataview query-js <js-string>` — evaluate a JS snippet directly from the command line
+- [x] `--output json` on both subcommands
+- [x] Diagnostics for runtime errors, timeout, and sandbox violations
 
 **Testing:**
-- [ ] Unit tests: `dv.pages()`, `dv.page()`, `dv.current()`, `dv.table()`, `dv.list()`, `dv.taskList()`, `dv.execute()`
-- [ ] Integration test: DataviewJS blocks in test vault produce expected output
-- [ ] Sandbox test: verify filesystem/network access is blocked, timeout triggers correctly
-- [ ] Feature flag test: build without `js_runtime`, verify detection-only behavior
+- [x] Unit tests: `dv.pages()`, `dv.page()`, `dv.current()`, `dv.table()`, `dv.list()`, `dv.taskList()`, `dv.execute()`
+- [x] Integration test: DataviewJS blocks in test vault produce expected output
+- [x] Sandbox test: verify filesystem/network access is blocked, timeout triggers correctly
+- [x] Feature flag test: build without `js_runtime`, verify detection-only behavior
 
 #### 9.8.9 Dataview plugin settings import
 
@@ -1415,9 +1415,9 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 - [x] **Search:** DQL code blocks and inline expressions are stored as metadata but excluded from FTS content indexing (they are queries, not prose). Inline field *values* are included in FTS.
 - [x] **Doctor:** Report notes with DQL blocks that fail to parse. Report inline fields with type inconsistencies against the property catalog. Report DataviewJS blocks (diagnosed when feature not compiled in).
 - [ ] **Browse TUI:** Notes with DQL blocks could show evaluated query results in a detail pane (future enhancement, not required for initial implementation).
-- [ ] **HTTP API:** `GET /{id}/dataview/eval` endpoint accepts a DQL string and returns structured results. Inline expression evaluation available via note render endpoints.
+- [x] **HTTP API:** Single-vault serve mode exposes structured Dataview endpoints: `GET /dataview/query`, `GET /dataview/query-js`, `GET /dataview/eval`, and `GET /dataview/inline`.
 - [x] **Property queries:** Inline fields and `file.*` fields are queryable via the existing `--where` filter surface. `vulcan notes --where "due < date(today)"` finds notes where the `due` inline field is in the past. `vulcan notes --where "file.size > 10000"` finds large notes.
-- [ ] **Bases interop:** Bases views and DQL queries share the same expression evaluation engine and filter primitives. A Bases view and a DQL TABLE query with equivalent logic should produce identical results.
+- [x] **Bases interop:** Bases views and DQL queries share the same expression evaluation engine and filter primitives. A Bases view and a DQL TABLE query with equivalent logic should produce identical results.
 - [ ] **Dataview test vault:** `tests/fixtures/vaults/dataview/` must exercise all features: inline fields (all variants, type inference, formatting edge cases), list items (plain and task, nested), `file.*` metadata access (including `file.day`, `file.tags` subtag expansion), DQL queries (TABLE, LIST, TASK, CALENDAR), GROUP BY (with null keys, computed expressions), FLATTEN (with non-array expressions, sequential composition), inline expressions (with configurable prefix), function calls (including vectorization, regex functions in WHERE), link indexing (`[[Note]].field` including missing targets), date/duration arithmetic, null ordering, Tasks plugin emoji shorthand, and DataviewJS blocks (evaluated when feature is compiled in, diagnosed otherwise).
 
 #### 9.8 Recommended implementation order

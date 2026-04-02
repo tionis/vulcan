@@ -1581,6 +1581,69 @@ mod tests {
             .any(|diagnostic| diagnostic.message.contains("unsupported view type `board`")));
     }
 
+    #[test]
+    fn bases_and_dql_equivalent_filters_produce_matching_rows() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        fs::write(
+            vault_root.join("parity.base"),
+            concat!(
+                "views:\n",
+                "  - name: Parity\n",
+                "    type: table\n",
+                "    filters:\n",
+                "      - 'reviewed = true'\n",
+                "      - 'file.folder = \"Projects\"'\n",
+                "    order:\n",
+                "      - file.path\n",
+                "      - status\n",
+                "      - priority\n",
+                "    sort: file.path\n",
+            ),
+        )
+        .expect("parity base should be written");
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let base = evaluate_base_file(&paths, "parity.base").expect("base eval should succeed");
+        let dql = crate::evaluate_dql(
+            &paths,
+            r#"TABLE WITHOUT ID file.path AS path, status, priority
+FROM "Projects"
+WHERE reviewed = true
+SORT file.path ASC"#,
+            None,
+        )
+        .expect("dql should evaluate");
+
+        assert!(base.diagnostics.is_empty());
+        assert_eq!(base.views.len(), 1);
+        assert_eq!(base.views[0].rows.len(), 1);
+        assert_eq!(dql.rows.len(), 1);
+
+        assert_eq!(
+            base.views[0].rows[0].cells.get("file.path"),
+            Some(&Value::String("Projects/Alpha.md".to_string()))
+        );
+        assert_eq!(
+            base.views[0].rows[0].cells.get("status"),
+            Some(&Value::String("active".to_string()))
+        );
+        assert_eq!(
+            base.views[0].rows[0].cells.get("priority"),
+            Some(&serde_json::json!(1.0))
+        );
+
+        assert_eq!(
+            dql.rows[0]["path"],
+            Value::String("Projects/Alpha.md".to_string())
+        );
+        assert_eq!(dql.rows[0]["status"], Value::String("active".to_string()));
+        assert_eq!(dql.rows[0]["priority"], serde_json::json!(1.0));
+    }
+
     fn copy_fixture_vault(name: &str, destination: &Path) {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/vaults")

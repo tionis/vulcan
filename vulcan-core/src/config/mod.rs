@@ -136,6 +136,9 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # max_recursive_render_depth = 4
 # primary_column_name = "File"
 # group_column_name = "Group"
+# js_timeout_seconds = 5
+# js_memory_limit_bytes = 16777216
+# js_max_stack_size_bytes = 262144
 
 # [templates]
 # date_format = "YYYY-MM-DD"
@@ -810,6 +813,12 @@ pub struct DataviewConfig {
     pub primary_column_name: String,
     #[serde(default = "default_dataview_group_column_name")]
     pub group_column_name: String,
+    #[serde(default = "default_dataview_js_timeout_seconds")]
+    pub js_timeout_seconds: usize,
+    #[serde(default = "default_dataview_js_memory_limit_bytes")]
+    pub js_memory_limit_bytes: usize,
+    #[serde(default = "default_dataview_js_max_stack_size_bytes")]
+    pub js_max_stack_size_bytes: usize,
 }
 
 impl Default for DataviewConfig {
@@ -830,6 +839,9 @@ impl Default for DataviewConfig {
             max_recursive_render_depth: default_dataview_max_recursive_render_depth(),
             primary_column_name: default_dataview_primary_column_name(),
             group_column_name: default_dataview_group_column_name(),
+            js_timeout_seconds: default_dataview_js_timeout_seconds(),
+            js_memory_limit_bytes: default_dataview_js_memory_limit_bytes(),
+            js_max_stack_size_bytes: default_dataview_js_max_stack_size_bytes(),
         }
     }
 }
@@ -1137,6 +1149,9 @@ struct PartialDataviewConfig {
     max_recursive_render_depth: Option<usize>,
     primary_column_name: Option<String>,
     group_column_name: Option<String>,
+    js_timeout_seconds: Option<usize>,
+    js_memory_limit_bytes: Option<usize>,
+    js_max_stack_size_bytes: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1430,6 +1445,18 @@ fn default_dataview_primary_column_name() -> String {
 
 fn default_dataview_group_column_name() -> String {
     "Group".to_string()
+}
+
+fn default_dataview_js_timeout_seconds() -> usize {
+    5
+}
+
+fn default_dataview_js_memory_limit_bytes() -> usize {
+    16 * 1024 * 1024
+}
+
+fn default_dataview_js_max_stack_size_bytes() -> usize {
+    256 * 1024
 }
 
 pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error> {
@@ -3255,6 +3282,15 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(name) = dataview.group_column_name {
             config.dataview.group_column_name = name;
+        }
+        if let Some(timeout) = dataview.js_timeout_seconds {
+            config.dataview.js_timeout_seconds = timeout;
+        }
+        if let Some(limit) = dataview.js_memory_limit_bytes {
+            config.dataview.js_memory_limit_bytes = limit;
+        }
+        if let Some(limit) = dataview.js_max_stack_size_bytes {
+            config.dataview.js_max_stack_size_bytes = limit;
         }
     }
 

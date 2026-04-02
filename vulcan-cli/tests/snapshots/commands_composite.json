@@ -870,7 +870,7 @@
       },
       {
         "about": "Evaluate Dataview-compatible metadata and inline expressions",
-        "after_help": "Subcommands:\n  inline      evaluate Dataview inline expressions from one note\n  query       evaluate a DQL query string directly\n  eval        evaluate indexed ```dataview``` blocks from one note\n\nExamples:\n  vulcan dataview inline Dashboard\n  vulcan --output json dataview inline Projects/Alpha\n  vulcan dataview query 'TABLE status FROM \"Projects\"'\n  vulcan dataview eval Dashboard --block 0",
+        "after_help": "Subcommands:\n  inline      evaluate Dataview inline expressions from one note\n  query       evaluate a DQL query string directly\n  query-js    evaluate a DataviewJS snippet directly\n  eval        evaluate indexed ```dataview``` blocks from one note\n\nExamples:\n  vulcan dataview inline Dashboard\n  vulcan --output json dataview inline Projects/Alpha\n  vulcan dataview query 'TABLE status FROM \"Projects\"'\n  vulcan dataview query-js 'dv.current()' --file Dashboard\n  vulcan dataview eval Dashboard --block 0",
         "name": "dataview",
         "options": [],
         "subcommands": [
@@ -905,6 +905,35 @@
                 "short": null,
                 "value_names": [
                   "DQL"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Evaluate a DataviewJS snippet directly",
+            "name": "query-js",
+            "options": [
+              {
+                "help": "Quoted DataviewJS snippet",
+                "id": "js",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "JS"
+                ]
+              },
+              {
+                "help": "Optional current note path, filename, or alias for dv.current()/this",
+                "id": "file",
+                "long": "file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILE"
                 ]
               }
             ],

@@ -1,4 +1,7 @@
-use crate::CliError;
+use crate::{
+    run_dataview_eval_command, run_dataview_inline_command, run_dataview_query_command,
+    run_dataview_query_js_command, CliError,
+};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -208,7 +211,17 @@ fn route_request(
         "/" => Response::ok(json!({
             "ok": true,
             "service": "vulcan",
-            "endpoints": ["/health", "/search", "/notes", "/graph/stats", "/related"],
+            "endpoints": [
+                "/health",
+                "/search",
+                "/notes",
+                "/graph/stats",
+                "/related",
+                "/dataview/inline",
+                "/dataview/query",
+                "/dataview/query-js",
+                "/dataview/eval"
+            ],
         })),
         "/health" => {
             let state = state
@@ -290,6 +303,46 @@ fn route_request(
                 limit: parse_optional_usize(&request.query, "limit").unwrap_or(10),
             };
             match query_related_notes(paths, &query) {
+                Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
+                Err(error) => Response::error(500, error.to_string()),
+            }
+        }
+        "/dataview/inline" => {
+            let Some(file) = first_param(&request.query, "file") else {
+                return Response::error(400, "missing required query parameter: file");
+            };
+            match run_dataview_inline_command(paths, file) {
+                Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
+                Err(error) => Response::error(500, error.to_string()),
+            }
+        }
+        "/dataview/query" => {
+            let Some(dql) = first_param(&request.query, "dql") else {
+                return Response::error(400, "missing required query parameter: dql");
+            };
+            match run_dataview_query_command(paths, dql) {
+                Ok(result) => Response::ok(json!({ "ok": true, "result": result })),
+                Err(error) => Response::error(500, error.to_string()),
+            }
+        }
+        "/dataview/query-js" => {
+            let Some(js) = first_param(&request.query, "js") else {
+                return Response::error(400, "missing required query parameter: js");
+            };
+            match run_dataview_query_js_command(paths, js, first_param(&request.query, "file")) {
+                Ok(result) => Response::ok(json!({ "ok": true, "result": result })),
+                Err(error) => Response::error(500, error.to_string()),
+            }
+        }
+        "/dataview/eval" => {
+            let Some(file) = first_param(&request.query, "file") else {
+                return Response::error(400, "missing required query parameter: file");
+            };
+            match run_dataview_eval_command(
+                paths,
+                file,
+                parse_optional_usize(&request.query, "block"),
+            ) {
                 Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
                 Err(error) => Response::error(500, error.to_string()),
             }
@@ -625,6 +678,58 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["document_path"], "Upper.md");
         assert_eq!(hits[0]["matched_line"], 1);
+
+        handle.shutdown().expect("server should shut down");
+    }
+
+    #[test]
+    fn serve_exposes_dataview_endpoints() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        scan_vault(&VaultPaths::new(&vault_root), ScanMode::Full).expect("scan should succeed");
+
+        let handle = spawn_server(
+            VaultPaths::new(&vault_root),
+            ServeOptions {
+                bind: "127.0.0.1:0".to_string(),
+                watch: false,
+                debounce_ms: 50,
+                auth_token: None,
+            },
+        )
+        .expect("server should start");
+
+        let inline = get_json(handle.addr(), "/dataview/inline?file=Dashboard", None);
+        assert_eq!(inline["ok"], true);
+        assert_eq!(inline["result"]["file"], "Dashboard.md");
+        assert_eq!(inline["result"]["results"][0]["value"], "draft");
+
+        let query = get_json(
+            handle.addr(),
+            "/dataview/query?dql=TABLE%20status%20FROM%20%22Projects%22%20SORT%20file.name%20ASC",
+            None,
+        );
+        assert_eq!(query["ok"], true);
+        assert_eq!(query["result"]["query_type"], "table");
+        assert_eq!(query["result"]["result_count"], 2);
+
+        let query_js = get_json(
+            handle.addr(),
+            "/dataview/query-js?js=dv.current%28%29.status&file=Dashboard",
+            None,
+        );
+        assert_eq!(query_js["ok"], true);
+        assert_eq!(query_js["result"]["value"], "draft");
+
+        let eval = get_json(handle.addr(), "/dataview/eval?file=Dashboard", None);
+        assert_eq!(eval["ok"], true);
+        assert_eq!(eval["result"]["blocks"].as_array().map(Vec::len), Some(2));
+        assert_eq!(eval["result"]["blocks"][1]["result"]["engine"], "js");
+        assert_eq!(
+            eval["result"]["blocks"][1]["result"]["data"]["outputs"][0]["rows"],
+            serde_json::json!([["draft"]])
+        );
 
         handle.shutdown().expect("server should shut down");
     }

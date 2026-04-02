@@ -876,17 +876,24 @@ mod tests {
         let report = doctor_vault(&paths).expect("doctor should succeed");
 
         assert_eq!(report.summary.parse_failures, 1);
-        assert_eq!(report.summary.unsupported_syntax, 1);
+        assert_eq!(
+            report.summary.unsupported_syntax,
+            if cfg!(feature = "js_runtime") { 0 } else { 1 }
+        );
         assert!(report.parse_failures[0]
             .message
             .contains("Dataview block 0 at line 1 failed to parse"));
-        assert_eq!(
-            report.unsupported_syntax[0].document_path.as_deref(),
-            Some("Dashboard.md")
-        );
-        assert!(report.unsupported_syntax[0]
-            .message
-            .contains("require the `js_runtime` feature flag"));
+        if cfg!(feature = "js_runtime") {
+            assert!(report.unsupported_syntax.is_empty());
+        } else {
+            assert_eq!(
+                report.unsupported_syntax[0].document_path.as_deref(),
+                Some("Dashboard.md")
+            );
+            assert!(report.unsupported_syntax[0]
+                .message
+                .contains("require the `js_runtime` feature flag"));
+        }
     }
 
     #[test]

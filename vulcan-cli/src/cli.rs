@@ -306,12 +306,14 @@ const DATAVIEW_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   inline      evaluate Dataview inline expressions from one note
   query       evaluate a DQL query string directly
+  query-js    evaluate a DataviewJS snippet directly
   eval        evaluate indexed ```dataview``` blocks from one note
 
 Examples:
   vulcan dataview inline Dashboard
   vulcan --output json dataview inline Projects/Alpha
   vulcan dataview query 'TABLE status FROM \"Projects\"'
+  vulcan dataview query-js 'dv.current()' --file Dashboard
   vulcan dataview eval Dashboard --block 0";
 
 const TASKS_COMMAND_AFTER_HELP: &str = "\
@@ -867,6 +869,16 @@ pub enum DataviewCommand {
     Query {
         #[arg(help = "Quoted DQL query string")]
         dql: String,
+    },
+    #[command(about = "Evaluate a DataviewJS snippet directly")]
+    QueryJs {
+        #[arg(help = "Quoted DataviewJS snippet")]
+        js: String,
+        #[arg(
+            long,
+            help = "Optional current note path, filename, or alias for dv.current()/this"
+        )]
+        file: Option<String>,
     },
     #[command(about = "Evaluate indexed Dataview code blocks from one note")]
     Eval {

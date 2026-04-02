@@ -349,6 +349,49 @@ fn dataview_query_json_output_evaluates_dql_strings() {
 }
 
 #[test]
+fn dataview_query_js_json_output_evaluates_snippets() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "dataview",
+            "query-js",
+            r##"dv.list(dv.pages("#project").file.name.sort().array()); dv.execute('TABLE status FROM "Projects" SORT file.name ASC');"##,
+            "--file",
+            "Dashboard",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["outputs"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        json["outputs"][0],
+        serde_json::json!({
+            "kind": "list",
+            "items": ["Alpha", "Beta", "Dashboard"]
+        })
+    );
+    assert_eq!(json["outputs"][1]["kind"], "query");
+    assert_eq!(json["outputs"][1]["result"]["query_type"], "table");
+    assert_eq!(json["outputs"][1]["result"]["result_count"], 2);
+    assert_eq!(
+        json["value"]["query_type"],
+        Value::String("table".to_string())
+    );
+}
+
+#[test]
 fn dataview_eval_json_output_evaluates_selected_block() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -382,17 +425,18 @@ fn dataview_eval_json_output_evaluates_selected_block() {
         Value::String("dataview".to_string())
     );
     assert_eq!(json["blocks"][0]["error"], Value::Null);
-    assert_eq!(json["blocks"][0]["result"]["query_type"], "table");
+    assert_eq!(json["blocks"][0]["result"]["engine"], "dql");
+    assert_eq!(json["blocks"][0]["result"]["data"]["query_type"], "table");
     assert_eq!(
-        json["blocks"][0]["result"]["columns"],
+        json["blocks"][0]["result"]["data"]["columns"],
         serde_json::json!(["File", "status", "priority"])
     );
     assert_eq!(
-        json["blocks"][0]["result"]["result_count"],
+        json["blocks"][0]["result"]["data"]["result_count"],
         Value::Number(1.into())
     );
     assert_eq!(
-        json["blocks"][0]["result"]["rows"][0],
+        json["blocks"][0]["result"]["data"]["rows"][0],
         serde_json::json!({
             "File": "[[Projects/Alpha]]",
             "status": "active",
@@ -431,13 +475,23 @@ fn dataview_eval_json_output_defaults_to_all_indexed_blocks() {
         Value::String("dataview".to_string())
     );
     assert_eq!(json["blocks"][0]["error"], Value::Null);
+    assert_eq!(json["blocks"][0]["result"]["engine"], "dql");
     assert_eq!(
         json["blocks"][1]["language"],
         Value::String("dataviewjs".to_string())
     );
-    assert!(json["blocks"][1]["error"]
-        .as_str()
-        .is_some_and(|error| error.contains("js_runtime")));
+    assert_eq!(json["blocks"][1]["error"], Value::Null);
+    assert_eq!(json["blocks"][1]["result"]["engine"], "js");
+    assert_eq!(
+        json["blocks"][1]["result"]["data"]["outputs"],
+        serde_json::json!([
+            {
+                "kind": "table",
+                "headers": ["Status"],
+                "rows": [["draft"]]
+            }
+        ])
+    );
 }
 
 #[test]
@@ -2089,15 +2143,22 @@ fn doctor_json_output_reports_dataview_specific_issues() {
 
     assert_eq!(json["summary"]["parse_failures"], 1);
     assert_eq!(json["summary"]["type_mismatches"], 1);
-    assert_eq!(json["summary"]["unsupported_syntax"], 1);
+    assert_eq!(
+        json["summary"]["unsupported_syntax"],
+        Value::Number((if cfg!(feature = "js_runtime") { 0 } else { 1 }).into())
+    );
     assert!(json["parse_failures"][0]["message"]
         .as_str()
         .is_some_and(|message| message.contains("Dataview block 0")));
     assert_eq!(json["type_mismatches"][0]["document_path"], "Dashboard.md");
-    assert_eq!(
-        json["unsupported_syntax"][0]["document_path"],
-        "Dashboard.md"
-    );
+    if cfg!(feature = "js_runtime") {
+        assert_eq!(json["unsupported_syntax"], serde_json::json!([]));
+    } else {
+        assert_eq!(
+            json["unsupported_syntax"][0]["document_path"],
+            "Dashboard.md"
+        );
+    }
 }
 
 #[test]

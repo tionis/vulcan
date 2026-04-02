@@ -7,17 +7,20 @@ license.workspace = true
 
 [features]
 default = ["js_runtime"]
-js_runtime = []
+js_runtime = ["dep:rquickjs", "dep:rquickjs-serde"]
 
 [dependencies]
 aho-corasick = "1"
 blake3.workspace = true
+csv.workspace = true
 fs2.workspace = true
 ignore.workspace = true
 notify.workspace = true
 pulldown-cmark.workspace = true
 rayon.workspace = true
 regex.workspace = true
+rquickjs = { workspace = true, optional = true }
+rquickjs-serde = { workspace = true, optional = true }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

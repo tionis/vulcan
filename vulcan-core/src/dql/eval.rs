@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::cache::CacheDatabase;
@@ -44,7 +44,7 @@ impl From<PropertyError> for DqlEvalError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DqlQueryResult {
     pub query_type: super::DqlQueryType,
     pub columns: Vec<String>,
