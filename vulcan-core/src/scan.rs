@@ -1679,6 +1679,7 @@ fn insert_property_diagnostics(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn insert_tasks(
     transaction: &Transaction<'_>,
     document_id: &str,
@@ -1917,7 +1918,6 @@ fn extract_task_marker_token(text: &str, markers: &[&str]) -> Option<String> {
     markers.iter().find_map(|marker| {
         text.find(marker).and_then(|index| {
             text[index + marker.len()..]
-                .trim_start()
                 .split_whitespace()
                 .next()
                 .map(str::to_string)

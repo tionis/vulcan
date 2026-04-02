@@ -84,6 +84,7 @@ impl GitStatusReport {
     }
 }
 
+#[must_use]
 pub fn is_git_repo(vault_root: &Path) -> bool {
     Command::new("git")
         .arg("-C")

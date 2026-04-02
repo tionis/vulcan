@@ -801,7 +801,7 @@ fn integer_value_ms(value: &Value) -> Option<i64> {
         Value::Number(number) => number.as_i64().or_else(|| {
             let value = number.as_f64()?;
             if value.is_finite() && value.fract() == 0.0 {
-                Some(value as i64)
+                value.to_string().parse::<i64>().ok()
             } else {
                 None
             }

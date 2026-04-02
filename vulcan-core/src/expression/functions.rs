@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use blake3::Hasher;
 use regex::Regex;
 use serde_json::Value;
@@ -42,8 +44,8 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
         "all" => func_truthy_aggregate(args, ctx, TruthyAggregate::All),
         "any" => func_truthy_aggregate(args, ctx, TruthyAggregate::Any),
         "none" => func_truthy_aggregate(args, ctx, TruthyAggregate::None),
-        "lower" => func_string_map(args, ctx, |text| text.to_lowercase()),
-        "upper" => func_string_map(args, ctx, |text| text.to_uppercase()),
+        "lower" => func_string_map(args, ctx, str::to_lowercase),
+        "upper" => func_string_map(args, ctx, str::to_uppercase),
         "startswith" => func_string_predicate(args, ctx, |text, prefix| text.starts_with(prefix)),
         "endswith" => func_string_predicate(args, ctx, |text, suffix| text.ends_with(suffix)),
         "substring" => func_substring(args, ctx),
@@ -156,7 +158,6 @@ fn func_date(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
         return Ok(match (&text, &format) {
             (Value::String(text), Value::String(format)) => parse_date_with_format(text, format)
                 .map_or(Value::Null, |ms| Value::Number(ms.into())),
-            (Value::Null, _) | (_, Value::Null) => Value::Null,
             _ => Value::Null,
         });
     }
@@ -236,10 +237,10 @@ fn func_extract(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
         Value::Array(values) => Ok(Value::Array(
             values
                 .into_iter()
-                .map(|value| extract_keys(value, args, ctx))
+                .map(|value| extract_keys(&value, args, ctx))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
-        value => extract_keys(value, args, ctx),
+        value => extract_keys(&value, args, ctx),
     }
 }
 
@@ -263,7 +264,7 @@ fn func_round(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
                 return Ok(number_to_value(number.round()));
             }
 
-            let factor = 10_f64.powi(precision as i32);
+            let factor = 10_f64.powf(precision.trunc());
             Ok(number_to_value((number * factor).round() / factor))
         },
     )
@@ -347,7 +348,8 @@ fn func_hash(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let mut raw = [0_u8; 8];
     raw.copy_from_slice(&bytes.as_bytes()[..8]);
     let value = u64::from_le_bytes(raw) % 9_000_000_000_000_000;
-    Ok(Value::Number((value as i64).into()))
+    let value = i64::try_from(value).expect("bounded hash value should fit in i64");
+    Ok(Value::Number(value.into()))
 }
 
 fn func_currencyformat(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -411,7 +413,6 @@ fn func_string_predicate(
             (Value::String(haystack), Value::String(needle)) => {
                 Value::Bool(predicate(haystack, needle))
             }
-            (Value::Null, _) | (_, Value::Null) => Value::Null,
             _ => Value::Null,
         })
     })
@@ -439,7 +440,6 @@ fn func_substring(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
                     };
                     Ok(Value::String(substring_value(&text, start, Some(end))))
                 }
-                Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             },
         )
@@ -451,7 +451,6 @@ fn func_substring(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
                 };
                 Ok(Value::String(substring_value(&text, start, None)))
             }
-            Value::Null => Ok(Value::Null),
             _ => Ok(Value::Null),
         })
     }
@@ -476,7 +475,6 @@ fn func_split(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
                     };
                     Ok(Value::Array(regex_split(text, pattern, Some(limit))?))
                 }
-                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 _ => Ok(Value::Null),
             },
         )
@@ -487,7 +485,6 @@ fn func_split(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
             (Value::String(text), Value::String(pattern)) => {
                 Ok(Value::Array(regex_split(text, pattern, None)?))
             }
-            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         })
     }
@@ -508,7 +505,6 @@ fn func_replace(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
             (Value::String(text), Value::String(pattern), Value::String(replacement)) => {
                 Ok(Value::String(text.replace(pattern, replacement)))
             }
-            (Value::Null, _, _) | (_, Value::Null, _) | (_, _, Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
     )
@@ -558,7 +554,6 @@ fn func_regexreplace(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> 
                     regex.replace_all(text, replacement).into_owned(),
                 ))
             }
-            (Value::Null, _, _) | (_, Value::Null, _) | (_, _, Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
     )
@@ -583,7 +578,6 @@ fn func_truncate(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
                     };
                     Ok(Value::String(truncate_value(&text, length, &suffix)))
                 }
-                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 _ => Ok(Value::Null),
             },
         )
@@ -595,7 +589,6 @@ fn func_truncate(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
                 };
                 Ok(Value::String(truncate_value(&text, length, "...")))
             }
-            Value::Null => Ok(Value::Null),
             _ => Ok(Value::Null),
         })
     }
@@ -625,7 +618,6 @@ fn func_pad(args: &[Expr], ctx: &EvalContext, left: bool) -> Result<Value, Strin
                         left,
                     )))
                 }
-                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 _ => Ok(Value::Null),
             },
         )
@@ -642,7 +634,6 @@ fn func_pad(args: &[Expr], ctx: &EvalContext, left: bool) -> Result<Value, Strin
                     };
                     Ok(Value::String(pad_string(&text, target_length, " ", left)))
                 }
-                Value::Null => Ok(Value::Null),
                 _ => Ok(Value::Null),
             },
         )
@@ -659,7 +650,6 @@ fn func_dateformat(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
 
         match date_value_ms(&value) {
             Some(ms) => Ok(Value::String(format_date(ms, &format))),
-            None if value.is_null() => Ok(Value::Null),
             None => Ok(Value::Null),
         }
     })
@@ -686,7 +676,6 @@ fn func_striptime(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     vectorize_unary(value, &|value| {
         Ok(match date_value_ms(&value) {
             Some(ms) => Value::Number(start_of_day(ms).into()),
-            None if value.is_null() => Value::Null,
             None => Value::Null,
         })
     })
@@ -697,7 +686,6 @@ fn func_localtime(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     vectorize_unary(value, &|value| {
         Ok(match date_value_ms(&value) {
             Some(ms) => Value::Number(ms.into()),
-            None if value.is_null() => Value::Null,
             None => Value::Null,
         })
     })
@@ -709,22 +697,14 @@ fn func_embed(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
         let should_embed = eval_arg(args, 1, ctx)?;
         vectorize_binary(value, should_embed, true, true, &|value, should_embed| {
             let Value::String(text) = value else {
-                return Ok(if value.is_null() {
-                    Value::Null
-                } else {
-                    Value::Null
-                });
+                return Ok(Value::Null);
             };
 
             let Some(link) = parse_wikilink(&text) else {
                 return Ok(Value::Null);
             };
             let Value::Bool(should_embed) = should_embed else {
-                return Ok(if should_embed.is_null() {
-                    Value::Null
-                } else {
-                    Value::Null
-                });
+                return Ok(Value::Null);
             };
 
             Ok(Value::String(rebuild_link(&link, should_embed)))
@@ -732,11 +712,7 @@ fn func_embed(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     } else {
         vectorize_unary(value, &|value| {
             let Value::String(text) = value else {
-                return Ok(if value.is_null() {
-                    Value::Null
-                } else {
-                    Value::Null
-                });
+                return Ok(Value::Null);
             };
 
             let Some(link) = parse_wikilink(&text) else {
@@ -753,11 +729,7 @@ fn func_elink(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
         let display = eval_arg(args, 1, ctx)?;
         vectorize_binary(url, display, true, true, &|url, display| {
             let Value::String(url) = url else {
-                return Ok(if url.is_null() {
-                    Value::Null
-                } else {
-                    Value::Null
-                });
+                return Ok(Value::Null);
             };
             let display = match display {
                 Value::String(display) => display,
@@ -770,11 +742,7 @@ fn func_elink(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     } else {
         vectorize_unary(url, &|url| {
             let Value::String(url) = url else {
-                return Ok(if url.is_null() {
-                    Value::Null
-                } else {
-                    Value::Null
-                });
+                return Ok(Value::Null);
             };
             Ok(Value::String(format!("[{url}]({url})")))
         })
@@ -1285,7 +1253,7 @@ fn values_match(left: &Value, right: &Value) -> bool {
     compare_values(left, right) == Some(std::cmp::Ordering::Equal) || left == right
 }
 
-fn extract_keys(value: Value, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
+fn extract_keys(value: &Value, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let mut result = serde_json::Map::new();
     for key_expr in &args[1..] {
         let key = evaluate(key_expr, ctx)?;
@@ -1349,7 +1317,7 @@ fn duration_value_ms(value: &Value) -> Option<i64> {
 fn render_value(expr: Option<&Expr>, value: &Value, mode: RenderMode) -> String {
     match value {
         Value::Null => "null".to_string(),
-        Value::Bool(_) => value_to_display(value),
+        Value::Bool(_) | Value::Object(_) => value_to_display(value),
         Value::Number(number) => {
             let hint = expr.and_then(type_name_hint);
             if hint == Some("date") {
@@ -1388,7 +1356,6 @@ fn render_value(expr: Option<&Expr>, value: &Value, mode: RenderMode) -> String 
             .map(|value| render_value(None, value, mode))
             .collect::<Vec<_>>()
             .join(", "),
-        Value::Object(_) => value_to_display(value),
     }
 }
 
@@ -1401,7 +1368,6 @@ fn map_string_value(value: Value, transform: fn(&str) -> String) -> Value {
                 .map(|value| map_string_value(value, transform))
                 .collect(),
         ),
-        Value::Null => Value::Null,
         _ => Value::Null,
     }
 }
@@ -1411,7 +1377,9 @@ fn nonnegative_index_value(value: &Value) -> Option<usize> {
     if value.is_null() || number.is_nan() {
         None
     } else {
-        Some(number.max(0.0) as usize)
+        format!("{:.0}", number.max(0.0).trunc())
+            .parse::<usize>()
+            .ok()
     }
 }
 
@@ -1543,9 +1511,7 @@ fn strip_markdown_display(text: &str) -> String {
         .replace("__", "")
         .replace("~~", "")
         .replace("==", "")
-        .replace('`', "")
-        .replace('*', "")
-        .replace('_', "")
+        .replace(['`', '*', '_'], "")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -1773,7 +1739,9 @@ pub fn parse_date_like_string(s: &str) -> Option<i64> {
 #[must_use]
 pub fn parse_date_with_format(text: &str, format: &str) -> Option<i64> {
     if format == "x" || format == "X" {
-        let value = first_number_in_text(text)? as i64;
+        let value = format!("{:.0}", first_number_in_text(text)?.trunc())
+            .parse::<i64>()
+            .ok()?;
         return Some(if format == "X" { value * 1000 } else { value });
     }
 
@@ -2213,8 +2181,7 @@ fn date_format_token(format: &str) -> Option<(&'static str, usize)> {
             let width = match token {
                 "yyyy" | "YYYY" => 4,
                 "yy" | "YY" | "MM" | "dd" | "DD" | "HH" | "mm" | "ss" => 2,
-                "d" | "D" => 1,
-                "x" | "X" => 1,
+                "d" | "D" | "x" | "X" => 1,
                 _ => token.len(),
             };
             return Some((token, width));
@@ -2247,32 +2214,57 @@ pub fn format_date(ms: i64, format: &str) -> String {
     while index < format.len() {
         let remainder = &format[index..];
         if let Some((token, _)) = date_format_token(remainder) {
-            rendered.push_str(&match token {
-                "yyyy" | "YYYY" => format!("{year:04}"),
-                "yy" | "YY" => format!("{:02}", year.rem_euclid(100)),
-                "MMMM" => month_name(month).to_string(),
-                "MMM" => month_name(month)[..3].to_string(),
-                "MM" => format!("{month:02}"),
-                "dd" | "DD" => format!("{day:02}"),
-                "d" | "D" => day.to_string(),
-                "HH" => format!("{hour:02}"),
-                "mm" => format!("{minute:02}"),
-                "ss" => format!("{second:02}"),
-                "SSS" => format!("{millisecond:03}"),
-                "x" => ms.to_string(),
-                "X" => (ms / 1000).to_string(),
-                "ffff" => format!(
-                    "{}, {} {}, {} {:02}:{:02}:{:02}",
-                    weekday_name(iso_weekday(year, month, day)),
-                    month_name(month),
-                    day,
-                    year,
-                    hour,
-                    minute,
-                    second
-                ),
-                _ => token.to_string(),
-            });
+            match token {
+                "yyyy" | "YYYY" => {
+                    let _ = write!(rendered, "{year:04}");
+                }
+                "yy" | "YY" => {
+                    let _ = write!(rendered, "{:02}", year.rem_euclid(100));
+                }
+                "MMMM" => rendered.push_str(month_name(month)),
+                "MMM" => rendered.push_str(&month_name(month)[..3]),
+                "MM" => {
+                    let _ = write!(rendered, "{month:02}");
+                }
+                "dd" | "DD" => {
+                    let _ = write!(rendered, "{day:02}");
+                }
+                "d" | "D" => {
+                    let _ = write!(rendered, "{day}");
+                }
+                "HH" => {
+                    let _ = write!(rendered, "{hour:02}");
+                }
+                "mm" => {
+                    let _ = write!(rendered, "{minute:02}");
+                }
+                "ss" => {
+                    let _ = write!(rendered, "{second:02}");
+                }
+                "SSS" => {
+                    let _ = write!(rendered, "{millisecond:03}");
+                }
+                "x" => {
+                    let _ = write!(rendered, "{ms}");
+                }
+                "X" => {
+                    let _ = write!(rendered, "{}", ms / 1000);
+                }
+                "ffff" => {
+                    let _ = write!(
+                        rendered,
+                        "{}, {} {}, {} {:02}:{:02}:{:02}",
+                        weekday_name(iso_weekday(year, month, day)),
+                        month_name(month),
+                        day,
+                        year,
+                        hour,
+                        minute,
+                        second
+                    );
+                }
+                _ => rendered.push_str(token),
+            }
             index += token.len();
         } else if let Some(ch) = remainder.chars().next() {
             rendered.push(ch);
@@ -2313,7 +2305,7 @@ pub fn format_duration(ms: i64, format: &str) -> String {
     let mut chars = format.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\'' {
-            while let Some(literal) = chars.next() {
+            for literal in chars.by_ref() {
                 if literal == '\'' {
                     break;
                 }
@@ -2329,7 +2321,7 @@ pub fn format_duration(ms: i64, format: &str) -> String {
                 width += 1;
             }
             let value = values.get(&ch).copied().unwrap_or(0);
-            rendered.push_str(&format!("{value:0width$}"));
+            let _ = write!(rendered, "{value:0width$}");
         } else {
             rendered.push(ch);
         }

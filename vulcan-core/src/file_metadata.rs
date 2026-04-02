@@ -140,7 +140,8 @@ fn list_item_object(
     );
     object.insert(
         "section".to_string(),
-        section_link(&note.document_path, &item.section_heading).map_or(Value::Null, Value::String),
+        section_link(&note.document_path, item.section_heading.as_deref())
+            .map_or(Value::Null, Value::String),
     );
     object.insert(
         "link".to_string(),
@@ -260,13 +261,15 @@ fn task_fully_completed(
     if !task.completed {
         return false;
     }
-    task_children.get(task.id.as_str()).is_none_or(|children| {
-        children.iter().all(|child| {
-            task_by_id
-                .get(child.id.as_str())
-                .is_some_and(|task| task_fully_completed(task, task_by_id, task_children))
+    task_children
+        .get(task.id.as_str())
+        .map_or(true, |children| {
+            children.iter().all(|child| {
+                task_by_id
+                    .get(child.id.as_str())
+                    .is_some_and(|task| task_fully_completed(task, task_by_id, task_children))
+            })
         })
-    })
 }
 
 fn list_item_link(note: &NoteRecord, item: &NoteListItemRecord) -> String {
@@ -277,14 +280,12 @@ fn list_item_link(note: &NoteRecord, item: &NoteListItemRecord) -> String {
             block_id
         );
     }
-    section_link(&note.document_path, &item.section_heading)
+    section_link(&note.document_path, item.section_heading.as_deref())
         .unwrap_or_else(|| synthetic_file_link(&note.document_path, &note.file_ext))
 }
 
-fn section_link(path: &str, heading: &Option<String>) -> Option<String> {
-    heading
-        .as_ref()
-        .map(|heading| format!("[[{}#{}]]", note_link_target(path), heading))
+fn section_link(path: &str, heading: Option<&str>) -> Option<String> {
+    heading.map(|heading| format!("[[{}#{}]]", note_link_target(path), heading))
 }
 
 fn note_link_target(path: &str) -> &str {

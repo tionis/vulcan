@@ -599,6 +599,7 @@ fn alias_collision_groups(notes: &[NoteIdentity]) -> Vec<DuplicateGroup> {
         .collect()
 }
 
+#[allow(clippy::too_many_lines)]
 fn merge_candidates(
     notes: &[NoteIdentity],
     duplicate_titles: &[DuplicateGroup],

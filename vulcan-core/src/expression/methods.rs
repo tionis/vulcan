@@ -515,22 +515,19 @@ pub(crate) fn evaluate_callback(
         note_lookup: ctx.note_lookup,
     };
 
-    match expr {
-        Expr::Lambda(params, body) => {
-            for (index, param) in params.iter().enumerate() {
-                local_ctx.locals.insert(
-                    param.clone(),
-                    lambda_args.get(index).cloned().unwrap_or(Value::Null),
-                );
-            }
-            evaluate(body, &local_ctx)
+    if let Expr::Lambda(params, body) = expr {
+        for (index, param) in params.iter().enumerate() {
+            local_ctx.locals.insert(
+                param.clone(),
+                lambda_args.get(index).cloned().unwrap_or(Value::Null),
+            );
         }
-        _ => {
-            for (name, value) in legacy_bindings {
-                local_ctx.locals.insert((*name).to_string(), value.clone());
-            }
-            evaluate(expr, &local_ctx)
+        evaluate(body, &local_ctx)
+    } else {
+        for (name, value) in legacy_bindings {
+            local_ctx.locals.insert((*name).to_string(), value.clone());
         }
+        evaluate(expr, &local_ctx)
     }
 }
 

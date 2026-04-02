@@ -354,23 +354,20 @@ fn merge_property_json_values(
     key: String,
     mut additional_values: Vec<Value>,
 ) {
-    match merged_properties.remove(&key) {
-        Some(existing_value) => {
-            let mut values = match existing_value {
-                Value::Array(values) => values,
-                other => vec![other],
-            };
-            values.append(&mut additional_values);
-            merged_properties.insert(key, Value::Array(values));
-        }
-        None => {
-            let merged_value = if additional_values.len() == 1 {
-                additional_values.into_iter().next().unwrap_or(Value::Null)
-            } else {
-                Value::Array(additional_values)
-            };
-            merged_properties.insert(key, merged_value);
-        }
+    if let Some(existing_value) = merged_properties.remove(&key) {
+        let mut values = match existing_value {
+            Value::Array(values) => values,
+            other => vec![other],
+        };
+        values.append(&mut additional_values);
+        merged_properties.insert(key, Value::Array(values));
+    } else {
+        let merged_value = if additional_values.len() == 1 {
+            additional_values.into_iter().next().unwrap_or(Value::Null)
+        } else {
+            Value::Array(additional_values)
+        };
+        merged_properties.insert(key, merged_value);
     }
 }
 
@@ -459,8 +456,10 @@ fn parse_frontmatter_json_object(raw_yaml: &str) -> Value {
 
     serde_yaml::from_str::<serde_yaml::Value>(raw_yaml)
         .ok()
-        .map(|value| Value::Object(yaml_to_json_object(&value)))
-        .unwrap_or_else(|| Value::Object(Map::new()))
+        .map_or_else(
+            || Value::Object(Map::new()),
+            |value| Value::Object(yaml_to_json_object(&value)),
+        )
 }
 
 #[allow(clippy::too_many_lines)]
@@ -728,6 +727,7 @@ fn collect_bookmarked_paths(value: &Value, paths: &mut HashSet<String>) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn hydrate_note_records(
     connection: &rusqlite::Connection,
     config: &VaultConfig,
@@ -930,7 +930,7 @@ fn hydrate_note_records(
                         row.get(3)?,
                         row.get::<_, Option<i64>>(4)?.map(|value| value != 0),
                         row.get(5)?,
-                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(6)?.as_str(),
                     ),
                 ))
             })?;
@@ -1052,9 +1052,9 @@ fn typed_property_json_value(
     value_number: Option<f64>,
     value_bool: Option<bool>,
     value_date: Option<String>,
-    value_type: String,
+    value_type: &str,
 ) -> Value {
-    match value_type.as_str() {
+    match value_type {
         "null" => Value::Null,
         "boolean" => value_bool.map_or(Value::Null, Value::Bool),
         "number" => value_number
@@ -1773,9 +1773,11 @@ fn is_legacy_filter_field(field: &str) -> bool {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
 }
 
+type PartitionedNoteQueryFilters = (Vec<String>, Vec<(String, Expr)>);
+
 fn partition_note_query_filters(
     filters: &[String],
-) -> Result<(Vec<String>, Vec<(String, Expr)>), PropertyError> {
+) -> Result<PartitionedNoteQueryFilters, PropertyError> {
     let mut sql_filters = Vec::new();
     let mut expression_filters = Vec::new();
 
@@ -2117,14 +2119,13 @@ fn sort_key_for_note(note: &NoteRecord, sort_by: &str) -> SortKey {
         "file.ext" => SortKey::Text(note.file_ext.clone()),
         "file.mtime" => SortKey::Integer(note.file_mtime),
         key => match note.properties.get(key) {
-            Some(Value::Null) => SortKey::Null,
+            Some(Value::Null) | None => SortKey::Null,
             Some(Value::Bool(value_bool)) => SortKey::Bool(*value_bool),
             Some(Value::Number(value_number)) => {
                 SortKey::Number(value_number.as_f64().unwrap_or_default())
             }
             Some(Value::String(value_text)) => SortKey::Text(value_text.clone()),
             Some(other) => SortKey::Text(other.to_string()),
-            None => SortKey::Null,
         },
     }
 }
