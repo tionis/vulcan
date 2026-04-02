@@ -1,24 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-#[cfg(feature = "js_runtime")]
-use std::cmp::Ordering;
-
-#[cfg(feature = "js_runtime")]
-use crate::config::load_vault_config;
-#[cfg(feature = "js_runtime")]
-use crate::dql::evaluate_dql;
 use crate::dql::DqlQueryResult;
-#[cfg(feature = "js_runtime")]
-use crate::expression::eval::{compare_values, value_to_display};
-#[cfg(feature = "js_runtime")]
-use crate::expression::functions::{parse_date_like_string, parse_duration_string};
-#[cfg(feature = "js_runtime")]
-use crate::file_metadata::FileMetadataResolver;
-#[cfg(feature = "js_runtime")]
-use crate::properties::{load_note_index, NoteRecord};
-#[cfg(feature = "js_runtime")]
-use crate::resolve_note_reference;
+#[cfg(not(feature = "js_runtime"))]
 use crate::VaultPaths;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +92,8 @@ mod disabled_tests {
 
     use crate::{scan_vault, ScanMode};
 
-    use super::*;
+    use super::{evaluate_dataview_js_query, DataviewJsError};
+    use crate::VaultPaths;
 
     #[test]
     fn dataviewjs_requires_runtime_feature() {
@@ -166,7 +151,20 @@ mod runtime {
     use serde::de::DeserializeOwned;
     use serde::Serialize;
 
-    use super::*;
+    use super::{DataviewJsError, DataviewJsOutput, DataviewJsResult};
+    use crate::config::load_vault_config;
+    use crate::dql::{evaluate_dql, DqlQueryResult};
+    use crate::expression::eval::{compare_values, value_to_display};
+    use crate::expression::functions::{
+        format_date, format_duration, link_meta_value, parse_date_like_string,
+        parse_duration_string,
+    };
+    use crate::file_metadata::FileMetadataResolver;
+    use crate::properties::{load_note_index, NoteRecord};
+    use crate::resolve_note_reference;
+    use crate::VaultPaths;
+    use serde_json::{Map, Value};
+    use std::cmp::Ordering;
 
     #[derive(Debug)]
     struct JsEvalState {
@@ -463,6 +461,483 @@ function __vulcanMarkdownEscape(value) {
   return String(value).replace(/\|/g, "\\|");
 }
 
+function __vulcanWrapLike(template, values) {
+  return template instanceof DataArray ? new DataArray(values) : values;
+}
+
+function __vulcanToNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function __vulcanTruthy(value) {
+  if (value instanceof DataArray) {
+    return value.values.length > 0;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  return !!value;
+}
+
+function __vulcanDateMillis(value) {
+  if (value instanceof VulcanDateTime) {
+    return value.toMillis();
+  }
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const millis = __vulcan_date_millis(value);
+    return millis == null ? null : millis;
+  }
+  return null;
+}
+
+function __vulcanDurationMillis(value) {
+  if (value instanceof VulcanDuration) {
+    return value.toMillis();
+  }
+  if (value && typeof value === "object" && value.__vulcanDuration === true) {
+    return typeof value.millis === "number" ? value.millis : null;
+  }
+  if (value && typeof value === "object" && typeof value.millis === "number") {
+    return value.millis;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const millis = __vulcan_duration_millis(value);
+    return millis == null ? null : millis;
+  }
+  return null;
+}
+
+function __vulcanVectorizeUnary(value, mapper) {
+  if (value instanceof DataArray) {
+    return new DataArray(value.values.map((item) => __vulcanVectorizeUnary(item, mapper)));
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => __vulcanVectorizeUnary(item, mapper));
+  }
+  return mapper(value);
+}
+
+function __vulcanVectorizeBinary(left, right, mapper, options = {}) {
+  const { leftVector = true, rightVector = true } = options;
+  if (leftVector && left instanceof DataArray) {
+    return new DataArray(
+      left.values.map((item) =>
+        __vulcanVectorizeBinary(item, right, mapper, options)
+      )
+    );
+  }
+  if (leftVector && Array.isArray(left)) {
+    return left.map((item) => __vulcanVectorizeBinary(item, right, mapper, options));
+  }
+  if (rightVector && right instanceof DataArray) {
+    return new DataArray(
+      right.values.map((item) =>
+        __vulcanVectorizeBinary(left, item, mapper, options)
+      )
+    );
+  }
+  if (rightVector && Array.isArray(right)) {
+    return right.map((item) => __vulcanVectorizeBinary(left, item, mapper, options));
+  }
+  return mapper(left, right);
+}
+
+function __vulcanVectorizeTernary(first, second, third, mapper, options = {}) {
+  const {
+    firstVector = true,
+    secondVector = true,
+    thirdVector = true,
+  } = options;
+  if (firstVector && first instanceof DataArray) {
+    return new DataArray(
+      first.values.map((item) =>
+        __vulcanVectorizeTernary(item, second, third, mapper, options)
+      )
+    );
+  }
+  if (firstVector && Array.isArray(first)) {
+    return first.map((item) =>
+      __vulcanVectorizeTernary(item, second, third, mapper, options)
+    );
+  }
+  if (secondVector && second instanceof DataArray) {
+    return new DataArray(
+      second.values.map((item) =>
+        __vulcanVectorizeTernary(first, item, third, mapper, options)
+      )
+    );
+  }
+  if (secondVector && Array.isArray(second)) {
+    return second.map((item) =>
+      __vulcanVectorizeTernary(first, item, third, mapper, options)
+    );
+  }
+  if (thirdVector && third instanceof DataArray) {
+    return new DataArray(
+      third.values.map((item) =>
+        __vulcanVectorizeTernary(first, second, item, mapper, options)
+      )
+    );
+  }
+  if (thirdVector && Array.isArray(third)) {
+    return third.map((item) =>
+      __vulcanVectorizeTernary(first, second, item, mapper, options)
+    );
+  }
+  return mapper(first, second, third);
+}
+
+function __vulcanEscapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function __vulcanRegex(value) {
+  if (value instanceof RegExp) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const literal = value.match(/^\/(.*)\/([a-z]*)$/i);
+  if (literal) {
+    try {
+      return new RegExp(literal[1], literal[2]);
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return new RegExp(value);
+  } catch {
+    return null;
+  }
+}
+
+function __vulcanTypeName(value) {
+  if (value instanceof DataArray) {
+    return "array";
+  }
+  if (value instanceof VulcanDuration) {
+    return "duration";
+  }
+  if (value instanceof VulcanDateTime || value instanceof Date) {
+    return "date";
+  }
+  if (typeof value === "string" && /^!?\[\[[^\]]+\]\]$/.test(value.trim())) {
+    return "link";
+  }
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  if (typeof value === "boolean") {
+    return "boolean";
+  }
+  if (typeof value === "number") {
+    return "number";
+  }
+  if (typeof value === "string") {
+    return "string";
+  }
+  if (typeof value === "object") {
+    return "object";
+  }
+  return typeof value;
+}
+
+function __vulcanMeta(value) {
+  return JSON.parse(__vulcan_link_meta_json(__vulcanSerialize(value)));
+}
+
+function __vulcanContains(haystack, needle, { insensitive = false, exact = false } = {}) {
+  if (haystack instanceof DataArray) {
+    return haystack.values.some((item) =>
+      __vulcanContains(item, needle, { insensitive, exact })
+    );
+  }
+  if (Array.isArray(haystack)) {
+    return haystack.some((item) =>
+      exact
+        ? dv.equal(item, needle)
+        : __vulcanContains(item, needle, { insensitive, exact })
+    );
+  }
+  if (haystack && typeof haystack === "object") {
+    return Object.values(haystack).some((item) =>
+      __vulcanContains(item, needle, { insensitive, exact })
+    );
+  }
+  if (typeof haystack === "string") {
+    const left = insensitive ? haystack.toLowerCase() : haystack;
+    const rightText = __vulcanRenderScalar(needle);
+    const right = insensitive ? rightText.toLowerCase() : rightText;
+    return left.includes(right);
+  }
+  return dv.equal(haystack, needle);
+}
+
+function __vulcanExtreme(values, pickMax) {
+  const items = values.flatMap(__vulcanAsArray);
+  if (items.length === 0) {
+    return null;
+  }
+  return items.reduce((best, item) => {
+    if (best === null) {
+      return item;
+    }
+    return (pickMax ? dv.compare(item, best) > 0 : dv.compare(item, best) < 0)
+      ? item
+      : best;
+  }, null);
+}
+
+function __vulcanReduceOperator(left, right, operand) {
+  const leftNumber = __vulcanToNumber(left);
+  const rightNumber = __vulcanToNumber(right);
+  switch (operand) {
+    case "+":
+      if (leftNumber != null && rightNumber != null) {
+        return leftNumber + rightNumber;
+      }
+      return `${__vulcanRenderScalar(left)}${__vulcanRenderScalar(right)}`;
+    case "-":
+      return leftNumber == null || rightNumber == null ? null : leftNumber - rightNumber;
+    case "*":
+      return leftNumber == null || rightNumber == null ? null : leftNumber * rightNumber;
+    case "/":
+      return leftNumber == null || rightNumber == null || rightNumber === 0
+        ? null
+        : leftNumber / rightNumber;
+    case "%":
+      return leftNumber == null || rightNumber == null || rightNumber === 0
+        ? null
+        : leftNumber % rightNumber;
+    default:
+      return null;
+  }
+}
+
+class VulcanDateTime {
+  constructor(date) {
+    this._date = new Date(date.getTime());
+  }
+
+  static now() {
+    return new VulcanDateTime(new Date());
+  }
+
+  static fromISO(value) {
+    const millis = __vulcan_date_millis(String(value));
+    return millis == null ? null : new VulcanDateTime(new Date(millis));
+  }
+
+  static fromMillis(value) {
+    return new VulcanDateTime(new Date(Number(value)));
+  }
+
+  static fromJSDate(value) {
+    return new VulcanDateTime(value instanceof Date ? value : new Date(Number(value)));
+  }
+
+  static fromObject(value = {}) {
+    const date = new Date(
+      Date.UTC(
+        Number(value.year ?? 1970),
+        Number((value.month ?? 1) - 1),
+        Number(value.day ?? 1),
+        Number(value.hour ?? 0),
+        Number(value.minute ?? 0),
+        Number(value.second ?? 0),
+        Number(value.millisecond ?? value.milliseconds ?? 0)
+      )
+    );
+    return new VulcanDateTime(date);
+  }
+
+  toISO() {
+    return this._date.toISOString();
+  }
+
+  toMillis() {
+    return this._date.getTime();
+  }
+
+  toJSDate() {
+    return new Date(this._date.getTime());
+  }
+
+  toFormat(format) {
+    return __vulcan_format_date(this.toMillis(), String(format));
+  }
+
+  plus(value) {
+    const millis = __vulcanDurationMillis(value);
+    return new VulcanDateTime(new Date(this.toMillis() + (millis ?? 0)));
+  }
+
+  minus(value) {
+    const millis = __vulcanDurationMillis(value);
+    return new VulcanDateTime(new Date(this.toMillis() - (millis ?? 0)));
+  }
+
+  startOf(unit) {
+    const date = this.toJSDate();
+    const normalized = String(unit).toLowerCase();
+    if (normalized === "day") {
+      date.setUTCHours(0, 0, 0, 0);
+    } else if (normalized === "month") {
+      date.setUTCDate(1);
+      date.setUTCHours(0, 0, 0, 0);
+    } else if (normalized === "year") {
+      date.setUTCMonth(0, 1);
+      date.setUTCHours(0, 0, 0, 0);
+    } else if (normalized === "week") {
+      const weekday = (date.getUTCDay() + 6) % 7;
+      date.setUTCDate(date.getUTCDate() - weekday);
+      date.setUTCHours(0, 0, 0, 0);
+    }
+    return new VulcanDateTime(date);
+  }
+
+  endOf(unit) {
+    const normalized = String(unit).toLowerCase();
+    const start = this.startOf(unit);
+    if (normalized === "day") {
+      return start.plus(VulcanDuration.fromObject({ days: 1 })).minus(1);
+    }
+    if (normalized === "month") {
+      const date = start.toJSDate();
+      date.setUTCMonth(date.getUTCMonth() + 1);
+      return new VulcanDateTime(date).minus(1);
+    }
+    if (normalized === "year") {
+      const date = start.toJSDate();
+      date.setUTCFullYear(date.getUTCFullYear() + 1);
+      return new VulcanDateTime(date).minus(1);
+    }
+    if (normalized === "week") {
+      return start.plus(VulcanDuration.fromObject({ weeks: 1 })).minus(1);
+    }
+    return start;
+  }
+
+  set(value = {}) {
+    const date = this.toJSDate();
+    if (value.year != null) date.setUTCFullYear(Number(value.year));
+    if (value.month != null) date.setUTCMonth(Number(value.month) - 1);
+    if (value.day != null) date.setUTCDate(Number(value.day));
+    if (value.hour != null) date.setUTCHours(Number(value.hour));
+    if (value.minute != null) date.setUTCMinutes(Number(value.minute));
+    if (value.second != null) date.setUTCSeconds(Number(value.second));
+    if (value.millisecond != null || value.milliseconds != null) {
+      date.setUTCMilliseconds(Number(value.millisecond ?? value.milliseconds));
+    }
+    return new VulcanDateTime(date);
+  }
+
+  get year() {
+    return this._date.getUTCFullYear();
+  }
+
+  get month() {
+    return this._date.getUTCMonth() + 1;
+  }
+
+  get day() {
+    return this._date.getUTCDate();
+  }
+
+  get hour() {
+    return this._date.getUTCHours();
+  }
+
+  get minute() {
+    return this._date.getUTCMinutes();
+  }
+
+  get second() {
+    return this._date.getUTCSeconds();
+  }
+
+  get millisecond() {
+    return this._date.getUTCMilliseconds();
+  }
+
+  get weekday() {
+    return ((this._date.getUTCDay() + 6) % 7) + 1;
+  }
+}
+
+class VulcanDuration {
+  constructor(millis, text) {
+    this.__vulcanDuration = true;
+    this.millis = Number(millis) || 0;
+    this.text = text ?? `${this.millis}ms`;
+  }
+
+  static fromMillis(value) {
+    return new VulcanDuration(Number(value) || 0, `${Number(value) || 0}ms`);
+  }
+
+  static fromISO(value) {
+    const millis = __vulcan_duration_millis(String(value));
+    return millis == null ? null : new VulcanDuration(millis, String(value));
+  }
+
+  static fromObject(value = {}) {
+    const millis =
+      Number(value.millisecond ?? value.milliseconds ?? 0) +
+      Number(value.second ?? value.seconds ?? 0) * 1000 +
+      Number(value.minute ?? value.minutes ?? 0) * 60 * 1000 +
+      Number(value.hour ?? value.hours ?? 0) * 60 * 60 * 1000 +
+      Number(value.day ?? value.days ?? 0) * 24 * 60 * 60 * 1000 +
+      Number(value.week ?? value.weeks ?? 0) * 7 * 24 * 60 * 60 * 1000 +
+      Number(value.month ?? value.months ?? 0) * 30 * 24 * 60 * 60 * 1000 +
+      Number(value.year ?? value.years ?? 0) * 365 * 24 * 60 * 60 * 1000;
+    return new VulcanDuration(millis);
+  }
+
+  toMillis() {
+    return this.millis;
+  }
+
+  toFormat(format) {
+    return __vulcan_format_duration(this.millis, String(format));
+  }
+
+  plus(value) {
+    const millis = __vulcanDurationMillis(value);
+    return new VulcanDuration(this.millis + (millis ?? 0));
+  }
+
+  minus(value) {
+    const millis = __vulcanDurationMillis(value);
+    return new VulcanDuration(this.millis - (millis ?? 0));
+  }
+
+  toString() {
+    return this.text;
+  }
+}
+
 function __vulcanRenderQueryMarkdown(result) {
   if (!result) {
     return "";
@@ -520,6 +995,560 @@ function __vulcanRenderQueryMarkdown(result) {
   }
   return JSON.stringify(result);
 }
+
+function buildDvFunctions(dv) {
+  return {
+    date: dv.date,
+    dur: dv.duration,
+    duration: dv.duration,
+    number(value) {
+      return __vulcanVectorizeUnary(value, (item) => {
+        if (item == null) {
+          return null;
+        }
+        return __vulcanToNumber(item);
+      });
+    },
+    string(value) {
+      return __vulcanVectorizeUnary(value, (item) =>
+        item == null ? null : __vulcanRenderScalar(item)
+      );
+    },
+    link(path, display) {
+      if (path == null) {
+        return null;
+      }
+      return display == null
+        ? `[[${String(path)}]]`
+        : `[[${String(path)}|${String(display)}]]`;
+    },
+    embed(value, shouldEmbed = true) {
+      if (typeof value !== "string") {
+        return null;
+      }
+      const trimmed = value.trim();
+      if (!/^!?\[\[[^\]]+\]\]$/.test(trimmed)) {
+        return null;
+      }
+      return shouldEmbed
+        ? trimmed.startsWith("!") ? trimmed : `!${trimmed}`
+        : trimmed.startsWith("!") ? trimmed.slice(1) : trimmed;
+    },
+    elink(url, display) {
+      if (url == null) {
+        return null;
+      }
+      const target = String(url);
+      return `[${display == null ? target : String(display)}](${target})`;
+    },
+    typeof(value) {
+      return __vulcanVectorizeUnary(value, __vulcanTypeName);
+    },
+    object(...args) {
+      const output = {};
+      for (let index = 0; index < args.length; index += 2) {
+        output[String(args[index])] = index + 1 < args.length ? args[index + 1] : null;
+      }
+      return output;
+    },
+    list(...args) {
+      return args.length === 1 && (args[0] instanceof DataArray || Array.isArray(args[0]))
+        ? __vulcanAsArray(args[0])
+        : args;
+    },
+    round(value, digits = 0) {
+      return __vulcanVectorizeBinary(
+        value,
+        digits,
+        (item, precision) => {
+          const number = __vulcanToNumber(item);
+          const decimals = __vulcanToNumber(precision) ?? 0;
+          if (number == null) {
+            return null;
+          }
+          const factor = 10 ** decimals;
+          return Math.round(number * factor) / factor;
+        },
+        { rightVector: false }
+      );
+    },
+    trunc(value) {
+      return __vulcanVectorizeUnary(value, (item) => {
+        const number = __vulcanToNumber(item);
+        return number == null ? null : Math.trunc(number);
+      });
+    },
+    floor(value) {
+      return __vulcanVectorizeUnary(value, (item) => {
+        const number = __vulcanToNumber(item);
+        return number == null ? null : Math.floor(number);
+      });
+    },
+    ceil(value) {
+      return __vulcanVectorizeUnary(value, (item) => {
+        const number = __vulcanToNumber(item);
+        return number == null ? null : Math.ceil(number);
+      });
+    },
+    min(...values) {
+      return __vulcanExtreme(values, false);
+    },
+    max(...values) {
+      return __vulcanExtreme(values, true);
+    },
+    sum(values) {
+      return __vulcanAsArray(values).reduce((total, item) => {
+        const number = __vulcanToNumber(item);
+        return number == null ? total : total + number;
+      }, 0);
+    },
+    product(values) {
+      return __vulcanAsArray(values).reduce((total, item) => {
+        const number = __vulcanToNumber(item);
+        return number == null ? total : total * number;
+      }, 1);
+    },
+    average(values) {
+      const numbers = __vulcanAsArray(values)
+        .map(__vulcanToNumber)
+        .filter((item) => item != null);
+      if (numbers.length === 0) {
+        return null;
+      }
+      return numbers.reduce((total, item) => total + item, 0) / numbers.length;
+    },
+    reduce(values, reducer) {
+      const items = __vulcanAsArray(values);
+      if (items.length === 0) {
+        return null;
+      }
+      return items.slice(1).reduce((accumulator, item) => {
+        if (typeof reducer === "function") {
+          return reducer(accumulator, item);
+        }
+        return __vulcanReduceOperator(accumulator, item, String(reducer));
+      }, items[0]);
+    },
+    minby(values, callback) {
+      return __vulcanAsArray(values).reduce((best, item) => {
+        if (best === null) {
+          return item;
+        }
+        return dv.compare(callback(item), callback(best)) < 0 ? item : best;
+      }, null);
+    },
+    maxby(values, callback) {
+      return __vulcanAsArray(values).reduce((best, item) => {
+        if (best === null) {
+          return item;
+        }
+        return dv.compare(callback(item), callback(best)) > 0 ? item : best;
+      }, null);
+    },
+    length(value) {
+      if (value instanceof DataArray) {
+        return value.length;
+      }
+      if (Array.isArray(value)) {
+        return value.length;
+      }
+      if (typeof value === "string") {
+        return value.length;
+      }
+      if (value && typeof value === "object") {
+        return Object.keys(value).length;
+      }
+      return value == null ? 0 : null;
+    },
+    sort(value) {
+      const items = [...__vulcanAsArray(value)];
+      items.sort((left, right) => __vulcanCompareForSort(left, right, "asc"));
+      return __vulcanWrapLike(value, items);
+    },
+    reverse(value) {
+      return __vulcanWrapLike(value, [...__vulcanAsArray(value)].reverse());
+    },
+    unique(value) {
+      const seen = new Set();
+      const unique = [];
+      for (const item of __vulcanAsArray(value)) {
+        const serialized = JSON.stringify(__vulcanPlain(item));
+        if (!seen.has(serialized)) {
+          seen.add(serialized);
+          unique.push(item);
+        }
+      }
+      return __vulcanWrapLike(value, unique);
+    },
+    flat(value, depth = 1) {
+      return __vulcanWrapLike(value, __vulcanAsArray(value).flat(Number(depth ?? 1)));
+    },
+    slice(value, start, end) {
+      return __vulcanWrapLike(value, __vulcanAsArray(value).slice(start, end));
+    },
+    nonnull(value) {
+      return __vulcanWrapLike(
+        value,
+        __vulcanAsArray(value).filter((item) => item != null)
+      );
+    },
+    firstvalue(value) {
+      return __vulcanAsArray(value).find((item) => item != null) ?? null;
+    },
+    contains(haystack, needle) {
+      return __vulcanVectorizeBinary(
+        haystack,
+        needle,
+        (left, right) => __vulcanContains(left, right),
+        { rightVector: false }
+      );
+    },
+    icontains(haystack, needle) {
+      return __vulcanVectorizeBinary(
+        haystack,
+        needle,
+        (left, right) => __vulcanContains(left, right, { insensitive: true }),
+        { rightVector: false }
+      );
+    },
+    econtains(haystack, needle) {
+      return __vulcanVectorizeBinary(
+        haystack,
+        needle,
+        (left, right) => __vulcanContains(left, right, { exact: true }),
+        { rightVector: false }
+      );
+    },
+    containsword(value, needle) {
+      return __vulcanVectorizeBinary(
+        value,
+        needle,
+        (text, word) => {
+          if (typeof text !== "string" || word == null) {
+            return null;
+          }
+          const regex = new RegExp(`\\b${__vulcanEscapeRegExp(word)}\\b`, "i");
+          return regex.test(text);
+        },
+        { rightVector: false }
+      );
+    },
+    all(values, predicate) {
+      const items = __vulcanAsArray(values);
+      return predicate
+        ? items.every((item, index) => __vulcanTruthy(predicate(item, index)))
+        : items.every(__vulcanTruthy);
+    },
+    any(values, predicate) {
+      const items = __vulcanAsArray(values);
+      return predicate
+        ? items.some((item, index) => __vulcanTruthy(predicate(item, index)))
+        : items.some(__vulcanTruthy);
+    },
+    none(values, predicate) {
+      return !this.any(values, predicate);
+    },
+    filter(values, predicate) {
+      return __vulcanWrapLike(
+        values,
+        __vulcanAsArray(values).filter((item, index) => predicate(item, index))
+      );
+    },
+    map(values, predicate) {
+      return __vulcanWrapLike(
+        values,
+        __vulcanAsArray(values).map((item, index) => predicate(item, index))
+      );
+    },
+    join(values, separator = ", ") {
+      return __vulcanAsArray(values).map(__vulcanRenderScalar).join(separator);
+    },
+    lower(value) {
+      return __vulcanVectorizeUnary(value, (item) =>
+        typeof item === "string" ? item.toLowerCase() : item == null ? null : null
+      );
+    },
+    upper(value) {
+      return __vulcanVectorizeUnary(value, (item) =>
+        typeof item === "string" ? item.toUpperCase() : item == null ? null : null
+      );
+    },
+    startswith(value, prefix) {
+      return __vulcanVectorizeBinary(
+        value,
+        prefix,
+        (text, needle) =>
+          typeof text === "string" && typeof needle === "string"
+            ? text.startsWith(needle)
+            : text == null || needle == null ? null : null,
+        { rightVector: false }
+      );
+    },
+    endswith(value, suffix) {
+      return __vulcanVectorizeBinary(
+        value,
+        suffix,
+        (text, needle) =>
+          typeof text === "string" && typeof needle === "string"
+            ? text.endsWith(needle)
+            : text == null || needle == null ? null : null,
+        { rightVector: false }
+      );
+    },
+    substring(value, start, end) {
+      return __vulcanVectorizeTernary(
+        value,
+        start,
+        end,
+        (text, startIndex, endIndex) => {
+          if (typeof text !== "string") {
+            return text == null ? null : null;
+          }
+          return text.substring(
+            Number(startIndex ?? 0),
+            endIndex == null ? undefined : Number(endIndex)
+          );
+        },
+        { secondVector: false, thirdVector: false }
+      );
+    },
+    split(value, delimiter, limit) {
+      return __vulcanVectorizeTernary(
+        value,
+        delimiter,
+        limit,
+        (text, needle, maxParts) => {
+          if (typeof text !== "string" || needle == null) {
+            return text == null ? null : null;
+          }
+          const parts = text.split(String(needle));
+          return maxParts == null ? parts : parts.slice(0, Number(maxParts));
+        },
+        { secondVector: false, thirdVector: false }
+      );
+    },
+    replace(value, pattern, replacement) {
+      return __vulcanVectorizeTernary(
+        value,
+        pattern,
+        replacement,
+        (text, needle, output) => {
+          if (typeof text !== "string" || needle == null || output == null) {
+            return text == null ? null : null;
+          }
+          return text.replaceAll(String(needle), String(output));
+        },
+        { secondVector: false, thirdVector: false }
+      );
+    },
+    regextest(pattern, value) {
+      return __vulcanVectorizeBinary(
+        pattern,
+        value,
+        (regexSource, text) => {
+          if (typeof text !== "string") {
+            return text == null ? null : null;
+          }
+          const regex = __vulcanRegex(regexSource);
+          return regex == null ? null : regex.test(text);
+        },
+        { leftVector: false }
+      );
+    },
+    regexmatch(pattern, value) {
+      return __vulcanVectorizeBinary(
+        pattern,
+        value,
+        (regexSource, text) => {
+          if (typeof text !== "string") {
+            return text == null ? null : null;
+          }
+          const regex = __vulcanRegex(regexSource);
+          const match = regex == null ? null : text.match(regex);
+          return match == null ? null : Array.from(match);
+        },
+        { leftVector: false }
+      );
+    },
+    regexreplace(value, pattern, replacement) {
+      return __vulcanVectorizeTernary(
+        value,
+        pattern,
+        replacement,
+        (text, regexSource, output) => {
+          if (typeof text !== "string" || output == null) {
+            return text == null ? null : null;
+          }
+          const regex = __vulcanRegex(regexSource);
+          return regex == null ? null : text.replace(regex, String(output));
+        },
+        { secondVector: false, thirdVector: false }
+      );
+    },
+    truncate(value, length, suffix = "...") {
+      return __vulcanVectorizeTernary(
+        value,
+        length,
+        suffix,
+        (text, maxLength, textSuffix) => {
+          if (typeof text !== "string") {
+            return text == null ? null : null;
+          }
+          const targetLength = Number(maxLength);
+          if (!Number.isFinite(targetLength) || targetLength < 0) {
+            return null;
+          }
+          return text.length <= targetLength
+            ? text
+            : `${text.slice(0, targetLength)}${textSuffix == null ? "" : String(textSuffix)}`;
+        },
+        { secondVector: false, thirdVector: false }
+      );
+    },
+    padleft(value, length, padding = " ") {
+      return __vulcanVectorizeTernary(
+        value,
+        length,
+        padding,
+        (text, targetLength, fill) => {
+          if (typeof text !== "string") {
+            return text == null ? null : null;
+          }
+          return text.padStart(Number(targetLength), String(fill ?? " "));
+        },
+        { secondVector: false, thirdVector: false }
+      );
+    },
+    padright(value, length, padding = " ") {
+      return __vulcanVectorizeTernary(
+        value,
+        length,
+        padding,
+        (text, targetLength, fill) => {
+          if (typeof text !== "string") {
+            return text == null ? null : null;
+          }
+          return text.padEnd(Number(targetLength), String(fill ?? " "));
+        },
+        { secondVector: false, thirdVector: false }
+      );
+    },
+    extract(value, ...keys) {
+      const extractKeys = (item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          return null;
+        }
+        const output = {};
+        for (const key of keys) {
+          const normalized = String(key);
+          if (Object.prototype.hasOwnProperty.call(item, normalized)) {
+            output[normalized] = item[normalized];
+          }
+        }
+        return output;
+      };
+      return __vulcanVectorizeUnary(value, extractKeys);
+    },
+    dateformat(value, format) {
+      return __vulcanVectorizeBinary(
+        value,
+        format,
+        (item, textFormat) => {
+          const millis = __vulcanDateMillis(item);
+          return millis == null || textFormat == null
+            ? null
+            : __vulcan_format_date(millis, String(textFormat));
+        },
+        { rightVector: false }
+      );
+    },
+    durationformat(value, format) {
+      return __vulcanVectorizeBinary(
+        value,
+        format,
+        (item, textFormat) => {
+          const millis = __vulcanDurationMillis(item);
+          return millis == null || textFormat == null
+            ? null
+            : __vulcan_format_duration(millis, String(textFormat));
+        },
+        { rightVector: false }
+      );
+    },
+    striptime(value) {
+      return __vulcanVectorizeUnary(value, (item) => {
+        const millis = __vulcanDateMillis(item);
+        return millis == null ? null : new Date(new Date(millis).setUTCHours(0, 0, 0, 0));
+      });
+    },
+    localtime(value) {
+      return value;
+    },
+    default(value, fallback) {
+      return __vulcanVectorizeBinary(
+        value,
+        fallback,
+        (item, replacement) => item == null ? replacement : item,
+        { rightVector: false }
+      );
+    },
+    ldefault(value, fallback) {
+      return value == null ? fallback : value;
+    },
+    choice(condition, left, right) {
+      return __vulcanVectorizeTernary(
+        condition,
+        left,
+        right,
+        (predicate, leftValue, rightValue) =>
+          __vulcanTruthy(predicate) ? leftValue : rightValue,
+        { secondVector: false, thirdVector: false }
+      );
+    },
+    display(value) {
+      return __vulcanVectorizeUnary(value, (item) =>
+        item == null ? null : __vulcanRenderScalar(item)
+      );
+    },
+    hash(seed, text = "", variant = 0) {
+      const input = `${seed}|${text}|${variant}`;
+      let hash = 2166136261;
+      for (const character of input) {
+        hash ^= character.charCodeAt(0);
+        hash = Math.imul(hash, 16777619);
+      }
+      return `00000000${(hash >>> 0).toString(16)}`.slice(-8);
+    },
+    currencyformat(value, currency = "USD") {
+      return __vulcanVectorizeBinary(
+        value,
+        currency,
+        (item, code) => {
+          const number = __vulcanToNumber(item);
+          if (number == null || code == null) {
+            return null;
+          }
+          try {
+            return new Intl.NumberFormat(undefined, {
+              style: "currency",
+              currency: String(code),
+            }).format(number);
+          } catch {
+            return null;
+          }
+        },
+        { rightVector: false }
+      );
+    },
+    meta(value) {
+      return __vulcanVectorizeUnary(value, (item) =>
+        item == null ? null : __vulcanMeta(item)
+      );
+    },
+  };
+}
+
+const __vulcanPrivateEval = globalThis.eval;
 
 const dv = {
   pages(source) {
@@ -601,7 +1630,7 @@ const dv = {
     const previousInput = globalThis.input;
     try {
       globalThis.input = input ?? null;
-      return eval(source);
+      return __vulcanPrivateEval(source);
     } finally {
       globalThis.input = previousInput;
     }
@@ -638,12 +1667,18 @@ const dv = {
   clone(value) {
     return JSON.parse(__vulcanSerialize(value));
   },
-  func: {},
-  luxon: {},
+  func: null,
+  luxon: {
+    DateTime: VulcanDateTime,
+    Duration: VulcanDuration,
+  },
 };
 
+dv.func = buildDvFunctions(dv);
 globalThis.dv = dv;
 globalThis.this = dv.current();
+globalThis.eval = undefined;
+globalThis.Function = undefined;
 "#;
 
     pub fn evaluate_dataview_js(
@@ -681,23 +1716,23 @@ globalThis.this = dv.current();
             install_dataview_globals(ctx.clone(), Arc::clone(&state), Arc::clone(&outputs))?;
             ctx.eval::<(), _>(DATAVIEW_JS_PRELUDE)
                 .catch(&ctx)
-                .map_err(|error| map_caught_runtime_error(error, timeout_seconds))?;
+                .map_err(|error| map_caught_runtime_error(&error, timeout_seconds))?;
             let value: JsValue<'_> = ctx
                 .eval(source)
                 .catch(&ctx)
-                .map_err(|error| map_caught_runtime_error(error, timeout_seconds))?;
+                .map_err(|error| map_caught_runtime_error(&error, timeout_seconds))?;
             if value.is_undefined() {
                 Ok(None)
             } else {
-                let serializer: rquickjs::Function<'_> = ctx
-                    .globals()
-                    .get("__vulcanSerialize")
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                let serialized: String = serializer
+                let serialize_fn: rquickjs::Function<'_> =
+                    ctx.globals()
+                        .get("__vulcanSerialize")
+                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                let serialized_json: String = serialize_fn
                     .call((value,))
                     .catch(&ctx)
-                    .map_err(|error| map_caught_runtime_error(error, timeout_seconds))?;
-                serde_json::from_str(&serialized)
+                    .map_err(|error| map_caught_runtime_error(&error, timeout_seconds))?;
+                serde_json::from_str(&serialized_json)
                     .map(Some)
                     .map_err(|error| DataviewJsError::Message(error.to_string()))
             }
@@ -725,6 +1760,7 @@ globalThis.this = dv.current();
         evaluate_dataview_js(paths, source, current_file)
     }
 
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
     fn install_dataview_globals(
         ctx: Ctx<'_>,
         state: Arc<JsEvalState>,
@@ -767,15 +1803,19 @@ globalThis.this = dv.current();
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
-        let page_state = Arc::clone(&state);
+        let single_page_state = Arc::clone(&state);
         globals
             .set(
                 "__vulcan_page_json",
                 Func::from(move |ctx: Ctx<'_>, path: String| {
                     to_json_string(
                         &ctx,
-                        page_object_by_reference(&page_state.paths, &page_state.note_index, &path)
-                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                        page_object_by_reference(
+                            &single_page_state.paths,
+                            &single_page_state.note_index,
+                            &path,
+                        )
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                     )
                 }),
             )
@@ -947,6 +1987,36 @@ globalThis.this = dv.current();
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
+        globals
+            .set(
+                "__vulcan_format_date",
+                Func::from(move |ctx: Ctx<'_>, millis: i64, format: String| {
+                    let _ = ctx;
+                    Ok::<String, rquickjs::Error>(format_date(millis, &format))
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        globals
+            .set(
+                "__vulcan_format_duration",
+                Func::from(move |ctx: Ctx<'_>, millis: i64, format: String| {
+                    let _ = ctx;
+                    Ok::<String, rquickjs::Error>(format_duration(millis, &format))
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        globals
+            .set(
+                "__vulcan_link_meta_json",
+                Func::from(move |ctx: Ctx<'_>, value_json: String| {
+                    let value: Value = parse_json_string(&ctx, &value_json)?;
+                    to_json_string(&ctx, link_meta_value(&value))
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
         Ok(())
     }
 
@@ -999,9 +2069,7 @@ globalThis.this = dv.current();
     ) -> Result<Value, DataviewJsError> {
         let resolved = resolve_note_reference(paths, file)
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        Ok(note_by_path(note_index, &resolved.path)
-            .map(page_object)
-            .unwrap_or(Value::Null))
+        Ok(note_by_path(note_index, &resolved.path).map_or(Value::Null, page_object))
     }
 
     fn note_by_path<'a>(
@@ -1135,7 +2203,7 @@ globalThis.this = dv.current();
         }
     }
 
-    fn map_runtime_message(message: String, timeout_seconds: usize) -> DataviewJsError {
+    fn map_runtime_message(message: &str, timeout_seconds: usize) -> DataviewJsError {
         if message.to_ascii_lowercase().contains("interrupted") {
             DataviewJsError::Message(format!(
                 "DataviewJS execution timed out after {timeout_seconds} second(s)"
@@ -1145,8 +2213,11 @@ globalThis.this = dv.current();
         }
     }
 
-    fn map_caught_runtime_error(error: CaughtError<'_>, timeout_seconds: usize) -> DataviewJsError {
-        map_runtime_message(error.to_string(), timeout_seconds)
+    fn map_caught_runtime_error(
+        error: &CaughtError<'_>,
+        timeout_seconds: usize,
+    ) -> DataviewJsError {
+        map_runtime_message(&error.to_string(), timeout_seconds)
     }
 
     fn drain_pending_jobs(
@@ -1157,7 +2228,7 @@ globalThis.this = dv.current();
             runtime.execute_pending_job().map_err(|error| {
                 error.0.with(|ctx| {
                     map_caught_runtime_error(
-                        CaughtError::from_error(&ctx, rquickjs::Error::Exception),
+                        &CaughtError::from_error(&ctx, rquickjs::Error::Exception),
                         timeout_seconds,
                     )
                 })
@@ -1412,7 +2483,15 @@ globalThis.this = dv.current();
 
             let result = evaluate_dataview_js_query(
                 &paths,
-                r#"dv.paragraph(typeof fetch === "undefined" ? "no-fetch" : "fetch")"#,
+                r#"
+                dv.paragraph(
+                  [
+                    typeof fetch === "undefined" ? "no-fetch" : "fetch",
+                    typeof eval === "undefined" ? "no-eval" : "eval",
+                    typeof Function === "undefined" ? "no-function" : "function"
+                  ].join(", ")
+                )
+                "#,
                 Some("Dashboard.md"),
             )
             .expect("DataviewJS should evaluate");
@@ -1420,9 +2499,64 @@ globalThis.this = dv.current();
             assert_eq!(
                 result.outputs,
                 vec![DataviewJsOutput::Paragraph {
-                    text: "no-fetch".to_string(),
+                    text: "no-fetch, no-eval, no-function".to_string(),
                 }]
             );
+        }
+
+        #[test]
+        fn dataviewjs_supports_dv_func_and_luxon_helpers() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const dt = dv.luxon.DateTime.fromISO("2026-04-03").plus(
+                  dv.luxon.Duration.fromObject({ days: 2 })
+                );
+                const lowered = dv.func.lower(["ALPHA", "BETA"]).join(", ");
+                const ownerPath = dv.func.meta(dv.func.link("People/Bob")).path;
+                dv.table(
+                  ["lowered", "contains", "formatted", "owner", "plus"],
+                  [[
+                    lowered,
+                    dv.func.contains("Release notes", "notes"),
+                    dv.func.dateformat(dv.date("2026-04-03"), "yyyy-MM-dd"),
+                    ownerPath,
+                    dt.toFormat("yyyy-MM-dd")
+                  ]]
+                );
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            assert_eq!(result.outputs.len(), 1);
+            match &result.outputs[0] {
+                DataviewJsOutput::Table { headers, rows } => {
+                    assert_eq!(
+                        headers,
+                        &vec![
+                            "lowered".to_string(),
+                            "contains".to_string(),
+                            "formatted".to_string(),
+                            "owner".to_string(),
+                            "plus".to_string(),
+                        ]
+                    );
+                    assert_eq!(rows.len(), 1);
+                    assert_eq!(rows[0][0], Value::String("alpha, beta".to_string()));
+                    assert_eq!(rows[0][1], Value::Bool(true));
+                    assert_eq!(rows[0][2], Value::String("2026-04-03".to_string()));
+                    assert_eq!(rows[0][3], Value::String("People/Bob".to_string()));
+                    assert_eq!(rows[0][4], Value::String("2026-04-05".to_string()));
+                }
+                other => panic!("expected table output, got {other:?}"),
+            }
         }
 
         fn copy_fixture_vault(name: &str, destination: &Path) {

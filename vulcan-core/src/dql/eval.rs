@@ -1322,6 +1322,48 @@ FLATTEN plain"#,
     }
 
     #[test]
+    fn fixture_queries_cover_tags_regex_date_math_and_missing_links() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let tags = evaluate_dql(
+            &paths,
+            r#"TABLE WITHOUT ID file.name AS page
+FROM #project/list"#,
+            None,
+        )
+        .expect("tag expansion query should evaluate");
+
+        assert_eq!(
+            tags.rows,
+            vec![serde_json::json!({ "page": "Dashboard" })]
+        );
+
+        let computed = evaluate_dql(
+            &paths,
+            r#"TABLE WITHOUT ID
+regexreplace(owner, "\[\[(.+)\]\]", "$1") AS owner_path,
+dateformat(date("2026-04-03") - dur("1d"), "yyyy-MM-dd") AS previous_day,
+[[Missing Person]].role AS missing_role
+FROM "Dashboard""#,
+            None,
+        )
+        .expect("computed query should evaluate");
+
+        assert_eq!(
+            computed.rows,
+            vec![serde_json::json!({
+                "owner_path": "People/Bob",
+                "previous_day": "2026-04-02",
+                "missing_role": Value::Null,
+            })]
+        );
+    }
+
+    #[test]
     fn respects_configured_primary_and_group_column_names() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");

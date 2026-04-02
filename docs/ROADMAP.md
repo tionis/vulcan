@@ -1346,7 +1346,7 @@ Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript
 **JS runtime integration (behind `js_runtime` feature):**
 - [x] Add `js_runtime` feature flag to `vulcan-core/Cargo.toml` and `vulcan-cli/Cargo.toml`
 - [x] Embed JS runtime: rquickjs (QuickJS) — chosen for binary size (~300KB vs ~15MB Boa vs ~40MB V8), sub-millisecond startup, built-in sandboxing primitives (`set_memory_limit()`, `set_max_stack_size()`, `set_interrupt_handler()`), and ES2023 compliance. See 9.18.5 for the full JS runtime design including REPL, vault API, and sandbox levels.
-- [ ] Sandbox constraints: no filesystem access, no network access, no `eval` of external scripts
+- [x] Sandbox constraints: no filesystem access, no network access, no `eval` of external scripts
 - [x] Execution timeout: configurable via `.vulcan/config.toml` (default 5 seconds per block)
 - [x] Memory limit: cap JS heap allocation via `Runtime::set_memory_limit()` to prevent runaway scripts
 
@@ -1378,8 +1378,8 @@ Evaluate `` ```dataviewjs `` code blocks using an embedded, sandboxed JavaScript
 - [x] `dv.date(input)`, `dv.duration(input)` — type constructors matching DQL semantics
 - [x] `dv.compare(a, b)`, `dv.equal(a, b)` — Dataview comparison/equality semantics
 - [x] `dv.clone(value)` — deep clone a value
-- [ ] `dv.func.*` — namespace exposing all DQL built-in functions (e.g., `dv.func.contains()`)
-- [ ] `dv.luxon` — expose date/time library API (Luxon-compatible or Vulcan equivalent)
+- [x] `dv.func.*` — namespace exposing all DQL built-in functions (e.g., `dv.func.contains()`)
+- [x] `dv.luxon` — expose date/time library API (Luxon-compatible or Vulcan equivalent)
 
 **DataArray implementation:**
 - [x] DataArray wraps query results with chainable methods: `.where(pred)`, `.filter(pred)`, `.map(fn)`, `.flatMap(fn)`, `.sort(key, [dir])`, `.groupBy(key)`, `.unique()`, `.distinct()`, `.limit(n)`, `.slice(start, [end])`, `.concat(other)`, `.indexOf(value)`, `.find(pred)`, `.findIndex(pred)`, `.includes(value)`, `.join(sep)`, `.every(pred)`, `.some(pred)`, `.none(pred)`
@@ -1414,11 +1414,11 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 
 - [x] **Search:** DQL code blocks and inline expressions are stored as metadata but excluded from FTS content indexing (they are queries, not prose). Inline field *values* are included in FTS.
 - [x] **Doctor:** Report notes with DQL blocks that fail to parse. Report inline fields with type inconsistencies against the property catalog. Report DataviewJS blocks (diagnosed when feature not compiled in).
-- [ ] **Browse TUI:** Notes with DQL blocks could show evaluated query results in a detail pane (future enhancement, not required for initial implementation).
+- [-] **Browse TUI:** Notes with DQL blocks could show evaluated query results in a detail pane (future enhancement, not required for initial implementation).
 - [x] **HTTP API:** Single-vault serve mode exposes structured Dataview endpoints: `GET /dataview/query`, `GET /dataview/query-js`, `GET /dataview/eval`, and `GET /dataview/inline`.
 - [x] **Property queries:** Inline fields and `file.*` fields are queryable via the existing `--where` filter surface. `vulcan notes --where "due < date(today)"` finds notes where the `due` inline field is in the past. `vulcan notes --where "file.size > 10000"` finds large notes.
 - [x] **Bases interop:** Bases views and DQL queries share the same expression evaluation engine and filter primitives. A Bases view and a DQL TABLE query with equivalent logic should produce identical results.
-- [ ] **Dataview test vault:** `tests/fixtures/vaults/dataview/` must exercise all features: inline fields (all variants, type inference, formatting edge cases), list items (plain and task, nested), `file.*` metadata access (including `file.day`, `file.tags` subtag expansion), DQL queries (TABLE, LIST, TASK, CALENDAR), GROUP BY (with null keys, computed expressions), FLATTEN (with non-array expressions, sequential composition), inline expressions (with configurable prefix), function calls (including vectorization, regex functions in WHERE), link indexing (`[[Note]].field` including missing targets), date/duration arithmetic, null ordering, Tasks plugin emoji shorthand, and DataviewJS blocks (evaluated when feature is compiled in, diagnosed otherwise).
+- [x] **Dataview test vault:** `tests/fixtures/vaults/dataview/` must exercise all features: inline fields (all variants, type inference, formatting edge cases), list items (plain and task, nested), `file.*` metadata access (including `file.day`, `file.tags` subtag expansion), DQL queries (TABLE, LIST, TASK, CALENDAR), GROUP BY (with null keys, computed expressions), FLATTEN (with non-array expressions, sequential composition), inline expressions (with configurable prefix), function calls (including vectorization, regex functions in WHERE), link indexing (`[[Note]].field` including missing targets), date/duration arithmetic, null ordering, Tasks plugin emoji shorthand, and DataviewJS blocks (evaluated when feature is compiled in, diagnosed otherwise).
 
 #### 9.8 Recommended implementation order
 
