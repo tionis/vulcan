@@ -103,19 +103,7 @@ pub fn evaluate_parsed_dql(
         match command {
             DqlDataCommand::From(_) => {}
             DqlDataCommand::Where(expr) => {
-                let mut filtered = Vec::with_capacity(rows.len());
-                for row in rows {
-                    let value = row.evaluate(expr, &note_lookup).map_err(|error| {
-                        DqlEvalError::Message(format!(
-                            "failed to evaluate WHERE for {}: {error}",
-                            row.note.document_path
-                        ))
-                    })?;
-                    if is_truthy(&value) {
-                        filtered.push(row);
-                    }
-                }
-                rows = filtered;
+                rows = apply_where(rows, expr, query, &note_lookup)?;
             }
             DqlDataCommand::Sort(keys) => {
                 let mut decorated = Vec::with_capacity(rows.len());
@@ -232,6 +220,8 @@ struct ExecutionRow {
     fields: Map<String, Value>,
     ordinal: i64,
     kind: RowKind,
+    task_id: Option<String>,
+    parent_task_id: Option<String>,
 }
 
 impl ExecutionRow {
@@ -245,16 +235,25 @@ impl ExecutionRow {
                 .unwrap_or_else(Map::new),
             ordinal: 0,
             kind: RowKind::Page,
+            task_id: None,
+            parent_task_id: None,
         }
     }
 
-    fn task(note: &NoteRecord, fields: Map<String, Value>) -> Self {
+    fn task(
+        note: &NoteRecord,
+        task_id: String,
+        parent_task_id: Option<String>,
+        fields: Map<String, Value>,
+    ) -> Self {
         let ordinal = fields.get("line").and_then(Value::as_i64).unwrap_or(0);
         Self {
             note: note.clone(),
             fields,
             ordinal,
             kind: RowKind::Task,
+            task_id: Some(task_id),
+            parent_task_id,
         }
     }
 
@@ -264,6 +263,8 @@ impl ExecutionRow {
             fields,
             ordinal,
             kind: RowKind::Group,
+            task_id: None,
+            parent_task_id: None,
         }
     }
 
@@ -337,13 +338,93 @@ fn task_rows_for_note(note: &NoteRecord) -> Vec<ExecutionRow> {
     match FileMetadataResolver::field(note, "tasks") {
         Value::Array(tasks) => tasks
             .into_iter()
-            .filter_map(|task| match task {
-                Value::Object(fields) => Some(ExecutionRow::task(note, fields)),
+            .zip(note.tasks.iter())
+            .filter_map(|(task, record)| match task {
+                Value::Object(fields) => Some(ExecutionRow::task(
+                    note,
+                    record.id.clone(),
+                    record.parent_task_id.clone(),
+                    fields,
+                )),
                 _ => None,
             })
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn apply_where(
+    rows: Vec<ExecutionRow>,
+    expr: &crate::expression::ast::Expr,
+    query: &DqlQuery,
+    note_lookup: &HashMap<String, NoteRecord>,
+) -> Result<Vec<ExecutionRow>, DqlEvalError> {
+    let mut decorated = Vec::with_capacity(rows.len());
+    let mut directly_matched_task_ids = HashSet::new();
+
+    for row in rows {
+        let value = row.evaluate(expr, note_lookup).map_err(|error| {
+            DqlEvalError::Message(format!(
+                "failed to evaluate WHERE for {}: {error}",
+                row.note.document_path
+            ))
+        })?;
+        let matched = is_truthy(&value);
+        if matched && query.query_type == super::DqlQueryType::Task {
+            if let Some(task_id) = row.task_id.as_ref() {
+                directly_matched_task_ids.insert(task_id.clone());
+            }
+        }
+        decorated.push((matched, row));
+    }
+
+    if query.query_type != super::DqlQueryType::Task || directly_matched_task_ids.is_empty() {
+        return Ok(decorated
+            .into_iter()
+            .filter_map(|(matched, row)| matched.then_some(row))
+            .collect());
+    }
+
+    let descendant_task_ids = descendant_task_ids(&decorated, &directly_matched_task_ids);
+    Ok(decorated
+        .into_iter()
+        .filter_map(|(matched, row)| {
+            if matched {
+                return Some(row);
+            }
+            row.task_id
+                .as_ref()
+                .is_some_and(|task_id| descendant_task_ids.contains(task_id))
+                .then_some(row)
+        })
+        .collect())
+}
+
+fn descendant_task_ids(rows: &[(bool, ExecutionRow)], roots: &HashSet<String>) -> HashSet<String> {
+    let mut children_by_parent = HashMap::<&str, Vec<&str>>::new();
+    for (_, row) in rows {
+        if let (Some(task_id), Some(parent_task_id)) =
+            (row.task_id.as_deref(), row.parent_task_id.as_deref())
+        {
+            children_by_parent
+                .entry(parent_task_id)
+                .or_default()
+                .push(task_id);
+        }
+    }
+
+    let mut included = HashSet::new();
+    let mut stack = roots.iter().map(String::as_str).collect::<Vec<_>>();
+    while let Some(task_id) = stack.pop() {
+        if let Some(children) = children_by_parent.get(task_id) {
+            for child in children {
+                if included.insert((*child).to_string()) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    included
 }
 
 fn source_paths(
@@ -353,15 +434,19 @@ fn source_paths(
     all_notes: &[NoteRecord],
 ) -> Result<HashSet<String>, DqlEvalError> {
     Ok(match source {
-        super::DqlSourceExpr::Tag(tag) => all_notes
-            .iter()
-            .filter(|note| {
-                note.tags
-                    .iter()
-                    .any(|candidate| candidate == tag || candidate.starts_with(&format!("{tag}/")))
-            })
-            .map(|note| note.document_path.clone())
-            .collect(),
+        super::DqlSourceExpr::Tag(tag) => {
+            let normalized_tag = tag.strip_prefix('#').unwrap_or(tag.as_str());
+            all_notes
+                .iter()
+                .filter(|note| {
+                    note.tags.iter().any(|candidate| {
+                        candidate == normalized_tag
+                            || candidate.starts_with(&format!("{normalized_tag}/"))
+                    })
+                })
+                .map(|note| note.document_path.clone())
+                .collect()
+        }
         super::DqlSourceExpr::Path(path) => all_notes
             .iter()
             .filter(|note| matches_path_source(note, path, all_notes))
@@ -994,6 +1079,40 @@ WHERE [[People/Bob]].role = "editor""#,
     }
 
     #[test]
+    fn from_tag_sources_include_subtags() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should be created");
+        fs::write(
+            vault_root.join("Projects/Alpha.md"),
+            "Tag #project/subtag\n",
+        )
+        .expect("alpha note should be written");
+        fs::write(vault_root.join("Projects/Beta.md"), "Tag #project\n")
+            .expect("beta note should be written");
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let result = evaluate_dql(
+            &paths,
+            r#"TABLE WITHOUT ID file.path AS path
+FROM #project
+SORT path ASC"#,
+            None,
+        )
+        .expect("DQL should evaluate");
+
+        assert_eq!(
+            result.rows,
+            vec![
+                serde_json::json!({ "path": "Projects/Alpha.md" }),
+                serde_json::json!({ "path": "Projects/Beta.md" }),
+            ]
+        );
+    }
+
+    #[test]
     fn evaluates_task_queries_using_inherited_page_fields() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -1032,6 +1151,35 @@ SORT due ASC"#,
         assert_eq!(
             result.rows[0]["path"],
             Value::String("Projects/Alpha.md".to_string())
+        );
+    }
+
+    #[test]
+    fn task_queries_include_child_tasks_when_parent_matches() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let result = evaluate_dql(
+            &paths,
+            r#"TASK
+FROM "Dashboard"
+WHERE text = "Write docs [due:: 2026-04-01]""#,
+            None,
+        )
+        .expect("DQL should evaluate");
+
+        assert_eq!(result.query_type, super::super::DqlQueryType::Task);
+        assert_eq!(result.result_count, 2);
+        assert_eq!(
+            result.rows[0]["text"],
+            Value::String("Write docs [due:: 2026-04-01]".to_string())
+        );
+        assert_eq!(
+            result.rows[1]["text"],
+            Value::String("Ship release [owner:: [[People/Bob]]]".to_string())
         );
     }
 

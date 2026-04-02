@@ -1,3 +1,4 @@
+use crate::dql::parse_dql;
 use crate::maintenance::{repair_fts, RepairFtsQuery};
 use crate::scan::discover_relative_paths;
 use crate::{initialize_vault, VaultPaths};
@@ -69,6 +70,8 @@ pub struct DoctorReport {
     pub ambiguous_links: Vec<DoctorLinkIssue>,
     pub broken_embeds: Vec<DoctorLinkIssue>,
     pub parse_failures: Vec<DoctorDiagnosticIssue>,
+    pub type_mismatches: Vec<DoctorDiagnosticIssue>,
+    pub unsupported_syntax: Vec<DoctorDiagnosticIssue>,
     pub stale_index_rows: Vec<String>,
     pub missing_index_rows: Vec<String>,
     pub orphan_notes: Vec<String>,
@@ -82,6 +85,8 @@ pub struct DoctorSummary {
     pub ambiguous_links: usize,
     pub broken_embeds: usize,
     pub parse_failures: usize,
+    pub type_mismatches: usize,
+    pub unsupported_syntax: usize,
     pub stale_index_rows: usize,
     pub missing_index_rows: usize,
     pub orphan_notes: usize,
@@ -155,7 +160,15 @@ pub fn doctor_vault(paths: &VaultPaths) -> Result<DoctorReport, DoctorError> {
         .map(|document| (document.id.clone(), document.path.clone()))
         .collect::<HashMap<_, _>>();
     let reconciliation = reconcile_paths(&indexed_documents, &on_disk_paths);
-    let sections = classify_diagnostics(load_diagnostics(&connection)?, &path_by_id);
+    let mut sections = classify_diagnostics(load_diagnostics(&connection)?, &path_by_id);
+    sections
+        .parse_failures
+        .extend(load_dataview_parse_failures(&connection)?);
+    sections.parse_failures.sort_by(|left, right| {
+        left.document_path
+            .cmp(&right.document_path)
+            .then(left.message.cmp(&right.message))
+    });
     let orphan_notes = load_orphan_notes(&connection, &indexed_documents, &reconciliation.on_disk)?;
     let broken_embeds = load_broken_embeds(&connection)?;
     let orphan_assets =
@@ -166,6 +179,8 @@ pub fn doctor_vault(paths: &VaultPaths) -> Result<DoctorReport, DoctorError> {
         sections.ambiguous_links,
         broken_embeds,
         sections.parse_failures,
+        sections.type_mismatches,
+        sections.unsupported_syntax,
         reconciliation.stale_index_rows,
         reconciliation.missing_index_rows,
         orphan_notes,
@@ -219,6 +234,8 @@ pub fn doctor_fix(paths: &VaultPaths, dry_run: bool) -> Result<DoctorFixReport, 
 
 fn empty_report(on_disk_paths: BTreeSet<String>) -> DoctorReport {
     DoctorReport::new(
+        Vec::new(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -280,6 +297,18 @@ fn fix_suggestions(summary: &DoctorSummary) -> Vec<String> {
                 .to_string(),
         );
     }
+    if summary.type_mismatches > 0 {
+        suggestions.push(
+            "Normalize conflicting property types so Dataview-style comparisons stay predictable."
+                .to_string(),
+        );
+    }
+    if summary.unsupported_syntax > 0 {
+        suggestions.push(
+            "Review unsupported syntax warnings; some DataviewJS or comment-contained content will not evaluate."
+                .to_string(),
+        );
+    }
     if summary.html_links > 0 {
         suggestions.push("Convert raw HTML links to Markdown or wikilinks if they should participate in the graph.".to_string());
     }
@@ -306,6 +335,8 @@ impl DoctorReport {
         ambiguous_links: Vec<DoctorLinkIssue>,
         broken_embeds: Vec<DoctorLinkIssue>,
         parse_failures: Vec<DoctorDiagnosticIssue>,
+        type_mismatches: Vec<DoctorDiagnosticIssue>,
+        unsupported_syntax: Vec<DoctorDiagnosticIssue>,
         stale_index_rows: Vec<String>,
         missing_index_rows: Vec<String>,
         orphan_notes: Vec<String>,
@@ -318,6 +349,8 @@ impl DoctorReport {
                 ambiguous_links: ambiguous_links.len(),
                 broken_embeds: broken_embeds.len(),
                 parse_failures: parse_failures.len(),
+                type_mismatches: type_mismatches.len(),
+                unsupported_syntax: unsupported_syntax.len(),
                 stale_index_rows: stale_index_rows.len(),
                 missing_index_rows: missing_index_rows.len(),
                 orphan_notes: orphan_notes.len(),
@@ -328,6 +361,8 @@ impl DoctorReport {
             ambiguous_links,
             broken_embeds,
             parse_failures,
+            type_mismatches,
+            unsupported_syntax,
             stale_index_rows,
             missing_index_rows,
             orphan_notes,
@@ -539,6 +574,8 @@ struct DiagnosticSections {
     unresolved_links: Vec<DoctorLinkIssue>,
     ambiguous_links: Vec<DoctorLinkIssue>,
     parse_failures: Vec<DoctorDiagnosticIssue>,
+    type_mismatches: Vec<DoctorDiagnosticIssue>,
+    unsupported_syntax: Vec<DoctorDiagnosticIssue>,
     html_links: Vec<DoctorDiagnosticIssue>,
 }
 
@@ -550,6 +587,8 @@ fn classify_diagnostics(
         unresolved_links: Vec::new(),
         ambiguous_links: Vec::new(),
         parse_failures: Vec::new(),
+        type_mismatches: Vec::new(),
+        unsupported_syntax: Vec::new(),
         html_links: Vec::new(),
     };
 
@@ -565,6 +604,11 @@ fn classify_diagnostics(
                 message: diagnostic.message,
                 byte_range: detail_byte_range(detail.as_ref()),
             }),
+            "type_mismatch" => sections.type_mismatches.push(DoctorDiagnosticIssue {
+                document_path: diagnostic.document_path,
+                message: diagnostic.message,
+                byte_range: detail_byte_range(detail.as_ref()),
+            }),
             "unsupported_syntax" if diagnostic.message.contains("HTML link detected") => {
                 sections.html_links.push(DoctorDiagnosticIssue {
                     document_path: diagnostic.document_path,
@@ -572,6 +616,11 @@ fn classify_diagnostics(
                     byte_range: detail_byte_range(detail.as_ref()),
                 });
             }
+            "unsupported_syntax" => sections.unsupported_syntax.push(DoctorDiagnosticIssue {
+                document_path: diagnostic.document_path,
+                message: diagnostic.message,
+                byte_range: detail_byte_range(detail.as_ref()),
+            }),
             _ => {}
         }
     }
@@ -589,6 +638,16 @@ fn classify_diagnostics(
             .then(left.message.cmp(&right.message))
     });
     sections.parse_failures.sort_by(|left, right| {
+        left.document_path
+            .cmp(&right.document_path)
+            .then(left.message.cmp(&right.message))
+    });
+    sections.type_mismatches.sort_by(|left, right| {
+        left.document_path
+            .cmp(&right.document_path)
+            .then(left.message.cmp(&right.message))
+    });
+    sections.unsupported_syntax.sort_by(|left, right| {
         left.document_path
             .cmp(&right.document_path)
             .then(left.message.cmp(&right.message))
@@ -672,6 +731,43 @@ fn detail_byte_range(detail: Option<&Value>) -> Option<DoctorByteRange> {
     })
 }
 
+fn load_dataview_parse_failures(
+    connection: &Connection,
+) -> Result<Vec<DoctorDiagnosticIssue>, DoctorError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT documents.path, dataview_blocks.block_index, dataview_blocks.line_number, dataview_blocks.raw_text
+        FROM dataview_blocks
+        JOIN documents ON documents.id = dataview_blocks.document_id
+        WHERE dataview_blocks.language = 'dataview'
+        ORDER BY documents.path, dataview_blocks.block_index
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+
+    let mut failures = Vec::new();
+    for row in rows {
+        let (document_path, block_index, line_number, raw_text) = row?;
+        if let Err(error) = parse_dql(&raw_text) {
+            failures.push(DoctorDiagnosticIssue {
+                document_path: Some(document_path),
+                message: format!(
+                    "Dataview block {block_index} at line {line_number} failed to parse: {error}"
+                ),
+                byte_range: None,
+            });
+        }
+    }
+    Ok(failures)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,6 +793,8 @@ mod tests {
                 ambiguous_links: 0,
                 broken_embeds: 0,
                 parse_failures: 0,
+                type_mismatches: 0,
+                unsupported_syntax: 0,
                 stale_index_rows: 0,
                 missing_index_rows: 0,
                 orphan_notes: 0,
@@ -724,6 +822,8 @@ mod tests {
                     ambiguous_links: 0,
                     broken_embeds: 0,
                     parse_failures: 0,
+                    type_mismatches: 0,
+                    unsupported_syntax: 0,
                     stale_index_rows: 0,
                     missing_index_rows: 0,
                     orphan_notes: 0,
@@ -751,6 +851,67 @@ mod tests {
             report.parse_failures[0].document_path.as_deref(),
             Some("Broken.md")
         );
+    }
+
+    #[test]
+    fn doctor_reports_dataview_parse_failures_and_unsupported_syntax() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should be created");
+        fs::write(
+            vault_root.join("Dashboard.md"),
+            concat!(
+                "```dataview\n",
+                "TABLE FROM\n",
+                "```\n\n",
+                "```dataviewjs\n",
+                "dv.current()\n",
+                "```\n",
+            ),
+        )
+        .expect("note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = doctor_vault(&paths).expect("doctor should succeed");
+
+        assert_eq!(report.summary.parse_failures, 1);
+        assert_eq!(report.summary.unsupported_syntax, 1);
+        assert!(report.parse_failures[0]
+            .message
+            .contains("Dataview block 0 at line 1 failed to parse"));
+        assert_eq!(
+            report.unsupported_syntax[0].document_path.as_deref(),
+            Some("Dashboard.md")
+        );
+        assert!(report.unsupported_syntax[0]
+            .message
+            .contains("require the `js_runtime` feature flag"));
+    }
+
+    #[test]
+    fn doctor_reports_property_type_mismatches() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/types.json"),
+            "{\n  \"priority\": \"number\"\n}\n",
+        )
+        .expect("types config should be written");
+        fs::write(vault_root.join("Dashboard.md"), "priority:: high\n")
+            .expect("note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = doctor_vault(&paths).expect("doctor should succeed");
+
+        assert_eq!(report.summary.type_mismatches, 1);
+        assert_eq!(
+            report.type_mismatches[0].document_path.as_deref(),
+            Some("Dashboard.md")
+        );
+        assert!(report.type_mismatches[0].message.contains("priority"));
     }
 
     #[test]

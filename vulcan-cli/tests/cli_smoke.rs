@@ -389,7 +389,15 @@ fn dataview_eval_json_output_evaluates_selected_block() {
     );
     assert_eq!(
         json["blocks"][0]["result"]["result_count"],
-        Value::Number(0.into())
+        Value::Number(1.into())
+    );
+    assert_eq!(
+        json["blocks"][0]["result"]["rows"][0],
+        serde_json::json!({
+            "File": "[[Projects/Alpha]]",
+            "status": "active",
+            "priority": 1.0
+        })
     );
 }
 
@@ -458,7 +466,8 @@ fn dataview_eval_human_output_keeps_empty_table_headers() {
         .expect("stdout should be valid utf-8");
 
     assert!(stdout.contains("File | status | priority"));
-    assert!(stdout.contains("0 result(s)"));
+    assert!(stdout.contains("[[Projects/Alpha]] | active | 1"));
+    assert!(stdout.contains("1 result(s)"));
 }
 
 fn write_tasks_cli_fixture(vault_root: &Path) {
@@ -2036,6 +2045,59 @@ fn doctor_json_output_reports_broken_frontmatter_vault() {
 
     assert_eq!(json["summary"]["parse_failures"], 1);
     assert_eq!(json["parse_failures"][0]["document_path"], "Broken.md");
+}
+
+#[test]
+fn doctor_json_output_reports_dataview_specific_issues() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/types.json"),
+        "{\n  \"priority\": \"number\"\n}\n",
+    )
+    .expect("types config should be written");
+    fs::write(
+        vault_root.join("Dashboard.md"),
+        concat!(
+            "priority:: high\n\n",
+            "```dataview\n",
+            "TABLE FROM\n",
+            "```\n\n",
+            "```dataviewjs\n",
+            "dv.current()\n",
+            "```\n",
+        ),
+    )
+    .expect("note should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "doctor",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["summary"]["parse_failures"], 1);
+    assert_eq!(json["summary"]["type_mismatches"], 1);
+    assert_eq!(json["summary"]["unsupported_syntax"], 1);
+    assert!(json["parse_failures"][0]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("Dataview block 0")));
+    assert_eq!(json["type_mismatches"][0]["document_path"], "Dashboard.md");
+    assert_eq!(
+        json["unsupported_syntax"][0]["document_path"],
+        "Dashboard.md"
+    );
 }
 
 #[test]

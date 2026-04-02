@@ -706,4 +706,15 @@ LIMIT 3"##,
             ]
         );
     }
+
+    #[test]
+    fn reports_malformed_queries_as_errors() {
+        let missing_table_columns =
+            parse_dql("TABLE FROM #project").expect_err("missing TABLE columns should fail");
+        assert!(missing_table_columns.contains("TABLE queries require at least one column"));
+
+        let malformed_from =
+            parse_dql("LIST FROM (#project OR)").expect_err("malformed FROM clause should fail");
+        assert!(malformed_from.contains("expected source expression"));
+    }
 }

@@ -3110,6 +3110,8 @@ fn doctor_summary_has_issues(summary: &vulcan_core::DoctorSummary) -> bool {
         || summary.ambiguous_links > 0
         || summary.broken_embeds > 0
         || summary.parse_failures > 0
+        || summary.type_mismatches > 0
+        || summary.unsupported_syntax > 0
         || summary.stale_index_rows > 0
         || summary.missing_index_rows > 0
         || summary.orphan_notes > 0
@@ -6088,6 +6090,11 @@ fn print_doctor_report(
             );
             println!("- broken embeds: {}", report.summary.broken_embeds);
             println!("- parse failures: {}", report.summary.parse_failures);
+            println!("- type mismatches: {}", report.summary.type_mismatches);
+            println!(
+                "- unsupported syntax: {}",
+                report.summary.unsupported_syntax
+            );
             println!("- stale index rows: {}", report.summary.stale_index_rows);
             println!(
                 "- missing index rows: {}",
@@ -6106,6 +6113,8 @@ fn print_doctor_report(
             print_link_section("Ambiguous link targets", &report.ambiguous_links);
             print_link_section("Broken embeds", &report.broken_embeds);
             print_diagnostic_section("Parse failures", &report.parse_failures);
+            print_diagnostic_section("Type mismatches", &report.type_mismatches);
+            print_diagnostic_section("Unsupported syntax", &report.unsupported_syntax);
             print_path_section("Stale index rows", &report.stale_index_rows);
             print_path_section("Missing index rows", &report.missing_index_rows);
             print_path_section("Orphan notes", &report.orphan_notes);
@@ -7265,10 +7274,12 @@ fn print_automation_run_report(
             }
             if let Some(summary) = report.doctor_issues.as_ref() {
                 println!(
-                    "- doctor: unresolved={}, ambiguous={}, parse_failures={}, stale={}, missing={}",
+                    "- doctor: unresolved={}, ambiguous={}, parse_failures={}, type_mismatches={}, unsupported_syntax={}, stale={}, missing={}",
                     summary.unresolved_links,
                     summary.ambiguous_links,
                     summary.parse_failures,
+                    summary.type_mismatches,
+                    summary.unsupported_syntax,
                     summary.stale_index_rows,
                     summary.missing_index_rows
                 );
@@ -7276,11 +7287,13 @@ fn print_automation_run_report(
             if let Some(fix) = report.doctor_fix.as_ref() {
                 let summary = fix.issues_after.as_ref().unwrap_or(&fix.issues_before);
                 println!(
-                    "- doctor-fix: {} actions, unresolved={}, ambiguous={}, parse_failures={}, stale={}, missing={}",
+                    "- doctor-fix: {} actions, unresolved={}, ambiguous={}, parse_failures={}, type_mismatches={}, unsupported_syntax={}, stale={}, missing={}",
                     fix.fixes.len(),
                     summary.unresolved_links,
                     summary.ambiguous_links,
                     summary.parse_failures,
+                    summary.type_mismatches,
+                    summary.unsupported_syntax,
                     summary.stale_index_rows,
                     summary.missing_index_rows
                 );
@@ -8530,6 +8543,8 @@ fn zero_summary() -> vulcan_core::DoctorSummary {
         ambiguous_links: 0,
         broken_embeds: 0,
         parse_failures: 0,
+        type_mismatches: 0,
+        unsupported_syntax: 0,
         stale_index_rows: 0,
         missing_index_rows: 0,
         orphan_notes: 0,
