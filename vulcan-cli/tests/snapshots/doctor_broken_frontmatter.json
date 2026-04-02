@@ -22,7 +22,11 @@
     "orphan_notes": 0,
     "parse_failures": 1,
     "stale_index_rows": 0,
-    "unresolved_links": 0
+    "type_mismatches": 0,
+    "unresolved_links": 0,
+    "unsupported_syntax": 0
   },
-  "unresolved_links": []
+  "type_mismatches": [],
+  "unresolved_links": [],
+  "unsupported_syntax": []
 }
