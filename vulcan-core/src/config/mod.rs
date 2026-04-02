@@ -189,18 +189,13 @@ pub enum LinkStylePreference {
     Markdown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AutoScanMode {
     Off,
+    #[default]
     Blocking,
     Background,
-}
-
-impl Default for AutoScanMode {
-    fn default() -> Self {
-        Self::Blocking
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -783,6 +778,7 @@ fn default_templater_intellisense_render() -> usize {
     1
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataviewConfig {
     #[serde(default = "default_dataview_inline_query_prefix")]
