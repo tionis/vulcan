@@ -499,9 +499,15 @@ mod tests {
         assert_eq!(parsed.dataview_blocks[0].language, "dataview");
         assert_eq!(parsed.dataview_blocks[1].language, "dataviewjs");
         assert_eq!(parsed.tasks_blocks.len(), 0);
-        assert!(parsed.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("require the `js_runtime` feature flag")));
+        if cfg!(feature = "js_runtime") {
+            assert!(!parsed.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("require the `js_runtime` feature flag")));
+        } else {
+            assert!(parsed.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("require the `js_runtime` feature flag")));
+        }
         assert!(parsed
             .chunk_texts
             .iter()

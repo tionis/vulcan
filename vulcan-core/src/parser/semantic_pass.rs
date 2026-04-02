@@ -463,6 +463,7 @@ impl<'a> SemanticProcessor<'a> {
                 }
             }
         }
+        #[cfg(not(feature = "js_runtime"))]
         for block in &self.parsed.dataview_blocks {
             if block.language == "dataviewjs" {
                 self.parsed.diagnostics.push(ParseDiagnostic {

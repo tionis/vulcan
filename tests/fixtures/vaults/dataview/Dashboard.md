@@ -33,7 +33,7 @@ SORT file.name ASC
 ```
 
 ```dataviewjs
-dv.table(["Status"], [[this.status]])
+dv.table(["Status"], [[dv.current().status]])
 ```
 
 #project

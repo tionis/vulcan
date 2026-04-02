@@ -2,6 +2,7 @@ pub mod bases;
 pub mod cache;
 pub mod chunking;
 pub mod config;
+pub mod dataview_js;
 pub mod doctor;
 pub mod dql;
 pub mod expression;
@@ -43,6 +44,10 @@ pub use config::{
     EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, InboxConfig, KanbanConfig,
     LinkResolutionMode, LinkStylePreference, ScanConfig, TemplaterCommandPairConfig,
     TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplatesConfig, VaultConfig,
+};
+pub use dataview_js::{
+    evaluate_dataview_js, evaluate_dataview_js_query, DataviewJsError, DataviewJsOutput,
+    DataviewJsResult,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,

@@ -40,36 +40,37 @@ use vulcan_core::{
     add_kanban_card, archive_kanban_card, bases_view_add, bases_view_delete, bases_view_edit,
     bases_view_rename, bulk_replace, bulk_set_property, cache_vacuum, cluster_vectors,
     create_checkpoint, doctor_fix, doctor_vault, drop_vector_model, evaluate_base_file,
-    evaluate_dql, evaluate_note_inline_expressions, evaluate_tasks_query, execute_query_report,
-    export_static_search_index, git_status, import_kanban_plugin_config,
-    import_tasks_plugin_config, import_templater_plugin_config, index_vectors_with_progress,
-    initialize_vault, inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints,
-    list_kanban_boards, list_saved_reports, list_vector_models, load_dataview_blocks,
-    load_kanban_board, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
-    move_kanban_card, move_note, parse_tasks_query, query_backlinks, query_change_report,
-    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
-    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
-    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
-    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, repair_vectors_with_progress, resolve_note_reference, save_saved_report,
-    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
-    task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport,
-    BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterQuery, ClusterReport, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    EvaluatedInlineExpression, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, InitSummary, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord,
-    KanbanBoardSummary, KanbanMoveReport, KanbanTaskStatus, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
-    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery,
-    RebuildReport, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
-    TasksQueryResult, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
+    evaluate_dataview_js_query, evaluate_dql, evaluate_note_inline_expressions,
+    evaluate_tasks_query, execute_query_report, export_static_search_index, git_status,
+    import_kanban_plugin_config, import_tasks_plugin_config, import_templater_plugin_config,
+    index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
+    link_mentions, list_checkpoints, list_kanban_boards, list_saved_reports, list_vector_models,
+    load_dataview_blocks, load_kanban_board, load_saved_report, load_tasks_blocks,
+    load_vault_config, merge_tags, move_kanban_card, move_note, parse_tasks_query, query_backlinks,
+    query_change_report, query_graph_analytics, query_graph_components, query_graph_dead_ends,
+    query_graph_hubs, query_graph_moc_candidates, query_graph_path, query_graph_trends,
+    query_links, query_notes, query_related_notes, query_vector_neighbors,
+    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
+    resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
+    suggest_duplicates, suggest_mentions, task_upcoming_occurrences, vector_duplicates,
+    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BaseViewGroupBy,
+    BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
+    DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
+    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression,
+    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    InitSummary, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
+    KanbanMoveReport, KanbanTaskStatus, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery, RebuildReport,
+    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksQueryResult,
+    TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
     VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
     VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
     VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
@@ -569,12 +570,19 @@ struct DataviewEvalReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "engine", content = "data", rename_all = "snake_case")]
+enum DataviewBlockResult {
+    Dql(DqlQueryResult),
+    Js(DataviewJsResult),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct DataviewBlockReport {
     block_index: usize,
     line_number: i64,
     language: String,
     source: String,
-    result: Option<DqlQueryResult>,
+    result: Option<DataviewBlockResult>,
     error: Option<String>,
 }
 
@@ -1222,6 +1230,14 @@ fn run_dataview_query_command(paths: &VaultPaths, dql: &str) -> Result<DqlQueryR
     evaluate_dql(paths, dql, None).map_err(CliError::operation)
 }
 
+fn run_dataview_query_js_command(
+    paths: &VaultPaths,
+    js: &str,
+    file: Option<&str>,
+) -> Result<DataviewJsResult, CliError> {
+    evaluate_dataview_js_query(paths, js, file).map_err(CliError::operation)
+}
+
 fn run_dataview_eval_command(
     paths: &VaultPaths,
     file: &str,
@@ -1237,13 +1253,21 @@ fn run_dataview_eval_command(
     for block in blocks {
         let (result, error) = if block.language == "dataview" {
             match evaluate_dql(paths, &block.source, Some(&block.file)) {
-                Ok(result) => (Some(result), None),
+                Ok(result) => (Some(DataviewBlockResult::Dql(result)), None),
+                Err(error) => (None, Some(error.to_string())),
+            }
+        } else if block.language == "dataviewjs" {
+            match run_dataview_query_js_command(paths, &block.source, Some(&block.file)) {
+                Ok(result) => (Some(DataviewBlockResult::Js(result)), None),
                 Err(error) => (None, Some(error.to_string())),
             }
         } else {
             (
                 None,
-                Some("DataviewJS blocks require the `js_runtime` feature flag".to_string()),
+                Some(format!(
+                    "unsupported Dataview block language `{}`",
+                    block.language
+                )),
             )
         };
 
@@ -4001,6 +4025,17 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         .display_result_count,
                 )
             }
+            DataviewCommand::QueryJs { js, file } => {
+                let result = run_dataview_query_js_command(&paths, js, file.as_deref())?;
+                print_dataview_js_result(
+                    cli.output,
+                    &result,
+                    load_vault_config(&paths)
+                        .config
+                        .dataview
+                        .display_result_count,
+                )
+            }
             DataviewCommand::Eval { file, block } => {
                 let report = run_dataview_eval_command(&paths, file, *block)?;
                 print_dataview_eval_report(
@@ -6614,12 +6649,26 @@ fn print_dataview_eval_report(
                     continue;
                 }
                 if let Some(result) = &block.result {
-                    print_dql_query_result_human(result, show_result_count);
+                    print_dataview_block_result_human(result, show_result_count);
                 }
             }
             Ok(())
         }
         OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_dataview_js_result(
+    output: OutputFormat,
+    result: &DataviewJsResult,
+    show_result_count: bool,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            print_dataview_js_result_human(result, show_result_count);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(result),
     }
 }
 
@@ -7054,6 +7103,93 @@ fn print_dql_query_result_human(result: &DqlQueryResult, show_result_count: bool
         vulcan_core::dql::DqlQueryType::List => print_dql_list_human(result),
         vulcan_core::dql::DqlQueryType::Task => print_dql_task_human(result, show_result_count),
         vulcan_core::dql::DqlQueryType::Calendar => print_dql_calendar_human(result),
+    }
+}
+
+fn print_dataview_block_result_human(result: &DataviewBlockResult, show_result_count: bool) {
+    match result {
+        DataviewBlockResult::Dql(result) => print_dql_query_result_human(result, show_result_count),
+        DataviewBlockResult::Js(result) => {
+            print_dataview_js_result_human(result, show_result_count)
+        }
+    }
+}
+
+fn print_dataview_js_result_human(result: &DataviewJsResult, show_result_count: bool) {
+    for (index, output) in result.outputs.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        match output {
+            DataviewJsOutput::Query { result } => {
+                print_dql_query_result_human(result, show_result_count);
+            }
+            DataviewJsOutput::Table { headers, rows } => {
+                if !headers.is_empty() {
+                    println!("{}", headers.join(" | "));
+                }
+                for row in rows {
+                    let rendered = row
+                        .iter()
+                        .map(render_dataview_inline_value)
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    println!("{rendered}");
+                }
+            }
+            DataviewJsOutput::List { items } => {
+                for item in items {
+                    println!("- {}", render_dataview_inline_value(item));
+                }
+            }
+            DataviewJsOutput::TaskList {
+                tasks,
+                group_by_file,
+            } => {
+                let mut current_file: Option<&str> = None;
+                for task in tasks {
+                    let file = task
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .or_else(|| {
+                            task.get("file")
+                                .and_then(|file| file.get("path"))
+                                .and_then(Value::as_str)
+                        })
+                        .unwrap_or("<unknown>");
+                    if *group_by_file && current_file != Some(file) {
+                        current_file = Some(file);
+                        println!("{file}");
+                    }
+                    let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
+                    let text = task
+                        .get("text")
+                        .map(render_dataview_inline_value)
+                        .unwrap_or_default();
+                    println!("- [{status}] {text}");
+                }
+            }
+            DataviewJsOutput::Paragraph { text } | DataviewJsOutput::Span { text } => {
+                println!("{text}");
+            }
+            DataviewJsOutput::Header { level, text } => {
+                let prefix = "#".repeat((*level).max(1));
+                println!("{prefix} {text}");
+            }
+            DataviewJsOutput::Element {
+                element,
+                text,
+                attrs: _,
+            } => {
+                println!("<{element}> {text}");
+            }
+        }
+    }
+
+    if result.outputs.is_empty() {
+        if let Some(value) = &result.value {
+            println!("{}", render_dataview_inline_value(value));
+        }
     }
 }
 
@@ -8813,6 +8949,29 @@ mod tests {
             Command::Dataview {
                 command: DataviewCommand::Query {
                     dql: "TABLE status FROM #tag".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_dataview_query_js_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "dataview",
+            "query-js",
+            "dv.current()",
+            "--file",
+            "Dashboard",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Dataview {
+                command: DataviewCommand::QueryJs {
+                    js: "dv.current()".to_string(),
+                    file: Some("Dashboard".to_string()),
                 },
             }
         );

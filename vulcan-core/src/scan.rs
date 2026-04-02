@@ -2788,7 +2788,7 @@ mod tests {
                 (
                     "dataviewjs".to_string(),
                     1,
-                    "dv.table([\"Status\"], [[this.status]])".to_string(),
+                    "dv.table([\"Status\"], [[dv.current().status]])".to_string(),
                 ),
             ]
         );
@@ -3032,9 +3032,13 @@ mod tests {
             .expect("query should succeed")
             .map(|row| row.expect("row should deserialize"))
             .collect();
-        assert!(unsupported_messages
-            .iter()
-            .any(|message| message.contains("require the `js_runtime` feature flag")));
+        if cfg!(feature = "js_runtime") {
+            assert!(unsupported_messages.is_empty());
+        } else {
+            assert!(unsupported_messages
+                .iter()
+                .any(|message| message.contains("require the `js_runtime` feature flag")));
+        }
 
         let task_to_list_links: Vec<(String, String)> = connection
             .prepare(
