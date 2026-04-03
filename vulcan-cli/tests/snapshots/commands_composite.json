@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -3853,6 +3853,419 @@
           }
         ],
         "subcommands": []
+      },
+      {
+        "about": "Read and mutate one note with selector-aware CRUD commands",
+        "after_help": "Subcommands:\n  get         read one note, optionally with heading, block, line, or regex selectors\n  set         replace one note's contents from stdin or --file\n  create      create a new note, optionally from a template and extra frontmatter\n  append      append text to the end of a note or under a heading\n  patch       perform a guarded single-note find/replace\n\nNotes:\n  `--check` runs non-blocking doctor-like diagnostics for the resulting note.\n  Mutating note commands support --no-commit; `patch` also supports --dry-run.\n  `note get --output json` returns content, parsed frontmatter, and selection metadata.\n\nExamples:\n  vulcan note get Projects/Alpha --heading Status\n  vulcan note set Projects/Alpha --no-frontmatter < body.md\n  vulcan note create Inbox/Idea --template daily --frontmatter status=idea\n  vulcan note append Projects/Alpha \"Shipped\" --heading \"## Log\"\n  vulcan note patch Projects/Alpha --find TODO --replace DONE",
+        "name": "note",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Read one note, optionally narrowed by selectors",
+            "after_help": "Selectors:\n  --heading <name>        limit to one heading section, including nested subheadings\n  --block-ref <id>        limit to the block tagged with ^<id>\n  --lines <range>         limit to a 1-based line range within the current selection\n  --match <regex>         keep only lines matching the regex\n  --context <n>           include N surrounding lines around each --match hit\n  --no-frontmatter        strip a leading YAML frontmatter block from the output\n  --raw                   print only the selected content without line numbers\n\nLine range syntax:\n  1-10    first ten lines\n  50-     line 50 through the end\n  -5      last five lines\n  7       only line 7\n\nExamples:\n  vulcan note get Dashboard\n  vulcan note get Dashboard --heading Tasks --match TODO --context 1\n  vulcan note get Dashboard --block-ref status-card\n  vulcan note get Dashboard --lines 10-20 --raw",
+            "name": "get",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to read",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Extract one heading section by exact heading text",
+                "id": "heading",
+                "long": "heading",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HEADING"
+                ]
+              },
+              {
+                "help": "Extract one block by block reference id",
+                "id": "block_ref",
+                "long": "block-ref",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BLOCK_REF"
+                ]
+              },
+              {
+                "help": "Select a 1-based line range such as 1-10, 50-, or -5",
+                "id": "lines",
+                "long": "lines",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LINES"
+                ]
+              },
+              {
+                "help": "Filter selected lines with a regex",
+                "id": "match_pattern",
+                "long": "match",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "MATCH_PATTERN"
+                ]
+              },
+              {
+                "help": "Context lines around each match",
+                "id": "context",
+                "long": "context",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CONTEXT"
+                ]
+              },
+              {
+                "help": "Strip a leading YAML frontmatter block from the output",
+                "id": "no_frontmatter",
+                "long": "no-frontmatter",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_FRONTMATTER"
+                ]
+              },
+              {
+                "help": "Print only the selected content without line numbers",
+                "id": "raw",
+                "long": "raw",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "RAW"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Replace one note's contents from stdin or a file",
+            "name": "set",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to overwrite",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Read replacement content from a file instead of stdin",
+                "id": "file",
+                "long": "file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "Preserve the existing YAML frontmatter and only replace the body",
+                "id": "no_frontmatter",
+                "long": "no-frontmatter",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_FRONTMATTER"
+                ]
+              },
+              {
+                "help": "Run non-blocking doctor-like diagnostics after the write",
+                "id": "check",
+                "long": "check",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHECK"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Create a new note from optional stdin content and template context",
+            "name": "create",
+            "options": [
+              {
+                "help": "New relative note path to create",
+                "id": "path",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Render a template before creating the note",
+                "id": "template",
+                "long": "template",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TEMPLATE"
+                ]
+              },
+              {
+                "help": "Add or override a top-level frontmatter key using key=value syntax",
+                "id": "frontmatter",
+                "long": "frontmatter",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FRONTMATTER"
+                ]
+              },
+              {
+                "help": "Run non-blocking doctor-like diagnostics after creation",
+                "id": "check",
+                "long": "check",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHECK"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Append text to a note or under a heading",
+            "name": "append",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to update",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Text to append, or `-` to read from stdin",
+                "id": "text",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TEXT"
+                ]
+              },
+              {
+                "help": "Append under this exact heading, creating it if needed",
+                "id": "heading",
+                "long": "heading",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HEADING"
+                ]
+              },
+              {
+                "help": "Run non-blocking doctor-like diagnostics after append",
+                "id": "check",
+                "long": "check",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHECK"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Find and replace inside a single note with guarded match counts",
+            "name": "patch",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to update",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Literal text or /regex/ pattern to find",
+                "id": "find",
+                "long": "find",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FIND"
+                ]
+              },
+              {
+                "help": "Replacement text",
+                "id": "replace",
+                "long": "replace",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "REPLACE"
+                ]
+              },
+              {
+                "help": "Allow replacing more than one match",
+                "id": "all",
+                "long": "all",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALL"
+                ]
+              },
+              {
+                "help": "Run non-blocking doctor-like diagnostics after patching",
+                "id": "check",
+                "long": "check",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHECK"
+                ]
+              },
+              {
+                "help": "Report the planned patch without writing the file",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
       },
       {
         "about": "Open a note in $VISUAL/$EDITOR and refresh the cache afterwards",

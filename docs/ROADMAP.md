@@ -2650,59 +2650,59 @@ Restructure all existing commands into logical groups. This is a clean break —
 
 **`note get` — Read note content with selectors**
 
-- [ ] `vulcan note get <note>` — print full note content
-- [ ] `--heading <name>` — extract section under heading (inclusive of subheadings until next heading at same or higher level)
-- [ ] `--block-ref <id>` — extract block by reference ID
-- [ ] `--lines <range>` — extract line range (syntax: `1-10`, `50-`, `-5` for last 5 lines)
-- [ ] `--match <regex>` — grep-like: return matching lines
-- [ ] `--context <n>` — lines of context around `--match` hits (default: 0)
-- [ ] `--no-frontmatter` — strip YAML header from output
-- [ ] `--raw` — no formatting, no line numbers, just content
-- [ ] `--output json` returns structured object with content, frontmatter, metadata
-- [ ] Selectors are composable: `--heading "Section" --match "TODO"` searches within the heading
+- [x] `vulcan note get <note>` — print full note content
+- [x] `--heading <name>` — extract section under heading (inclusive of subheadings until next heading at same or higher level)
+- [x] `--block-ref <id>` — extract block by reference ID
+- [x] `--lines <range>` — extract line range (syntax: `1-10`, `50-`, `-5` for last 5 lines)
+- [x] `--match <regex>` — grep-like: return matching lines
+- [x] `--context <n>` — lines of context around `--match` hits (default: 0)
+- [x] `--no-frontmatter` — strip YAML header from output
+- [x] `--raw` — no formatting, no line numbers, just content
+- [x] `--output json` returns structured object with content, frontmatter, metadata
+- [x] Selectors are composable: `--heading "Section" --match "TODO"` searches within the heading
 
 **`note set` — Replace note content**
 
-- [ ] `vulcan note set <note>` — read new content from stdin
-- [ ] `--file <path>` — read content from a file
-- [ ] `--no-frontmatter` — preserve existing YAML header, only replace body
-- [ ] `--check` — run doctor-like diagnostics after write (broken links, syntax, frontmatter)
-- [ ] Auto-commit if enabled
-- [ ] Incremental rescan after write
+- [x] `vulcan note set <note>` — read new content from stdin
+- [x] `--file <path>` — read content from a file
+- [x] `--no-frontmatter` — preserve existing YAML header, only replace body
+- [x] `--check` — run doctor-like diagnostics after write (broken links, syntax, frontmatter)
+- [x] Auto-commit if enabled
+- [x] Incremental rescan after write
 
 **`note create` — Create a new note**
 
-- [ ] `vulcan note create <path>` — create with empty content or from stdin
-- [ ] `--template <name>` — use a template (from 9.7/9.9 template system)
-- [ ] `--frontmatter <key=value>` — set frontmatter properties (repeatable)
-- [ ] `--check` — run diagnostics after creation
-- [ ] Error if note already exists (no silent overwrite)
-- [ ] Auto-commit if enabled
+- [x] `vulcan note create <path>` — create with empty content or from stdin
+- [x] `--template <name>` — use a template (from 9.7/9.9 template system)
+- [x] `--frontmatter <key=value>` — set frontmatter properties (repeatable)
+- [x] `--check` — run diagnostics after creation
+- [x] Error if note already exists (no silent overwrite)
+- [x] Auto-commit if enabled
 
 **`note append` — Append text to a note**
 
-- [ ] `vulcan note append <note> <text>` — append text at end (or read from stdin with `-`)
-- [ ] `--heading <name>` — append under a specific heading
-- [ ] `--check` — run diagnostics after append
-- [ ] Auto-commit if enabled
+- [x] `vulcan note append <note> <text>` — append text at end (or read from stdin with `-`)
+- [x] `--heading <name>` — append under a specific heading
+- [x] `--check` — run diagnostics after append
+- [x] Auto-commit if enabled
 
 **`note patch` — Find and replace in a single note**
 
-- [ ] `vulcan note patch <note> --find <pattern> --replace <text>`
-- [ ] `--find` accepts literal strings or regex (prefix with `/` for regex: `--find '/\d{4}-\d{2}-\d{2}/'`)
-- [ ] **Safety: fails if `--find` matches more than once** (prevents accidental bulk edits)
-- [ ] `--all` flag to allow multiple replacements
-- [ ] `--check` — run diagnostics after patch
-- [ ] `--dry-run` — show planned changes without writing
-- [ ] Reuses `bulk_replace` infrastructure from `vulcan-core::suggestions`
-- [ ] Auto-commit if enabled
+- [x] `vulcan note patch <note> --find <pattern> --replace <text>`
+- [x] `--find` accepts literal strings or regex (prefix with `/` for regex: `--find '/\d{4}-\d{2}-\d{2}/'`)
+- [x] **Safety: fails if `--find` matches more than once** (prevents accidental bulk edits)
+- [x] `--all` flag to allow multiple replacements
+- [x] `--check` — run diagnostics after patch
+- [x] `--dry-run` — show planned changes without writing
+- [x] Reuses `bulk_replace` infrastructure from `vulcan-core::suggestions`
+- [x] Auto-commit if enabled
 
 **`--check` flag (shared across write commands)**
 
-- [ ] Runs the same diagnostic checks as `doctor` on the single modified file
-- [ ] Reports: broken links, broken block refs, malformed frontmatter, syntax issues
-- [ ] Non-blocking: writes succeed even if checks find issues, but warnings are printed to stderr
-- [ ] `--output json` includes diagnostics in the response object
+- [x] Runs the same diagnostic checks as `doctor` on the single modified file
+- [x] Reports: broken links, broken block refs, malformed frontmatter, syntax issues
+- [x] Non-blocking: writes succeed even if checks find issues, but warnings are printed to stderr
+- [x] `--output json` includes diagnostics in the response object
 
 #### 9.18.3 Query enhancements
 
