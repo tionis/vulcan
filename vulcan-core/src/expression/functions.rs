@@ -10,14 +10,15 @@ use crate::expression::eval::{
     resolve_note_reference, value_to_display, EvalContext,
 };
 use crate::expression::methods::{call_method, evaluate_callback};
+use crate::expression::value::dataview_value_type;
 use crate::file_metadata::FileMetadataResolver;
 
 #[allow(clippy::too_many_lines)]
 pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     match name {
         "if" => func_if(args, ctx),
-        "now" => Ok(Value::Number(ctx.now_ms.into())),
-        "today" => Ok(Value::Number(start_of_day(ctx.now_ms).into())),
+        "now" => Ok(Value::Number(localized_now_ms(ctx).into())),
+        "today" => Ok(Value::Number(start_of_day(localized_now_ms(ctx)).into())),
         "date" => func_date(args, ctx),
         "meta" => func_meta(args, ctx),
         "typeof" => func_typeof(args, ctx),
@@ -685,7 +686,7 @@ fn func_localtime(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
     let value = eval_arg(args, 0, ctx)?;
     vectorize_unary(value, &|value| {
         Ok(match date_value_ms(&value) {
-            Some(ms) => Value::Number(ms.into()),
+            Some(ms) => Value::Number(ctx.time_zone.localize_utc_ms(ms).into()),
             None => Value::Null,
         })
     })
@@ -1704,23 +1705,29 @@ pub fn parse_date_string(s: &str) -> Option<i64> {
         return None;
     }
 
-    let (hour, minute, second) = if let Some(t) = time_part {
-        let t = t.trim_end_matches('Z');
-        let mut tparts = t.split(':');
-        let h: i64 = tparts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let m: i64 = tparts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let (hour, minute, second, offset_ms) = if let Some(t) = time_part {
+        let (time_text, offset_ms) = parse_time_zone_suffix(t)?;
+        let mut tparts = time_text.split(':');
+        let h: i64 = tparts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .unwrap_or(0);
+        let m: i64 = tparts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .unwrap_or(0);
         let sec: i64 = tparts
             .next()
-            .and_then(|s| s.split('.').next()?.parse().ok())
+            .and_then(|part| part.split('.').next()?.parse().ok())
             .unwrap_or(0);
-        (h, m, sec)
+        (h, m, sec, offset_ms)
     } else {
-        (0, 0, 0)
+        (0, 0, 0, 0)
     };
 
     // Simplified days-since-epoch calculation (not accounting for leap seconds)
     let days = days_from_civil(year, month, day);
-    Some(days * 86400 * 1000 + hour * 3600 * 1000 + minute * 60 * 1000 + second * 1000)
+    Some(days * 86_400_000 + hour * 3_600_000 + minute * 60_000 + second * 1_000 - offset_ms)
 }
 
 /// Parse a Dataview-style date string into milliseconds since epoch.
@@ -2022,25 +2029,7 @@ pub fn file_field_type_name(field: &str) -> Option<&'static str> {
 
 #[must_use]
 pub fn value_type_name(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "null",
-        Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(s) => {
-            let trimmed = s.trim();
-            if looks_like_wikilink(trimmed) {
-                "link"
-            } else if parse_date_like_string(trimmed).is_some() {
-                "date"
-            } else if parse_duration_string(trimmed).is_some() {
-                "duration"
-            } else {
-                "string"
-            }
-        }
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
-    }
+    dataview_value_type(value).typeof_name()
 }
 
 fn type_name_hint(expr: &Expr) -> Option<&'static str> {
@@ -2071,7 +2060,7 @@ fn date_shortcut_arg(expr: &Expr, ctx: &EvalContext) -> Option<i64> {
     let Expr::Identifier(name) = expr else {
         return None;
     };
-    date_shortcut_value(name, ctx.now_ms)
+    date_shortcut_value(name, localized_now_ms(ctx))
 }
 
 fn date_shortcut_value(name: &str, now_ms: i64) -> Option<i64> {
@@ -2107,8 +2096,60 @@ fn date_shortcut_value(name: &str, now_ms: i64) -> Option<i64> {
     }
 }
 
+fn localized_now_ms(ctx: &EvalContext) -> i64 {
+    ctx.time_zone.localize_utc_ms(ctx.now_ms)
+}
+
 fn start_of_day(ms: i64) -> i64 {
     ms.div_euclid(86_400_000) * 86_400_000
+}
+
+fn parse_time_zone_suffix(time_text: &str) -> Option<(&str, i64)> {
+    let trimmed = time_text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.ends_with('Z') || trimmed.ends_with('z') {
+        return Some((&trimmed[..trimmed.len() - 1], 0));
+    }
+
+    let bytes = trimmed.as_bytes();
+    for (index, byte) in bytes.iter().enumerate().rev() {
+        if !matches!(byte, b'+' | b'-') || index == 0 {
+            continue;
+        }
+        let suffix = &trimmed[index..];
+        let offset_ms = parse_time_zone_offset(suffix)?;
+        return Some((&trimmed[..index], offset_ms));
+    }
+
+    Some((trimmed, 0))
+}
+
+fn parse_time_zone_offset(raw: &str) -> Option<i64> {
+    let sign = match raw.as_bytes().first().copied() {
+        Some(b'+') => 1_i64,
+        Some(b'-') => -1_i64,
+        _ => return None,
+    };
+    let rest = &raw[1..];
+    let (hours, minutes) = if let Some((hours, minutes)) = rest.split_once(':') {
+        (hours, minutes)
+    } else if rest.len() == 4 {
+        (&rest[..2], &rest[2..])
+    } else if rest.len() == 2 {
+        (rest, "00")
+    } else {
+        return None;
+    };
+
+    let hours = hours.parse::<i64>().ok()?;
+    let minutes = minutes.parse::<i64>().ok()?;
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
+        return None;
+    }
+
+    Some(sign * (hours * 3_600_000 + minutes * 60_000))
 }
 
 fn iso_weekday(year: i64, month: i64, day: i64) -> i64 {
@@ -2153,10 +2194,6 @@ fn matches_iso_year_month(value: &str) -> bool {
             .bytes()
             .enumerate()
             .all(|(index, byte)| index == 4 || byte.is_ascii_digit())
-}
-
-fn looks_like_wikilink(value: &str) -> bool {
-    parse_wikilink(value).is_some()
 }
 
 fn split_unescaped_pipe(link: &str) -> (String, Option<String>) {
@@ -2400,6 +2437,15 @@ mod tests {
             (year, month, day, hour, minute, second),
             (2025, 6, 15, 14, 30, 0)
         );
+    }
+
+    #[test]
+    fn test_parse_date_with_time_zone_offset() {
+        let utc = parse_date_string("2025-06-15T12:30:00Z").unwrap();
+        let shifted = parse_date_string("2025-06-15T14:30:00+02:00").unwrap();
+        let compact = parse_date_string("2025-06-15T07:00:00-0530").unwrap();
+        assert_eq!(utc, shifted);
+        assert_eq!(compact, parse_date_string("2025-06-15T12:30:00Z").unwrap());
     }
 
     #[test]

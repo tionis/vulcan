@@ -12,12 +12,17 @@ use crate::expression::eval::{
     compare_values, evaluate, is_truthy, parse_wikilink_target,
     resolve_note_reference as resolve_lookup_note_reference, value_to_display, EvalContext,
 };
+use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
-use crate::properties::{load_note_index, NoteRecord, PropertyError};
+use crate::properties::{
+    build_note_filter_clause_from_expressions, load_note_index, FilterExpression, FilterField,
+    FilterOperator, FilterValue, NoteRecord, ParsedFilter, PropertyError,
+};
 use crate::resolve_note_reference as resolve_vault_note_reference;
 
 use super::ast::{DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery};
+use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr, CompiledWhereClause};
 use super::parse_dql;
 
 #[derive(Debug)]
@@ -76,13 +81,15 @@ pub fn evaluate_parsed_dql(
     current_file: Option<&str>,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let config = load_vault_config(paths).config;
+    let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
+    let compiled = compile_dql(query);
     let note_lookup = load_note_index(paths)?;
     let all_notes = sorted_notes(&note_lookup);
-    let from_sources = query
+    let from_sources = compiled
         .commands
         .iter()
         .filter_map(|command| match command {
-            DqlDataCommand::From(source) => Some(source),
+            CompiledDqlCommand::From(source) => Some(source),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -94,28 +101,39 @@ pub fn evaluate_parsed_dql(
     }
 
     let mut rows = if let Some(source) = from_sources.first() {
-        rows_for_source(query, source, current_file, &note_lookup, &all_notes)?
+        rows_for_source(paths, query, source, current_file, &note_lookup, &all_notes)?
     } else {
         default_rows(query, &all_notes)
     };
+    let mut page_rows_are_pristine = query.query_type != super::DqlQueryType::Task;
 
-    for command in &query.commands {
+    for command in &compiled.commands {
         match command {
-            DqlDataCommand::From(_) => {}
-            DqlDataCommand::Where(expr) => {
-                rows = apply_where(rows, expr, query, &note_lookup)?;
+            CompiledDqlCommand::From(_) => {}
+            CompiledDqlCommand::Where(where_clause) => {
+                rows = apply_where(
+                    paths,
+                    rows,
+                    where_clause,
+                    query,
+                    &note_lookup,
+                    page_rows_are_pristine,
+                    time_zone,
+                )?;
             }
-            DqlDataCommand::Sort(keys) => {
+            CompiledDqlCommand::Sort(keys) => {
                 let mut decorated = Vec::with_capacity(rows.len());
                 for row in rows {
                     let mut values = Vec::with_capacity(keys.len());
                     for key in keys {
-                        let value = row.evaluate(&key.expr, &note_lookup).map_err(|error| {
-                            DqlEvalError::Message(format!(
-                                "failed to evaluate SORT key for {}: {error}",
-                                row.note.document_path
-                            ))
-                        })?;
+                        let value =
+                            row.evaluate(&key.expr, &note_lookup, time_zone)
+                                .map_err(|error| {
+                                    DqlEvalError::Message(format!(
+                                        "failed to evaluate SORT key for {}: {error}",
+                                        row.note.document_path
+                                    ))
+                                })?;
                         values.push(value);
                     }
                     decorated.push((values, row));
@@ -127,12 +145,14 @@ pub fn evaluate_parsed_dql(
                 });
                 rows = decorated.into_iter().map(|(_, row)| row).collect();
             }
-            DqlDataCommand::Limit(limit) => rows.truncate(*limit),
-            DqlDataCommand::GroupBy(named_expr) => {
-                rows = apply_group_by(rows, named_expr, &note_lookup)?;
+            CompiledDqlCommand::Limit(limit) => rows.truncate(*limit),
+            CompiledDqlCommand::GroupBy(named_expr) => {
+                rows = apply_group_by(rows, named_expr, &note_lookup, time_zone)?;
+                page_rows_are_pristine = false;
             }
-            DqlDataCommand::Flatten(named_expr) => {
-                rows = apply_flatten(rows, named_expr, &note_lookup)?;
+            CompiledDqlCommand::Flatten(named_expr) => {
+                rows = apply_flatten(rows, named_expr, &note_lookup, time_zone)?;
+                page_rows_are_pristine = false;
             }
         }
     }
@@ -143,6 +163,7 @@ pub fn evaluate_parsed_dql(
         &config.dataview.group_column_name,
         rows,
         &note_lookup,
+        time_zone,
     )
 }
 
@@ -272,11 +293,14 @@ impl ExecutionRow {
         &self,
         expr: &crate::expression::ast::Expr,
         note_lookup: &HashMap<String, NoteRecord>,
+        time_zone: DataviewTimeZone,
     ) -> Result<Value, String> {
         let mut note = self.note.clone();
         note.properties = Value::Object(self.fields.clone());
         let formulas = BTreeMap::new();
-        let ctx = EvalContext::new(&note, &formulas).with_note_lookup(note_lookup);
+        let ctx = EvalContext::new(&note, &formulas)
+            .with_note_lookup(note_lookup)
+            .with_time_zone(time_zone);
         evaluate(expr, &ctx)
     }
 
@@ -314,13 +338,14 @@ fn default_rows(query: &DqlQuery, notes: &[NoteRecord]) -> Vec<ExecutionRow> {
 }
 
 fn rows_for_source(
+    paths: &VaultPaths,
     query: &DqlQuery,
-    source: &super::DqlSourceExpr,
+    source: &CompiledDqlSourceExpr,
     current_file: Option<&str>,
     note_lookup: &HashMap<String, NoteRecord>,
     all_notes: &[NoteRecord],
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
-    let source_paths = source_paths(source, current_file, note_lookup, all_notes)?;
+    let source_paths = source_paths(paths, source, current_file, note_lookup, all_notes)?;
     let mut notes = all_notes
         .iter()
         .filter(|note| source_paths.contains(note.document_path.as_str()))
@@ -354,21 +379,53 @@ fn task_rows_for_note(note: &NoteRecord) -> Vec<ExecutionRow> {
 }
 
 fn apply_where(
+    paths: &VaultPaths,
+    rows: Vec<ExecutionRow>,
+    where_clause: &CompiledWhereClause,
+    query: &DqlQuery,
+    note_lookup: &HashMap<String, NoteRecord>,
+    page_rows_are_pristine: bool,
+    time_zone: DataviewTimeZone,
+) -> Result<Vec<ExecutionRow>, DqlEvalError> {
+    if page_rows_are_pristine
+        && query.query_type != super::DqlQueryType::Task
+        && where_clause.filters.is_some()
+    {
+        let matching_paths = matching_note_paths_for_filters(
+            paths,
+            where_clause
+                .filters
+                .as_deref()
+                .expect("filters presence checked above"),
+        )?;
+        return Ok(rows
+            .into_iter()
+            .filter(|row| matching_paths.contains(row.note.document_path.as_str()))
+            .collect());
+    }
+
+    apply_where_expression(rows, &where_clause.expr, query, note_lookup, time_zone)
+}
+
+fn apply_where_expression(
     rows: Vec<ExecutionRow>,
     expr: &crate::expression::ast::Expr,
     query: &DqlQuery,
     note_lookup: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let mut decorated = Vec::with_capacity(rows.len());
     let mut directly_matched_task_ids = HashSet::new();
 
     for row in rows {
-        let value = row.evaluate(expr, note_lookup).map_err(|error| {
-            DqlEvalError::Message(format!(
-                "failed to evaluate WHERE for {}: {error}",
-                row.note.document_path
-            ))
-        })?;
+        let value = row
+            .evaluate(expr, note_lookup, time_zone)
+            .map_err(|error| {
+                DqlEvalError::Message(format!(
+                    "failed to evaluate WHERE for {}: {error}",
+                    row.note.document_path
+                ))
+            })?;
         let matched = is_truthy(&value);
         if matched && query.query_type == super::DqlQueryType::Task {
             if let Some(task_id) = row.task_id.as_ref() {
@@ -428,65 +485,64 @@ fn descendant_task_ids(rows: &[(bool, ExecutionRow)], roots: &HashSet<String>) -
 }
 
 fn source_paths(
-    source: &super::DqlSourceExpr,
+    paths: &VaultPaths,
+    source: &CompiledDqlSourceExpr,
     current_file: Option<&str>,
     note_lookup: &HashMap<String, NoteRecord>,
     all_notes: &[NoteRecord],
 ) -> Result<HashSet<String>, DqlEvalError> {
     Ok(match source {
-        super::DqlSourceExpr::Tag(tag) => {
-            let normalized_tag = tag.strip_prefix('#').unwrap_or(tag.as_str());
-            all_notes
-                .iter()
-                .filter(|note| {
-                    note.tags.iter().any(|candidate| {
-                        candidate == normalized_tag
-                            || candidate.starts_with(&format!("{normalized_tag}/"))
-                    })
-                })
-                .map(|note| note.document_path.clone())
-                .collect()
+        CompiledDqlSourceExpr::Filter(filter) => {
+            matching_note_paths_for_filters(paths, std::slice::from_ref(filter))?
         }
-        super::DqlSourceExpr::Path(path) => all_notes
-            .iter()
-            .filter(|note| matches_path_source(note, path, all_notes))
-            .map(|note| note.document_path.clone())
-            .collect(),
-        super::DqlSourceExpr::IncomingLink(target) => {
+        CompiledDqlSourceExpr::Path(path) => {
+            matching_note_paths_for_filters(paths, &[path_source_filter(path, all_notes)])?
+        }
+        CompiledDqlSourceExpr::IncomingLink(target) => {
             let target_note = resolve_source_target(target, current_file, note_lookup)?;
-            incoming_link_sources(target_note, note_lookup, all_notes)
+            incoming_link_sources(paths, target_note)?
         }
-        super::DqlSourceExpr::OutgoingLink(target) => {
+        CompiledDqlSourceExpr::OutgoingLink(target) => {
             let target_note = resolve_source_target(target, current_file, note_lookup)?;
-            outgoing_link_sources(target_note, note_lookup)
+            outgoing_link_sources(paths, target_note)?
         }
-        super::DqlSourceExpr::Not(inner) => {
-            let inner_paths = source_paths(inner, current_file, note_lookup, all_notes)?;
+        CompiledDqlSourceExpr::Not(inner) => {
+            let inner_paths = source_paths(paths, inner, current_file, note_lookup, all_notes)?;
             all_notes
                 .iter()
                 .filter(|note| !inner_paths.contains(note.document_path.as_str()))
                 .map(|note| note.document_path.clone())
                 .collect()
         }
-        super::DqlSourceExpr::And(left, right) => {
-            let left_paths = source_paths(left, current_file, note_lookup, all_notes)?;
-            let right_paths = source_paths(right, current_file, note_lookup, all_notes)?;
+        CompiledDqlSourceExpr::And(left, right) => {
+            let left_paths = source_paths(paths, left, current_file, note_lookup, all_notes)?;
+            let right_paths = source_paths(paths, right, current_file, note_lookup, all_notes)?;
             left_paths.intersection(&right_paths).cloned().collect()
         }
-        super::DqlSourceExpr::Or(left, right) => {
-            let mut left_paths = source_paths(left, current_file, note_lookup, all_notes)?;
-            left_paths.extend(source_paths(right, current_file, note_lookup, all_notes)?);
+        CompiledDqlSourceExpr::Or(left, right) => {
+            let mut left_paths = source_paths(paths, left, current_file, note_lookup, all_notes)?;
+            left_paths.extend(source_paths(
+                paths,
+                right,
+                current_file,
+                note_lookup,
+                all_notes,
+            )?);
             left_paths
         }
     })
 }
 
-fn matches_path_source(note: &NoteRecord, path: &str, all_notes: &[NoteRecord]) -> bool {
+fn path_source_filter(path: &str, all_notes: &[NoteRecord]) -> FilterExpression {
     if Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
     {
-        return note.document_path == path;
+        return FilterExpression::Condition(ParsedFilter {
+            field: FilterField::FilePath,
+            operator: FilterOperator::Eq,
+            value: FilterValue::Text(path.to_string()),
+        });
     }
 
     let normalized = path.trim_end_matches('/');
@@ -500,11 +556,38 @@ fn matches_path_source(note: &NoteRecord, path: &str, all_notes: &[NoteRecord]) 
     });
 
     if path.contains('/') && file_exists {
-        note.document_path == normalized || note.document_path == exact_file
+        exact_path_filter(normalized, &exact_file)
     } else if folder_exists {
-        note.document_path.starts_with(&folder_prefix)
+        FilterExpression::Condition(ParsedFilter {
+            field: FilterField::FilePath,
+            operator: FilterOperator::StartsWith,
+            value: FilterValue::Text(folder_prefix),
+        })
     } else {
-        note.document_path == normalized || note.document_path == exact_file
+        exact_path_filter(normalized, &exact_file)
+    }
+}
+
+fn exact_path_filter(normalized: &str, exact_file: &str) -> FilterExpression {
+    if normalized == exact_file {
+        FilterExpression::Condition(ParsedFilter {
+            field: FilterField::FilePath,
+            operator: FilterOperator::Eq,
+            value: FilterValue::Text(normalized.to_string()),
+        })
+    } else {
+        FilterExpression::Any(vec![
+            ParsedFilter {
+                field: FilterField::FilePath,
+                operator: FilterOperator::Eq,
+                value: FilterValue::Text(normalized.to_string()),
+            },
+            ParsedFilter {
+                field: FilterField::FilePath,
+                operator: FilterOperator::Eq,
+                value: FilterValue::Text(exact_file.to_string()),
+            },
+        ])
     }
 }
 
@@ -538,36 +621,90 @@ fn resolve_source_target<'a>(
 }
 
 fn incoming_link_sources(
+    paths: &VaultPaths,
     target_note: &NoteRecord,
-    note_lookup: &HashMap<String, NoteRecord>,
-    all_notes: &[NoteRecord],
-) -> HashSet<String> {
-    all_notes
-        .iter()
-        .filter(|note| {
-            note.links.iter().any(|link| {
-                let target = parse_wikilink_target(link);
-                resolve_lookup_note_reference(note_lookup, &note.document_path, &target)
-                    .is_some_and(|resolved| resolved.document_path == target_note.document_path)
-            })
+) -> Result<HashSet<String>, DqlEvalError> {
+    let database =
+        CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let mut statement = database
+        .connection()
+        .prepare(
+            "
+            SELECT source.path
+            FROM links
+            JOIN documents AS source ON source.id = links.source_document_id
+            WHERE links.resolved_target_id = ?1
+            ORDER BY source.path
+            ",
+        )
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let rows = statement
+        .query_map([target_note.document_id.as_str()], |row| {
+            row.get::<_, String>(0)
         })
-        .map(|note| note.document_path.clone())
-        .collect()
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| DqlEvalError::Message(error.to_string()))
 }
 
 fn outgoing_link_sources(
+    paths: &VaultPaths,
     target_note: &NoteRecord,
-    note_lookup: &HashMap<String, NoteRecord>,
-) -> HashSet<String> {
-    target_note
-        .links
-        .iter()
-        .filter_map(|link| {
-            let target = parse_wikilink_target(link);
-            resolve_lookup_note_reference(note_lookup, &target_note.document_path, &target)
-                .map(|note| note.document_path.clone())
+) -> Result<HashSet<String>, DqlEvalError> {
+    let database =
+        CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let mut statement = database
+        .connection()
+        .prepare(
+            "
+            SELECT target.path
+            FROM links
+            JOIN documents AS target ON target.id = links.resolved_target_id
+            WHERE links.source_document_id = ?1
+            ORDER BY target.path
+            ",
+        )
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let rows = statement
+        .query_map([target_note.document_id.as_str()], |row| {
+            row.get::<_, String>(0)
         })
-        .collect()
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| DqlEvalError::Message(error.to_string()))
+}
+
+fn matching_note_paths_for_filters(
+    paths: &VaultPaths,
+    filters: &[FilterExpression],
+) -> Result<HashSet<String>, DqlEvalError> {
+    if filters.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let database =
+        CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let filter_sql = build_note_filter_clause_from_expressions(filters)?;
+    let mut sql = filter_sql.cte;
+    sql.push_str(
+        "SELECT documents.path
+        FROM documents
+        LEFT JOIN properties ON properties.document_id = documents.id
+        WHERE documents.extension = 'md'",
+    );
+    sql.push_str(&filter_sql.clause);
+    let mut statement = database
+        .connection()
+        .prepare(&sql)
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let rows = statement
+        .query_map(
+            rusqlite::params_from_iter(filter_sql.params.iter()),
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| DqlEvalError::Message(error.to_string()))
 }
 
 fn compare_sort_key_lists(left: &[Value], right: &[Value], keys: &[super::DqlSortKey]) -> Ordering {
@@ -593,6 +730,7 @@ fn apply_group_by(
     rows: Vec<ExecutionRow>,
     named_expr: &DqlNamedExpr,
     note_lookup: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let group_name = named_expr
         .alias
@@ -602,7 +740,7 @@ fn apply_group_by(
 
     for row in rows {
         let key = row
-            .evaluate(&named_expr.expr, note_lookup)
+            .evaluate(&named_expr.expr, note_lookup, time_zone)
             .map_err(|error| {
                 DqlEvalError::Message(format!(
                     "failed to evaluate GROUP BY key for {}: {error}",
@@ -649,6 +787,7 @@ fn apply_flatten(
     rows: Vec<ExecutionRow>,
     named_expr: &DqlNamedExpr,
     note_lookup: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let field_name = named_expr
         .alias
@@ -658,7 +797,7 @@ fn apply_flatten(
 
     for row in rows {
         let value = row
-            .evaluate(&named_expr.expr, note_lookup)
+            .evaluate(&named_expr.expr, note_lookup, time_zone)
             .map_err(|error| {
                 DqlEvalError::Message(format!(
                     "failed to evaluate FLATTEN expression for {}: {error}",
@@ -714,18 +853,19 @@ fn render_result(
     group_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let first_column_name = result_first_column_name(query, primary_column_name, group_column_name);
     match query.query_type {
         super::DqlQueryType::Table => {
-            render_table_result(query, first_column_name, rows, note_lookup)
+            render_table_result(query, first_column_name, rows, note_lookup, time_zone)
         }
         super::DqlQueryType::List => {
-            render_list_result(query, first_column_name, rows, note_lookup)
+            render_list_result(query, first_column_name, rows, note_lookup, time_zone)
         }
         super::DqlQueryType::Task => Ok(render_task_result(query, first_column_name, rows)),
         super::DqlQueryType::Calendar => {
-            render_calendar_result(query, first_column_name, rows, note_lookup)
+            render_calendar_result(query, first_column_name, rows, note_lookup, time_zone)
         }
     }
 }
@@ -754,6 +894,7 @@ fn render_table_result(
     primary_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let mut columns = Vec::new();
     if !query.without_id {
@@ -763,7 +904,7 @@ fn render_table_result(
 
     let rendered_rows = rows
         .into_iter()
-        .map(|row| render_table_row(&row, query, primary_column_name, note_lookup))
+        .map(|row| render_table_row(&row, query, primary_column_name, note_lookup, time_zone))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(DqlQueryResult {
@@ -779,6 +920,7 @@ fn render_table_row(
     query: &DqlQuery,
     primary_column_name: &str,
     note_lookup: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> Result<Value, DqlEvalError> {
     let mut object = Map::new();
     if !query.without_id {
@@ -788,7 +930,7 @@ fn render_table_row(
     for projection in &query.table_columns {
         let label = projection_label(projection);
         let value = row
-            .evaluate(&projection.expr, note_lookup)
+            .evaluate(&projection.expr, note_lookup, time_zone)
             .map_err(|error| {
                 DqlEvalError::Message(format!(
                     "failed to evaluate TABLE column `{label}` for {}: {error}",
@@ -806,6 +948,7 @@ fn render_list_result(
     primary_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let mut columns = Vec::new();
     if !query.without_id {
@@ -823,12 +966,14 @@ fn render_list_result(
                 object.insert(primary_column_name.to_string(), row.primary_value());
             }
             if let Some(expr) = &query.list_expression {
-                let value = row.evaluate(expr, note_lookup).map_err(|error| {
-                    DqlEvalError::Message(format!(
-                        "failed to evaluate LIST expression for {}: {error}",
-                        row.note.document_path
-                    ))
-                })?;
+                let value = row
+                    .evaluate(expr, note_lookup, time_zone)
+                    .map_err(|error| {
+                        DqlEvalError::Message(format!(
+                            "failed to evaluate LIST expression for {}: {error}",
+                            row.note.document_path
+                        ))
+                    })?;
                 object.insert("value".to_string(), value);
             } else if query.without_id {
                 object.insert(
@@ -889,6 +1034,7 @@ fn render_calendar_result(
     primary_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let expr = query.calendar_expression.as_ref().ok_or_else(|| {
         DqlEvalError::Message("CALENDAR queries require a date expression".to_string())
@@ -896,12 +1042,14 @@ fn render_calendar_result(
     let mut rendered_rows = Vec::new();
 
     for row in rows {
-        let value = row.evaluate(expr, note_lookup).map_err(|error| {
-            DqlEvalError::Message(format!(
-                "failed to evaluate CALENDAR expression for {}: {error}",
-                row.note.document_path
-            ))
-        })?;
+        let value = row
+            .evaluate(expr, note_lookup, time_zone)
+            .map_err(|error| {
+                DqlEvalError::Message(format!(
+                    "failed to evaluate CALENDAR expression for {}: {error}",
+                    row.note.document_path
+                ))
+            })?;
         if value.is_null() {
             continue;
         }
@@ -1361,6 +1509,41 @@ FROM "Dashboard""#,
     }
 
     #[test]
+    fn evaluates_incoming_and_outgoing_from_sources_via_link_joins() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
+        fs::write(vault_root.join("Notes/A.md"), "[[Notes/B]]\n")
+            .expect("note A should be written");
+        fs::write(vault_root.join("Notes/B.md"), "[[Notes/C]]\n")
+            .expect("note B should be written");
+        fs::write(vault_root.join("Notes/C.md"), "done\n").expect("note C should be written");
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let incoming = evaluate_dql(
+            &paths,
+            r#"TABLE WITHOUT ID file.name AS page
+FROM [[Notes/B]]
+SORT page ASC"#,
+            None,
+        )
+        .expect("incoming source query should evaluate");
+        assert_eq!(incoming.rows, vec![serde_json::json!({ "page": "A" })]);
+
+        let outgoing = evaluate_dql(
+            &paths,
+            r#"TABLE WITHOUT ID file.name AS page
+FROM outgoing([[Notes/B]])
+SORT page ASC"#,
+            None,
+        )
+        .expect("outgoing source query should evaluate");
+        assert_eq!(outgoing.rows, vec![serde_json::json!({ "page": "C" })]);
+    }
+
+    #[test]
     fn respects_configured_primary_and_group_column_names() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -1390,6 +1573,38 @@ GROUP BY category"#,
         )
         .expect("grouped query should evaluate");
         assert_eq!(grouped.columns, vec!["Bucket", "count"]);
+    }
+
+    #[test]
+    fn respects_configured_timezone_in_dql_expressions() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+        fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[dataview]\ntimezone = \"+02:00\"\n",
+        )
+        .expect("config should be written");
+        fs::write(vault_root.join("Notes/A.md"), "status:: draft\n")
+            .expect("note should be written");
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let result = evaluate_dql(
+            &paths,
+            r#"TABLE WITHOUT ID
+dateformat(localtime(date("2026-04-17T22:00:00Z")), "yyyy-MM-dd HH:mm") AS local
+FROM "Notes""#,
+            None,
+        )
+        .expect("timezone query should evaluate");
+
+        assert_eq!(
+            result.rows,
+            vec![serde_json::json!({ "local": "2026-04-18 00:00" })]
+        );
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {

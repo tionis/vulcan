@@ -1,4 +1,4 @@
-use crate::dql::parse_dql;
+use crate::dql::parse_dql_with_diagnostics;
 use crate::maintenance::{repair_fts, RepairFtsQuery};
 use crate::scan::discover_relative_paths;
 use crate::{initialize_vault, VaultPaths};
@@ -755,11 +755,13 @@ fn load_dataview_parse_failures(
     let mut failures = Vec::new();
     for row in rows {
         let (document_path, block_index, line_number, raw_text) = row?;
-        if let Err(error) = parse_dql(&raw_text) {
+        let parsed = parse_dql_with_diagnostics(&raw_text);
+        if let Some(error) = parsed.diagnostics.first() {
             failures.push(DoctorDiagnosticIssue {
                 document_path: Some(document_path),
                 message: format!(
-                    "Dataview block {block_index} at line {line_number} failed to parse: {error}"
+                    "Dataview block {block_index} at line {line_number} failed to parse: {}",
+                    error.message
                 ),
                 byte_range: None,
             });

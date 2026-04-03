@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::expression::{ast::Expr, parse_expression};
 
 use super::ast::{
@@ -8,6 +10,31 @@ use super::token::{DqlToken, DqlTokenizer};
 
 pub fn parse_dql(source: &str) -> Result<DqlQuery, String> {
     DqlParser::new(source)?.parse()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DqlDiagnostic {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DqlParseOutput {
+    pub query: Option<DqlQuery>,
+    pub diagnostics: Vec<DqlDiagnostic>,
+}
+
+#[must_use]
+pub fn parse_dql_with_diagnostics(source: &str) -> DqlParseOutput {
+    match parse_dql(source) {
+        Ok(query) => DqlParseOutput {
+            query: Some(query),
+            diagnostics: Vec::new(),
+        },
+        Err(message) => DqlParseOutput {
+            query: None,
+            diagnostics: vec![DqlDiagnostic { message }],
+        },
+    }
 }
 
 struct DqlParser {
@@ -716,5 +743,15 @@ LIMIT 3"##,
         let malformed_from =
             parse_dql("LIST FROM (#project OR)").expect_err("malformed FROM clause should fail");
         assert!(malformed_from.contains("expected source expression"));
+    }
+
+    #[test]
+    fn reports_malformed_queries_as_diagnostics() {
+        let output = parse_dql_with_diagnostics("LIST FROM (#project OR)");
+        assert!(output.query.is_none());
+        assert_eq!(output.diagnostics.len(), 1);
+        assert!(output.diagnostics[0]
+            .message
+            .contains("expected source expression"));
     }
 }

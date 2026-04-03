@@ -56,8 +56,8 @@ pub use doctor::{
     DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
 };
 pub use dql::{
-    evaluate_dql, evaluate_parsed_dql, load_dataview_blocks, DataviewBlockRecord, DqlEvalError,
-    DqlQueryResult,
+    evaluate_dql, evaluate_parsed_dql, load_dataview_blocks, parse_dql_with_diagnostics,
+    DataviewBlockRecord, DqlDiagnostic, DqlEvalError, DqlParseOutput, DqlQueryResult,
 };
 pub use git::{
     auto_commit, git_log, git_status, is_git_repo, AutoCommitReport, GitError, GitLogEntry,
