@@ -306,13 +306,13 @@ Public API: `parse_document(source: &str, config: &VaultConfig) -> ParsedDocumen
 
 The built-in Bases evaluator queries vault files as its data source. Phases 9.15 (TaskNotes) and potentially other plugins require registering **custom source types** that provide non-file-based row sets to the Bases query engine.
 
-- [ ] `BasesSource` trait: `fn rows(&self, filter: &Filter) -> Result<Vec<Row>>` — pluggable data source that can produce rows for Bases evaluation
-- [ ] Built-in source: `FileSource` — queries the documents table (current behavior, extracted into the trait)
-- [ ] Custom source registration: `BasesEvaluator::register_source(name, source)` — register a named source type
-- [ ] Source type in `.base` files: `source.type` field selects the data source (default: `file`; custom sources like `tasknotes` are registered by their respective phases)
-- [ ] Source config passthrough: `source.config` is forwarded to the source implementation (e.g., `config.type: tasknotesTaskList` for TaskNotes views)
-- [ ] Custom sources participate in the same filter/sort/group/formula pipeline as file-based queries
-- [ ] Custom sources can define additional computed columns (e.g., TaskNotes urgency score, days until due)
+- [x] `BasesSource` trait: `fn rows(&self, filter: &Filter) -> Result<Vec<Row>>` — pluggable data source that can produce rows for Bases evaluation
+- [x] Built-in source: `FileSource` — queries the documents table (current behavior, extracted into the trait)
+- [x] Custom source registration: `BasesEvaluator::register_source(name, source)` — register a named source type
+- [x] Source type in `.base` files: `source.type` field selects the data source (default: `file`; custom sources like `tasknotes` are registered by their respective phases)
+- [x] Source config passthrough: `source.config` is forwarded to the source implementation (e.g., `config.type: tasknotesTaskList` for TaskNotes views)
+- [x] Custom sources participate in the same filter/sort/group/formula pipeline as file-based queries
+- [x] Custom sources can define additional computed columns (e.g., TaskNotes urgency score, days until due)
 
 **Note:** The trait definition and `FileSource` extraction can be implemented as part of Phase 4.5. The actual custom source registrations happen in their respective phases (9.15.8 for TaskNotes).
 
