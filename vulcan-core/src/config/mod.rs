@@ -924,10 +924,78 @@ pub struct ConfigImportMapping {
 pub struct ConfigImportReport {
     pub plugin: String,
     pub source_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_paths: Vec<PathBuf>,
     pub config_path: PathBuf,
+    pub target_file: PathBuf,
     pub created_config: bool,
     pub updated: bool,
+    pub dry_run: bool,
     pub mappings: Vec<ConfigImportMapping>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<ImportConflict>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ImportConflict {
+    pub key: String,
+    pub sources: Vec<String>,
+    pub kept_value: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportTarget {
+    Shared,
+    Local,
+}
+
+impl ImportTarget {
+    fn config_path(self, paths: &VaultPaths) -> PathBuf {
+        match self {
+            Self::Shared => paths.config_file().to_path_buf(),
+            Self::Local => paths.local_config_file().to_path_buf(),
+        }
+    }
+}
+
+pub trait PluginImporter {
+    fn name(&self) -> &'static str;
+
+    fn display_name(&self) -> &'static str;
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf>;
+
+    fn detect(&self, paths: &VaultPaths) -> bool {
+        self.source_paths(paths).iter().any(|path| path.exists())
+    }
+
+    fn import(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        self.import_with_mode(paths, target, false)
+    }
+
+    fn dry_run(&self, paths: &VaultPaths) -> Result<ConfigImportReport, ConfigImportError> {
+        self.import_with_mode(paths, ImportTarget::Shared, true)
+    }
+
+    fn dry_run_to(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        self.import_with_mode(paths, target, true)
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError>;
 }
 
 #[derive(Debug)]
@@ -1472,114 +1540,561 @@ pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error>
     Ok(true)
 }
 
+#[derive(Debug, Clone)]
+struct ImportSetting {
+    source: String,
+    target: String,
+    path: Vec<String>,
+    value: Value,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CoreImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KanbanImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TasksImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TemplaterImporter;
+
+#[must_use]
+pub fn all_importers() -> Vec<Box<dyn PluginImporter>> {
+    vec![
+        Box::new(CoreImporter),
+        Box::new(KanbanImporter),
+        Box::new(TasksImporter),
+        Box::new(TemplaterImporter),
+    ]
+}
+
 pub fn import_tasks_plugin_config(
     paths: &VaultPaths,
 ) -> Result<ConfigImportReport, ConfigImportError> {
-    let source_path = paths
-        .vault_root()
-        .join(".obsidian/plugins/obsidian-tasks-plugin/data.json");
-    if !source_path.exists() {
-        return Err(ConfigImportError::MissingSource(source_path));
-    }
-
-    let obsidian = serde_json::from_str::<ObsidianTasksConfig>(&fs::read_to_string(&source_path)?)?;
-    let imported_tasks = imported_tasks_config(obsidian);
-    let mappings = tasks_config_import_mappings(&imported_tasks)?;
-
-    ensure_vulcan_dir(paths)?;
-    let config_path = paths.config_file().to_path_buf();
-    let created_config = !config_path.exists();
-    let existing_contents = fs::read_to_string(&config_path).ok();
-    let mut config_value = load_config_value(&config_path)?;
-    write_tasks_import(&mut config_value, &imported_tasks)?;
-    let rendered = toml::to_string_pretty(&config_value)?;
-    let updated = existing_contents.as_deref() != Some(rendered.as_str());
-    if updated {
-        fs::write(&config_path, rendered)?;
-    }
-
-    Ok(ConfigImportReport {
-        plugin: "tasks".to_string(),
-        source_path,
-        config_path,
-        created_config,
-        updated,
-        mappings,
-    })
+    TasksImporter.import(paths, ImportTarget::Shared)
 }
 
 pub fn import_templater_plugin_config(
     paths: &VaultPaths,
 ) -> Result<ConfigImportReport, ConfigImportError> {
-    let source_path = paths
-        .vault_root()
-        .join(".obsidian/plugins/templater-obsidian/data.json");
-    if !source_path.exists() {
-        return Err(ConfigImportError::MissingSource(source_path));
-    }
-
-    let obsidian =
-        serde_json::from_str::<ObsidianTemplaterConfig>(&fs::read_to_string(&source_path)?)?;
-    let imported_templates = imported_templater_config(obsidian);
-    let mappings = templater_config_import_mappings(&imported_templates)?;
-
-    ensure_vulcan_dir(paths)?;
-    let config_path = paths.config_file().to_path_buf();
-    let created_config = !config_path.exists();
-    let existing_contents = fs::read_to_string(&config_path).ok();
-    let mut config_value = load_config_value(&config_path)?;
-    write_templater_import(&mut config_value, &imported_templates)?;
-    let rendered = toml::to_string_pretty(&config_value)?;
-    let updated = existing_contents.as_deref() != Some(rendered.as_str());
-    if updated {
-        fs::write(&config_path, rendered)?;
-    }
-
-    Ok(ConfigImportReport {
-        plugin: "templater".to_string(),
-        source_path,
-        config_path,
-        created_config,
-        updated,
-        mappings,
-    })
+    TemplaterImporter.import(paths, ImportTarget::Shared)
 }
 
 pub fn import_kanban_plugin_config(
     paths: &VaultPaths,
 ) -> Result<ConfigImportReport, ConfigImportError> {
-    let source_path = paths
-        .vault_root()
-        .join(".obsidian/plugins/obsidian-kanban/data.json");
-    if !source_path.exists() {
-        return Err(ConfigImportError::MissingSource(source_path));
+    KanbanImporter.import(paths, ImportTarget::Shared)
+}
+
+pub fn import_core_plugin_config(
+    paths: &VaultPaths,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    CoreImporter.import(paths, ImportTarget::Shared)
+}
+
+fn importer_source_path(paths: &VaultPaths, relative: &str) -> PathBuf {
+    paths.vault_root().join(relative)
+}
+
+fn import_settings_from_mappings(mappings: Vec<ConfigImportMapping>) -> Vec<ImportSetting> {
+    mappings
+        .into_iter()
+        .map(|mapping| ImportSetting {
+            source: mapping.source,
+            target: mapping.target.clone(),
+            path: mapping
+                .target
+                .split('.')
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>(),
+            value: mapping.value,
+        })
+        .collect()
+}
+
+fn import_settings_to_mappings(settings: &[ImportSetting]) -> Vec<ConfigImportMapping> {
+    settings
+        .iter()
+        .map(|setting| ConfigImportMapping {
+            source: setting.source.clone(),
+            target: setting.target.clone(),
+            value: setting.value.clone(),
+        })
+        .collect()
+}
+
+fn import_setting<T: Serialize>(
+    settings: &mut Vec<ImportSetting>,
+    source: &str,
+    path: &[&str],
+    value: &T,
+) -> Result<(), ConfigImportError> {
+    import_setting_path(
+        settings,
+        source,
+        path.iter().map(|segment| (*segment).to_string()).collect(),
+        value,
+    )
+}
+
+fn import_setting_path<T: Serialize>(
+    settings: &mut Vec<ImportSetting>,
+    source: &str,
+    path: Vec<String>,
+    value: &T,
+) -> Result<(), ConfigImportError> {
+    settings.push(ImportSetting {
+        source: source.to_string(),
+        target: path.join("."),
+        path,
+        value: serde_json::to_value(value)?,
+    });
+    Ok(())
+}
+
+fn apply_import_settings(
+    paths: &VaultPaths,
+    plugin: &str,
+    source_path: PathBuf,
+    source_paths: Vec<PathBuf>,
+    settings: &[ImportSetting],
+    target: ImportTarget,
+    dry_run: bool,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    if !dry_run {
+        ensure_vulcan_dir(paths)?;
     }
 
-    let obsidian =
-        serde_json::from_str::<ObsidianKanbanConfig>(&fs::read_to_string(&source_path)?)?;
-    let imported_kanban = imported_kanban_config(obsidian);
-    let mappings = kanban_config_import_mappings(&imported_kanban)?;
-
-    ensure_vulcan_dir(paths)?;
-    let config_path = paths.config_file().to_path_buf();
-    let created_config = !config_path.exists();
-    let existing_contents = fs::read_to_string(&config_path).ok();
-    let mut config_value = load_config_value(&config_path)?;
-    write_kanban_import(&mut config_value, &imported_kanban)?;
+    let target_file = target.config_path(paths);
+    let created_config = !target_file.exists();
+    let existing_contents = fs::read_to_string(&target_file).ok();
+    let mut config_value = load_config_value(&target_file)?;
+    merge_import_into_toml(&mut config_value, settings)?;
     let rendered = toml::to_string_pretty(&config_value)?;
     let updated = existing_contents.as_deref() != Some(rendered.as_str());
-    if updated {
-        fs::write(&config_path, rendered)?;
+    if updated && !dry_run {
+        fs::write(&target_file, rendered)?;
     }
 
     Ok(ConfigImportReport {
-        plugin: "kanban".to_string(),
+        plugin: plugin.to_string(),
         source_path,
-        config_path,
+        source_paths,
+        config_path: target_file.clone(),
+        target_file,
         created_config,
         updated,
-        mappings,
+        dry_run,
+        mappings: import_settings_to_mappings(settings),
+        conflicts: Vec::new(),
     })
+}
+
+fn merge_import_into_toml(
+    config_value: &mut toml::Value,
+    settings: &[ImportSetting],
+) -> Result<(), ConfigImportError> {
+    let Some(root_table) = config_value.as_table_mut() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "expected .vulcan config to contain a TOML table".to_string(),
+        ));
+    };
+
+    for setting in settings {
+        merge_import_setting(root_table, &setting.path, &setting.value)?;
+    }
+    Ok(())
+}
+
+fn merge_import_setting(
+    table: &mut toml::map::Map<String, toml::Value>,
+    path: &[String],
+    value: &Value,
+) -> Result<(), ConfigImportError> {
+    let Some((segment, rest)) = path.split_first() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "import setting path cannot be empty".to_string(),
+        ));
+    };
+
+    if rest.is_empty() {
+        match json_to_toml_value(value)? {
+            Some(value) => {
+                table.insert(segment.clone(), value);
+            }
+            None => {
+                table.remove(segment);
+            }
+        }
+        return Ok(());
+    }
+
+    let entry = table
+        .entry(segment.clone())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !entry.is_table() {
+        *entry = toml::Value::Table(toml::map::Map::new());
+    }
+    let Some(child_table) = entry.as_table_mut() else {
+        return Err(ConfigImportError::InvalidConfig(format!(
+            "expected [{}] to be a TOML table",
+            path[..path.len() - rest.len()].join(".")
+        )));
+    };
+
+    merge_import_setting(child_table, rest, value)
+}
+
+fn json_to_toml_value(value: &Value) -> Result<Option<toml::Value>, ConfigImportError> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Bool(value) => Ok(Some(toml::Value::Boolean(*value))),
+        Value::Number(number) => {
+            if let Some(value) = number.as_i64() {
+                Ok(Some(toml::Value::Integer(value)))
+            } else if let Some(value) = number.as_u64() {
+                let integer = i64::try_from(value).map_err(|_| {
+                    ConfigImportError::InvalidConfig(
+                        "numeric config import value does not fit in signed 64-bit TOML integer"
+                            .to_string(),
+                    )
+                })?;
+                Ok(Some(toml::Value::Integer(integer)))
+            } else if let Some(value) = number.as_f64() {
+                Ok(Some(toml::Value::Float(value)))
+            } else {
+                Err(ConfigImportError::InvalidConfig(
+                    "unsupported numeric config import value".to_string(),
+                ))
+            }
+        }
+        Value::String(text) => Ok(Some(toml::Value::String(text.clone()))),
+        Value::Array(values) => {
+            let mut items = Vec::new();
+            for value in values {
+                if let Some(value) = json_to_toml_value(value)? {
+                    items.push(value);
+                }
+            }
+            Ok(Some(toml::Value::Array(items)))
+        }
+        Value::Object(entries) => {
+            let mut table = toml::map::Map::new();
+            for (key, value) in entries {
+                if let Some(value) = json_to_toml_value(value)? {
+                    table.insert(key.clone(), value);
+                }
+            }
+            Ok(Some(toml::Value::Table(table)))
+        }
+    }
+}
+
+#[cfg(test)]
+fn annotate_import_conflicts(reports: &mut [ConfigImportReport]) {
+    let mut previous_sources = BTreeMap::<String, Vec<String>>::new();
+
+    for report in reports {
+        report.conflicts.clear();
+        for mapping in &report.mappings {
+            if let Some(sources) = previous_sources.get_mut(&mapping.target) {
+                if !sources.iter().any(|source| source == &report.plugin) {
+                    sources.push(report.plugin.clone());
+                }
+                report.conflicts.push(ImportConflict {
+                    key: mapping.target.clone(),
+                    sources: sources.clone(),
+                    kept_value: mapping.value.clone(),
+                });
+            } else {
+                previous_sources.insert(mapping.target.clone(), vec![report.plugin.clone()]);
+            }
+        }
+    }
+}
+
+impl PluginImporter for TasksImporter {
+    fn name(&self) -> &'static str {
+        "tasks"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian Tasks plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/obsidian-tasks-plugin/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+
+        let obsidian =
+            serde_json::from_str::<ObsidianTasksConfig>(&fs::read_to_string(&source_path)?)?;
+        let imported_tasks = imported_tasks_config(obsidian);
+        let settings =
+            import_settings_from_mappings(tasks_config_import_mappings(&imported_tasks)?);
+        apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
+            &settings,
+            target,
+            dry_run,
+        )
+    }
+}
+
+impl PluginImporter for TemplaterImporter {
+    fn name(&self) -> &'static str {
+        "templater"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian Templater plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/templater-obsidian/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+
+        let obsidian =
+            serde_json::from_str::<ObsidianTemplaterConfig>(&fs::read_to_string(&source_path)?)?;
+        let imported_templates = imported_templater_config(obsidian);
+        let settings =
+            import_settings_from_mappings(templater_config_import_mappings(&imported_templates)?);
+        apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
+            &settings,
+            target,
+            dry_run,
+        )
+    }
+}
+
+impl PluginImporter for KanbanImporter {
+    fn name(&self) -> &'static str {
+        "kanban"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian Kanban plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/obsidian-kanban/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+
+        let obsidian =
+            serde_json::from_str::<ObsidianKanbanConfig>(&fs::read_to_string(&source_path)?)?;
+        let imported_kanban = imported_kanban_config(obsidian);
+        let settings =
+            import_settings_from_mappings(kanban_config_import_mappings(&imported_kanban)?);
+        apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
+            &settings,
+            target,
+            dry_run,
+        )
+    }
+}
+
+impl PluginImporter for CoreImporter {
+    fn name(&self) -> &'static str {
+        "core"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian core settings"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![
+            importer_source_path(paths, ".obsidian/app.json"),
+            importer_source_path(paths, ".obsidian/templates.json"),
+            importer_source_path(paths, ".obsidian/types.json"),
+        ]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_root = paths.vault_root().join(".obsidian");
+        let source_paths = self
+            .source_paths(paths)
+            .into_iter()
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>();
+        if source_paths.is_empty() {
+            return Err(ConfigImportError::MissingSource(source_root));
+        }
+
+        let settings = core_import_settings(paths)?;
+        apply_import_settings(
+            paths,
+            self.name(),
+            paths.vault_root().join(".obsidian"),
+            source_paths,
+            &settings,
+            target,
+            dry_run,
+        )
+    }
+}
+
+fn core_import_settings(paths: &VaultPaths) -> Result<Vec<ImportSetting>, ConfigImportError> {
+    let app_path = importer_source_path(paths, ".obsidian/app.json");
+    let templates_path = importer_source_path(paths, ".obsidian/templates.json");
+    let types_path = importer_source_path(paths, ".obsidian/types.json");
+    let mut settings = Vec::new();
+
+    if app_path.exists() {
+        let app = serde_json::from_str::<ObsidianAppConfig>(&fs::read_to_string(&app_path)?)?;
+        if let Some(use_markdown_links) = app.use_markdown_links {
+            let link_style = if use_markdown_links {
+                LinkStylePreference::Markdown
+            } else {
+                LinkStylePreference::Wikilink
+            };
+            import_setting(
+                &mut settings,
+                "app.json.useMarkdownLinks",
+                &["links", "style"],
+                &link_style,
+            )?;
+        }
+        if let Some(new_link_format) = app.new_link_format {
+            import_setting(
+                &mut settings,
+                "app.json.newLinkFormat",
+                &["links", "resolution"],
+                &new_link_format,
+            )?;
+        }
+        if let Some(attachment_folder_path) = app.attachment_folder_path {
+            let normalized = normalize_attachment_folder(&attachment_folder_path);
+            import_setting(
+                &mut settings,
+                "app.json.attachmentFolderPath",
+                &["links", "attachment_folder"],
+                &normalized,
+            )?;
+        }
+        if let Some(strict_line_breaks) = app.strict_line_breaks {
+            import_setting(
+                &mut settings,
+                "app.json.strictLineBreaks",
+                &["strict_line_breaks"],
+                &strict_line_breaks,
+            )?;
+        }
+    }
+
+    if templates_path.exists() {
+        let templates =
+            serde_json::from_str::<ObsidianTemplatesConfig>(&fs::read_to_string(&templates_path)?)?;
+        if let Some(date_format) = templates.date_format {
+            import_setting(
+                &mut settings,
+                "templates.json.dateFormat",
+                &["templates", "date_format"],
+                &date_format,
+            )?;
+        }
+        if let Some(time_format) = templates.time_format {
+            import_setting(
+                &mut settings,
+                "templates.json.timeFormat",
+                &["templates", "time_format"],
+                &time_format,
+            )?;
+        }
+        if let Some(folder) = templates.folder {
+            let normalized = normalize_template_path(Some(folder));
+            import_setting(
+                &mut settings,
+                "templates.json.folder",
+                &["templates", "obsidian_folder"],
+                &normalized,
+            )?;
+        }
+    }
+
+    if types_path.exists() {
+        for (property, value_type) in load_explicit_obsidian_property_types(&types_path)? {
+            import_setting_path(
+                &mut settings,
+                "types.json",
+                vec!["property_types".to_string(), property],
+                &value_type,
+            )?;
+        }
+    }
+
+    Ok(settings)
 }
 
 #[must_use]
@@ -1650,9 +2165,25 @@ fn load_obsidian_property_types(
     let Some(value) = load_json_file::<Value>(&path, diagnostics) else {
         return BTreeMap::new();
     };
+    match parse_obsidian_property_types_value(value) {
+        Ok(types) => types,
+        Err(message) => {
+            diagnostics.push(ConfigDiagnostic { path, message });
+            BTreeMap::new()
+        }
+    }
+}
 
+fn load_explicit_obsidian_property_types(
+    path: &Path,
+) -> Result<BTreeMap<String, String>, ConfigImportError> {
+    let value = serde_json::from_str::<Value>(&fs::read_to_string(path)?)?;
+    parse_obsidian_property_types_value(value).map_err(ConfigImportError::InvalidConfig)
+}
+
+fn parse_obsidian_property_types_value(value: Value) -> Result<BTreeMap<String, String>, String> {
     if let Value::Object(entries) = value {
-        entries
+        Ok(entries
             .into_iter()
             .filter_map(|(key, value)| {
                 value
@@ -1666,13 +2197,9 @@ fn load_obsidian_property_types(
                     })
                     .map(|value_type| (key, value_type))
             })
-            .collect()
+            .collect())
     } else {
-        diagnostics.push(ConfigDiagnostic {
-            path,
-            message: "expected a JSON object of property types".to_string(),
-        });
-        BTreeMap::new()
+        Err("expected a JSON object of property types".to_string())
     }
 }
 
@@ -2203,432 +2730,9 @@ fn load_config_value(path: &Path) -> Result<toml::Value, ConfigImportError> {
         Ok(value)
     } else {
         Err(ConfigImportError::InvalidConfig(
-            "expected .vulcan/config.toml to contain a TOML table".to_string(),
+            "expected .vulcan config file to contain a TOML table".to_string(),
         ))
     }
-}
-
-fn write_tasks_import(
-    config_value: &mut toml::Value,
-    tasks: &TasksConfig,
-) -> Result<(), ConfigImportError> {
-    let Some(root_table) = config_value.as_table_mut() else {
-        return Err(ConfigImportError::InvalidConfig(
-            "expected .vulcan/config.toml to contain a TOML table".to_string(),
-        ));
-    };
-
-    let tasks_entry = root_table
-        .entry("tasks".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    if !tasks_entry.is_table() {
-        *tasks_entry = toml::Value::Table(toml::map::Map::new());
-    }
-    let Some(tasks_table) = tasks_entry.as_table_mut() else {
-        return Err(ConfigImportError::InvalidConfig(
-            "expected [tasks] to be a TOML table".to_string(),
-        ));
-    };
-
-    write_optional_toml_string(tasks_table, "global_filter", tasks.global_filter.as_deref());
-    write_optional_toml_string(tasks_table, "global_query", tasks.global_query.as_deref());
-    tasks_table.insert(
-        "remove_global_filter".to_string(),
-        toml::Value::Boolean(tasks.remove_global_filter),
-    );
-    tasks_table.insert(
-        "set_created_date".to_string(),
-        toml::Value::Boolean(tasks.set_created_date),
-    );
-    write_optional_toml_string(
-        tasks_table,
-        "recurrence_on_completion",
-        tasks.recurrence_on_completion.as_deref(),
-    );
-
-    let statuses_entry = tasks_table
-        .entry("statuses".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    if !statuses_entry.is_table() {
-        *statuses_entry = toml::Value::Table(toml::map::Map::new());
-    }
-    let Some(statuses_table) = statuses_entry.as_table_mut() else {
-        return Err(ConfigImportError::InvalidConfig(
-            "expected [tasks.statuses] to be a TOML table".to_string(),
-        ));
-    };
-
-    write_string_array(statuses_table, "todo", &tasks.statuses.todo);
-    write_string_array(statuses_table, "completed", &tasks.statuses.completed);
-    write_string_array(statuses_table, "in_progress", &tasks.statuses.in_progress);
-    write_string_array(statuses_table, "cancelled", &tasks.statuses.cancelled);
-    write_string_array(statuses_table, "non_task", &tasks.statuses.non_task);
-    statuses_table.insert(
-        "definitions".to_string(),
-        toml::Value::try_from(&tasks.statuses.definitions)?,
-    );
-
-    Ok(())
-}
-
-#[allow(clippy::too_many_lines)]
-fn write_templater_import(
-    config_value: &mut toml::Value,
-    templates: &TemplatesConfig,
-) -> Result<(), ConfigImportError> {
-    let Some(root_table) = config_value.as_table_mut() else {
-        return Err(ConfigImportError::InvalidConfig(
-            "expected .vulcan/config.toml to contain a TOML table".to_string(),
-        ));
-    };
-
-    let templates_entry = root_table
-        .entry("templates".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    if !templates_entry.is_table() {
-        *templates_entry = toml::Value::Table(toml::map::Map::new());
-    }
-    let Some(templates_table) = templates_entry.as_table_mut() else {
-        return Err(ConfigImportError::InvalidConfig(
-            "expected [templates] to be a TOML table".to_string(),
-        ));
-    };
-
-    write_optional_toml_serialized(
-        templates_table,
-        "templater_folder",
-        templates.templater_folder.as_ref(),
-    )?;
-    templates_table.insert(
-        "command_timeout".to_string(),
-        toml::Value::Integer(i64::try_from(templates.command_timeout).map_err(|_| {
-            ConfigImportError::InvalidConfig(
-                "expected command_timeout to fit in a signed 64-bit integer".to_string(),
-            )
-        })?),
-    );
-    write_optional_toml_serialized(
-        templates_table,
-        "templates_pairs",
-        (!templates.templates_pairs.is_empty()).then_some(&templates.templates_pairs),
-    )?;
-    templates_table.insert(
-        "trigger_on_file_creation".to_string(),
-        toml::Value::Boolean(templates.trigger_on_file_creation),
-    );
-    templates_table.insert(
-        "auto_jump_to_cursor".to_string(),
-        toml::Value::Boolean(templates.auto_jump_to_cursor),
-    );
-    templates_table.insert(
-        "enable_system_commands".to_string(),
-        toml::Value::Boolean(templates.enable_system_commands),
-    );
-    write_optional_toml_serialized(templates_table, "shell_path", templates.shell_path.as_ref())?;
-    write_optional_toml_serialized(
-        templates_table,
-        "user_scripts_folder",
-        templates.user_scripts_folder.as_ref(),
-    )?;
-    templates_table.insert(
-        "enable_folder_templates".to_string(),
-        toml::Value::Boolean(templates.enable_folder_templates),
-    );
-    write_optional_toml_serialized(
-        templates_table,
-        "folder_templates",
-        (!templates.folder_templates.is_empty()).then_some(&templates.folder_templates),
-    )?;
-    templates_table.insert(
-        "enable_file_templates".to_string(),
-        toml::Value::Boolean(templates.enable_file_templates),
-    );
-    write_optional_toml_serialized(
-        templates_table,
-        "file_templates",
-        (!templates.file_templates.is_empty()).then_some(&templates.file_templates),
-    )?;
-    templates_table.insert(
-        "syntax_highlighting".to_string(),
-        toml::Value::Boolean(templates.syntax_highlighting),
-    );
-    templates_table.insert(
-        "syntax_highlighting_mobile".to_string(),
-        toml::Value::Boolean(templates.syntax_highlighting_mobile),
-    );
-    write_optional_toml_serialized(
-        templates_table,
-        "enabled_templates_hotkeys",
-        (!templates.enabled_templates_hotkeys.is_empty())
-            .then_some(&templates.enabled_templates_hotkeys),
-    )?;
-    write_optional_toml_serialized(
-        templates_table,
-        "startup_templates",
-        (!templates.startup_templates.is_empty()).then_some(&templates.startup_templates),
-    )?;
-    templates_table.insert(
-        "intellisense_render".to_string(),
-        toml::Value::Integer(i64::try_from(templates.intellisense_render).map_err(|_| {
-            ConfigImportError::InvalidConfig(
-                "expected intellisense_render to fit in a signed 64-bit integer".to_string(),
-            )
-        })?),
-    );
-
-    Ok(())
-}
-
-#[allow(clippy::too_many_lines)]
-fn write_kanban_import(
-    config_value: &mut toml::Value,
-    kanban: &KanbanConfig,
-) -> Result<(), ConfigImportError> {
-    let Some(root_table) = config_value.as_table_mut() else {
-        return Err(ConfigImportError::InvalidConfig(
-            "expected .vulcan/config.toml to contain a TOML table".to_string(),
-        ));
-    };
-
-    let kanban_entry = root_table
-        .entry("kanban".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    if !kanban_entry.is_table() {
-        *kanban_entry = toml::Value::Table(toml::map::Map::new());
-    }
-    let Some(kanban_table) = kanban_entry.as_table_mut() else {
-        return Err(ConfigImportError::InvalidConfig(
-            "expected [kanban] to be a TOML table".to_string(),
-        ));
-    };
-
-    kanban_table.insert(
-        "date_trigger".to_string(),
-        toml::Value::String(kanban.date_trigger.clone()),
-    );
-    kanban_table.insert(
-        "time_trigger".to_string(),
-        toml::Value::String(kanban.time_trigger.clone()),
-    );
-    kanban_table.insert(
-        "date_format".to_string(),
-        toml::Value::String(kanban.date_format.clone()),
-    );
-    kanban_table.insert(
-        "time_format".to_string(),
-        toml::Value::String(kanban.time_format.clone()),
-    );
-    write_optional_toml_string(
-        kanban_table,
-        "date_display_format",
-        kanban.date_display_format.as_deref(),
-    );
-    write_optional_toml_string(
-        kanban_table,
-        "date_time_display_format",
-        kanban.date_time_display_format.as_deref(),
-    );
-    kanban_table.insert(
-        "link_date_to_daily_note".to_string(),
-        toml::Value::Boolean(kanban.link_date_to_daily_note),
-    );
-    write_optional_toml_serialized(
-        kanban_table,
-        "metadata_keys",
-        (!kanban.metadata_keys.is_empty()).then_some(&kanban.metadata_keys),
-    )?;
-    kanban_table.insert(
-        "archive_with_date".to_string(),
-        toml::Value::Boolean(kanban.archive_with_date),
-    );
-    kanban_table.insert(
-        "append_archive_date".to_string(),
-        toml::Value::Boolean(kanban.append_archive_date),
-    );
-    kanban_table.insert(
-        "archive_date_format".to_string(),
-        toml::Value::String(kanban.archive_date_format.clone()),
-    );
-    write_optional_toml_string(
-        kanban_table,
-        "archive_date_separator",
-        kanban.archive_date_separator.as_deref(),
-    );
-    kanban_table.insert(
-        "new_card_insertion_method".to_string(),
-        toml::Value::String(kanban.new_card_insertion_method.clone()),
-    );
-    write_optional_toml_string(
-        kanban_table,
-        "new_line_trigger",
-        kanban.new_line_trigger.as_deref(),
-    );
-    write_optional_toml_string(
-        kanban_table,
-        "new_note_folder",
-        kanban.new_note_folder.as_deref(),
-    );
-    write_optional_toml_string(
-        kanban_table,
-        "new_note_template",
-        kanban.new_note_template.as_deref(),
-    );
-    kanban_table.insert(
-        "hide_card_count".to_string(),
-        toml::Value::Boolean(kanban.hide_card_count),
-    );
-    kanban_table.insert(
-        "hide_tags_in_title".to_string(),
-        toml::Value::Boolean(kanban.hide_tags_in_title),
-    );
-    kanban_table.insert(
-        "hide_tags_display".to_string(),
-        toml::Value::Boolean(kanban.hide_tags_display),
-    );
-    write_optional_toml_string(
-        kanban_table,
-        "inline_metadata_position",
-        kanban.inline_metadata_position.as_deref(),
-    );
-    write_optional_toml_usize(kanban_table, "lane_width", kanban.lane_width)?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "full_list_lane_width",
-        kanban.full_list_lane_width.as_ref(),
-    )?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "list_collapse",
-        (!kanban.list_collapse.is_empty()).then_some(&kanban.list_collapse),
-    )?;
-    write_optional_toml_usize(kanban_table, "max_archive_size", kanban.max_archive_size)?;
-    kanban_table.insert(
-        "show_checkboxes".to_string(),
-        toml::Value::Boolean(kanban.show_checkboxes),
-    );
-    write_optional_toml_serialized(kanban_table, "move_dates", kanban.move_dates.as_ref())?;
-    write_optional_toml_serialized(kanban_table, "move_tags", kanban.move_tags.as_ref())?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "move_task_metadata",
-        kanban.move_task_metadata.as_ref(),
-    )?;
-    write_optional_toml_serialized(kanban_table, "show_add_list", kanban.show_add_list.as_ref())?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "show_archive_all",
-        kanban.show_archive_all.as_ref(),
-    )?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "show_board_settings",
-        kanban.show_board_settings.as_ref(),
-    )?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "show_relative_date",
-        kanban.show_relative_date.as_ref(),
-    )?;
-    write_optional_toml_serialized(kanban_table, "show_search", kanban.show_search.as_ref())?;
-    write_optional_toml_serialized(kanban_table, "show_set_view", kanban.show_set_view.as_ref())?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "show_view_as_markdown",
-        kanban.show_view_as_markdown.as_ref(),
-    )?;
-    write_optional_toml_usize(
-        kanban_table,
-        "date_picker_week_start",
-        kanban.date_picker_week_start,
-    )?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "table_sizing",
-        (!kanban.table_sizing.is_empty()).then_some(&kanban.table_sizing),
-    )?;
-    write_optional_toml_string(kanban_table, "tag_action", kanban.tag_action.as_deref());
-    write_optional_toml_serialized(
-        kanban_table,
-        "tag_colors",
-        (!kanban.tag_colors.is_empty()).then_some(&kanban.tag_colors),
-    )?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "tag_sort",
-        (!kanban.tag_sort.is_empty()).then_some(&kanban.tag_sort),
-    )?;
-    write_optional_toml_serialized(
-        kanban_table,
-        "date_colors",
-        (!kanban.date_colors.is_empty()).then_some(&kanban.date_colors),
-    )?;
-
-    Ok(())
-}
-
-fn write_optional_toml_string(
-    table: &mut toml::map::Map<String, toml::Value>,
-    key: &str,
-    value: Option<&str>,
-) {
-    match value {
-        Some(value) => {
-            table.insert(key.to_string(), toml::Value::String(value.to_string()));
-        }
-        None => {
-            table.remove(key);
-        }
-    }
-}
-
-fn write_string_array(
-    table: &mut toml::map::Map<String, toml::Value>,
-    key: &str,
-    values: &[String],
-) {
-    table.insert(
-        key.to_string(),
-        toml::Value::Array(values.iter().cloned().map(toml::Value::String).collect()),
-    );
-}
-
-fn write_optional_toml_usize(
-    table: &mut toml::map::Map<String, toml::Value>,
-    key: &str,
-    value: Option<usize>,
-) -> Result<(), ConfigImportError> {
-    match value {
-        Some(value) => {
-            let value = i64::try_from(value).map_err(|_| {
-                ConfigImportError::InvalidConfig(format!(
-                    "expected {key} to fit in a signed 64-bit integer"
-                ))
-            })?;
-            table.insert(key.to_string(), toml::Value::Integer(value));
-        }
-        None => {
-            table.remove(key);
-        }
-    }
-
-    Ok(())
-}
-
-fn write_optional_toml_serialized<T: Serialize>(
-    table: &mut toml::map::Map<String, toml::Value>,
-    key: &str,
-    value: Option<&T>,
-) -> Result<(), ConfigImportError> {
-    match value {
-        Some(value) => {
-            table.insert(key.to_string(), toml::Value::try_from(value)?);
-        }
-        None => {
-            table.remove(key);
-        }
-    }
-
-    Ok(())
 }
 
 fn load_vulcan_overrides(
@@ -4988,5 +5092,182 @@ default_mode = "off"
 
         let error = import_kanban_plugin_config(&paths).expect_err("import should fail");
         assert!(matches!(error, ConfigImportError::MissingSource(_)));
+    }
+
+    #[test]
+    fn importer_registry_dispatches_existing_importers_in_priority_order() {
+        let importer_names = all_importers()
+            .into_iter()
+            .map(|importer| importer.name().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(importer_names, ["core", "kanban", "tasks", "templater"]);
+    }
+
+    #[test]
+    fn importer_dry_run_reports_changes_without_writing_files() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-tasks-plugin"))
+            .expect("tasks plugin dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/obsidian-tasks-plugin/data.json"),
+            r##"{
+              "globalFilter": "#task",
+              "globalQuery": "not done"
+            }"##,
+        )
+        .expect("tasks config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = TasksImporter
+            .dry_run(&paths)
+            .expect("dry run import should succeed");
+
+        assert_eq!(report.plugin, "tasks");
+        assert_eq!(report.target_file, paths.config_file());
+        assert!(report.created_config);
+        assert!(report.updated);
+        assert!(report.dry_run);
+        assert!(!paths.config_file().exists());
+        assert!(!paths.gitignore_file().exists());
+    }
+
+    #[test]
+    fn import_conflicts_are_reported_when_multiple_importers_touch_one_key() {
+        let mut reports = vec![
+            ConfigImportReport {
+                plugin: "core".to_string(),
+                source_path: PathBuf::from(".obsidian"),
+                source_paths: vec![PathBuf::from(".obsidian/app.json")],
+                config_path: PathBuf::from(".vulcan/config.toml"),
+                target_file: PathBuf::from(".vulcan/config.toml"),
+                created_config: false,
+                updated: true,
+                dry_run: false,
+                mappings: vec![ConfigImportMapping {
+                    source: "app.json.useMarkdownLinks".to_string(),
+                    target: "links.style".to_string(),
+                    value: Value::String("wikilink".to_string()),
+                }],
+                conflicts: Vec::new(),
+            },
+            ConfigImportReport {
+                plugin: "templater".to_string(),
+                source_path: PathBuf::from(".obsidian/plugins/templater-obsidian/data.json"),
+                source_paths: vec![PathBuf::from(
+                    ".obsidian/plugins/templater-obsidian/data.json",
+                )],
+                config_path: PathBuf::from(".vulcan/config.toml"),
+                target_file: PathBuf::from(".vulcan/config.toml"),
+                created_config: false,
+                updated: true,
+                dry_run: false,
+                mappings: vec![ConfigImportMapping {
+                    source: "templates_folder".to_string(),
+                    target: "links.style".to_string(),
+                    value: Value::String("markdown".to_string()),
+                }],
+                conflicts: Vec::new(),
+            },
+        ];
+
+        annotate_import_conflicts(&mut reports);
+
+        assert!(reports[0].conflicts.is_empty());
+        assert_eq!(reports[1].conflicts.len(), 1);
+        assert_eq!(reports[1].conflicts[0].key, "links.style");
+        assert_eq!(reports[1].conflicts[0].sources, ["core", "templater"]);
+        assert_eq!(
+            reports[1].conflicts[0].kept_value,
+            Value::String("markdown".to_string())
+        );
+    }
+
+    #[test]
+    fn import_core_plugin_config_writes_settings_from_all_supported_sources() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/app.json"),
+            r#"{
+              "useMarkdownLinks": true,
+              "newLinkFormat": "relative",
+              "attachmentFolderPath": "Assets/Images",
+              "strictLineBreaks": true
+            }"#,
+        )
+        .expect("app config should be written");
+        fs::write(
+            vault_root.join(".obsidian/templates.json"),
+            r#"{
+              "dateFormat": "DD/MM/YYYY",
+              "timeFormat": "HH:mm",
+              "folder": "Templates/Core"
+            }"#,
+        )
+        .expect("templates config should be written");
+        fs::write(
+            vault_root.join(".obsidian/types.json"),
+            r#"{
+              "status": "text",
+              "reviewed": { "type": "checkbox" }
+            }"#,
+        )
+        .expect("types config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = import_core_plugin_config(&paths).expect("core import should succeed");
+
+        assert_eq!(report.plugin, "core");
+        assert_eq!(report.source_paths.len(), 3);
+        assert_eq!(report.target_file, paths.config_file());
+        assert!(!report.dry_run);
+        let rendered = fs::read_to_string(paths.config_file()).expect("config should exist");
+        assert!(rendered.contains("[links]"));
+        assert!(rendered.contains("style = \"markdown\""));
+        assert!(rendered.contains("resolution = \"relative\""));
+        assert!(rendered.contains("attachment_folder = \"Assets/Images\""));
+        assert!(rendered.contains("strict_line_breaks = true"));
+        assert!(rendered.contains("[templates]"));
+        assert!(rendered.contains("date_format = \"DD/MM/YYYY\""));
+        assert!(rendered.contains("time_format = \"HH:mm\""));
+        assert!(rendered.contains("obsidian_folder = \"Templates/Core\""));
+        assert!(rendered.contains("[property_types]"));
+        assert!(rendered.contains("status = \"text\""));
+        assert!(rendered.contains("reviewed = \"checkbox\""));
+    }
+
+    #[test]
+    fn core_importer_supports_partial_sources_and_local_target() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/app.json"),
+            r#"{
+              "strictLineBreaks": true
+            }"#,
+        )
+        .expect("app config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = CoreImporter
+            .import(&paths, ImportTarget::Local)
+            .expect("core local import should succeed");
+
+        assert_eq!(
+            report.source_paths,
+            vec![vault_root.join(".obsidian/app.json")]
+        );
+        assert_eq!(report.target_file, paths.local_config_file());
+        assert!(paths.local_config_file().exists());
+        assert!(!paths.config_file().exists());
+        let rendered =
+            fs::read_to_string(paths.local_config_file()).expect("local config should exist");
+        assert!(rendered.contains("strict_line_breaks = true"));
+        assert!(!rendered.contains("[templates]"));
+        assert!(!rendered.contains("[property_types]"));
     }
 }

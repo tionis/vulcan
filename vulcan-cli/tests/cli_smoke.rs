@@ -162,6 +162,88 @@ fn config_import_templater_json_output_reports_mappings() {
 }
 
 #[test]
+fn config_import_core_json_output_reports_sources_and_target_file() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/app.json"),
+        r#"{
+          "useMarkdownLinks": true,
+          "newLinkFormat": "shortest",
+          "attachmentFolderPath": "Assets",
+          "strictLineBreaks": true
+        }"#,
+    )
+    .expect("app config should be written");
+    fs::write(
+        vault_root.join(".obsidian/templates.json"),
+        r#"{
+          "dateFormat": "YYYY-MM-DD",
+          "timeFormat": "HH:mm",
+          "folder": "Templates"
+        }"#,
+    )
+    .expect("templates config should be written");
+    fs::write(
+        vault_root.join(".obsidian/types.json"),
+        r#"{
+          "effort": {"type": "number"},
+          "reviewed": {"type": "checkbox"}
+        }"#,
+    )
+    .expect("types config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "core",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["plugin"], "core");
+    assert_eq!(json["dry_run"], false);
+    assert_eq!(json["target_file"], ".vulcan/config.toml");
+    assert!(json["source_paths"].as_array().is_some_and(|paths| {
+        paths.iter().any(|path| path == ".obsidian/app.json")
+            && paths.iter().any(|path| path == ".obsidian/templates.json")
+            && paths.iter().any(|path| path == ".obsidian/types.json")
+    }));
+    assert!(json["mappings"].as_array().is_some_and(|mappings| mappings
+        .iter()
+        .any(|mapping| mapping["target"] == "templates.obsidian_folder"
+            && mapping["value"] == "Templates")));
+    assert!(json["mappings"].as_array().is_some_and(|mappings| mappings
+        .iter()
+        .any(|mapping| mapping["target"] == "property_types.reviewed"
+            && mapping["value"] == "checkbox")));
+
+    let config =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(config.contains("[links]"));
+    assert!(config.contains("style = \"markdown\""));
+    assert!(config.contains("resolution = \"shortest\""));
+    assert!(config.contains("attachment_folder = \"Assets\""));
+    assert!(config.contains("strict_line_breaks = true"));
+    assert!(config.contains("[templates]"));
+    assert!(config.contains("obsidian_folder = \"Templates\""));
+    assert!(config.contains("[property_types]"));
+    assert!(config.contains("effort = \"number\""));
+    assert!(config.contains("reviewed = \"checkbox\""));
+}
+
+#[test]
 fn config_import_kanban_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

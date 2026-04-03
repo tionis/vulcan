@@ -344,16 +344,21 @@ Examples:
 
 const CONFIG_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  import core    import Obsidian core settings into Vulcan config
   import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
+  import templater import Obsidian Templater plugin settings into .vulcan/config.toml
   import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml
 
 Notes:
   Import commands preserve unrelated config sections and overwrite the mapped target keys.
+  Shared flags: --dry-run, --target <shared|local>, --no-commit
   When git auto-commit is enabled for mutations, config imports participate like other mutating commands.
 
 Examples:
+  vulcan config import core
   vulcan config import kanban
-  vulcan config import tasks
+  vulcan config import tasks --dry-run
+  vulcan config import templater --target local
   vulcan --output json config import tasks";
 
 const KANBAN_COMMAND_AFTER_HELP: &str = "\
@@ -846,21 +851,47 @@ pub enum ExportCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ConfigImportCommand {
+    #[command(about = "Import Obsidian core settings")]
+    Core {
+        #[command(flatten)]
+        args: ConfigImportArgs,
+    },
     #[command(about = "Import Obsidian Templater plugin settings")]
     Templater {
-        #[arg(long, help = "Suppress auto-commit for this invocation")]
-        no_commit: bool,
+        #[command(flatten)]
+        args: ConfigImportArgs,
     },
     #[command(about = "Import Obsidian Kanban plugin settings")]
     Kanban {
-        #[arg(long, help = "Suppress auto-commit for this invocation")]
-        no_commit: bool,
+        #[command(flatten)]
+        args: ConfigImportArgs,
     },
     #[command(about = "Import Obsidian Tasks plugin settings")]
     Tasks {
-        #[arg(long, help = "Suppress auto-commit for this invocation")]
-        no_commit: bool,
+        #[command(flatten)]
+        args: ConfigImportArgs,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ConfigImportTargetArg {
+    Shared,
+    Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct ConfigImportArgs {
+    #[arg(long, help = "Preview config changes without writing files")]
+    pub dry_run: bool,
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ConfigImportTargetArg::Shared,
+        help = "Select the target Vulcan config file"
+    )]
+    pub target: ConfigImportTargetArg,
+    #[arg(long, help = "Suppress auto-commit for this invocation")]
+    pub no_commit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
