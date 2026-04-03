@@ -7300,6 +7300,7 @@ fn print_dql_query_result_human(result: &DqlQueryResult, show_result_count: bool
         vulcan_core::dql::DqlQueryType::Task => print_dql_task_human(result, show_result_count),
         vulcan_core::dql::DqlQueryType::Calendar => print_dql_calendar_human(result),
     }
+    print_dql_diagnostics_human(&result.diagnostics);
 }
 
 fn print_dataview_block_result_human(result: &DataviewBlockResult, show_result_count: bool) {
@@ -7462,6 +7463,17 @@ fn print_dql_calendar_human(result: &DqlQueryResult) {
             println!("{date}");
         }
         println!("- {}", render_dataview_inline_value(&row[file_column]));
+    }
+}
+
+fn print_dql_diagnostics_human(diagnostics: &[vulcan_core::DqlDiagnostic]) {
+    if diagnostics.is_empty() {
+        return;
+    }
+
+    println!("Diagnostics:");
+    for diagnostic in diagnostics {
+        println!("- {}", diagnostic.message);
     }
 }
 

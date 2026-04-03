@@ -31,14 +31,14 @@ pub fn call_method(
         Value::String(s) => string_method(s, method, args, ctx),
         Value::Number(n) => number_method(n.as_f64().unwrap_or(0.0), method, args, ctx),
         Value::Array(arr) => array_method(arr, method, args, ctx),
-        Value::Object(map) => Ok(object_method(map, method, args, ctx)),
+        Value::Object(map) => object_method(map, method, args, ctx),
         Value::Bool(_) => match method {
             "isEmpty" => Ok(Value::Bool(false)),
-            _ => Ok(Value::Null),
+            _ => Err(unknown_method_error(method, "boolean")),
         },
         Value::Null => match method {
             "isEmpty" => Ok(Value::Bool(true)),
-            _ => Ok(Value::Null),
+            _ => Err(unknown_method_error(method, "null")),
         },
     }
 }
@@ -186,7 +186,7 @@ fn string_method(s: &str, method: &str, args: &[Expr], ctx: &EvalContext) -> Res
             }
             Ok(Value::Null)
         }
-        _ => Ok(Value::Null),
+        _ => Err(unknown_method_error(method, "string")),
     }
 }
 
@@ -234,7 +234,7 @@ fn number_method(n: f64, method: &str, args: &[Expr], ctx: &EvalContext) -> Resu
         | "second" | "millisecond" | "weekday" | "week" | "weekyear" => {
             date_method(n as i64, method, args, ctx)
         }
-        _ => Ok(Value::Null),
+        _ => Err(unknown_method_error(method, "number")),
     }
 }
 
@@ -296,7 +296,7 @@ fn date_method(ms: i64, method: &str, args: &[Expr], ctx: &EvalContext) -> Resul
             }
         }
         "isEmpty" => Ok(Value::Bool(false)),
-        _ => Ok(Value::Null),
+        _ => Err(unknown_method_error(method, "date")),
     }
 }
 
@@ -470,7 +470,7 @@ fn array_method(
             }
             Ok(acc)
         }
-        _ => Ok(Value::Null),
+        _ => Err(unknown_method_error(method, "array")),
     }
 }
 
@@ -481,16 +481,20 @@ fn object_method(
     method: &str,
     _args: &[Expr],
     _ctx: &EvalContext,
-) -> Value {
-    match method {
+) -> Result<Value, String> {
+    Ok(match method {
         "isEmpty" => Value::Bool(map.is_empty()),
         "keys" => Value::Array(map.keys().map(|k| Value::String(k.clone())).collect()),
         "values" => Value::Array(map.values().cloned().collect()),
-        _ => Value::Null,
-    }
+        _ => return Err(unknown_method_error(method, "object")),
+    })
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+fn unknown_method_error(method: &str, receiver_type: &str) -> String {
+    format!("unknown method `{method}` on {receiver_type} values")
+}
 
 pub fn eval_arg(args: &[Expr], index: usize, ctx: &EvalContext) -> Result<Value, String> {
     args.get(index)

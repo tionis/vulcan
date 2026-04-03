@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
 
@@ -22,8 +22,8 @@ use crate::properties::{
 use crate::resolve_note_reference as resolve_vault_note_reference;
 
 use super::ast::{DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery};
-use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr, CompiledWhereClause};
-use super::parse_dql;
+use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr};
+use super::{parse_dql, DqlDiagnostic};
 
 #[derive(Debug)]
 pub enum DqlEvalError {
@@ -55,6 +55,8 @@ pub struct DqlQueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Value>,
     pub result_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<DqlDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -66,6 +68,45 @@ pub struct DataviewBlockRecord {
     pub source: String,
 }
 
+#[derive(Debug, Default)]
+struct DqlDiagnosticCollector {
+    messages: BTreeSet<String>,
+}
+
+impl DqlDiagnosticCollector {
+    fn push(&mut self, message: impl Into<String>) {
+        self.messages.insert(message.into());
+    }
+
+    fn into_vec(self) -> Vec<DqlDiagnostic> {
+        self.messages
+            .into_iter()
+            .map(|message| DqlDiagnostic { message })
+            .collect()
+    }
+}
+
+fn is_unsupported_dql_feature(error: &str) -> bool {
+    error.starts_with("unknown function `")
+        || error.starts_with("unknown method `")
+        || error.starts_with("unknown file method `")
+}
+
+fn recover_unsupported_feature<T>(
+    diagnostics: &mut DqlDiagnosticCollector,
+    error: &str,
+    diagnostic_message: impl FnOnce(&str) -> String,
+    error_message: impl FnOnce(&str) -> String,
+    fallback: T,
+) -> Result<T, DqlEvalError> {
+    if is_unsupported_dql_feature(error) {
+        diagnostics.push(diagnostic_message(error));
+        Ok(fallback)
+    } else {
+        Err(DqlEvalError::Message(error_message(error)))
+    }
+}
+
 pub fn evaluate_dql(
     paths: &VaultPaths,
     source: &str,
@@ -75,6 +116,7 @@ pub fn evaluate_dql(
     evaluate_parsed_dql(paths, &query, current_file)
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn evaluate_parsed_dql(
     paths: &VaultPaths,
     query: &DqlQuery,
@@ -83,6 +125,7 @@ pub fn evaluate_parsed_dql(
     let config = load_vault_config(paths).config;
     let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
     let compiled = compile_dql(query);
+    let mut diagnostics = DqlDiagnosticCollector::default();
     let note_lookup = load_note_index(paths)?;
     let all_notes = sorted_notes(&note_lookup);
     let from_sources = compiled
@@ -111,29 +154,54 @@ pub fn evaluate_parsed_dql(
         match command {
             CompiledDqlCommand::From(_) => {}
             CompiledDqlCommand::Where(where_clause) => {
-                rows = apply_where(
-                    paths,
-                    rows,
-                    where_clause,
-                    query,
-                    &note_lookup,
-                    page_rows_are_pristine,
-                    time_zone,
-                )?;
+                if page_rows_are_pristine
+                    && query.query_type != super::DqlQueryType::Task
+                    && where_clause.filters.is_some()
+                {
+                    let matching_paths = matching_note_paths_for_filters(
+                        paths,
+                        where_clause
+                            .filters
+                            .as_deref()
+                            .expect("filters presence checked above"),
+                    )?;
+                    rows.retain(|row| matching_paths.contains(row.note.document_path.as_str()));
+                } else {
+                    rows = apply_where_expression(
+                        rows,
+                        &where_clause.expr,
+                        query,
+                        &note_lookup,
+                        time_zone,
+                        &mut diagnostics,
+                    )?;
+                }
             }
             CompiledDqlCommand::Sort(keys) => {
                 let mut decorated = Vec::with_capacity(rows.len());
                 for row in rows {
                     let mut values = Vec::with_capacity(keys.len());
                     for key in keys {
-                        let value =
-                            row.evaluate(&key.expr, &note_lookup, time_zone)
-                                .map_err(|error| {
-                                    DqlEvalError::Message(format!(
+                        let value = match row.evaluate(&key.expr, &note_lookup, time_zone) {
+                            Ok(value) => value,
+                            Err(error) => recover_unsupported_feature(
+                                &mut diagnostics,
+                                &error,
+                                |error| {
+                                    format!(
+                                        "unsupported DQL feature in SORT for {}: {error}; using null sort key",
+                                        row.note.document_path
+                                    )
+                                },
+                                |error| {
+                                    format!(
                                         "failed to evaluate SORT key for {}: {error}",
                                         row.note.document_path
-                                    ))
-                                })?;
+                                    )
+                                },
+                                Value::Null,
+                            )?,
+                        };
                         values.push(value);
                     }
                     decorated.push((values, row));
@@ -147,24 +215,27 @@ pub fn evaluate_parsed_dql(
             }
             CompiledDqlCommand::Limit(limit) => rows.truncate(*limit),
             CompiledDqlCommand::GroupBy(named_expr) => {
-                rows = apply_group_by(rows, named_expr, &note_lookup, time_zone)?;
+                rows = apply_group_by(rows, named_expr, &note_lookup, time_zone, &mut diagnostics)?;
                 page_rows_are_pristine = false;
             }
             CompiledDqlCommand::Flatten(named_expr) => {
-                rows = apply_flatten(rows, named_expr, &note_lookup, time_zone)?;
+                rows = apply_flatten(rows, named_expr, &note_lookup, time_zone, &mut diagnostics)?;
                 page_rows_are_pristine = false;
             }
         }
     }
 
-    render_result(
+    let mut result = render_result(
         query,
         &config.dataview.primary_column_name,
         &config.dataview.group_column_name,
         rows,
         &note_lookup,
         time_zone,
-    )
+        &mut diagnostics,
+    )?;
+    result.diagnostics = diagnostics.into_vec();
+    Ok(result)
 }
 
 pub fn load_dataview_blocks(
@@ -378,54 +449,38 @@ fn task_rows_for_note(note: &NoteRecord) -> Vec<ExecutionRow> {
     }
 }
 
-fn apply_where(
-    paths: &VaultPaths,
-    rows: Vec<ExecutionRow>,
-    where_clause: &CompiledWhereClause,
-    query: &DqlQuery,
-    note_lookup: &HashMap<String, NoteRecord>,
-    page_rows_are_pristine: bool,
-    time_zone: DataviewTimeZone,
-) -> Result<Vec<ExecutionRow>, DqlEvalError> {
-    if page_rows_are_pristine
-        && query.query_type != super::DqlQueryType::Task
-        && where_clause.filters.is_some()
-    {
-        let matching_paths = matching_note_paths_for_filters(
-            paths,
-            where_clause
-                .filters
-                .as_deref()
-                .expect("filters presence checked above"),
-        )?;
-        return Ok(rows
-            .into_iter()
-            .filter(|row| matching_paths.contains(row.note.document_path.as_str()))
-            .collect());
-    }
-
-    apply_where_expression(rows, &where_clause.expr, query, note_lookup, time_zone)
-}
-
 fn apply_where_expression(
     rows: Vec<ExecutionRow>,
     expr: &crate::expression::ast::Expr,
     query: &DqlQuery,
     note_lookup: &HashMap<String, NoteRecord>,
     time_zone: DataviewTimeZone,
+    diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let mut decorated = Vec::with_capacity(rows.len());
     let mut directly_matched_task_ids = HashSet::new();
 
     for row in rows {
-        let value = row
-            .evaluate(expr, note_lookup, time_zone)
-            .map_err(|error| {
-                DqlEvalError::Message(format!(
-                    "failed to evaluate WHERE for {}: {error}",
-                    row.note.document_path
-                ))
-            })?;
+        let value = match row.evaluate(expr, note_lookup, time_zone) {
+            Ok(value) => value,
+            Err(error) => recover_unsupported_feature(
+                diagnostics,
+                &error,
+                |error| {
+                    format!(
+                        "unsupported DQL feature in WHERE for {}: {error}; treating the row as non-matching",
+                        row.note.document_path
+                    )
+                },
+                |error| {
+                    format!(
+                        "failed to evaluate WHERE for {}: {error}",
+                        row.note.document_path
+                    )
+                },
+                Value::Bool(false),
+            )?,
+        };
         let matched = is_truthy(&value);
         if matched && query.query_type == super::DqlQueryType::Task {
             if let Some(task_id) = row.task_id.as_ref() {
@@ -731,6 +786,7 @@ fn apply_group_by(
     named_expr: &DqlNamedExpr,
     note_lookup: &HashMap<String, NoteRecord>,
     time_zone: DataviewTimeZone,
+    diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let group_name = named_expr
         .alias
@@ -739,14 +795,26 @@ fn apply_group_by(
     let mut decorated = Vec::with_capacity(rows.len());
 
     for row in rows {
-        let key = row
-            .evaluate(&named_expr.expr, note_lookup, time_zone)
-            .map_err(|error| {
-                DqlEvalError::Message(format!(
-                    "failed to evaluate GROUP BY key for {}: {error}",
-                    row.note.document_path
-                ))
-            })?;
+        let key = match row.evaluate(&named_expr.expr, note_lookup, time_zone) {
+            Ok(value) => value,
+            Err(error) => recover_unsupported_feature(
+                diagnostics,
+                &error,
+                |error| {
+                    format!(
+                        "unsupported DQL feature in GROUP BY for {}: {error}; grouping under null",
+                        row.note.document_path
+                    )
+                },
+                |error| {
+                    format!(
+                        "failed to evaluate GROUP BY key for {}: {error}",
+                        row.note.document_path
+                    )
+                },
+                Value::Null,
+            )?,
+        };
         decorated.push((key, row));
     }
 
@@ -788,6 +856,7 @@ fn apply_flatten(
     named_expr: &DqlNamedExpr,
     note_lookup: &HashMap<String, NoteRecord>,
     time_zone: DataviewTimeZone,
+    diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let field_name = named_expr
         .alias
@@ -796,14 +865,26 @@ fn apply_flatten(
     let mut flattened_rows = Vec::new();
 
     for row in rows {
-        let value = row
-            .evaluate(&named_expr.expr, note_lookup, time_zone)
-            .map_err(|error| {
-                DqlEvalError::Message(format!(
-                    "failed to evaluate FLATTEN expression for {}: {error}",
-                    row.note.document_path
-                ))
-            })?;
+        let value = match row.evaluate(&named_expr.expr, note_lookup, time_zone) {
+            Ok(value) => value,
+            Err(error) => recover_unsupported_feature(
+                diagnostics,
+                &error,
+                |error| {
+                    format!(
+                        "unsupported DQL feature in FLATTEN for {}: {error}; flattening a single null value",
+                        row.note.document_path
+                    )
+                },
+                |error| {
+                    format!(
+                        "failed to evaluate FLATTEN expression for {}: {error}",
+                        row.note.document_path
+                    )
+                },
+                Value::Null,
+            )?,
+        };
 
         let datapoints = match value {
             Value::Array(values) => values,
@@ -854,19 +935,35 @@ fn render_result(
     rows: Vec<ExecutionRow>,
     note_lookup: &HashMap<String, NoteRecord>,
     time_zone: DataviewTimeZone,
+    diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let first_column_name = result_first_column_name(query, primary_column_name, group_column_name);
     match query.query_type {
-        super::DqlQueryType::Table => {
-            render_table_result(query, first_column_name, rows, note_lookup, time_zone)
-        }
-        super::DqlQueryType::List => {
-            render_list_result(query, first_column_name, rows, note_lookup, time_zone)
-        }
+        super::DqlQueryType::Table => render_table_result(
+            query,
+            first_column_name,
+            rows,
+            note_lookup,
+            time_zone,
+            diagnostics,
+        ),
+        super::DqlQueryType::List => render_list_result(
+            query,
+            first_column_name,
+            rows,
+            note_lookup,
+            time_zone,
+            diagnostics,
+        ),
         super::DqlQueryType::Task => Ok(render_task_result(query, first_column_name, rows)),
-        super::DqlQueryType::Calendar => {
-            render_calendar_result(query, first_column_name, rows, note_lookup, time_zone)
-        }
+        super::DqlQueryType::Calendar => render_calendar_result(
+            query,
+            first_column_name,
+            rows,
+            note_lookup,
+            time_zone,
+            diagnostics,
+        ),
     }
 }
 
@@ -895,6 +992,7 @@ fn render_table_result(
     rows: Vec<ExecutionRow>,
     note_lookup: &HashMap<String, NoteRecord>,
     time_zone: DataviewTimeZone,
+    diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let mut columns = Vec::new();
     if !query.without_id {
@@ -904,7 +1002,16 @@ fn render_table_result(
 
     let rendered_rows = rows
         .into_iter()
-        .map(|row| render_table_row(&row, query, primary_column_name, note_lookup, time_zone))
+        .map(|row| {
+            render_table_row(
+                &row,
+                query,
+                primary_column_name,
+                note_lookup,
+                time_zone,
+                diagnostics,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(DqlQueryResult {
@@ -912,6 +1019,7 @@ fn render_table_result(
         result_count: rendered_rows.len(),
         columns,
         rows: rendered_rows,
+        diagnostics: Vec::new(),
     })
 }
 
@@ -921,6 +1029,7 @@ fn render_table_row(
     primary_column_name: &str,
     note_lookup: &HashMap<String, NoteRecord>,
     time_zone: DataviewTimeZone,
+    diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Value, DqlEvalError> {
     let mut object = Map::new();
     if !query.without_id {
@@ -929,14 +1038,26 @@ fn render_table_row(
 
     for projection in &query.table_columns {
         let label = projection_label(projection);
-        let value = row
-            .evaluate(&projection.expr, note_lookup, time_zone)
-            .map_err(|error| {
-                DqlEvalError::Message(format!(
-                    "failed to evaluate TABLE column `{label}` for {}: {error}",
-                    row.note.document_path
-                ))
-            })?;
+        let value = match row.evaluate(&projection.expr, note_lookup, time_zone) {
+            Ok(value) => value,
+            Err(error) => recover_unsupported_feature(
+                diagnostics,
+                &error,
+                |error| {
+                    format!(
+                        "unsupported DQL feature in TABLE column `{label}` for {}: {error}; rendered as null",
+                        row.note.document_path
+                    )
+                },
+                |error| {
+                    format!(
+                        "failed to evaluate TABLE column `{label}` for {}: {error}",
+                        row.note.document_path
+                    )
+                },
+                Value::Null,
+            )?,
+        };
         object.insert(label, value);
     }
 
@@ -949,6 +1070,7 @@ fn render_list_result(
     rows: Vec<ExecutionRow>,
     note_lookup: &HashMap<String, NoteRecord>,
     time_zone: DataviewTimeZone,
+    diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let mut columns = Vec::new();
     if !query.without_id {
@@ -966,14 +1088,26 @@ fn render_list_result(
                 object.insert(primary_column_name.to_string(), row.primary_value());
             }
             if let Some(expr) = &query.list_expression {
-                let value = row
-                    .evaluate(expr, note_lookup, time_zone)
-                    .map_err(|error| {
-                        DqlEvalError::Message(format!(
-                            "failed to evaluate LIST expression for {}: {error}",
-                            row.note.document_path
-                        ))
-                    })?;
+                let value = match row.evaluate(expr, note_lookup, time_zone) {
+                    Ok(value) => value,
+                    Err(error) => recover_unsupported_feature(
+                        diagnostics,
+                        &error,
+                        |error| {
+                            format!(
+                                "unsupported DQL feature in LIST for {}: {error}; rendered as null",
+                                row.note.document_path
+                            )
+                        },
+                        |error| {
+                            format!(
+                                "failed to evaluate LIST expression for {}: {error}",
+                                row.note.document_path
+                            )
+                        },
+                        Value::Null,
+                    )?,
+                };
                 object.insert("value".to_string(), value);
             } else if query.without_id {
                 object.insert(
@@ -990,6 +1124,7 @@ fn render_list_result(
         result_count: rendered_rows.len(),
         columns,
         rows: rendered_rows,
+        diagnostics: Vec::new(),
     })
 }
 
@@ -1026,6 +1161,7 @@ fn render_task_result(
         result_count: rendered_rows.len(),
         columns,
         rows: rendered_rows,
+        diagnostics: Vec::new(),
     }
 }
 
@@ -1035,6 +1171,7 @@ fn render_calendar_result(
     rows: Vec<ExecutionRow>,
     note_lookup: &HashMap<String, NoteRecord>,
     time_zone: DataviewTimeZone,
+    diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let expr = query.calendar_expression.as_ref().ok_or_else(|| {
         DqlEvalError::Message("CALENDAR queries require a date expression".to_string())
@@ -1042,14 +1179,26 @@ fn render_calendar_result(
     let mut rendered_rows = Vec::new();
 
     for row in rows {
-        let value = row
-            .evaluate(expr, note_lookup, time_zone)
-            .map_err(|error| {
-                DqlEvalError::Message(format!(
-                    "failed to evaluate CALENDAR expression for {}: {error}",
-                    row.note.document_path
-                ))
-            })?;
+        let value = match row.evaluate(expr, note_lookup, time_zone) {
+            Ok(value) => value,
+            Err(error) => recover_unsupported_feature(
+                diagnostics,
+                &error,
+                |error| {
+                    format!(
+                        "unsupported DQL feature in CALENDAR for {}: {error}; skipping the row",
+                        row.note.document_path
+                    )
+                },
+                |error| {
+                    format!(
+                        "failed to evaluate CALENDAR expression for {}: {error}",
+                        row.note.document_path
+                    )
+                },
+                Value::Null,
+            )?,
+        };
         if value.is_null() {
             continue;
         }
@@ -1065,6 +1214,7 @@ fn render_calendar_result(
         result_count: rendered_rows.len(),
         columns: vec!["date".to_string(), primary_column_name.to_string()],
         rows: rendered_rows,
+        diagnostics: Vec::new(),
     })
 }
 
@@ -1467,6 +1617,38 @@ FLATTEN plain"#,
             flattened_scalar.rows,
             vec![serde_json::json!({ "plain": "alpha, beta" })]
         );
+    }
+
+    #[test]
+    fn reports_unsupported_function_and_method_diagnostics_without_aborting_query() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let result = evaluate_dql(
+            &paths,
+            r#"TABLE status.slugify() AS slug, mystery(status) AS surprise
+FROM "Projects"
+SORT file.name ASC"#,
+            None,
+        )
+        .expect("unsupported features should surface as diagnostics");
+
+        assert_eq!(result.result_count, 2);
+        assert_eq!(result.rows[0]["slug"], Value::Null);
+        assert_eq!(result.rows[0]["surprise"], Value::Null);
+        assert_eq!(result.rows[1]["slug"], Value::Null);
+        assert_eq!(result.rows[1]["surprise"], Value::Null);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unknown method `slugify`")));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unknown function `mystery`")));
     }
 
     #[test]
