@@ -349,6 +349,53 @@ fn dataview_query_json_output_evaluates_dql_strings() {
 }
 
 #[test]
+fn dataview_query_json_output_surfaces_unsupported_dql_diagnostics() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "dataview",
+            "query",
+            r#"TABLE status.slugify() AS slug, mystery(status) AS surprise FROM "Projects" SORT file.name ASC"#,
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["query_type"], "table");
+    assert_eq!(json["rows"].as_array().map(Vec::len), Some(2));
+    assert_eq!(json["rows"][0]["slug"], Value::Null);
+    assert_eq!(json["rows"][0]["surprise"], Value::Null);
+    assert!(json["diagnostics"]
+        .as_array()
+        .is_some_and(|diagnostics| diagnostics.len() >= 2));
+    assert!(json["diagnostics"]
+        .as_array()
+        .is_some_and(
+            |diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("unknown method `slugify`")))
+        ));
+    assert!(json["diagnostics"]
+        .as_array()
+        .is_some_and(
+            |diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("unknown function `mystery`")))
+        ));
+}
+
+#[test]
 fn dataview_query_js_json_output_evaluates_snippets() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -531,6 +578,46 @@ fn dataview_eval_human_output_keeps_empty_table_headers() {
     assert!(stdout.contains("[[Projects/Alpha]] | active | 1"));
     assert!(stdout.contains("[[Dashboard]] | draft | [2.0,3.0]"));
     assert!(stdout.contains("2 result(s)"));
+}
+
+#[test]
+fn dataview_eval_human_output_shows_unsupported_dql_diagnostics() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    fs::write(
+        vault_root.join("Unsupported.md"),
+        concat!(
+            "```dataview\n",
+            "TABLE status.slugify() AS slug\n",
+            "FROM \"Projects\"\n",
+            "SORT file.name ASC\n",
+            "```\n",
+        ),
+    )
+    .expect("unsupported note should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "dataview",
+            "eval",
+            "Unsupported",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone())
+        .expect("stdout should be valid utf-8");
+
+    assert!(stdout.contains("File | slug"));
+    assert!(stdout.contains("[[Projects/Alpha]] | null"));
+    assert!(stdout.contains("Diagnostics:"));
+    assert!(stdout.contains("unknown method `slugify`"));
 }
 
 fn write_tasks_cli_fixture(vault_root: &Path) {

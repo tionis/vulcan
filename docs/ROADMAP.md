@@ -1310,7 +1310,7 @@ Execute parsed DQL queries against the cache and expose results via CLI.
 - [x] SORT with multi-key tiebreaking and correct type-aware ordering
 - [x] `file.*` namespace fully accessible in all expressions (WHERE, TABLE columns, SORT, GROUP BY, FLATTEN)
 - [x] Link indexing in expressions: `[[Note]].field` resolves field from the linked note's metadata
-- [ ] Diagnostics for unsupported DQL features surfaced in output
+- [x] Diagnostics for unsupported DQL features surfaced in output
 - [x] `--output json` on all subcommands
 - [x] Empty result handling: TABLE with 0 results shows headers + result count; LIST with 0 results shows empty; TASK with 0 results shows nothing
 - [x] Result count display: configurable via Dataview settings (`displayResultCount`); show count in TABLE/TASK headers by default
