@@ -32,9 +32,10 @@ pub mod write_lock;
 
 pub use bases::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,
-    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesColumn, BasesDiagnostic, BasesError,
-    BasesEvalReport, BasesEvaluatedView, BasesEvaluator, BasesGroupBy, BasesRow, BasesSource,
-    BasesSourceRequest, BasesViewEditReport, FileSource,
+    plan_base_note_create, BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesColumn,
+    BasesCreateContext, BasesDiagnostic, BasesError, BasesEvalReport, BasesEvaluatedView,
+    BasesEvaluator, BasesGroupBy, BasesRow, BasesSource, BasesSourceRequest, BasesViewEditReport,
+    FileSource,
 };
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{
