@@ -2366,7 +2366,7 @@ Deferred. The Phase 10 daemon will expose task functionality through its own uni
   template = "yearly"
   ```
 - [x] Each period type is independently configurable: folder, filename format, template, enabled flag
-- [ ] Custom period types (future): allow user-defined periods beyond the built-in five (e.g., `[periodic.sprint]` with custom interval). Deferred — the config structure supports it (any `[periodic.<name>]` section), but the resolution and CLI integration land after the five built-in types are working.
+- [x] Custom period types: allow user-defined periods beyond the built-in five via `[periodic.<name>]` with `unit = "days|weeks|months|quarters|years"`, `interval = <n>`, and optional `anchor_date = "YYYY-MM-DD"` for cycle alignment
 
 #### 9.16.2 Periodic note discovery and resolution
 
@@ -2410,8 +2410,9 @@ schedule_heading = "Schedule"   # heading to parse events from (optional)
 **Queryable via:**
 
 - [x] `vulcan daily list` aggregates events across daily notes in a date range
-- [ ] JS runtime: `vault.daily.today().events`, `vault.events({ from, to })` (see 9.18.5)
-- [ ] Future: calendar UI rendering, one-way `.ics` export
+- [x] JS runtime: `vault.daily.today().events`, `vault.events({ from, to })` (see 9.18.5)
+- [x] One-way `.ics` export for daily-note events
+- [ ] Calendar UI rendering moved to 9.18.1 / Phase 13 as a presentation concern rather than periodic-note data infrastructure
 
 #### 9.16.4 CLI surface
 
@@ -2421,6 +2422,7 @@ schedule_heading = "Schedule"   # heading to parse events from (optional)
   - [x] `--no-edit` flag: create only, don't open
 - [x] `vulcan daily show [date]` — display a daily note's content (default: today)
 - [x] `vulcan daily list [--from <date>] [--to <date>]` — list daily notes in range, with aggregated events (also `--week`, `--month` shorthand)
+- [x] `vulcan daily export-ics [--from <date>] [--to <date>] [--week] [--month] [--path <file.ics>]` — export parsed daily-note events as an ICS calendar
 - [x] `vulcan daily append <text> [--heading <name>] [--date <date>]` — append text to a daily note (default: today)
 - [x] `vulcan weekly [date]`, `vulcan monthly [date]` — same pattern for other periods
 - [x] `vulcan periodic <type> [date]` — generic command for any configured period type
@@ -2609,7 +2611,7 @@ Restructure all existing commands into logical groups. This is a clean break —
 | `web` | External data fetching (agent tools) | `search`, `fetch` |
 | `run` | JS runtime execution and REPL | (new) |
 | `help` | Integrated documentation | (new) |
-| `daily` | Daily note operations | `today`, `show`, `list`, `append` (extends 9.16) |
+| `daily` | Daily note operations | `today`, `show`, `list`, `export-ics`, `append` (extends 9.16) |
 | `git` | Sandboxed git operations | `status`, `log`, `diff`, `commit`, `blame` |
 | `graph` | Graph analytics | (existing) |
 | `vectors` | Vector/semantic operations | (existing) |
@@ -2636,6 +2638,7 @@ Restructure all existing commands into logical groups. This is a clean break —
   - `suggest` → `refactor suggest`
   - `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
 - [ ] Alias commands that appear in both group and top-level: `note doctor` → `doctor <note>`, `note diff` → `diff <note>`
+- [ ] Add a calendar navigation/rendering mode for periodic notes in the browse TUI; Phase 13 WebUI can reuse the same periodic/event data foundation for a graphical calendar view
 - [ ] Update `describe` command output to reflect new hierarchy
 - [ ] Update shell completion generation
 - [ ] Update all integration tests
@@ -2889,8 +2892,8 @@ scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
 - [ ] Implement `Note` JS class wrapping `NoteIndex`/`NoteRecord` core structs
 - [ ] Implement `vault.graph` object wrapping petgraph structure
 - [ ] Implement collection API with `.where()`, `.sortBy()`, `.limit()`, `.forEach()`
-- [ ] Implement `vault.daily` namespace (delegates to 9.16 infrastructure)
-- [ ] Implement `vault.events()` aggregation across daily notes
+- [x] Implement `vault.daily` namespace (delegates to 9.16 infrastructure)
+- [x] Implement `vault.events()` aggregation across daily notes
 - [ ] Implement write methods (Tier 2) with sandbox level checks
 - [ ] Implement `vault.transaction()` for atomic batch mutations
 - [ ] Implement `web.search()` and `web.fetch()` (Tier 3), gated on `net` sandbox

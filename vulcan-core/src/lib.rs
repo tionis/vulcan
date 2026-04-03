@@ -104,8 +104,11 @@ pub use paths::{
     REPORTS_DIR_NAME, VULCAN_DIR_NAME,
 };
 pub use periodic::{
-    expected_periodic_note_path, match_periodic_note_path, period_range_for_date,
-    resolve_daily_note, resolve_periodic_note, step_period_start, PeriodicNoteMatch,
+    expected_periodic_note_path, export_daily_events_to_ics, list_daily_note_events,
+    list_events_between, load_events_for_periodic_note, match_periodic_note_path,
+    period_range_for_date, resolve_daily_note, resolve_periodic_note, step_period_start,
+    DailyNoteEvents, PeriodicError, PeriodicEvent, PeriodicEventOccurrence, PeriodicIcsExport,
+    PeriodicNoteMatch,
 };
 pub use properties::{
     evaluate_note_inline_expressions, extract_indexed_properties, query_notes,

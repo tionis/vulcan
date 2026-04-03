@@ -2763,7 +2763,7 @@
       },
       {
         "about": "Open, inspect, and append to daily notes",
-        "after_help": "Subcommands:\n  today       open or create today's daily note\n  show        display one daily note's contents\n  list        list daily notes and extracted schedule events\n  append      append text to one daily note\n\nNotes:\n  `list --week` and `list --month` expand around the current date using the configured periodic week start.\n  `show` defaults to today. `append` creates the daily note first when it does not exist.\n\nExamples:\n  vulcan daily today\n  vulcan daily today --no-edit\n  vulcan daily show 2026-04-03\n  vulcan daily list --week\n  vulcan daily append \"Called Alice\" --heading \"## Log\"",
+        "after_help": "Subcommands:\n  today       open or create today's daily note\n  show        display one daily note's contents\n  list        list daily notes and extracted schedule events\n  export-ics  export extracted daily-note events as an ICS calendar\n  append      append text to one daily note\n\nNotes:\n  `list --week` and `list --month` expand around the current date using the configured periodic week start.\n  `show` defaults to today. `append` creates the daily note first when it does not exist.\n\nExamples:\n  vulcan daily today\n  vulcan daily today --no-edit\n  vulcan daily show 2026-04-03\n  vulcan daily list --week\n  vulcan daily export-ics --month --path Journal.ics\n  vulcan daily append \"Called Alice\" --heading \"## Log\"",
         "name": "daily",
         "options": [],
         "subcommands": [
@@ -2872,6 +2872,85 @@
                 "short": null,
                 "value_names": [
                   "MONTH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Export daily-note events as an ICS calendar",
+            "name": "export-ics",
+            "options": [
+              {
+                "help": "Start date for the export window",
+                "id": "from",
+                "long": "from",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM"
+                ]
+              },
+              {
+                "help": "End date for the export window",
+                "id": "to",
+                "long": "to",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TO"
+                ]
+              },
+              {
+                "help": "Use the current week",
+                "id": "week",
+                "long": "week",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WEEK"
+                ]
+              },
+              {
+                "help": "Use the current month",
+                "id": "month",
+                "long": "month",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "MONTH"
+                ]
+              },
+              {
+                "help": "Write the generated calendar to this .ics file",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Calendar name to embed in the ICS export",
+                "id": "calendar_name",
+                "long": "calendar-name",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CALENDAR_NAME"
                 ]
               }
             ],
