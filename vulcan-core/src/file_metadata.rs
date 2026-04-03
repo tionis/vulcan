@@ -330,7 +330,10 @@ fn expand_explicit_tags(tags: &[String]) -> Vec<String> {
 }
 
 fn resolve_file_day(note: &NoteRecord) -> Option<String> {
-    filename_day(&note.file_name).or_else(|| frontmatter_day(&note.frontmatter))
+    note.periodic_date
+        .clone()
+        .or_else(|| filename_day(&note.file_name))
+        .or_else(|| frontmatter_day(&note.frontmatter))
 }
 
 fn filename_day(file_name: &str) -> Option<String> {
@@ -406,6 +409,8 @@ mod tests {
             inlinks: vec!["[[Home]]".to_string()],
             aliases: vec!["Sprint Note".to_string()],
             frontmatter: serde_json::json!({"Date": "2026-04-18"}),
+            periodic_type: None,
+            periodic_date: None,
             list_items: vec![],
             tasks: vec![],
             raw_inline_expressions: vec![],

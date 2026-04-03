@@ -162,6 +162,38 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # templates_pairs = [{ name = "slugify", command = "node scripts/slugify.js" }]
 # folder_templates = [{ folder = "Daily", template = "Daily Template" }]
 # file_templates = [{ regex = "^Projects/.*\\.md$", template = "Project Template" }]
+
+# [periodic.daily]
+# enabled = true
+# folder = "Journal/Daily"
+# format = "YYYY-MM-DD"
+# template = "daily"
+# schedule_heading = "Schedule"
+#
+# [periodic.weekly]
+# enabled = true
+# folder = "Journal/Weekly"
+# format = "YYYY-[W]ww"
+# template = "weekly"
+# start_of_week = "monday"
+#
+# [periodic.monthly]
+# enabled = true
+# folder = "Journal/Monthly"
+# format = "YYYY-MM"
+# template = "monthly"
+#
+# [periodic.quarterly]
+# enabled = false
+# folder = "Journal/Quarterly"
+# format = "YYYY-[Q]Q"
+# template = "quarterly"
+#
+# [periodic.yearly]
+# enabled = false
+# folder = "Journal/Yearly"
+# format = "YYYY"
+# template = "yearly"
 "###;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -845,6 +877,130 @@ impl Default for DataviewConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PeriodicStartOfWeek {
+    #[default]
+    Monday,
+    Sunday,
+    Saturday,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeriodicNoteConfig {
+    #[serde(default = "default_periodic_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub folder: PathBuf,
+    #[serde(default = "default_periodic_format")]
+    pub format: String,
+    #[serde(default)]
+    pub template: Option<String>,
+    #[serde(default)]
+    pub start_of_week: PeriodicStartOfWeek,
+    #[serde(default)]
+    pub schedule_heading: Option<String>,
+}
+
+impl PeriodicNoteConfig {
+    #[must_use]
+    pub fn built_in(name: &str) -> Self {
+        match name {
+            "daily" => Self {
+                enabled: true,
+                folder: PathBuf::from("Journal/Daily"),
+                format: "YYYY-MM-DD".to_string(),
+                template: Some("daily".to_string()),
+                start_of_week: PeriodicStartOfWeek::Monday,
+                schedule_heading: None,
+            },
+            "weekly" => Self {
+                enabled: true,
+                folder: PathBuf::from("Journal/Weekly"),
+                format: "YYYY-[W]ww".to_string(),
+                template: Some("weekly".to_string()),
+                start_of_week: PeriodicStartOfWeek::Monday,
+                schedule_heading: None,
+            },
+            "monthly" => Self {
+                enabled: true,
+                folder: PathBuf::from("Journal/Monthly"),
+                format: "YYYY-MM".to_string(),
+                template: Some("monthly".to_string()),
+                start_of_week: PeriodicStartOfWeek::Monday,
+                schedule_heading: None,
+            },
+            "quarterly" => Self {
+                enabled: false,
+                folder: PathBuf::from("Journal/Quarterly"),
+                format: "YYYY-[Q]Q".to_string(),
+                template: Some("quarterly".to_string()),
+                start_of_week: PeriodicStartOfWeek::Monday,
+                schedule_heading: None,
+            },
+            "yearly" => Self {
+                enabled: false,
+                folder: PathBuf::from("Journal/Yearly"),
+                format: "YYYY".to_string(),
+                template: Some("yearly".to_string()),
+                start_of_week: PeriodicStartOfWeek::Monday,
+                schedule_heading: None,
+            },
+            _ => Self {
+                enabled: false,
+                folder: PathBuf::new(),
+                format: default_periodic_format(),
+                template: None,
+                start_of_week: PeriodicStartOfWeek::Monday,
+                schedule_heading: None,
+            },
+        }
+    }
+}
+
+impl Default for PeriodicNoteConfig {
+    fn default() -> Self {
+        Self::built_in("daily")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeriodicConfig {
+    #[serde(flatten)]
+    pub notes: BTreeMap<String, PeriodicNoteConfig>,
+}
+
+impl PeriodicConfig {
+    #[must_use]
+    pub fn note(&self, period_type: &str) -> Option<&PeriodicNoteConfig> {
+        self.notes.get(period_type)
+    }
+
+    pub fn note_mut(&mut self, period_type: &str) -> &mut PeriodicNoteConfig {
+        self.notes
+            .entry(period_type.to_string())
+            .or_insert_with(|| PeriodicNoteConfig::built_in(period_type))
+    }
+}
+
+impl Default for PeriodicConfig {
+    fn default() -> Self {
+        let mut notes = BTreeMap::new();
+        for name in ["daily", "weekly", "monthly", "quarterly", "yearly"] {
+            notes.insert(name.to_string(), PeriodicNoteConfig::built_in(name));
+        }
+        Self { notes }
+    }
+}
+
+fn default_periodic_enabled() -> bool {
+    true
+}
+
+fn default_periodic_format() -> String {
+    "YYYY-MM-DD".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanConfig {
     pub default_mode: AutoScanMode,
@@ -877,6 +1033,7 @@ pub struct VaultConfig {
     pub kanban: KanbanConfig,
     pub dataview: DataviewConfig,
     pub templates: TemplatesConfig,
+    pub periodic: PeriodicConfig,
 }
 
 impl Default for VaultConfig {
@@ -897,6 +1054,7 @@ impl Default for VaultConfig {
             kanban: KanbanConfig::default(),
             dataview: DataviewConfig::default(),
             templates: TemplatesConfig::default(),
+            periodic: PeriodicConfig::default(),
         }
     }
 }
@@ -1072,6 +1230,7 @@ struct PartialVulcanConfig {
     kanban: Option<PartialKanbanConfig>,
     dataview: Option<PartialDataviewConfig>,
     templates: Option<PartialTemplatesConfig>,
+    periodic: Option<PartialPeriodicConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1133,6 +1292,22 @@ struct PartialTemplatesConfig {
     enabled_templates_hotkeys: Option<Vec<String>>,
     startup_templates: Option<Vec<String>>,
     intellisense_render: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialPeriodicConfig {
+    #[serde(flatten)]
+    notes: BTreeMap<String, PartialPeriodicNoteConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialPeriodicNoteConfig {
+    enabled: Option<bool>,
+    folder: Option<PathBuf>,
+    format: Option<String>,
+    template: Option<String>,
+    start_of_week: Option<PeriodicStartOfWeek>,
+    schedule_heading: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1247,6 +1422,33 @@ struct ObsidianTemplatesConfig {
         alias = "templateFolderPath"
     )]
     folder: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianDailyNotesConfig {
+    folder: Option<String>,
+    format: Option<String>,
+    template: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianPeriodicNoteSettings {
+    enabled: Option<bool>,
+    folder: Option<String>,
+    format: Option<String>,
+    #[serde(rename = "templatePath", alias = "template")]
+    template_path: Option<String>,
+    #[serde(rename = "startOfWeek")]
+    start_of_week: Option<PeriodicStartOfWeek>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianPeriodicNotesConfig {
+    daily: Option<ObsidianPeriodicNoteSettings>,
+    weekly: Option<ObsidianPeriodicNoteSettings>,
+    monthly: Option<ObsidianPeriodicNoteSettings>,
+    quarterly: Option<ObsidianPeriodicNoteSettings>,
+    yearly: Option<ObsidianPeriodicNoteSettings>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1555,6 +1757,9 @@ pub struct CoreImporter;
 pub struct KanbanImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct PeriodicNotesImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TasksImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1565,6 +1770,7 @@ pub fn all_importers() -> Vec<Box<dyn PluginImporter>> {
     vec![
         Box::new(CoreImporter),
         Box::new(KanbanImporter),
+        Box::new(PeriodicNotesImporter),
         Box::new(TasksImporter),
         Box::new(TemplaterImporter),
     ]
@@ -1586,6 +1792,12 @@ pub fn import_kanban_plugin_config(
     paths: &VaultPaths,
 ) -> Result<ConfigImportReport, ConfigImportError> {
     KanbanImporter.import(paths, ImportTarget::Shared)
+}
+
+pub fn import_periodic_notes_plugin_config(
+    paths: &VaultPaths,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    PeriodicNotesImporter.import(paths, ImportTarget::Shared)
 }
 
 pub fn import_core_plugin_config(
@@ -1959,6 +2171,71 @@ impl PluginImporter for KanbanImporter {
     }
 }
 
+impl PluginImporter for PeriodicNotesImporter {
+    fn name(&self) -> &'static str {
+        "periodic-notes"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian Daily Notes and Periodic Notes"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![
+            importer_source_path(paths, ".obsidian/daily-notes.json"),
+            importer_source_path(paths, ".obsidian/plugins/periodic-notes/data.json"),
+        ]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_paths = self
+            .source_paths(paths)
+            .into_iter()
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>();
+        if source_paths.is_empty() {
+            return Err(ConfigImportError::MissingSource(importer_source_path(
+                paths,
+                ".obsidian/plugins/periodic-notes/data.json",
+            )));
+        }
+
+        let mut mappings = Vec::new();
+        let daily_path = importer_source_path(paths, ".obsidian/daily-notes.json");
+        if daily_path.exists() {
+            let daily = serde_json::from_str::<ObsidianDailyNotesConfig>(&fs::read_to_string(
+                &daily_path,
+            )?)?;
+            mappings.extend(periodic_daily_notes_import_mappings(&daily)?);
+        }
+
+        let periodic_path =
+            importer_source_path(paths, ".obsidian/plugins/periodic-notes/data.json");
+        if periodic_path.exists() {
+            let periodic = serde_json::from_str::<ObsidianPeriodicNotesConfig>(
+                &fs::read_to_string(&periodic_path)?,
+            )?;
+            mappings.extend(periodic_plugin_import_mappings(&periodic)?);
+        }
+
+        let settings = import_settings_from_mappings(mappings);
+        apply_import_settings(
+            paths,
+            self.name(),
+            source_paths[0].clone(),
+            source_paths,
+            &settings,
+            target,
+            dry_run,
+        )
+    }
+}
+
 impl PluginImporter for CoreImporter {
     fn name(&self) -> &'static str {
         "core"
@@ -2110,6 +2387,16 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
         apply_obsidian_template_defaults(&mut config, obsidian_templates);
     }
 
+    if let Some(obsidian_daily_notes) = load_obsidian_daily_notes_config(paths, &mut diagnostics) {
+        apply_obsidian_daily_notes_defaults(&mut config, obsidian_daily_notes);
+    }
+
+    if let Some(obsidian_periodic_notes) =
+        load_obsidian_periodic_notes_config(paths, &mut diagnostics)
+    {
+        apply_obsidian_periodic_notes_defaults(&mut config, obsidian_periodic_notes);
+    }
+
     if let Some(obsidian_templater) = load_obsidian_templater_config(paths, &mut diagnostics) {
         apply_obsidian_templater_defaults(&mut config, obsidian_templater);
     }
@@ -2172,6 +2459,26 @@ fn load_obsidian_property_types(
             BTreeMap::new()
         }
     }
+}
+
+fn load_obsidian_daily_notes_config(
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<ObsidianDailyNotesConfig> {
+    let path = paths.vault_root().join(".obsidian/daily-notes.json");
+
+    load_json_file(&path, diagnostics)
+}
+
+fn load_obsidian_periodic_notes_config(
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<ObsidianPeriodicNotesConfig> {
+    let path = paths
+        .vault_root()
+        .join(".obsidian/plugins/periodic-notes/data.json");
+
+    load_json_file(&path, diagnostics)
 }
 
 fn load_explicit_obsidian_property_types(
@@ -2715,6 +3022,86 @@ fn kanban_config_import_mappings(
     Ok(mappings)
 }
 
+fn periodic_daily_notes_import_mappings(
+    config: &ObsidianDailyNotesConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let mut mappings = Vec::new();
+    push_config_import_mapping(
+        &mut mappings,
+        "daily-notes.folder",
+        "periodic.daily.folder",
+        &normalize_optional_text(config.folder.clone()).map(normalize_periodic_folder),
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "daily-notes.format",
+        "periodic.daily.format",
+        &normalize_optional_text(config.format.clone()),
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "daily-notes.template",
+        "periodic.daily.template",
+        &normalize_optional_text(config.template.clone()),
+    )?;
+    Ok(mappings)
+}
+
+fn periodic_plugin_import_mappings(
+    config: &ObsidianPeriodicNotesConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let mut mappings = Vec::new();
+    push_periodic_plugin_mappings(&mut mappings, "daily", config.daily.as_ref())?;
+    push_periodic_plugin_mappings(&mut mappings, "weekly", config.weekly.as_ref())?;
+    push_periodic_plugin_mappings(&mut mappings, "monthly", config.monthly.as_ref())?;
+    push_periodic_plugin_mappings(&mut mappings, "quarterly", config.quarterly.as_ref())?;
+    push_periodic_plugin_mappings(&mut mappings, "yearly", config.yearly.as_ref())?;
+    Ok(mappings)
+}
+
+fn push_periodic_plugin_mappings(
+    mappings: &mut Vec<ConfigImportMapping>,
+    period_type: &str,
+    config: Option<&ObsidianPeriodicNoteSettings>,
+) -> Result<(), ConfigImportError> {
+    let Some(config) = config else {
+        return Ok(());
+    };
+
+    push_config_import_mapping(
+        mappings,
+        &format!("{period_type}.enabled"),
+        &format!("periodic.{period_type}.enabled"),
+        &config.enabled,
+    )?;
+    push_config_import_mapping(
+        mappings,
+        &format!("{period_type}.folder"),
+        &format!("periodic.{period_type}.folder"),
+        &normalize_optional_text(config.folder.clone()).map(normalize_periodic_folder),
+    )?;
+    push_config_import_mapping(
+        mappings,
+        &format!("{period_type}.format"),
+        &format!("periodic.{period_type}.format"),
+        &normalize_optional_text(config.format.clone()),
+    )?;
+    push_config_import_mapping(
+        mappings,
+        &format!("{period_type}.templatePath"),
+        &format!("periodic.{period_type}.template"),
+        &normalize_optional_text(config.template_path.clone()),
+    )?;
+    push_config_import_mapping(
+        mappings,
+        &format!("{period_type}.startOfWeek"),
+        &format!("periodic.{period_type}.start_of_week"),
+        &config.start_of_week,
+    )?;
+
+    Ok(())
+}
+
 fn load_config_value(path: &Path) -> Result<toml::Value, ConfigImportError> {
     if !path.exists() {
         return Ok(toml::Value::Table(toml::map::Map::new()));
@@ -2827,6 +3214,61 @@ fn apply_obsidian_template_defaults(config: &mut VaultConfig, obsidian: Obsidian
 
     if let Some(folder) = obsidian.folder {
         config.templates.obsidian_folder = normalize_template_path(Some(folder));
+    }
+}
+
+fn apply_obsidian_daily_notes_defaults(
+    config: &mut VaultConfig,
+    obsidian: ObsidianDailyNotesConfig,
+) {
+    let daily = config.periodic.note_mut("daily");
+    if let Some(folder) = obsidian.folder {
+        daily.folder = normalize_periodic_folder(folder);
+    }
+    if let Some(format) = normalize_optional_text(obsidian.format) {
+        daily.format = format;
+    }
+    if let Some(template) = normalize_optional_text(obsidian.template) {
+        daily.template = Some(template);
+    }
+}
+
+fn apply_obsidian_periodic_notes_defaults(
+    config: &mut VaultConfig,
+    obsidian: ObsidianPeriodicNotesConfig,
+) {
+    apply_obsidian_periodic_note_defaults(config.periodic.note_mut("daily"), obsidian.daily);
+    apply_obsidian_periodic_note_defaults(config.periodic.note_mut("weekly"), obsidian.weekly);
+    apply_obsidian_periodic_note_defaults(config.periodic.note_mut("monthly"), obsidian.monthly);
+    apply_obsidian_periodic_note_defaults(
+        config.periodic.note_mut("quarterly"),
+        obsidian.quarterly,
+    );
+    apply_obsidian_periodic_note_defaults(config.periodic.note_mut("yearly"), obsidian.yearly);
+}
+
+fn apply_obsidian_periodic_note_defaults(
+    target: &mut PeriodicNoteConfig,
+    settings: Option<ObsidianPeriodicNoteSettings>,
+) {
+    let Some(settings) = settings else {
+        return;
+    };
+
+    if let Some(enabled) = settings.enabled {
+        target.enabled = enabled;
+    }
+    if let Some(folder) = settings.folder {
+        target.folder = normalize_periodic_folder(folder);
+    }
+    if let Some(format) = normalize_optional_text(settings.format) {
+        target.format = format;
+    }
+    if let Some(template) = normalize_optional_text(settings.template_path) {
+        target.template = Some(template);
+    }
+    if let Some(start_of_week) = settings.start_of_week {
+        target.start_of_week = start_of_week;
     }
 }
 
@@ -3472,6 +3914,30 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             config.templates.intellisense_render = intellisense_render;
         }
     }
+
+    if let Some(periodic) = overrides.periodic {
+        for (name, overrides) in periodic.notes {
+            let note = config.periodic.note_mut(&name);
+            if let Some(enabled) = overrides.enabled {
+                note.enabled = enabled;
+            }
+            if let Some(folder) = overrides.folder {
+                note.folder = normalize_periodic_folder_pathbuf(&folder);
+            }
+            if let Some(format) = normalize_optional_text(overrides.format) {
+                note.format = format;
+            }
+            if let Some(template) = overrides.template {
+                note.template = normalize_optional_text(Some(template));
+            }
+            if let Some(start_of_week) = overrides.start_of_week {
+                note.start_of_week = start_of_week;
+            }
+            if let Some(schedule_heading) = overrides.schedule_heading {
+                note.schedule_heading = normalize_optional_text(Some(schedule_heading));
+            }
+        }
+    }
 }
 
 fn normalize_attachment_folder(path: &str) -> PathBuf {
@@ -3504,6 +3970,14 @@ fn normalize_template_path(value: Option<String>) -> Option<PathBuf> {
 
 fn normalize_template_pathbuf(value: &Path) -> Option<PathBuf> {
     normalize_template_path(Some(value.to_string_lossy().into_owned()))
+}
+
+fn normalize_periodic_folder(value: String) -> PathBuf {
+    normalize_template_path(Some(value)).unwrap_or_default()
+}
+
+fn normalize_periodic_folder_pathbuf(value: &Path) -> PathBuf {
+    normalize_periodic_folder(value.to_string_lossy().into_owned())
 }
 
 fn normalize_filesystem_path(value: Option<String>) -> Option<PathBuf> {
@@ -3754,6 +4228,32 @@ mod tests {
       "folder": "Shared Templates",
       "dateFormat": "dddd, MMMM Do YYYY",
       "timeFormat": "hh:mm A"
+    }"#;
+    const OBSIDIAN_DAILY_NOTES_JSON: &str = r#"{
+      "folder": "Journal/Core Daily",
+      "format": "YYYY-MM-DD",
+      "template": "Daily Core"
+    }"#;
+    const OBSIDIAN_PERIODIC_NOTES_JSON: &str = r#"{
+      "daily": {
+        "enabled": true,
+        "folder": "Journal/Daily",
+        "format": "YYYY-MM-DD",
+        "templatePath": "daily"
+      },
+      "weekly": {
+        "enabled": true,
+        "folder": "Journal/Weekly",
+        "format": "YYYY-[W]ww",
+        "templatePath": "weekly",
+        "startOfWeek": "sunday"
+      },
+      "monthly": {
+        "enabled": true,
+        "folder": "Journal/Monthly",
+        "format": "YYYY-MM",
+        "templatePath": "monthly"
+      }
     }"#;
     const OBSIDIAN_DATAVIEW_JSON: &str = r#"{
       "inlineQueryPrefix": "dv:",
@@ -4071,8 +4571,16 @@ intellisense_render = 2
             OBSIDIAN_TEMPLATES_JSON,
         );
         write_test_file(
+            &vault_root.join(".obsidian/daily-notes.json"),
+            OBSIDIAN_DAILY_NOTES_JSON,
+        );
+        write_test_file(
             &vault_root.join(".obsidian/plugins/dataview/data.json"),
             OBSIDIAN_DATAVIEW_JSON,
+        );
+        write_test_file(
+            &vault_root.join(".obsidian/plugins/periodic-notes/data.json"),
+            OBSIDIAN_PERIODIC_NOTES_JSON,
         );
         write_test_file(
             &vault_root.join(".obsidian/plugins/obsidian-kanban/data.json"),
@@ -4216,6 +4724,34 @@ intellisense_render = 2
                 color: Some("#ffffff".to_string()),
                 background_color: Some("#2d6cdf".to_string()),
             }]
+        );
+    }
+
+    fn assert_obsidian_seed_periodic_defaults(config: &VaultConfig) {
+        assert_eq!(
+            config
+                .periodic
+                .note("daily")
+                .map(|note| note.folder.clone()),
+            Some(PathBuf::from("Journal/Daily"))
+        );
+        assert_eq!(
+            config
+                .periodic
+                .note("daily")
+                .and_then(|note| note.template.clone()),
+            Some("daily".to_string())
+        );
+        assert_eq!(
+            config
+                .periodic
+                .note("weekly")
+                .map(|note| note.start_of_week),
+            Some(PeriodicStartOfWeek::Sunday)
+        );
+        assert_eq!(
+            config.periodic.note("monthly").map(|note| note.enabled),
+            Some(true)
         );
     }
 
@@ -4422,6 +4958,7 @@ intellisense_render = 2
         assert_obsidian_seed_core_defaults(&loaded.config);
         assert_obsidian_seed_dataview_defaults(&loaded.config);
         assert_obsidian_seed_kanban_defaults(&loaded.config);
+        assert_obsidian_seed_periodic_defaults(&loaded.config);
     }
 
     #[test]
@@ -5095,13 +5632,74 @@ default_mode = "off"
     }
 
     #[test]
+    fn import_periodic_notes_plugin_config_preserves_existing_sections_and_is_idempotent() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/periodic-notes"))
+            .expect("periodic plugin dir should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/daily-notes.json"),
+            OBSIDIAN_DAILY_NOTES_JSON,
+        )
+        .expect("daily notes config should be written");
+        fs::write(
+            vault_root.join(".obsidian/plugins/periodic-notes/data.json"),
+            OBSIDIAN_PERIODIC_NOTES_JSON,
+        )
+        .expect("periodic plugin config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .expect("existing config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = import_periodic_notes_plugin_config(&paths).expect("import should succeed");
+
+        assert_eq!(report.plugin, "periodic-notes");
+        assert_eq!(report.source_paths.len(), 2);
+        assert!(!report.created_config);
+        assert!(report.updated);
+        assert!(report.mappings.iter().any(|mapping| {
+            mapping.target == "periodic.weekly.start_of_week"
+                && mapping.value == Value::String("sunday".to_string())
+        }));
+
+        let rendered = fs::read_to_string(paths.config_file()).expect("config should exist");
+        assert!(rendered.contains("[git]"));
+        assert!(rendered.contains("auto_commit = true"));
+        assert!(rendered.contains("[periodic.daily]"));
+        assert!(rendered.contains("folder = \"Journal/Daily\""));
+        assert!(rendered.contains("template = \"daily\""));
+        assert!(rendered.contains("[periodic.weekly]"));
+        assert!(rendered.contains("start_of_week = \"sunday\""));
+
+        let second_report =
+            import_periodic_notes_plugin_config(&paths).expect("second import should succeed");
+        assert!(!second_report.updated);
+    }
+
+    #[test]
+    fn import_periodic_notes_plugin_config_errors_when_sources_are_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let error = import_periodic_notes_plugin_config(&paths).expect_err("import should fail");
+        assert!(matches!(error, ConfigImportError::MissingSource(_)));
+    }
+
+    #[test]
     fn importer_registry_dispatches_existing_importers_in_priority_order() {
         let importer_names = all_importers()
             .into_iter()
             .map(|importer| importer.name().to_string())
             .collect::<Vec<_>>();
 
-        assert_eq!(importer_names, ["core", "kanban", "tasks", "templater"]);
+        assert_eq!(
+            importer_names,
+            ["core", "kanban", "periodic-notes", "tasks", "templater"]
+        );
     }
 
     #[test]

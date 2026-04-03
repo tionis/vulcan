@@ -17,6 +17,7 @@ pub mod maintenance;
 pub mod move_rewrite;
 pub mod parser;
 pub mod paths;
+pub mod periodic;
 pub mod properties;
 pub mod query;
 pub mod refactor;
@@ -40,14 +41,15 @@ pub use bases::{
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{
     all_importers, create_default_config, default_config_template, import_core_plugin_config,
-    import_kanban_plugin_config, import_tasks_plugin_config, import_templater_plugin_config,
-    load_vault_config, AttachmentExtractionConfig, AutoScanMode, ChunkingConfig, ChunkingStrategy,
-    ConfigDiagnostic, ConfigImportError, ConfigImportMapping, ConfigImportReport, ConfigLoadResult,
-    CoreImporter, EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, ImportConflict,
-    ImportTarget, InboxConfig, KanbanConfig, KanbanImporter, LinkResolutionMode,
-    LinkStylePreference, PluginImporter, ScanConfig, TasksImporter, TemplaterCommandPairConfig,
-    TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplaterImporter, TemplatesConfig,
-    VaultConfig,
+    import_kanban_plugin_config, import_periodic_notes_plugin_config, import_tasks_plugin_config,
+    import_templater_plugin_config, load_vault_config, AttachmentExtractionConfig, AutoScanMode,
+    ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigImportError, ConfigImportMapping,
+    ConfigImportReport, ConfigLoadResult, CoreImporter, EmbeddingProviderConfig, GitConfig,
+    GitScope, GitTrigger, ImportConflict, ImportTarget, InboxConfig, KanbanConfig, KanbanImporter,
+    LinkResolutionMode, LinkStylePreference, PeriodicConfig, PeriodicNoteConfig,
+    PeriodicNotesImporter, PeriodicStartOfWeek, PluginImporter, ScanConfig, TasksImporter,
+    TemplaterCommandPairConfig, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
+    TemplaterImporter, TemplatesConfig, VaultConfig,
 };
 pub use dataview_js::{
     evaluate_dataview_js, evaluate_dataview_js_query, DataviewJsError, DataviewJsOutput,
@@ -100,6 +102,10 @@ pub use parser::{
 pub use paths::{
     VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, LOCAL_CONFIG_FILE_NAME,
     REPORTS_DIR_NAME, VULCAN_DIR_NAME,
+};
+pub use periodic::{
+    expected_periodic_note_path, match_periodic_note_path, period_range_for_date,
+    resolve_daily_note, resolve_periodic_note, step_period_start, PeriodicNoteMatch,
 };
 pub use properties::{
     evaluate_note_inline_expressions, extract_indexed_properties, query_notes,
@@ -161,4 +167,4 @@ pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchR
 
 pub const PARSER_VERSION: u32 = 5;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 15;

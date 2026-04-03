@@ -921,6 +921,8 @@ fn synthetic_group_note(fields: &Map<String, Value>) -> NoteRecord {
         inlinks: Vec::new(),
         aliases: Vec::new(),
         frontmatter: Value::Object(Map::new()),
+        periodic_type: None,
+        periodic_date: None,
         list_items: Vec::new(),
         tasks: Vec::new(),
         raw_inline_expressions: Vec::new(),
