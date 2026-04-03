@@ -6,6 +6,7 @@ use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::synthetic_file_link;
 use crate::parser::{parse_document, types::InlineFieldKind};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
+use regex::Regex;
 use rusqlite::params_from_iter;
 use rusqlite::types::Type as SqlType;
 use rusqlite::types::Value as SqlValue;
@@ -475,7 +476,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     let vault_root = paths.vault_root().to_path_buf();
     let config = crate::load_vault_config(paths).config;
 
-    let (sql_filters, expression_filters) = partition_note_query_filters(&query.filters)?;
+    let (sql_filters, post_filters) = partition_note_query_filters(&query.filters)?;
 
     let NoteFilterSql {
         cte,
@@ -558,22 +559,32 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         .collect();
 
     let mut note_index = None;
-    if !expression_filters.is_empty() {
+    if !post_filters.is_empty() {
         let loaded_note_index = load_note_index(paths)?;
         let formulas = BTreeMap::new();
         let mut filtered = Vec::with_capacity(notes.len());
         let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
         for note in notes {
-            let ctx = EvalContext::new(&note, &formulas)
-                .with_note_lookup(&loaded_note_index)
-                .with_time_zone(time_zone);
             let mut keep = true;
-            for (filter, expr) in &expression_filters {
-                let value = evaluate(expr, &ctx)
-                    .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
-                if !expression_filter_matches(&value) {
-                    keep = false;
-                    break;
+            for filter in &post_filters {
+                match filter {
+                    NotePostFilter::Expression { filter, expr } => {
+                        let ctx = EvalContext::new(&note, &formulas)
+                            .with_note_lookup(&loaded_note_index)
+                            .with_time_zone(time_zone);
+                        let value = evaluate(expr, &ctx)
+                            .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
+                        if !expression_filter_matches(&value) {
+                            keep = false;
+                            break;
+                        }
+                    }
+                    NotePostFilter::Regex { field, regex } => {
+                        if !regex_filter_matches_note(&note, field, regex) {
+                            keep = false;
+                            break;
+                        }
+                    }
                 }
             }
             if keep {
@@ -1722,6 +1733,8 @@ pub(crate) enum FilterOperator {
     StartsWith,
     Contains,
     HasTag,
+    Matches,
+    MatchesI,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1752,6 +1765,8 @@ pub(crate) fn parse_note_filter_expression(filter: &str) -> Result<ParsedFilter,
 
 fn parse_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> {
     for (separator, operator) in [
+        (" matches_i ", FilterOperator::MatchesI),
+        (" matches ", FilterOperator::Matches),
         (" has_tag ", FilterOperator::HasTag),
         (" contains ", FilterOperator::Contains),
         (" starts_with ", FilterOperator::StartsWith),
@@ -1805,17 +1820,30 @@ fn is_legacy_filter_field(field: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
 }
 
-type PartitionedNoteQueryFilters = (Vec<String>, Vec<(String, Expr)>);
+type PartitionedNoteQueryFilters = (Vec<String>, Vec<NotePostFilter>);
+
+#[derive(Debug)]
+enum NotePostFilter {
+    Expression { filter: String, expr: Expr },
+    Regex { field: FilterField, regex: Regex },
+}
 
 fn partition_note_query_filters(
     filters: &[String],
 ) -> Result<PartitionedNoteQueryFilters, PropertyError> {
     let mut sql_filters = Vec::new();
-    let mut expression_filters = Vec::new();
+    let mut post_filters = Vec::new();
 
     for filter in filters {
-        if parse_filter_expression(filter).is_ok() {
-            sql_filters.push(filter.clone());
+        if let Ok(parsed) = parse_filter_expression(filter) {
+            if matches!(
+                parsed.operator,
+                FilterOperator::Matches | FilterOperator::MatchesI
+            ) {
+                post_filters.push(build_regex_post_filter(filter, parsed)?);
+            } else {
+                sql_filters.push(filter.clone());
+            }
             continue;
         }
 
@@ -1823,16 +1851,63 @@ fn partition_note_query_filters(
             .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?
             .parse()
             .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
-        expression_filters.push((filter.clone(), expr));
+        post_filters.push(NotePostFilter::Expression {
+            filter: filter.clone(),
+            expr,
+        });
     }
 
-    Ok((sql_filters, expression_filters))
+    Ok((sql_filters, post_filters))
+}
+
+fn build_regex_post_filter(
+    filter: &str,
+    parsed: ParsedFilter,
+) -> Result<NotePostFilter, PropertyError> {
+    let FilterValue::Text(pattern) = parsed.value else {
+        return Err(PropertyError::InvalidFilter(format!(
+            "{filter} (regex filters require a text pattern)"
+        )));
+    };
+    let regex = Regex::new(&if parsed.operator == FilterOperator::MatchesI {
+        format!("(?i:{pattern})")
+    } else {
+        pattern
+    })
+    .map_err(|error| PropertyError::InvalidFilter(format!("{filter} ({error})")))?;
+
+    Ok(NotePostFilter::Regex {
+        field: parsed.field,
+        regex,
+    })
 }
 
 fn expression_filter_matches(value: &Value) -> bool {
     match value {
         Value::Array(values) => values.iter().any(expression_filter_matches),
         value => is_truthy(value),
+    }
+}
+
+fn regex_filter_matches_note(note: &NoteRecord, field: &FilterField, regex: &Regex) -> bool {
+    regex_filter_values(note, field).any(|value| regex.is_match(value))
+}
+
+fn regex_filter_values<'a>(
+    note: &'a NoteRecord,
+    field: &'a FilterField,
+) -> Box<dyn Iterator<Item = &'a str> + 'a> {
+    match field {
+        FilterField::Property(key) => match note.properties.get(key) {
+            Some(Value::String(value)) => Box::new(std::iter::once(value.as_str())),
+            Some(Value::Array(values)) => Box::new(values.iter().filter_map(Value::as_str)),
+            _ => Box::new(std::iter::empty()),
+        },
+        FilterField::FilePath => Box::new(std::iter::once(note.document_path.as_str())),
+        FilterField::FileName => Box::new(std::iter::once(note.file_name.as_str())),
+        FilterField::FileExt => Box::new(std::iter::once(note.file_ext.as_str())),
+        FilterField::FileTags => Box::new(note.tags.iter().map(String::as_str)),
+        FilterField::FileMtime => Box::new(std::iter::empty()),
     }
 }
 
@@ -2179,6 +2254,12 @@ fn sql_comparator(operator: FilterOperator) -> Result<&'static str, PropertyErro
         )),
         FilterOperator::HasTag => Err(PropertyError::InvalidFilter(
             "has_tag only supports property lists".to_string(),
+        )),
+        FilterOperator::Matches => Err(PropertyError::InvalidFilter(
+            "matches is applied after hydration, not as a raw SQL comparator".to_string(),
+        )),
+        FilterOperator::MatchesI => Err(PropertyError::InvalidFilter(
+            "matches_i is applied after hydration, not as a raw SQL comparator".to_string(),
         )),
     }
 }

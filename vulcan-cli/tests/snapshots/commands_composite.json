@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, refactor\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -642,7 +642,7 @@
       },
       {
         "about": "Search indexed note content",
-        "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    ignore-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'\n  vulcan search Bob --match-case\n  vulcan search dashboard --sort path-desc\n  vulcan search dashboard --sort modified-newest",
+        "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    ignore-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n  Use --regex for an explicit regex search without /pattern/ delimiters.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'\n  vulcan search Bob --match-case\n  vulcan search dashboard --sort path-desc\n  vulcan search dashboard --sort modified-newest",
         "name": "search",
         "options": [
           {
@@ -650,10 +650,21 @@
             "id": "query",
             "long": null,
             "possible_values": [],
-            "required": true,
+            "required": false,
             "short": null,
             "value_names": [
               "QUERY"
+            ]
+          },
+          {
+            "help": "Run an explicit regex search without /pattern/ delimiters",
+            "id": "regex",
+            "long": "regex",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "REGEX"
             ]
           },
           {
@@ -2039,7 +2050,7 @@
           },
           {
             "about": "Persist a saved search definition in .vulcan/reports",
-            "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    ignore-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'\n  vulcan search Bob --match-case\n  vulcan search dashboard --sort path-desc\n  vulcan search dashboard --sort modified-newest",
+            "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    ignore-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n  Use --regex for an explicit regex search without /pattern/ delimiters.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'\n  vulcan search Bob --match-case\n  vulcan search dashboard --sort path-desc\n  vulcan search dashboard --sort modified-newest",
             "name": "search",
             "options": [
               {
@@ -5391,7 +5402,7 @@
       },
       {
         "about": "Run a query using the human DSL or a JSON payload",
-        "after_help": "Query DSL syntax:\n  from notes\n    [where <field> <op> <value> [and <field> <op> <value>...]]\n    [select <field>[,<field>...]]\n    [order by <field> [desc|asc]]\n    [limit <n>]\n    [offset <n>]\n\nJSON payload (--json flag):\n  {\"source\":\"notes\",\"predicates\":[{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"done\"}],\n   \"sort\":{\"field\":\"file.mtime\",\"descending\":true},\"limit\":10}\n\nOperators:  = | > | >= | < | <= | starts_with | contains\n            (JSON: eq | gt | gte | lt | lte | starts_with | contains)\n\nExamples:\n  vulcan query 'from notes where status = done order by file.mtime desc limit 10'\n  vulcan query 'from notes where tags contains sprint and reviewed = true'\n  vulcan query --json '{\"source\":\"notes\",\"predicates\":[{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"done\"}]}'\n  vulcan query --explain 'from notes where status = backlog'",
+        "after_help": "Query DSL syntax:\n  from notes\n    [where <field> <op> <value> [and <field> <op> <value>...]]\n    [select <field>[,<field>...]]\n    [order by <field> [desc|asc]]\n    [limit <n>]\n    [offset <n>]\n\nOperators:\n  = | > | >= | < | <= | starts_with | contains | matches | matches_i\n\nFormats:\n  table   structured note rows (default)\n  paths   one path per line\n  detail  path, metadata summary, and content preview\n  count   matched row count only\n\nExamples:\n  vulcan query --format paths 'from notes where status = done'\n  vulcan query --glob 'Projects/**' 'from notes'\n  vulcan query 'from notes where file.name matches \"^2026-\"'\n  vulcan query 'from notes where owner matches_i \"alice\"'",
         "name": "query",
         "options": [
           {
@@ -5414,6 +5425,33 @@
             "short": null,
             "value_names": [
               "JSON"
+            ]
+          },
+          {
+            "help": null,
+            "id": "format",
+            "long": "format",
+            "possible_values": [
+              "table",
+              "paths",
+              "detail",
+              "count"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FORMAT"
+            ]
+          },
+          {
+            "help": "Restrict result paths with a glob such as Projects/**",
+            "id": "glob",
+            "long": "glob",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "GLOB"
             ]
           },
           {
@@ -5457,6 +5495,667 @@
           }
         ],
         "subcommands": []
+      },
+      {
+        "about": "List note paths with query-style filters",
+        "after_help": "Thin alias for `vulcan query 'from notes' --format paths`.\n\nExamples:\n  vulcan ls\n  vulcan ls --glob 'Projects/**'\n  vulcan ls --where 'status = done'\n  vulcan ls --tag project --format detail",
+        "name": "ls",
+        "options": [
+          {
+            "help": "Typed property filter; repeatable and combined with AND",
+            "id": "filters",
+            "long": "where",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILTERS"
+            ]
+          },
+          {
+            "help": "Restrict result paths with a glob such as Projects/**",
+            "id": "glob",
+            "long": "glob",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "GLOB"
+            ]
+          },
+          {
+            "help": "Shorthand tag filter",
+            "id": "tag",
+            "long": "tag",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "TAG"
+            ]
+          },
+          {
+            "help": null,
+            "id": "format",
+            "long": "format",
+            "possible_values": [
+              "table",
+              "paths",
+              "detail",
+              "count"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FORMAT"
+            ]
+          },
+          {
+            "help": "Write query rows to a CSV or JSONL file",
+            "id": "export",
+            "long": "export",
+            "possible_values": [
+              "csv",
+              "jsonl"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT"
+            ]
+          },
+          {
+            "help": "Destination file for CSV or JSONL exports",
+            "id": "export_path",
+            "long": "export-path",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXPORT_PATH"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Apply vault-wide refactors and suggestion passes",
+        "name": "refactor",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Rename an alias inside one note's frontmatter",
+            "name": "rename-alias",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to update",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Existing alias text",
+                "id": "old",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "OLD"
+                ]
+              },
+              {
+                "help": "Replacement alias text",
+                "id": "new",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NEW"
+                ]
+              },
+              {
+                "help": "Report planned rewrites without modifying files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Rename a heading and rewrite inbound heading links",
+            "name": "rename-heading",
+            "options": [
+              {
+                "help": "Note path, filename, or alias containing the heading",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Existing heading text",
+                "id": "old",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "OLD"
+                ]
+              },
+              {
+                "help": "Replacement heading text",
+                "id": "new",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NEW"
+                ]
+              },
+              {
+                "help": "Report planned rewrites without modifying files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Rename a block reference and rewrite inbound block links",
+            "name": "rename-block-ref",
+            "options": [
+              {
+                "help": "Note path, filename, or alias containing the block reference",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Existing block reference id without the ^ prefix",
+                "id": "old",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "OLD"
+                ]
+              },
+              {
+                "help": "Replacement block reference id without the ^ prefix",
+                "id": "new",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NEW"
+                ]
+              },
+              {
+                "help": "Report planned rewrites without modifying files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Rename a frontmatter property key across notes",
+            "name": "rename-property",
+            "options": [
+              {
+                "help": "Existing property key",
+                "id": "old",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "OLD"
+                ]
+              },
+              {
+                "help": "Replacement property key",
+                "id": "new",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NEW"
+                ]
+              },
+              {
+                "help": "Report planned rewrites without modifying files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Merge one tag into another across frontmatter and note bodies",
+            "name": "merge-tags",
+            "options": [
+              {
+                "help": "Source tag to replace",
+                "id": "source",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "SOURCE"
+                ]
+              },
+              {
+                "help": "Destination tag to write",
+                "id": "dest",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "DEST"
+                ]
+              },
+              {
+                "help": "Report planned rewrites without modifying files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Apply a literal find/replace across notes selected by filters",
+            "after_help": "Scope selection:\n  rewrite does a literal find/replace over notes selected by --where filters.\n  Repeat --where to combine filters with AND.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan rewrite --where 'status = draft' --find TODO --replace DONE --dry-run\n  vulcan rewrite --where 'file.path starts_with \"Projects/\"' --find alpha --replace beta",
+            "name": "rewrite",
+            "options": [
+              {
+                "help": "Typed property filter such as `status = done`; repeatable and combined with AND",
+                "id": "filters",
+                "long": "where",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILTERS"
+                ]
+              },
+              {
+                "help": "Literal text to find",
+                "id": "find",
+                "long": "find",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FIND"
+                ]
+              },
+              {
+                "help": "Replacement text",
+                "id": "replace",
+                "long": "replace",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "REPLACE"
+                ]
+              },
+              {
+                "help": "Report planned rewrites without modifying files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Move a note or attachment and safely rewrite inbound links",
+            "name": "move",
+            "options": [
+              {
+                "help": "Existing source note or attachment path",
+                "id": "source",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "SOURCE"
+                ]
+              },
+              {
+                "help": "Destination note or attachment path",
+                "id": "dest",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "DEST"
+                ]
+              },
+              {
+                "help": "Report rewrite changes without moving files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Convert unambiguous plain-text note mentions into links",
+            "name": "link-mentions",
+            "options": [
+              {
+                "help": "Optional note path, filename, or alias to update",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Report planned rewrites without modifying files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Suggest link and merge opportunities from indexed notes",
+            "name": "suggest",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Report plain-text note mentions that could become links",
+                "name": "mentions",
+                "options": [
+                  {
+                    "help": "Optional note path, filename, or alias to inspect",
+                    "id": "note",
+                    "long": null,
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NOTE"
+                    ]
+                  },
+                  {
+                    "help": "Write query rows to a CSV or JSONL file",
+                    "id": "export",
+                    "long": "export",
+                    "possible_values": [
+                      "csv",
+                      "jsonl"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT"
+                    ]
+                  },
+                  {
+                    "help": "Destination file for CSV or JSONL exports",
+                    "id": "export_path",
+                    "long": "export-path",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT_PATH"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Report duplicate titles, alias collisions, and merge candidates",
+                "name": "duplicates",
+                "options": [
+                  {
+                    "help": "Write query rows to a CSV or JSONL file",
+                    "id": "export",
+                    "long": "export",
+                    "possible_values": [
+                      "csv",
+                      "jsonl"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT"
+                    ]
+                  },
+                  {
+                    "help": "Destination file for CSV or JSONL exports",
+                    "id": "export_path",
+                    "long": "export-path",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT_PATH"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          }
+        ]
       },
       {
         "about": "Describe the CLI schema and command surface",

@@ -5,11 +5,11 @@ use std::path::PathBuf;
 const ROOT_AFTER_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
-  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff
+  Graph and Query: links, backlinks, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, suggest, diff
   Journaling: daily, weekly, monthly, periodic, inbox, template
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
-  Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
+  Mutations: note, edit, update, unset, refactor
   Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions
 
 Docs:
@@ -84,6 +84,7 @@ Notes:
   Use --where for typed property filters and list membership.
   --explain prints the parsed boolean tree plus active filters.
   Use --raw-query to pass SQLite FTS5 syntax through unchanged.
+  Use --regex for an explicit regex search without /pattern/ delimiters.
 
 \
 Filter syntax:
@@ -241,6 +242,30 @@ Examples:
   vulcan note create Inbox/Idea --template daily --frontmatter status=idea
   vulcan note append Projects/Alpha \"Shipped\" --heading \"## Log\"
   vulcan note patch Projects/Alpha --find TODO --replace DONE";
+
+const QUERY_COMMAND_AFTER_HELP: &str = "\
+Query DSL syntax:
+  from notes
+    [where <field> <op> <value> [and <field> <op> <value>...]]
+    [select <field>[,<field>...]]
+    [order by <field> [desc|asc]]
+    [limit <n>]
+    [offset <n>]
+
+Operators:
+  = | > | >= | < | <= | starts_with | contains | matches | matches_i
+
+Formats:
+  table   structured note rows (default)
+  paths   one path per line
+  detail  path, metadata summary, and content preview
+  count   matched row count only
+
+Examples:
+  vulcan query --format paths 'from notes where status = done'
+  vulcan query --glob 'Projects/**' 'from notes'
+  vulcan query 'from notes where file.name matches \"^2026-\"'
+  vulcan query 'from notes where owner matches_i \"alice\"'";
 
 const NOTE_GET_COMMAND_AFTER_HELP: &str = "\
 Selectors:
@@ -1190,6 +1215,14 @@ pub enum WebFetchMode {
     Raw,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum QueryFormatArg {
+    Table,
+    Paths,
+    Detail,
+    Count,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum PeriodicSubcommand {
     #[command(about = "List indexed periodic notes")]
@@ -1335,6 +1368,115 @@ pub enum KanbanCommand {
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum RefactorCommand {
+    #[command(about = "Rename an alias inside one note's frontmatter")]
+    RenameAlias {
+        #[arg(help = "Note path, filename, or alias to update")]
+        note: String,
+        #[arg(help = "Existing alias text")]
+        old: String,
+        #[arg(help = "Replacement alias text")]
+        new: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Rename a heading and rewrite inbound heading links")]
+    RenameHeading {
+        #[arg(help = "Note path, filename, or alias containing the heading")]
+        note: String,
+        #[arg(help = "Existing heading text")]
+        old: String,
+        #[arg(help = "Replacement heading text")]
+        new: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Rename a block reference and rewrite inbound block links")]
+    RenameBlockRef {
+        #[arg(help = "Note path, filename, or alias containing the block reference")]
+        note: String,
+        #[arg(help = "Existing block reference id without the ^ prefix")]
+        old: String,
+        #[arg(help = "Replacement block reference id without the ^ prefix")]
+        new: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Rename a frontmatter property key across notes")]
+    RenameProperty {
+        #[arg(help = "Existing property key")]
+        old: String,
+        #[arg(help = "Replacement property key")]
+        new: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Merge one tag into another across frontmatter and note bodies")]
+    MergeTags {
+        #[arg(help = "Source tag to replace")]
+        source: String,
+        #[arg(help = "Destination tag to write")]
+        dest: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(
+        about = "Apply a literal find/replace across notes selected by filters",
+        after_help = REWRITE_COMMAND_AFTER_HELP
+    )]
+    Rewrite {
+        #[arg(
+            long = "where",
+            help = "Typed property filter such as `status = done`; repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(long, help = "Literal text to find")]
+        find: String,
+        #[arg(long, help = "Replacement text")]
+        replace: String,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Move a note or attachment and safely rewrite inbound links")]
+    Move {
+        #[arg(help = "Existing source note or attachment path")]
+        source: String,
+        #[arg(help = "Destination note or attachment path")]
+        dest: String,
+        #[arg(long, help = "Report rewrite changes without moving files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Convert unambiguous plain-text note mentions into links")]
+    LinkMentions {
+        #[arg(help = "Optional note path, filename, or alias to update")]
+        note: Option<String>,
+        #[arg(long, help = "Report planned rewrites without modifying files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Suggest link and merge opportunities from indexed notes")]
+    Suggest {
+        #[command(subcommand)]
+        command: SuggestCommand,
     },
 }
 
@@ -1607,9 +1749,16 @@ pub enum Command {
     )]
     Search {
         #[arg(
+            required_unless_present = "regex",
             help = "Full-text query string; supports phrases, `or`, `-term`, and inline tag:/path:/has: filters"
         )]
-        query: String,
+        query: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "query",
+            help = "Run an explicit regex search without /pattern/ delimiters"
+        )]
+        regex: Option<String>,
         #[arg(
             long = "where",
             help = "Typed property filter such as `status = done`; repeatable and combined with AND"
@@ -2088,27 +2237,7 @@ Examples:
     },
     #[command(
         about = "Run a query using the human DSL or a JSON payload",
-        after_help = "\
-Query DSL syntax:
-  from notes
-    [where <field> <op> <value> [and <field> <op> <value>...]]
-    [select <field>[,<field>...]]
-    [order by <field> [desc|asc]]
-    [limit <n>]
-    [offset <n>]
-
-JSON payload (--json flag):
-  {\"source\":\"notes\",\"predicates\":[{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"done\"}],
-   \"sort\":{\"field\":\"file.mtime\",\"descending\":true},\"limit\":10}
-
-Operators:  = | > | >= | < | <= | starts_with | contains
-            (JSON: eq | gt | gte | lt | lte | starts_with | contains)
-
-Examples:
-  vulcan query 'from notes where status = done order by file.mtime desc limit 10'
-  vulcan query 'from notes where tags contains sprint and reviewed = true'
-  vulcan query --json '{\"source\":\"notes\",\"predicates\":[{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"done\"}]}'
-  vulcan query --explain 'from notes where status = backlog'"
+        after_help = QUERY_COMMAND_AFTER_HELP
     )]
     Query {
         #[arg(
@@ -2120,10 +2249,45 @@ Examples:
             help = "JSON query payload; mutually exclusive with the positional DSL argument"
         )]
         json: Option<String>,
+        #[arg(long, value_enum, default_value_t = QueryFormatArg::Table)]
+        format: QueryFormatArg,
+        #[arg(long, help = "Restrict result paths with a glob such as Projects/**")]
+        glob: Option<String>,
         #[arg(long, help = "Print the parsed query AST alongside the results")]
         explain: bool,
         #[command(flatten)]
         export: ExportArgs,
+    },
+    #[command(
+        about = "List note paths with query-style filters",
+        after_help = "\
+Thin alias for `vulcan query 'from notes' --format paths`.
+
+Examples:
+  vulcan ls
+  vulcan ls --glob 'Projects/**'
+  vulcan ls --where 'status = done'
+  vulcan ls --tag project --format detail"
+    )]
+    Ls {
+        #[arg(
+            long = "where",
+            help = "Typed property filter; repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(long, help = "Restrict result paths with a glob such as Projects/**")]
+        glob: Option<String>,
+        #[arg(long, help = "Shorthand tag filter")]
+        tag: Option<String>,
+        #[arg(long, value_enum, default_value_t = QueryFormatArg::Paths)]
+        format: QueryFormatArg,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "Apply vault-wide refactors and suggestion passes")]
+    Refactor {
+        #[command(subcommand)]
+        command: RefactorCommand,
     },
     #[command(
         about = "Describe the CLI schema and command surface",

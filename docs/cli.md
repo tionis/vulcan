@@ -158,10 +158,12 @@ Shared behavior:
 - `vulcan graph stats`: note-graph and vault analytics summary.
 - `vulcan graph trends [--limit <N>]`: trends across saved scan checkpoints.
 - `vulcan notes ...`: property and file-metadata queries.
-- `vulcan search ...`: full-text search with optional typed property filters and explicit result sorting.
-- `vulcan query ...`: run the human DSL or JSON query payload.
+- `vulcan search <query> [--regex <pattern>] ...`: full-text search with optional typed property filters, explicit result sorting, and explicit regex mode.
+- `vulcan query ...`: run the human DSL or JSON query payload with `--format table|paths|detail|count` and optional `--glob`.
+- `vulcan ls [--where <filter>] [--tag <tag>] [--glob <pattern>] [--format <paths|detail|count>]`: thin alias for `query 'from notes'`.
 - `vulcan suggest mentions [note]`: plain-text mentions that could become links.
 - `vulcan suggest duplicates`: duplicate titles, alias collisions, and merge candidates.
+- `vulcan refactor ...`: grouped cross-vault mutation commands (`rename-*`, `merge-tags`, `rewrite`, `move`, `link-mentions`, `suggest`).
 - `vulcan saved list`: list saved query/report definitions from `.vulcan/reports`.
 - `vulcan saved show <name>`: show one saved report definition.
 - `vulcan saved search ...`: save a search definition.
@@ -286,11 +288,15 @@ Supported operators:
 - `<=`
 - `starts_with`
 - `contains`
+- `matches`
+- `matches_i`
 
 Operator notes:
 
 - `starts_with` is for text fields.
 - `contains` is for list-valued properties such as `tags`.
+- `matches` applies a Rust `regex` to string-valued fields.
+- `matches_i` is the case-insensitive `regex` variant.
 
 Supported value types:
 
@@ -307,6 +313,8 @@ Examples:
 vulcan notes --where 'status = done'
 vulcan notes --where 'tags contains sprint' --sort due
 vulcan notes --where 'file.path starts_with "Projects/"'
+vulcan notes --where 'file.name matches "^2026-"'
+vulcan notes --where 'owner matches_i "alice"'
 vulcan update --where 'status = draft' --key status --value done --dry-run
 vulcan rewrite --where 'file.path starts_with "Archive/"' --find TODO --replace DONE
 vulcan bases view-add release.base Inbox --filter 'status = idea'
@@ -322,6 +330,7 @@ Examples:
 vulcan search dashboard
 vulcan search 'dashboard "release notes" -draft'
 vulcan search dashboard --where 'reviewed = true'
+vulcan search --regex 'release\\s+readiness'
 vulcan search 'tag:index path:People/ has:status owned'
 vulcan search Bob --match-case
 vulcan search dashboard --sort path-desc
@@ -409,6 +418,8 @@ Examples:
 ```bash
 vulcan query 'from notes where status = done order by file.mtime desc limit 10'
 vulcan query 'from notes where tags contains sprint and reviewed = true'
+vulcan query --format paths 'from notes where file.name matches "^2026-"'
+vulcan query --glob 'Projects/**' 'from notes'
 vulcan query --json '{"source":"notes","predicates":[{"field":"status","operator":"eq","value":"done"}]}'
 vulcan query --explain 'from notes where status = backlog'
 ```
@@ -712,6 +723,15 @@ Automation notes:
 - `automation run --doctor-fix` applies deterministic doctor fixes before reporting status.
 - `automation run --fail-on-issues` returns exit code `2` when checks complete but issues remain.
 - `saved search` and `saved notes` use the same syntax as `search` and `notes`.
+
+### Query output modes
+
+- `query --format table`: the default structured note rows.
+- `query --format paths`: one document path per line.
+- `query --format detail`: document path, property summary, and a short preview.
+- `query --format count`: only the number of matched rows.
+- `query --glob 'Projects/**'`: apply an extra path glob after query evaluation.
+- `ls` shares the same implementation but defaults to `--format paths`.
 
 ## Shell completions
 
