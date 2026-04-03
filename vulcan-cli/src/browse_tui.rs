@@ -25,12 +25,13 @@ use vulcan_core::properties::load_note_index;
 use vulcan_core::search::{SearchMode, SearchSort};
 use vulcan_core::{
     doctor_vault, evaluate_base_file, evaluate_dataview_js_query, evaluate_dql,
-    evaluate_note_inline_expressions, git_log, is_git_repo, list_note_identities,
-    list_tagged_note_identities, list_tags, load_dataview_blocks, move_note, query_backlinks,
-    query_links, query_notes, scan_vault, search_vault, AutoScanMode, BacklinkRecord,
-    DataviewJsOutput, DoctorDiagnosticIssue, DoctorLinkIssue, DqlEvalError, DqlQueryResult,
-    GitLogEntry, NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, ResolutionStatus,
-    ScanMode, ScanSummary, SearchHit, SearchQuery, VaultPaths,
+    evaluate_note_inline_expressions, git_log, is_git_repo, list_kanban_boards,
+    list_note_identities, list_tagged_note_identities, list_tags, load_dataview_blocks,
+    load_kanban_board, move_note, query_backlinks, query_links, query_notes, scan_vault,
+    search_vault, AutoScanMode, BacklinkRecord, DataviewJsOutput, DoctorDiagnosticIssue,
+    DoctorLinkIssue, DqlEvalError, DqlQueryResult, GitLogEntry, KanbanBoardRecord, NamedCount,
+    NoteIdentity, NoteQuery, OutgoingLinkRecord, ResolutionStatus, ScanMode, ScanSummary,
+    SearchHit, SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
@@ -304,6 +305,33 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
     );
     frame.render_widget(query, layout[0]);
 
+    if let Some(view) = state.kanban_view.as_ref() {
+        draw_kanban_board_view(frame, layout[1], view);
+        let footer_lines = if footer_height >= 5 {
+            vec![
+                Line::from(state.status_bar_line()),
+                Line::from(state.key_help_line()),
+                Line::from(format!("      {}", state.mode_help_line())),
+                Line::from(format!("Status: {}", state.status_line())),
+            ]
+        } else {
+            vec![
+                Line::from(state.status_bar_line()),
+                Line::from(format!("Status: {}", state.status_line())),
+            ]
+        };
+        let footer = Paragraph::new(footer_lines)
+            .block(
+                Block::default()
+                    .title("Browse")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(footer, layout[2]);
+        return;
+    }
+
     let items = state
         .list_items()
         .into_iter()
@@ -388,6 +416,90 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(footer, layout[2]);
+}
+
+fn draw_kanban_board_view(
+    frame: &mut Frame<'_>,
+    area: ratatui::layout::Rect,
+    view: &KanbanBoardViewState,
+) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .split(area);
+
+    let column_count = view.board.columns.len().max(1);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![
+            Constraint::Ratio(
+                1,
+                column_count.try_into().unwrap_or(1)
+            );
+            column_count
+        ])
+        .split(layout[0]);
+
+    for (index, column_area) in columns.iter().copied().enumerate() {
+        let Some(column) = view.board.columns.get(index) else {
+            continue;
+        };
+        let lines = if column.cards.is_empty() {
+            vec![Line::from("No cards.")]
+        } else {
+            column
+                .cards
+                .iter()
+                .enumerate()
+                .map(|(card_index, card)| {
+                    let label = format_kanban_card_label(card);
+                    if index == view.selected_column && card_index == view.selected_card {
+                        Line::from(vec![Span::styled(
+                            label,
+                            Style::default()
+                                .bg(Color::DarkGray)
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        )])
+                    } else {
+                        Line::from(label)
+                    }
+                })
+                .collect()
+        };
+        let border_style = if index == view.selected_column {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        let paragraph = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(format!("{} ({})", column.name, column.card_count))
+                    .borders(Borders::ALL)
+                    .border_style(border_style),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(paragraph, column_area);
+    }
+
+    let preview = Paragraph::new(view.preview_lines())
+        .block(
+            Block::default()
+                .title(view.preview_title())
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(preview, layout[1]);
+}
+
+fn format_kanban_card_label(card: &vulcan_core::KanbanCardRecord) -> String {
+    if let Some(task) = card.task.as_ref() {
+        format!("[{}] {}", task.status_char, card.text)
+    } else {
+        format!("- {}", card.text)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,6 +638,7 @@ struct BrowseState {
     full_text: FullTextState,
     tag_filter: TagFilterState,
     property_filter: PropertyFilterState,
+    kanban_view: Option<KanbanBoardViewState>,
     backlinks_view: Option<BacklinksViewState>,
     links_view: Option<OutgoingLinksViewState>,
     git_view: Option<GitLogViewState>,
@@ -556,6 +669,7 @@ impl BrowseState {
             full_text: FullTextState::default(),
             tag_filter: TagFilterState::new(paths.clone(), tags),
             property_filter: PropertyFilterState::new(paths),
+            kanban_view: None,
             backlinks_view: None,
             links_view: None,
             git_view: None,
@@ -578,6 +692,9 @@ impl BrowseState {
         }
         if self.move_prompt.is_some() {
             return self.handle_move_prompt_key(key.code);
+        }
+        if self.kanban_view.is_some() {
+            return self.handle_kanban_key(key.code);
         }
         if self.git_view.is_some() {
             return self.handle_git_key(key.code);
@@ -674,6 +791,18 @@ impl BrowseState {
             }
         }
 
+        if key.modifiers.is_empty()
+            && key.code == KeyCode::Char('o')
+            && self.query().is_empty()
+            && self.selected_note_is_kanban_board()
+        {
+            self.clear_status();
+            if let Err(error) = self.open_kanban_view() {
+                self.set_status(error);
+            }
+            return BrowseAction::Continue;
+        }
+
         match key.code {
             KeyCode::Esc => BrowseAction::Quit,
             KeyCode::Char('/') if self.mode != BrowseMode::Fuzzy => {
@@ -715,6 +844,39 @@ impl BrowseState {
                 view.move_selection(1);
                 BrowseAction::Continue
             }
+            _ => BrowseAction::Continue,
+        }
+    }
+
+    fn handle_kanban_key(&mut self, code: KeyCode) -> BrowseAction {
+        let Some(view) = self.kanban_view.as_mut() else {
+            return BrowseAction::Continue;
+        };
+
+        match code {
+            KeyCode::Esc => {
+                self.kanban_view = None;
+                self.clear_status();
+                self.refresh_dataview_preview_if_needed();
+                BrowseAction::Continue
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                view.move_column(-1);
+                BrowseAction::Continue
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                view.move_column(1);
+                BrowseAction::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                view.move_card(-1);
+                BrowseAction::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                view.move_card(1);
+                BrowseAction::Continue
+            }
+            KeyCode::Enter | KeyCode::Char('e') => BrowseAction::Edit(view.path().to_string()),
             _ => BrowseAction::Continue,
         }
     }
@@ -940,6 +1102,9 @@ impl BrowseState {
             .refresh_results(&self.paths, &self.all_notes)?;
         self.property_filter
             .refresh_results(&self.paths, &self.all_notes);
+        if let Some(view) = self.kanban_view.as_mut() {
+            view.reload(&self.paths)?;
+        }
         if let Some(view) = self.git_view.as_mut() {
             view.reload(self.paths.vault_root())?;
         }
@@ -1025,7 +1190,8 @@ impl BrowseState {
     }
 
     fn uses_note_preview(&self) -> bool {
-        self.git_view.is_none()
+        self.kanban_view.is_none()
+            && self.git_view.is_none()
             && self.doctor_view.is_none()
             && self.backlinks_view.is_none()
             && self.links_view.is_none()
@@ -1070,6 +1236,9 @@ impl BrowseState {
     }
 
     fn selected_path(&self) -> Option<&str> {
+        if let Some(view) = self.kanban_view.as_ref() {
+            return Some(view.path());
+        }
         if let Some(view) = self.git_view.as_ref() {
             return Some(view.path());
         }
@@ -1091,6 +1260,9 @@ impl BrowseState {
     }
 
     fn query(&self) -> &str {
+        if let Some(view) = self.kanban_view.as_ref() {
+            return view.path();
+        }
         if let Some(view) = self.git_view.as_ref() {
             return view.path();
         }
@@ -1118,6 +1290,9 @@ impl BrowseState {
     }
 
     fn query_title(&self) -> String {
+        if let Some(view) = self.kanban_view.as_ref() {
+            return format!("Kanban ({})", view.path());
+        }
         if let Some(view) = self.git_view.as_ref() {
             return format!("Git Log ({})", view.path());
         }
@@ -1140,6 +1315,10 @@ impl BrowseState {
     }
 
     fn key_help_line(&self) -> String {
+        if self.kanban_view.is_some() {
+            return "Keys: Esc back, h/l switch columns, j/k move cards, Enter/e edit board"
+                .to_string();
+        }
         if self.git_view.is_some() {
             return "Keys: Esc back, j/k move".to_string();
         }
@@ -1159,15 +1338,19 @@ impl BrowseState {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
             match self.mode {
-                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Esc quit".to_string(),
+                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, o open Kanban board when query is empty, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Esc quit".to_string(),
                 BrowseMode::FullText => "Keys: type to search, Backspace edit query, Up/Down move, Enter edit, Ctrl-V preview, Ctrl-E explain, Ctrl-S sort, Alt-C case, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
             }
         }
     }
 
     fn mode_help_line(&self) -> String {
+        if self.kanban_view.is_some() {
+            return "view Kanban columns side-by-side for the selected board; Esc returns to browse"
+                .to_string();
+        }
         if self.git_view.is_some() {
             return "view git history for the selected file; Esc returns to browse".to_string();
         }
@@ -1191,7 +1374,9 @@ impl BrowseState {
     }
 
     fn list_title(&self) -> &'static str {
-        if self.git_view.is_some() {
+        if self.kanban_view.is_some() {
+            "Kanban"
+        } else if self.git_view.is_some() {
             "Git Log"
         } else if self.doctor_view.is_some() {
             "Diagnostics"
@@ -1205,6 +1390,14 @@ impl BrowseState {
     }
 
     fn list_items(&self) -> Vec<String> {
+        if let Some(view) = self.kanban_view.as_ref() {
+            return view
+                .board
+                .columns
+                .iter()
+                .map(|column| format!("{} ({})", column.name, column.card_count))
+                .collect();
+        }
         if let Some(view) = self.git_view.as_ref() {
             return view.list_items();
         }
@@ -1252,6 +1445,9 @@ impl BrowseState {
     }
 
     fn selected_index(&self) -> Option<usize> {
+        if let Some(view) = self.kanban_view.as_ref() {
+            return Some(view.selected_column);
+        }
         if let Some(view) = self.git_view.as_ref() {
             return view.selected_index();
         }
@@ -1273,6 +1469,9 @@ impl BrowseState {
     }
 
     fn preview_title(&self) -> String {
+        if let Some(view) = self.kanban_view.as_ref() {
+            return view.preview_title();
+        }
         if let Some(view) = self.git_view.as_ref() {
             return view.preview_title();
         }
@@ -1306,6 +1505,9 @@ impl BrowseState {
     }
 
     fn preview_lines(&self) -> Vec<Line<'static>> {
+        if let Some(view) = self.kanban_view.as_ref() {
+            return view.preview_lines();
+        }
         if let Some(view) = self.git_view.as_ref() {
             return view.preview_lines();
         }
@@ -1336,6 +1538,9 @@ impl BrowseState {
     }
 
     fn filtered_count(&self) -> usize {
+        if let Some(view) = self.kanban_view.as_ref() {
+            return view.filtered_count();
+        }
         if let Some(view) = self.git_view.as_ref() {
             return view.filtered_count();
         }
@@ -1365,6 +1570,7 @@ impl BrowseState {
             .uses_note_preview()
             .then(|| format!(" | Preview: {}", self.preview_mode.label()));
         let full_text_meta = (self.mode == BrowseMode::FullText
+            && self.kanban_view.is_none()
             && self.git_view.is_none()
             && self.doctor_view.is_none()
             && self.backlinks_view.is_none()
@@ -1430,12 +1636,26 @@ impl BrowseState {
         }
     }
 
+    fn open_kanban_view(&mut self) -> Result<(), String> {
+        let Some(path) = self.selected_path().map(str::to_string) else {
+            self.set_status("No matching note selected.");
+            return Ok(());
+        };
+        self.kanban_view = Some(KanbanBoardViewState::load(&self.paths, &path)?);
+        self.backlinks_view = None;
+        self.links_view = None;
+        self.git_view = None;
+        self.doctor_view = None;
+        Ok(())
+    }
+
     fn open_backlinks_view(&mut self) -> Result<(), String> {
         let Some(path) = self.selected_path().map(str::to_string) else {
             self.set_status("No matching note selected.");
             return Ok(());
         };
         self.backlinks_view = Some(BacklinksViewState::load(&self.paths, &path)?);
+        self.kanban_view = None;
         self.links_view = None;
         self.git_view = None;
         self.doctor_view = None;
@@ -1448,6 +1668,7 @@ impl BrowseState {
             return Ok(());
         };
         self.links_view = Some(OutgoingLinksViewState::load(&self.paths, &path)?);
+        self.kanban_view = None;
         self.backlinks_view = None;
         self.git_view = None;
         self.doctor_view = None;
@@ -1460,6 +1681,7 @@ impl BrowseState {
             return Ok(());
         };
         self.doctor_view = Some(DoctorViewState::load(&self.paths, &path)?);
+        self.kanban_view = None;
         self.backlinks_view = None;
         self.links_view = None;
         self.git_view = None;
@@ -1475,10 +1697,20 @@ impl BrowseState {
             return Ok(());
         };
         self.git_view = Some(GitLogViewState::load(self.paths.vault_root(), &path)?);
+        self.kanban_view = None;
         self.backlinks_view = None;
         self.links_view = None;
         self.doctor_view = None;
         Ok(())
+    }
+
+    fn selected_note_is_kanban_board(&self) -> bool {
+        let Some(path) = self.selected_path() else {
+            return false;
+        };
+        list_kanban_boards(&self.paths)
+            .map(|boards| boards.into_iter().any(|board| board.path == path))
+            .unwrap_or(false)
     }
 
     fn status_line(&self) -> String {
@@ -1491,6 +1723,14 @@ impl BrowseState {
         }
         if self.new_note_prompt.is_some() {
             return "Creating new note".to_string();
+        }
+        if let Some(view) = self.kanban_view.as_ref() {
+            return format!(
+                "Kanban board {} ({} columns, {} cards)",
+                view.path(),
+                view.board.columns.len(),
+                view.filtered_count()
+            );
         }
         if let Some(view) = self.git_view.as_ref() {
             return format!("Git log for {}", view.path());
@@ -1535,7 +1775,9 @@ impl BrowseState {
     }
 
     fn active_mode_label(&self) -> &'static str {
-        if self.doctor_view.is_some() {
+        if self.kanban_view.is_some() {
+            "kanban"
+        } else if self.doctor_view.is_some() {
             "doctor"
         } else if self.backlinks_view.is_some() {
             "backlinks"
@@ -1548,6 +1790,182 @@ impl BrowseState {
         } else {
             self.mode.label()
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct KanbanBoardViewState {
+    board: KanbanBoardRecord,
+    selected_column: usize,
+    selected_card: usize,
+}
+
+impl KanbanBoardViewState {
+    fn load(paths: &VaultPaths, board: &str) -> Result<Self, String> {
+        let board = load_kanban_board(paths, board, false).map_err(|error| error.to_string())?;
+        Ok(Self {
+            board,
+            selected_column: 0,
+            selected_card: 0,
+        })
+    }
+
+    fn reload(&mut self, paths: &VaultPaths) -> Result<(), String> {
+        let board_path = self.board.path.clone();
+        let selected_column_name = self
+            .board
+            .columns
+            .get(self.selected_column)
+            .map(|column| column.name.clone());
+        let selected_card_id = self.selected_card().map(|card| card.id.clone());
+        self.board =
+            load_kanban_board(paths, &board_path, false).map_err(|error| error.to_string())?;
+        if let Some(column_name) = selected_column_name.as_deref() {
+            self.selected_column = self
+                .board
+                .columns
+                .iter()
+                .position(|column| column.name == column_name)
+                .unwrap_or(0);
+        } else {
+            self.selected_column = 0;
+        }
+        if let Some(card_id) = selected_card_id.as_deref() {
+            self.selected_card = self
+                .board
+                .columns
+                .get(self.selected_column)
+                .and_then(|column| column.cards.iter().position(|card| card.id == card_id))
+                .unwrap_or(0);
+        } else {
+            self.selected_card = 0;
+        }
+        self.clamp_selection();
+        Ok(())
+    }
+
+    fn path(&self) -> &str {
+        &self.board.path
+    }
+
+    fn filtered_count(&self) -> usize {
+        self.board
+            .columns
+            .iter()
+            .map(|column| column.card_count)
+            .sum()
+    }
+
+    fn preview_title(&self) -> String {
+        self.selected_card().map_or_else(
+            || format!("Kanban: {}", self.path()),
+            |card| format!("Card: {}", card.text),
+        )
+    }
+
+    fn preview_lines(&self) -> Vec<Line<'static>> {
+        let Some(column) = self.board.columns.get(self.selected_column) else {
+            return vec![Line::from("No Kanban columns in this board.")];
+        };
+        let Some(card) = self.selected_card() else {
+            return vec![
+                Line::from(format!("Column: {}", column.name)),
+                Line::from("No cards in the selected column."),
+            ];
+        };
+
+        let mut lines = vec![
+            Line::from(format!("Board: {}", self.board.title)),
+            Line::from(format!("Column: {}", column.name)),
+            Line::from(format!("Line: {}", card.line_number)),
+            Line::from(format!("Text: {}", card.text)),
+        ];
+        if let Some(task) = card.task.as_ref() {
+            lines.push(Line::from(format!(
+                "Task: {} ({})",
+                task.status_name, task.status_type
+            )));
+        }
+        if !card.tags.is_empty() {
+            lines.push(Line::from(format!("Tags: {}", card.tags.join(", "))));
+        }
+        if !card.outlinks.is_empty() {
+            lines.push(Line::from(format!("Links: {}", card.outlinks.join(", "))));
+        }
+        if let Some(date) = card.date.as_deref() {
+            lines.push(Line::from(format!("Date: {date}")));
+        }
+        if let Some(time) = card.time.as_deref() {
+            lines.push(Line::from(format!("Time: {time}")));
+        }
+        if let Some(block_id) = card.block_id.as_deref() {
+            lines.push(Line::from(format!("Block: ^{block_id}")));
+        }
+        if let Some(inline_fields) = json_preview_line("Inline fields", &card.inline_fields) {
+            lines.push(Line::from(inline_fields));
+        }
+        if let Some(metadata) = json_preview_line("Metadata", &card.metadata) {
+            lines.push(Line::from(metadata));
+        }
+        lines
+    }
+
+    fn move_column(&mut self, delta: isize) {
+        let len = self.board.columns.len();
+        if len == 0 {
+            self.selected_column = 0;
+            self.selected_card = 0;
+            return;
+        }
+        let current = self.selected_column;
+        let step = delta.unsigned_abs();
+        self.selected_column = if delta.is_negative() {
+            current.saturating_sub(step)
+        } else {
+            current.saturating_add(step)
+        }
+        .min(len - 1);
+        self.clamp_selection();
+    }
+
+    fn move_card(&mut self, delta: isize) {
+        let Some(column) = self.board.columns.get(self.selected_column) else {
+            self.selected_card = 0;
+            return;
+        };
+        let len = column.cards.len();
+        if len == 0 {
+            self.selected_card = 0;
+            return;
+        }
+        let current = self.selected_card;
+        let step = delta.unsigned_abs();
+        self.selected_card = if delta.is_negative() {
+            current.saturating_sub(step)
+        } else {
+            current.saturating_add(step)
+        }
+        .min(len - 1);
+    }
+
+    fn clamp_selection(&mut self) {
+        let Some(column) = self.board.columns.get(self.selected_column) else {
+            self.selected_column = 0;
+            self.selected_card = 0;
+            return;
+        };
+        if column.cards.is_empty() {
+            self.selected_card = 0;
+        } else {
+            self.selected_card = self.selected_card.min(column.cards.len() - 1);
+        }
+    }
+
+    fn selected_card(&self) -> Option<&vulcan_core::KanbanCardRecord> {
+        self.board
+            .columns
+            .get(self.selected_column)
+            .and_then(|column| column.cards.get(self.selected_card))
     }
 }
 
@@ -2163,6 +2581,15 @@ fn is_base_path(path: &str) -> bool {
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("base"))
+}
+
+fn json_preview_line(label: &str, value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::Object(object) if object.is_empty() => None,
+        Value::Array(items) if items.is_empty() => None,
+        _ => Some(format!("{label}: {value}")),
+    }
 }
 
 fn last_scan_label(paths: &VaultPaths) -> String {
@@ -3315,6 +3742,10 @@ mod tests {
             BrowseAction::Continue
         );
         assert_eq!(
+            state.handle_key(key(KeyCode::Char('o'))),
+            BrowseAction::Continue
+        );
+        assert_eq!(
             state.handle_key(key(KeyCode::Char('j'))),
             BrowseAction::Continue
         );
@@ -3323,7 +3754,7 @@ mod tests {
             BrowseAction::Continue
         );
 
-        assert_eq!(state.query(), "bmnjk");
+        assert_eq!(state.query(), "bmnojk");
         assert_eq!(state.query_title(), "Browse (/ fuzzy search)");
     }
 
@@ -3541,6 +3972,70 @@ mod tests {
             action,
             BrowseAction::OpenBaseTui("release.base".to_string())
         );
+    }
+
+    #[test]
+    fn o_opens_kanban_board_view_for_selected_board() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Board.md",
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "---\n\n",
+                "## Todo\n\n",
+                "- Build release\n",
+                "- [/] Review checklist\n\n",
+                "## Done\n\n",
+                "- Shipped\n",
+            ),
+        );
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Board.md", &[])]).expect("state should build");
+        state.picker.select_path("Board.md");
+
+        let action = state.handle_key(key(KeyCode::Char('o')));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "Kanban (Board.md)");
+        assert_eq!(state.selected_path(), Some("Board.md"));
+        assert_eq!(state.filtered_count(), 3);
+        assert_eq!(
+            state.mode_help_line(),
+            "view Kanban columns side-by-side for the selected board; Esc returns to browse"
+        );
+        assert!(preview_text(&state.preview_lines()).contains("Build release"));
+    }
+
+    #[test]
+    fn kanban_view_esc_returns_to_browse() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Board.md",
+            concat!(
+                "---\n",
+                "kanban-plugin: board\n",
+                "---\n\n",
+                "## Todo\n\n",
+                "- Build release\n",
+            ),
+        );
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Board.md", &[])]).expect("state should build");
+        state.picker.select_path("Board.md");
+        state.handle_key(key(KeyCode::Char('o')));
+
+        let action = state.handle_key(key(KeyCode::Esc));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.query_title(), "Browse (/ fuzzy search)");
+        assert_eq!(state.selected_path(), Some("Board.md"));
     }
 
     #[test]

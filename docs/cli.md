@@ -472,6 +472,7 @@ Primary keys:
 - `Ctrl-O`: outgoing-links view
 - `Ctrl-D`: note-scoped doctor view
 - `Ctrl-G`: git history for the selected file
+- `o`: with an empty fuzzy/tag/property query, open the selected Kanban board in a side-by-side board view
 - `Esc`: quit
 
 Ctrl-F full-text extras:
@@ -485,6 +486,7 @@ Additional browse notes:
 
 - By default, `browse` opens immediately on current cache contents and runs a background incremental refresh. Use `[scan].browse_mode` or `--refresh` to change that behavior.
 - Printable characters always extend the active query or prompt. Browse actions use `Enter` or `Ctrl-*` shortcuts.
+- In fuzzy/tag/property modes, `o` is reserved as a board-view shortcut only when the current query is empty and the selected note is an indexed Kanban board.
 - In full-text mode, the status line mirrors the parsed query/explain output when the explain pane is open.
 - After edits, creates, and moves, Vulcan rescans the affected files and refreshes the list.
 - In backlinks and outgoing-link views, `o` opens the selected `.base` file in the Bases TUI.
