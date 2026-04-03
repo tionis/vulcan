@@ -132,6 +132,7 @@ Note resolution rules:
 
 - `vulcan config import core [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian core settings from `.obsidian/app.json`, `.obsidian/templates.json`, and `.obsidian/types.json`.
 - `vulcan config import kanban [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Kanban plugin settings.
+- `vulcan config import periodic-notes [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Daily Notes core plugin settings plus the community Periodic Notes plugin settings.
 - `vulcan config import tasks [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Tasks plugin settings.
 - `vulcan config import templater [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Templater plugin settings.
 
@@ -166,6 +167,25 @@ Shared behavior:
 - `vulcan saved run <name>`: execute one saved report.
 - `vulcan batch [<name> ...] [--all]`: run several saved reports at once.
 - `vulcan automation run ...`: run saved reports plus optional scan, doctor, verify, or FTS repair steps for CI and scripts.
+
+### Periodic note commands
+
+- `vulcan daily today [--no-edit] [--no-commit]`: open or create today's daily note.
+- `vulcan daily show [date]`: print one daily note's contents. Defaults to today.
+- `vulcan daily list [--from <date>] [--to <date>] [--week] [--month]`: list daily notes and extracted schedule events across a date window.
+- `vulcan daily append <text> [--heading <heading>] [--date <date>] [--no-commit]`: append text to one daily note, creating it first when needed.
+- `vulcan weekly [date] [--no-edit] [--no-commit]`: open or create the weekly note containing the given date.
+- `vulcan monthly [date] [--no-edit] [--no-commit]`: open or create the monthly note containing the given date.
+- `vulcan periodic <type> [date] [--no-edit] [--no-commit]`: generic open-or-create command for any configured period type.
+- `vulcan periodic list [--type <period>]`: list indexed periodic notes from the cache.
+- `vulcan periodic gaps [--type <period>] [--from <date>] [--to <date>]`: show missing periodic notes by expected path.
+
+Behavior:
+
+- Periodic note defaults come from `[periodic.*]` in `.vulcan/config.toml`.
+- `daily list` uses the configured weekly start when `--week` is selected and includes parsed schedule events from the `events` cache table.
+- Periodic note creation uses the configured periodic template name when it resolves successfully; otherwise Vulcan creates a blank note and reports the template warning.
+- These commands participate in auto-commit when they mutate note files and vault git auto-commit is enabled.
 
 ### Bases commands
 
@@ -470,6 +490,10 @@ Common mutating commands:
 - `rename-block-ref`
 - `edit`
 - `browse`
+- `daily`
+- `weekly`
+- `monthly`
+- `periodic`
 - `inbox`
 - `template`
 - `bases view-*`
@@ -671,7 +695,6 @@ vulcan query '...' [--format table|paths|detail|count] [--glob ...]
 vulcan search '...' [--regex <pattern>]
 vulcan web search|fetch
 vulcan git status|log|diff|commit|blame
-vulcan daily today|show|list|append
 vulcan help [<topic>]
 ```
 

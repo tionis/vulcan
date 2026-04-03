@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -2503,7 +2503,7 @@
       },
       {
         "about": "Import compatible plugin settings into .vulcan/config.toml",
-        "after_help": "Subcommands:\n  import core    import Obsidian core settings into Vulcan config\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import templater import Obsidian Templater plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Shared flags: --dry-run, --target <shared|local>, --no-commit\n  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.\n\nExamples:\n  vulcan config import core\n  vulcan config import kanban\n  vulcan config import tasks --dry-run\n  vulcan config import templater --target local\n  vulcan --output json config import tasks",
+        "after_help": "Subcommands:\n  import core    import Obsidian core settings into Vulcan config\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml\n  import templater import Obsidian Templater plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Shared flags: --dry-run, --target <shared|local>, --no-commit\n  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.\n\nExamples:\n  vulcan config import core\n  vulcan config import kanban\n  vulcan config import periodic-notes\n  vulcan config import tasks --dry-run\n  vulcan config import templater --target local\n  vulcan --output json config import tasks",
         "name": "config",
         "options": [],
         "subcommands": [
@@ -2660,6 +2660,55 @@
                 "subcommands": []
               },
               {
+                "about": "Import Obsidian Daily Notes and Periodic Notes settings",
+                "name": "periodic-notes",
+                "options": [
+                  {
+                    "help": "Preview config changes without writing files",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Select the target Vulcan config file",
+                    "id": "target",
+                    "long": "target",
+                    "possible_values": [
+                      "shared",
+                      "local"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TARGET"
+                    ]
+                  },
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
                 "about": "Import Obsidian Tasks plugin settings",
                 "name": "tasks",
                 "options": [
@@ -2709,6 +2758,389 @@
                 "subcommands": []
               }
             ]
+          }
+        ]
+      },
+      {
+        "about": "Open, inspect, and append to daily notes",
+        "after_help": "Subcommands:\n  today       open or create today's daily note\n  show        display one daily note's contents\n  list        list daily notes and extracted schedule events\n  append      append text to one daily note\n\nNotes:\n  `list --week` and `list --month` expand around the current date using the configured periodic week start.\n  `show` defaults to today. `append` creates the daily note first when it does not exist.\n\nExamples:\n  vulcan daily today\n  vulcan daily today --no-edit\n  vulcan daily show 2026-04-03\n  vulcan daily list --week\n  vulcan daily append \"Called Alice\" --heading \"## Log\"",
+        "name": "daily",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Open or create today's daily note",
+            "name": "today",
+            "options": [
+              {
+                "help": "Create the note without opening it in the editor",
+                "id": "no_edit",
+                "long": "no-edit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_EDIT"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Display one daily note's contents",
+            "name": "show",
+            "options": [
+              {
+                "help": "Date to show (defaults to today)",
+                "id": "date",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List daily notes and extracted schedule events",
+            "name": "list",
+            "options": [
+              {
+                "help": "Start date for the listing window",
+                "id": "from",
+                "long": "from",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM"
+                ]
+              },
+              {
+                "help": "End date for the listing window",
+                "id": "to",
+                "long": "to",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TO"
+                ]
+              },
+              {
+                "help": "Use the current week",
+                "id": "week",
+                "long": "week",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WEEK"
+                ]
+              },
+              {
+                "help": "Use the current month",
+                "id": "month",
+                "long": "month",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "MONTH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Append text to one daily note",
+            "name": "append",
+            "options": [
+              {
+                "help": "Text to append",
+                "id": "text",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TEXT"
+                ]
+              },
+              {
+                "help": "Optional heading to append under",
+                "id": "heading",
+                "long": "heading",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HEADING"
+                ]
+              },
+              {
+                "help": "Date to append to (defaults to today)",
+                "id": "date",
+                "long": "date",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Open or create the weekly note for a date",
+        "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `weekly [date]` and `monthly [date]` are shorthand for `periodic weekly|monthly`.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n\nExamples:\n  vulcan weekly\n  vulcan monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
+        "name": "weekly",
+        "options": [
+          {
+            "help": "Reference date for the period (defaults to today)",
+            "id": "date",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DATE"
+            ]
+          },
+          {
+            "help": "Create the note without opening it in the editor",
+            "id": "no_edit",
+            "long": "no-edit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_EDIT"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Open or create the monthly note for a date",
+        "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `weekly [date]` and `monthly [date]` are shorthand for `periodic weekly|monthly`.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n\nExamples:\n  vulcan weekly\n  vulcan monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
+        "name": "monthly",
+        "options": [
+          {
+            "help": "Reference date for the period (defaults to today)",
+            "id": "date",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DATE"
+            ]
+          },
+          {
+            "help": "Create the note without opening it in the editor",
+            "id": "no_edit",
+            "long": "no-edit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_EDIT"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "about": "Open, list, and inspect periodic notes",
+        "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `weekly [date]` and `monthly [date]` are shorthand for `periodic weekly|monthly`.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n\nExamples:\n  vulcan weekly\n  vulcan monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
+        "name": "periodic",
+        "options": [
+          {
+            "help": "Configured period type to open when no subcommand is used",
+            "id": "period_type",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "PERIOD_TYPE"
+            ]
+          },
+          {
+            "help": "Reference date for the period (defaults to today)",
+            "id": "date",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DATE"
+            ]
+          },
+          {
+            "help": "Create the note without opening it in the editor",
+            "id": "no_edit",
+            "long": "no-edit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_EDIT"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
+          }
+        ],
+        "subcommands": [
+          {
+            "about": "List indexed periodic notes",
+            "name": "list",
+            "options": [
+              {
+                "help": "Restrict results to one period type",
+                "id": "period_type",
+                "long": "type",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PERIOD_TYPE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Show missing periodic notes in a date range",
+            "name": "gaps",
+            "options": [
+              {
+                "help": "Restrict gaps to one period type",
+                "id": "period_type",
+                "long": "type",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PERIOD_TYPE"
+                ]
+              },
+              {
+                "help": "Start date for the gap window",
+                "id": "from",
+                "long": "from",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM"
+                ]
+              },
+              {
+                "help": "End date for the gap window",
+                "id": "to",
+                "long": "to",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TO"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },
