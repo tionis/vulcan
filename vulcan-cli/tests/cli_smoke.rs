@@ -252,6 +252,171 @@ fn config_import_core_json_output_reports_sources_and_target_file() {
 }
 
 #[test]
+fn config_import_dataview_json_output_reports_mappings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
+        .expect("dataview plugin dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/dataview/data.json"),
+        r#"{
+          "inlineQueryPrefix": "dv:",
+          "inlineJsQueryPrefix": "$dv:",
+          "enableDataviewJs": false,
+          "enableInlineDataviewJs": true,
+          "taskCompletionTracking": true,
+          "taskCompletionUseEmojiShorthand": true,
+          "taskCompletionText": "done-on",
+          "recursiveSubTaskCompletion": true,
+          "showResultCount": false,
+          "defaultDateFormat": "yyyy-MM-dd",
+          "defaultDateTimeFormat": "yyyy-MM-dd HH:mm",
+          "timezone": "+02:00",
+          "maxRecursiveRenderDepth": 7,
+          "tableIdColumnName": "Document",
+          "tableGroupColumnName": "Bucket"
+        }"#,
+    )
+    .expect("dataview config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "dataview",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["plugin"], "dataview");
+    assert_eq!(json["dry_run"], false);
+    assert_eq!(json["target_file"], ".vulcan/config.toml");
+    assert!(json["mappings"]
+        .as_array()
+        .is_some_and(|mappings| mappings.iter().any(|mapping| mapping["target"]
+            == "dataview.inline_query_prefix"
+            && mapping["value"] == "dv:")));
+
+    let config =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(config.contains("[dataview]"));
+    assert!(config.contains("inline_query_prefix = \"dv:\""));
+    assert!(config.contains("enable_dataview_js = false"));
+    assert!(config.contains("group_column_name = \"Bucket\""));
+}
+
+#[test]
+fn config_import_list_json_output_reports_detectable_sources() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
+        .expect("dataview plugin dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/app.json"),
+        r#"{"useMarkdownLinks": true}"#,
+    )
+    .expect("app config should be written");
+    fs::write(
+        vault_root.join(".obsidian/plugins/dataview/data.json"),
+        r#"{"inlineQueryPrefix":"dv:"}"#,
+    )
+    .expect("dataview config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "--list",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    let importers = json["importers"]
+        .as_array()
+        .expect("importers should be an array");
+    assert!(importers.iter().any(|item| {
+        item["plugin"] == "core"
+            && item["detected"] == true
+            && item["source_paths"]
+                .as_array()
+                .is_some_and(|paths| paths.iter().any(|path| path == ".obsidian/app.json"))
+    }));
+    assert!(importers
+        .iter()
+        .any(|item| item["plugin"] == "dataview" && item["detected"] == true));
+    assert!(importers
+        .iter()
+        .any(|item| item["plugin"] == "templater" && item["detected"] == false));
+}
+
+#[test]
+fn config_import_all_dry_run_aggregates_detected_sources() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
+        .expect("dataview plugin dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/app.json"),
+        r#"{
+          "useMarkdownLinks": true,
+          "newLinkFormat": "shortest"
+        }"#,
+    )
+    .expect("app config should be written");
+    fs::write(
+        vault_root.join(".obsidian/plugins/dataview/data.json"),
+        r#"{"inlineQueryPrefix":"dv:","tableGroupColumnName":"Bucket"}"#,
+    )
+    .expect("dataview config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "--all",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["detected_count"], 2);
+    assert_eq!(json["imported_count"], 2);
+    assert!(json["reports"]
+        .as_array()
+        .is_some_and(|reports| reports.iter().any(|report| report["plugin"] == "core")));
+    assert!(json["reports"]
+        .as_array()
+        .is_some_and(|reports| reports.iter().any(|report| report["plugin"] == "dataview")));
+    assert!(!vault_root.join(".vulcan/config.toml").exists());
+}
+
+#[test]
 fn config_import_kanban_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -2924,6 +3089,60 @@ fn init_json_output_creates_default_config() {
             .expect("gitignore should be readable"),
         "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n"
     );
+}
+
+#[test]
+fn init_import_applies_detected_sources_and_reports_them() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
+        .expect("dataview plugin dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/app.json"),
+        r#"{
+          "useMarkdownLinks": true,
+          "newLinkFormat": "relative"
+        }"#,
+    )
+    .expect("app config should be written");
+    fs::write(
+        vault_root.join(".obsidian/plugins/dataview/data.json"),
+        r#"{"inlineQueryPrefix":"dv:"}"#,
+    )
+    .expect("dataview config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "init",
+            "--import",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["created_config"], true);
+    assert!(json["imported"].is_object());
+    assert_eq!(json["imported"]["imported_count"], 2);
+    assert!(json["importable_sources"]
+        .as_array()
+        .is_some_and(|sources| {
+            sources.iter().any(|source| source["plugin"] == "core")
+                && sources.iter().any(|source| source["plugin"] == "dataview")
+        }));
+
+    let rendered =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(rendered.contains("[links]"));
+    assert!(rendered.contains("style = \"markdown\""));
+    assert!(rendered.contains("[dataview]"));
+    assert!(rendered.contains("inline_query_prefix = \"dv:\""));
 }
 
 #[test]

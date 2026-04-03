@@ -113,7 +113,36 @@
       {
         "about": "Initialize .vulcan/ state for a vault",
         "name": "init",
-        "options": [],
+        "options": [
+          {
+            "help": "Import all detected settings after initialization",
+            "id": "import",
+            "long": "import",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "IMPORT"
+            ]
+          },
+          {
+            "help": "Suppress import detection suggestions after initialization",
+            "id": "no_import",
+            "long": "no-import",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_IMPORT"
+            ]
+          }
+        ],
         "subcommands": []
       },
       {
@@ -2503,258 +2532,78 @@
       },
       {
         "about": "Import compatible plugin settings into .vulcan/config.toml",
-        "after_help": "Subcommands:\n  import core    import Obsidian core settings into Vulcan config\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml\n  import templater import Obsidian Templater plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Shared flags: --dry-run, --target <shared|local>, --no-commit\n  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.\n\nExamples:\n  vulcan config import core\n  vulcan config import kanban\n  vulcan config import periodic-notes\n  vulcan config import tasks --dry-run\n  vulcan config import templater --target local\n  vulcan --output json config import tasks",
+        "after_help": "Subcommands:\n  import core    import Obsidian core settings into Vulcan config\n  import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml\n  import templater import Obsidian Templater plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Shared flags: --dry-run, --target <shared|local>, --no-commit\n  Use `config import --all` to apply every detected importer in registry order.\n  Use `config import --list` to inspect detectable sources without writing.\n  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.\n\nExamples:\n  vulcan config import core\n  vulcan config import dataview\n  vulcan config import kanban\n  vulcan config import --all --dry-run\n  vulcan config import --list\n  vulcan config import periodic-notes\n  vulcan config import tasks --dry-run\n  vulcan config import templater --target local\n  vulcan --output json config import tasks",
         "name": "config",
         "options": [],
         "subcommands": [
           {
             "about": "Import compatible Obsidian plugin settings",
             "name": "import",
-            "options": [],
+            "options": [
+              {
+                "help": "Import every detected Obsidian source in registry order",
+                "id": "all",
+                "long": "all",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALL"
+                ]
+              },
+              {
+                "help": "List detectable import sources without writing files",
+                "id": "list",
+                "long": "list",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIST"
+                ]
+              }
+            ],
             "subcommands": [
               {
                 "about": "Import Obsidian core settings",
                 "name": "core",
-                "options": [
-                  {
-                    "help": "Preview config changes without writing files",
-                    "id": "dry_run",
-                    "long": "dry-run",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "DRY_RUN"
-                    ]
-                  },
-                  {
-                    "help": "Select the target Vulcan config file",
-                    "id": "target",
-                    "long": "target",
-                    "possible_values": [
-                      "shared",
-                      "local"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "TARGET"
-                    ]
-                  },
-                  {
-                    "help": "Suppress auto-commit for this invocation",
-                    "id": "no_commit",
-                    "long": "no-commit",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "NO_COMMIT"
-                    ]
-                  }
-                ],
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Import Obsidian Dataview plugin settings",
+                "name": "dataview",
+                "options": [],
                 "subcommands": []
               },
               {
                 "about": "Import Obsidian Templater plugin settings",
                 "name": "templater",
-                "options": [
-                  {
-                    "help": "Preview config changes without writing files",
-                    "id": "dry_run",
-                    "long": "dry-run",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "DRY_RUN"
-                    ]
-                  },
-                  {
-                    "help": "Select the target Vulcan config file",
-                    "id": "target",
-                    "long": "target",
-                    "possible_values": [
-                      "shared",
-                      "local"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "TARGET"
-                    ]
-                  },
-                  {
-                    "help": "Suppress auto-commit for this invocation",
-                    "id": "no_commit",
-                    "long": "no-commit",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "NO_COMMIT"
-                    ]
-                  }
-                ],
+                "options": [],
                 "subcommands": []
               },
               {
                 "about": "Import Obsidian Kanban plugin settings",
                 "name": "kanban",
-                "options": [
-                  {
-                    "help": "Preview config changes without writing files",
-                    "id": "dry_run",
-                    "long": "dry-run",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "DRY_RUN"
-                    ]
-                  },
-                  {
-                    "help": "Select the target Vulcan config file",
-                    "id": "target",
-                    "long": "target",
-                    "possible_values": [
-                      "shared",
-                      "local"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "TARGET"
-                    ]
-                  },
-                  {
-                    "help": "Suppress auto-commit for this invocation",
-                    "id": "no_commit",
-                    "long": "no-commit",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "NO_COMMIT"
-                    ]
-                  }
-                ],
+                "options": [],
                 "subcommands": []
               },
               {
                 "about": "Import Obsidian Daily Notes and Periodic Notes settings",
                 "name": "periodic-notes",
-                "options": [
-                  {
-                    "help": "Preview config changes without writing files",
-                    "id": "dry_run",
-                    "long": "dry-run",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "DRY_RUN"
-                    ]
-                  },
-                  {
-                    "help": "Select the target Vulcan config file",
-                    "id": "target",
-                    "long": "target",
-                    "possible_values": [
-                      "shared",
-                      "local"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "TARGET"
-                    ]
-                  },
-                  {
-                    "help": "Suppress auto-commit for this invocation",
-                    "id": "no_commit",
-                    "long": "no-commit",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "NO_COMMIT"
-                    ]
-                  }
-                ],
+                "options": [],
                 "subcommands": []
               },
               {
                 "about": "Import Obsidian Tasks plugin settings",
                 "name": "tasks",
-                "options": [
-                  {
-                    "help": "Preview config changes without writing files",
-                    "id": "dry_run",
-                    "long": "dry-run",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "DRY_RUN"
-                    ]
-                  },
-                  {
-                    "help": "Select the target Vulcan config file",
-                    "id": "target",
-                    "long": "target",
-                    "possible_values": [
-                      "shared",
-                      "local"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "TARGET"
-                    ]
-                  },
-                  {
-                    "help": "Suppress auto-commit for this invocation",
-                    "id": "no_commit",
-                    "long": "no-commit",
-                    "possible_values": [
-                      "true",
-                      "false"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "NO_COMMIT"
-                    ]
-                  }
-                ],
+                "options": [],
                 "subcommands": []
               }
             ]

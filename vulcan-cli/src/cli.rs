@@ -394,6 +394,7 @@ Examples:
 const CONFIG_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   import core    import Obsidian core settings into Vulcan config
+  import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml
   import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
   import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml
   import templater import Obsidian Templater plugin settings into .vulcan/config.toml
@@ -402,11 +403,16 @@ Subcommands:
 Notes:
   Import commands preserve unrelated config sections and overwrite the mapped target keys.
   Shared flags: --dry-run, --target <shared|local>, --no-commit
+  Use `config import --all` to apply every detected importer in registry order.
+  Use `config import --list` to inspect detectable sources without writing.
   When git auto-commit is enabled for mutations, config imports participate like other mutating commands.
 
 Examples:
   vulcan config import core
+  vulcan config import dataview
   vulcan config import kanban
+  vulcan config import --all --dry-run
+  vulcan config import --list
   vulcan config import periodic-notes
   vulcan config import tasks --dry-run
   vulcan config import templater --target local
@@ -939,30 +945,17 @@ pub enum ExportCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ConfigImportCommand {
     #[command(about = "Import Obsidian core settings")]
-    Core {
-        #[command(flatten)]
-        args: ConfigImportArgs,
-    },
+    Core,
+    #[command(about = "Import Obsidian Dataview plugin settings")]
+    Dataview,
     #[command(about = "Import Obsidian Templater plugin settings")]
-    Templater {
-        #[command(flatten)]
-        args: ConfigImportArgs,
-    },
+    Templater,
     #[command(about = "Import Obsidian Kanban plugin settings")]
-    Kanban {
-        #[command(flatten)]
-        args: ConfigImportArgs,
-    },
+    Kanban,
     #[command(about = "Import Obsidian Daily Notes and Periodic Notes settings")]
-    PeriodicNotes {
-        #[command(flatten)]
-        args: ConfigImportArgs,
-    },
+    PeriodicNotes,
     #[command(about = "Import Obsidian Tasks plugin settings")]
-    Tasks {
-        #[command(flatten)]
-        args: ConfigImportArgs,
-    },
+    Tasks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -973,26 +966,64 @@ pub enum ConfigImportTargetArg {
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct ConfigImportArgs {
-    #[arg(long, help = "Preview config changes without writing files")]
+    #[arg(
+        long,
+        global = true,
+        help = "Preview config changes without writing files"
+    )]
     pub dry_run: bool,
     #[arg(
         long,
+        global = true,
         value_enum,
         default_value_t = ConfigImportTargetArg::Shared,
         help = "Select the target Vulcan config file"
     )]
     pub target: ConfigImportTargetArg,
-    #[arg(long, help = "Suppress auto-commit for this invocation")]
+    #[arg(long, global = true, help = "Suppress auto-commit for this invocation")]
     pub no_commit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct ConfigImportSelection {
+    #[command(subcommand)]
+    pub command: Option<ConfigImportCommand>,
+    #[arg(
+        long,
+        conflicts_with = "list",
+        help = "Import every detected Obsidian source in registry order"
+    )]
+    pub all: bool,
+    #[arg(
+        long,
+        conflicts_with = "all",
+        help = "List detectable import sources without writing files"
+    )]
+    pub list: bool,
+    #[command(flatten)]
+    pub args: ConfigImportArgs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ConfigCommand {
     #[command(about = "Import compatible Obsidian plugin settings")]
-    Import {
-        #[command(subcommand)]
-        command: ConfigImportCommand,
-    },
+    Import(ConfigImportSelection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct InitArgs {
+    #[arg(
+        long,
+        conflicts_with = "no_import",
+        help = "Import all detected settings after initialization"
+    )]
+    pub import: bool,
+    #[arg(
+        long,
+        conflicts_with = "import",
+        help = "Suppress import detection suggestions after initialization"
+    )]
+    pub no_import: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
@@ -1395,7 +1426,7 @@ pub struct TemplateRenderArgs {
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Command {
     #[command(about = "Initialize .vulcan/ state for a vault")]
-    Init,
+    Init(InitArgs),
     #[command(about = "Rebuild the cache from disk")]
     Rebuild {
         #[arg(long, help = "Report rebuild scope without mutating the cache")]

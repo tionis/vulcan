@@ -2527,8 +2527,8 @@ Import Obsidian's core settings files, which are currently only used as runtime 
 
 Parity with the other plugin importers. Dataview settings are currently auto-loaded during config initialization but have no explicit import command to write them into `config.toml`.
 
-- [ ] `DataviewImporter` implementing `PluginImporter`, reading from `.obsidian/plugins/dataview/data.json`
-- [ ] Import mappings (same 14 settings already parsed in `load_obsidian_dataview_config`):
+- [x] `DataviewImporter` implementing `PluginImporter`, reading from `.obsidian/plugins/dataview/data.json`
+- [x] Import mappings (same 14 settings already parsed in `load_obsidian_dataview_config`):
   | Setting key | Vulcan config key |
   |---|---|
   | `inlineQueryPrefix` | `dataview.inline_query_prefix` |
@@ -2545,12 +2545,12 @@ Parity with the other plugin importers. Dataview settings are currently auto-loa
   | `maxRecursiveRenderDepth` | `dataview.max_recursive_render_depth` |
   | `primaryColumnName` | `dataview.primary_column_name` |
   | `groupColumnName` | `dataview.group_column_name` |
-- [ ] `vulcan config import dataview` CLI subcommand with all shared flags
-- [ ] Unit test: import and idempotency
+- [x] `vulcan config import dataview` CLI subcommand with all shared flags
+- [x] Unit test: import and idempotency
 
 #### 9.17.6 Batch import commands
 
-- [ ] `vulcan config import --all` — discover all importable sources via the importer registry, run each in priority order, aggregate reports:
+- [x] `vulcan config import --all` — discover all importable sources via the importer registry, run each in priority order, aggregate reports:
   - Respects `--dry-run`, `--target`, `--no-commit`, `--output`
   - Single commit for the batch (not one commit per importer)
   - Reports per-importer results and any conflicts (9.17.3)
@@ -2566,17 +2566,17 @@ Parity with the other plugin importers. Dataview settings are currently auto-loa
       - tasknotes: not detected
       - periodic-notes: not detected
     ```
-- [ ] `vulcan config import --list` — show what is importable without importing; calls `detect()` on each importer
+- [x] `vulcan config import --list` — show what is importable without importing; calls `detect()` on each importer
   - Human output: detected/not-detected with source file paths
   - JSON output: array of `{ name, detected, source_paths }`
-- [ ] `--all` and `--list` are flags on the `Import` variant of `ConfigCommand`, coexisting with the existing subcommand dispatch
-- [ ] Unit test: `--all` imports all detected sources
-- [ ] Unit test: `--list` does not write anything
-- [ ] Integration test: `--all --dry-run` shows batch preview
+- [x] `--all` and `--list` are flags on the `Import` variant of `ConfigCommand`, coexisting with the existing subcommand dispatch
+- [x] Unit test: `--all` imports all detected sources
+- [x] Unit test: `--list` does not write anything
+- [x] Integration test: `--all --dry-run` shows batch preview
 
 #### 9.17.7 `vulcan init` integration
 
-- [ ] After `vulcan init` creates `.vulcan/config.toml`, detect importable sources via the importer registry and print a summary:
+- [x] After `vulcan init` creates `.vulcan/config.toml`, detect importable sources via the importer registry and print a summary:
   ```
   Detected importable Obsidian settings:
     core (app.json, templates.json, types.json)
@@ -2584,9 +2584,9 @@ Parity with the other plugin importers. Dataview settings are currently auto-loa
     templater (.obsidian/plugins/templater-obsidian/data.json)
   Run `vulcan config import --all` to import them.
   ```
-- [ ] `vulcan init --import` — automatically run `--all` import after initialization
-- [ ] `vulcan init --no-import` — suppress the detection summary (for scripted use)
-- [ ] Default behavior (no flag): detect and print the suggestion, do not auto-import
+- [x] `vulcan init --import` — automatically run `--all` import after initialization
+- [x] `vulcan init --no-import` — suppress the detection summary (for scripted use)
+- [x] Default behavior (no flag): detect and print the suggestion, do not auto-import
 
 ### 9.18 CLI redesign — command reorganization, note CRUD, JS runtime, and agent tools
 

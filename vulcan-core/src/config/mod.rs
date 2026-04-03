@@ -1814,6 +1814,9 @@ struct ImportSetting {
 pub struct CoreImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct DataviewImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct KanbanImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1829,6 +1832,7 @@ pub struct TemplaterImporter;
 pub fn all_importers() -> Vec<Box<dyn PluginImporter>> {
     vec![
         Box::new(CoreImporter),
+        Box::new(DataviewImporter),
         Box::new(KanbanImporter),
         Box::new(PeriodicNotesImporter),
         Box::new(TasksImporter),
@@ -1864,6 +1868,12 @@ pub fn import_core_plugin_config(
     paths: &VaultPaths,
 ) -> Result<ConfigImportReport, ConfigImportError> {
     CoreImporter.import(paths, ImportTarget::Shared)
+}
+
+pub fn import_dataview_plugin_config(
+    paths: &VaultPaths,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    DataviewImporter.import(paths, ImportTarget::Shared)
 }
 
 fn importer_source_path(paths: &VaultPaths, relative: &str) -> PathBuf {
@@ -2064,8 +2074,7 @@ fn json_to_toml_value(value: &Value) -> Result<Option<toml::Value>, ConfigImport
     }
 }
 
-#[cfg(test)]
-fn annotate_import_conflicts(reports: &mut [ConfigImportReport]) {
+pub fn annotate_import_conflicts(reports: &mut [ConfigImportReport]) {
     let mut previous_sources = BTreeMap::<String, Vec<String>>::new();
 
     for report in reports {
@@ -2335,6 +2344,54 @@ impl PluginImporter for CoreImporter {
             self.name(),
             paths.vault_root().join(".obsidian"),
             source_paths,
+            &settings,
+            target,
+            dry_run,
+        )
+    }
+}
+
+impl PluginImporter for DataviewImporter {
+    fn name(&self) -> &'static str {
+        "dataview"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian Dataview plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/dataview/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+
+        let obsidian =
+            serde_json::from_str::<ObsidianDataviewConfig>(&fs::read_to_string(&source_path)?)?;
+        let imported_dataview = imported_dataview_config(obsidian);
+        let settings =
+            import_settings_from_mappings(dataview_config_import_mappings(&imported_dataview)?);
+        apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
             &settings,
             target,
             dry_run,
@@ -2635,6 +2692,12 @@ fn imported_templater_config(obsidian: ObsidianTemplaterConfig) -> TemplatesConf
     config.templates
 }
 
+fn imported_dataview_config(obsidian: ObsidianDataviewConfig) -> DataviewConfig {
+    let mut config = VaultConfig::default();
+    apply_obsidian_dataview_defaults(&mut config, obsidian);
+    config.dataview
+}
+
 fn imported_kanban_config(obsidian: ObsidianKanbanConfig) -> KanbanConfig {
     let mut config = VaultConfig::default();
     apply_obsidian_kanban_defaults(&mut config, obsidian);
@@ -2824,6 +2887,103 @@ fn templater_config_import_mappings(
         "intellisense_render",
         "templates.intellisense_render",
         &config.intellisense_render,
+    )?;
+    Ok(mappings)
+}
+
+fn dataview_config_import_mappings(
+    config: &DataviewConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let mut mappings = Vec::new();
+    push_config_import_mapping(
+        &mut mappings,
+        "inlineQueryPrefix",
+        "dataview.inline_query_prefix",
+        &config.inline_query_prefix,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "inlineJsQueryPrefix",
+        "dataview.inline_js_query_prefix",
+        &config.inline_js_query_prefix,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "enableDataviewJs",
+        "dataview.enable_dataview_js",
+        &config.enable_dataview_js,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "enableInlineDataviewJs",
+        "dataview.enable_inline_dataview_js",
+        &config.enable_inline_dataview_js,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCompletionTracking",
+        "dataview.task_completion_tracking",
+        &config.task_completion_tracking,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCompletionUseEmojiShorthand",
+        "dataview.task_completion_use_emoji_shorthand",
+        &config.task_completion_use_emoji_shorthand,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCompletionText",
+        "dataview.task_completion_text",
+        &config.task_completion_text,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "recursiveSubTaskCompletion",
+        "dataview.recursive_subtask_completion",
+        &config.recursive_subtask_completion,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "displayResultCount",
+        "dataview.display_result_count",
+        &config.display_result_count,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "defaultDateFormat",
+        "dataview.default_date_format",
+        &config.default_date_format,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "defaultDateTimeFormat",
+        "dataview.default_datetime_format",
+        &config.default_datetime_format,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "timezone",
+        "dataview.timezone",
+        &config.timezone,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "maxRecursiveRenderDepth",
+        "dataview.max_recursive_render_depth",
+        &config.max_recursive_render_depth,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "primaryColumnName",
+        "dataview.primary_column_name",
+        &config.primary_column_name,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "groupColumnName",
+        "dataview.group_column_name",
+        &config.group_column_name,
     )?;
     Ok(mappings)
 }
@@ -5626,6 +5786,70 @@ default_mode = "off"
     }
 
     #[test]
+    fn import_dataview_plugin_config_preserves_existing_sections_and_is_idempotent() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
+            .expect("dataview plugin dir should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/dataview/data.json"),
+            OBSIDIAN_DATAVIEW_JSON,
+        )
+        .expect("dataview config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .expect("existing config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = import_dataview_plugin_config(&paths).expect("import should succeed");
+
+        assert_eq!(report.plugin, "dataview");
+        assert!(!report.created_config);
+        assert!(report.updated);
+        assert!(report
+            .mappings
+            .iter()
+            .any(|mapping| mapping.target == "dataview.inline_query_prefix"
+                && mapping.value == Value::String("dv:".to_string())));
+
+        let rendered = fs::read_to_string(paths.config_file()).expect("config should exist");
+        assert!(rendered.contains("[git]"));
+        assert!(rendered.contains("auto_commit = true"));
+        assert!(rendered.contains("[dataview]"));
+        assert!(rendered.contains("inline_query_prefix = \"dv:\""));
+        assert!(rendered.contains("inline_js_query_prefix = \"$dv:\""));
+        assert!(rendered.contains("enable_dataview_js = false"));
+        assert!(rendered.contains("enable_inline_dataview_js = true"));
+        assert!(rendered.contains("task_completion_tracking = true"));
+        assert!(rendered.contains("task_completion_use_emoji_shorthand = true"));
+        assert!(rendered.contains("task_completion_text = \"done-on\""));
+        assert!(rendered.contains("recursive_subtask_completion = true"));
+        assert!(rendered.contains("display_result_count = false"));
+        assert!(rendered.contains("default_date_format = \"yyyy-MM-dd\""));
+        assert!(rendered.contains("default_datetime_format = \"yyyy-MM-dd HH:mm\""));
+        assert!(rendered.contains("timezone = \"+02:00\""));
+        assert!(rendered.contains("max_recursive_render_depth = 7"));
+        assert!(rendered.contains("primary_column_name = \"Document\""));
+        assert!(rendered.contains("group_column_name = \"Bucket\""));
+
+        let second_report =
+            import_dataview_plugin_config(&paths).expect("second import should succeed");
+        assert!(!second_report.updated);
+    }
+
+    #[test]
+    fn import_dataview_plugin_config_errors_when_source_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let error = import_dataview_plugin_config(&paths).expect_err("import should fail");
+        assert!(matches!(error, ConfigImportError::MissingSource(_)));
+    }
+
+    #[test]
     fn import_kanban_plugin_config_preserves_existing_sections_and_is_idempotent() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
@@ -5805,7 +6029,14 @@ default_mode = "off"
 
         assert_eq!(
             importer_names,
-            ["core", "kanban", "periodic-notes", "tasks", "templater"]
+            [
+                "core",
+                "dataview",
+                "kanban",
+                "periodic-notes",
+                "tasks",
+                "templater"
+            ]
         );
     }
 

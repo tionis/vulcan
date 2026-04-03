@@ -40,16 +40,18 @@ pub use bases::{
 };
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{
-    all_importers, create_default_config, default_config_template, import_core_plugin_config,
-    import_kanban_plugin_config, import_periodic_notes_plugin_config, import_tasks_plugin_config,
+    all_importers, annotate_import_conflicts, create_default_config, default_config_template,
+    import_core_plugin_config, import_dataview_plugin_config, import_kanban_plugin_config,
+    import_periodic_notes_plugin_config, import_tasks_plugin_config,
     import_templater_plugin_config, load_vault_config, AttachmentExtractionConfig, AutoScanMode,
     ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigImportError, ConfigImportMapping,
-    ConfigImportReport, ConfigLoadResult, CoreImporter, EmbeddingProviderConfig, GitConfig,
-    GitScope, GitTrigger, ImportConflict, ImportTarget, InboxConfig, KanbanConfig, KanbanImporter,
-    LinkResolutionMode, LinkStylePreference, PeriodicCadenceUnit, PeriodicConfig,
-    PeriodicNoteConfig, PeriodicNotesImporter, PeriodicStartOfWeek, PluginImporter, ScanConfig,
-    TasksImporter, TemplaterCommandPairConfig, TemplaterFileTemplateConfig,
-    TemplaterFolderTemplateConfig, TemplaterImporter, TemplatesConfig, VaultConfig,
+    ConfigImportReport, ConfigLoadResult, CoreImporter, DataviewConfig, DataviewImporter,
+    EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, ImportConflict, ImportTarget,
+    InboxConfig, KanbanConfig, KanbanImporter, LinkResolutionMode, LinkStylePreference,
+    PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter,
+    PeriodicStartOfWeek, PluginImporter, ScanConfig, TasksImporter, TemplaterCommandPairConfig,
+    TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplaterImporter, TemplatesConfig,
+    VaultConfig,
 };
 pub use dataview_js::{
     evaluate_dataview_js, evaluate_dataview_js_query, DataviewJsError, DataviewJsOutput,

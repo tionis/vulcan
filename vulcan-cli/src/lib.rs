@@ -9,11 +9,11 @@ mod template_engine;
 
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
-    ConfigImportArgs, ConfigImportCommand, ConfigImportTargetArg, DailyCommand, DataviewCommand,
-    ExportArgs, ExportCommand, ExportFormat, GraphCommand, KanbanCommand, NoteCommand,
-    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, RefreshMode, RepairCommand, SavedCommand,
-    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, VectorQueueCommand, VectorsCommand,
+    ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
+    DailyCommand, DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GraphCommand, InitArgs,
+    KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, RefreshMode,
+    RepairCommand, SavedCommand, SearchMode, SearchSortArg, SuggestCommand, TasksCommand,
+    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -29,7 +29,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use serve::{serve_forever, ServeOptions};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -44,10 +44,10 @@ use vulcan_core::expression::parse_expression;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
-    add_kanban_card, archive_kanban_card, bases_view_add, bases_view_delete, bases_view_edit,
-    bases_view_rename, bulk_replace, bulk_set_property, cache_vacuum, cluster_vectors,
-    create_checkpoint, doctor_fix, doctor_vault, drop_vector_model, evaluate_base_file,
-    evaluate_dataview_js_query, evaluate_dql, evaluate_note_inline_expressions,
+    add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bases_view_add,
+    bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace, bulk_set_property,
+    cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault, drop_vector_model,
+    evaluate_base_file, evaluate_dataview_js_query, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, expected_periodic_note_path,
     export_daily_events_to_ics, export_static_search_index, git_status,
     index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
@@ -68,8 +68,8 @@ use vulcan_core::{
     BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
     CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
     CheckpointRecord, ClusterQuery, ClusterReport, ConfigImportReport, CoreImporter,
-    DataviewJsOutput, DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    DataviewImporter, DataviewJsOutput, DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
     EvaluatedInlineExpression, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
     GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
     GraphTrendsReport, ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport,
@@ -961,6 +961,39 @@ struct NotePatchReport {
     match_count: usize,
     changes: Vec<RefactorChange>,
     diagnostics: Vec<DoctorDiagnosticIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ConfigImportDiscoveryItem {
+    plugin: String,
+    display_name: String,
+    detected: bool,
+    source_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ConfigImportListReport {
+    importers: Vec<ConfigImportDiscoveryItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ConfigImportBatchReport {
+    dry_run: bool,
+    target: ImportTarget,
+    detected_count: usize,
+    imported_count: usize,
+    updated_count: usize,
+    reports: Vec<ConfigImportReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct InitReport {
+    #[serde(flatten)]
+    summary: InitSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    importable_sources: Vec<ConfigImportDiscoveryItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    imported: Option<ConfigImportBatchReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5941,9 +5974,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             Ok(())
         }
-        Command::Init => {
-            let summary = initialize_vault(&paths).map_err(CliError::operation)?;
-            print_init_summary(cli.output, &summary)?;
+        Command::Init(ref args) => {
+            let report = run_init_command(&paths, args)?;
+            print_init_summary(cli.output, &paths, &report)?;
             Ok(())
         }
         Command::Rebuild { dry_run } => {
@@ -6663,23 +6696,32 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
         },
         Command::Config { ref command } => match command {
-            ConfigCommand::Import { command } => match command {
-                ConfigImportCommand::Core { args } => {
-                    run_config_import(&paths, cli.output, &CoreImporter, args)
+            ConfigCommand::Import(selection) => {
+                if selection.command.is_some() && (selection.all || selection.list) {
+                    return Err(CliError::operation(
+                        "config import accepts either a subcommand, --all, or --list",
+                    ));
                 }
-                ConfigImportCommand::Templater { args } => {
-                    run_config_import(&paths, cli.output, &TemplaterImporter, args)
+                if selection.list {
+                    let report = ConfigImportListReport {
+                        importers: discover_config_importers(&paths)
+                            .into_iter()
+                            .map(|(_, discovery)| discovery)
+                            .collect(),
+                    };
+                    return print_config_import_list_report(cli.output, &paths, &report);
                 }
-                ConfigImportCommand::Kanban { args } => {
-                    run_config_import(&paths, cli.output, &KanbanImporter, args)
+                if selection.all {
+                    return run_config_import_batch(&paths, cli.output, &selection.args);
                 }
-                ConfigImportCommand::PeriodicNotes { args } => {
-                    run_config_import(&paths, cli.output, &PeriodicNotesImporter, args)
-                }
-                ConfigImportCommand::Tasks { args } => {
-                    run_config_import(&paths, cli.output, &TasksImporter, args)
-                }
-            },
+                let Some(command) = selection.command.as_ref() else {
+                    return Err(CliError::operation(
+                        "config import requires a subcommand, --all, or --list",
+                    ));
+                };
+                let importer = importer_for_command(command);
+                run_config_import(&paths, cli.output, importer.as_ref(), &selection.args)
+            }
         },
         Command::Daily { ref command } => match command {
             DailyCommand::Today { no_edit, no_commit } => {
@@ -8306,26 +8348,117 @@ fn print_backlinks_report(
     }
 }
 
-fn print_init_summary(output: OutputFormat, summary: &InitSummary) -> Result<(), CliError> {
+fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, CliError> {
+    let summary = initialize_vault(paths).map_err(CliError::operation)?;
+    let importable_sources = if args.no_import {
+        Vec::new()
+    } else {
+        discover_config_importers(paths)
+            .into_iter()
+            .filter_map(|(_, discovery)| discovery.detected.then_some(discovery))
+            .collect()
+    };
+    let imported = if args.import {
+        let target = ImportTarget::Shared;
+        let mut reports = Vec::new();
+        for importer in all_importers()
+            .into_iter()
+            .filter(|importer| importer.detect(paths))
+        {
+            reports.push(
+                importer
+                    .import(paths, target)
+                    .map_err(CliError::operation)?,
+            );
+        }
+        annotate_import_conflicts(&mut reports);
+        Some(ConfigImportBatchReport {
+            dry_run: false,
+            target,
+            detected_count: reports.len(),
+            imported_count: reports.len(),
+            updated_count: reports.iter().filter(|report| report.updated).count(),
+            reports,
+        })
+    } else {
+        None
+    };
+
+    Ok(InitReport {
+        summary,
+        importable_sources,
+        imported,
+    })
+}
+
+fn print_init_summary(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    report: &InitReport,
+) -> Result<(), CliError> {
+    let normalized_importable = report
+        .importable_sources
+        .iter()
+        .map(|item| normalize_import_discovery_item(paths, item))
+        .collect::<Vec<_>>();
+    let normalized_imported = report
+        .imported
+        .as_ref()
+        .map(|batch| ConfigImportBatchReport {
+            dry_run: batch.dry_run,
+            target: batch.target,
+            detected_count: batch.detected_count,
+            imported_count: batch.imported_count,
+            updated_count: batch.updated_count,
+            reports: batch
+                .reports
+                .iter()
+                .map(|item| normalize_config_import_report(paths, item))
+                .collect(),
+        });
+    let normalized = InitReport {
+        summary: report.summary.clone(),
+        importable_sources: normalized_importable,
+        imported: normalized_imported,
+    };
+
     match output {
         OutputFormat::Human => {
             println!(
                 "Initialized {} (config {}, cache {})",
-                summary.vault_root.display(),
-                if summary.created_config {
+                normalized.summary.vault_root.display(),
+                if normalized.summary.created_config {
                     "created"
                 } else {
                     "existing"
                 },
-                if summary.created_cache {
+                if normalized.summary.created_cache {
                     "created"
                 } else {
                     "existing"
                 },
             );
+            if let Some(imported) = &normalized.imported {
+                println!(
+                    "Imported {} detected importer{} ({} updated).",
+                    imported.imported_count,
+                    if imported.imported_count == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    imported.updated_count
+                );
+            } else if !normalized.importable_sources.is_empty() {
+                println!("Importable settings detected:");
+                for importer in &normalized.importable_sources {
+                    println!("- {} ({})", importer.plugin, importer.display_name);
+                }
+                println!("Run `vulcan config import --all` to import them.");
+            }
             Ok(())
         }
-        OutputFormat::Json => print_json(summary),
+        OutputFormat::Json => print_json(&normalized),
     }
 }
 
@@ -8456,6 +8589,52 @@ fn config_import_target(target: ConfigImportTargetArg) -> ImportTarget {
     }
 }
 
+fn importer_for_command(command: &ConfigImportCommand) -> Box<dyn PluginImporter> {
+    match command {
+        ConfigImportCommand::Core => Box::new(CoreImporter),
+        ConfigImportCommand::Dataview => Box::new(DataviewImporter),
+        ConfigImportCommand::Templater => Box::new(TemplaterImporter),
+        ConfigImportCommand::Kanban => Box::new(KanbanImporter),
+        ConfigImportCommand::PeriodicNotes => Box::new(PeriodicNotesImporter),
+        ConfigImportCommand::Tasks => Box::new(TasksImporter),
+    }
+}
+
+fn discover_config_importers(
+    paths: &VaultPaths,
+) -> Vec<(Box<dyn PluginImporter>, ConfigImportDiscoveryItem)> {
+    all_importers()
+        .into_iter()
+        .map(|importer| {
+            let source_paths = importer.source_paths(paths);
+            let detected = importer.detect(paths);
+            let discovery = ConfigImportDiscoveryItem {
+                plugin: importer.name().to_string(),
+                display_name: importer.display_name().to_string(),
+                detected,
+                source_paths,
+            };
+            (importer, discovery)
+        })
+        .collect()
+}
+
+fn normalize_import_discovery_item(
+    paths: &VaultPaths,
+    item: &ConfigImportDiscoveryItem,
+) -> ConfigImportDiscoveryItem {
+    ConfigImportDiscoveryItem {
+        plugin: item.plugin.clone(),
+        display_name: item.display_name.clone(),
+        detected: item.detected,
+        source_paths: item
+            .source_paths
+            .iter()
+            .map(|path| relativize_config_import_path(paths, path))
+            .collect(),
+    }
+}
+
 fn run_config_import(
     paths: &VaultPaths,
     output: OutputFormat,
@@ -8487,6 +8666,179 @@ fn run_config_import(
     };
 
     print_config_import_report(output, paths, &report)
+}
+
+fn run_config_import_batch(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    args: &ConfigImportArgs,
+) -> Result<(), CliError> {
+    let target = config_import_target(args.target);
+    let discovered = discover_config_importers(paths);
+    let importers = discovered
+        .into_iter()
+        .filter_map(|(importer, discovery)| discovery.detected.then_some(importer))
+        .collect::<Vec<_>>();
+    let detected_count = importers.len();
+    let mut reports = Vec::new();
+
+    if args.dry_run {
+        for importer in importers {
+            reports.push(
+                importer
+                    .dry_run_to(paths, target)
+                    .map_err(CliError::operation)?,
+            );
+        }
+    } else {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, args.no_commit);
+        warn_auto_commit_if_needed(&auto_commit);
+        let had_gitignore = paths.gitignore_file().exists();
+        for importer in importers {
+            reports.push(
+                importer
+                    .import(paths, target)
+                    .map_err(CliError::operation)?,
+            );
+        }
+
+        if reports.iter().any(|report| report.updated) {
+            let changed_files = config_import_batch_changed_files(paths, had_gitignore, &reports);
+            auto_commit
+                .commit(paths, "config-import-all", &changed_files)
+                .map_err(CliError::operation)?;
+        }
+    }
+
+    annotate_import_conflicts(&mut reports);
+    let updated_count = reports.iter().filter(|report| report.updated).count();
+    let report = ConfigImportBatchReport {
+        dry_run: args.dry_run,
+        target,
+        detected_count,
+        imported_count: reports.len(),
+        updated_count,
+        reports,
+    };
+    print_config_import_batch_report(output, paths, &report)
+}
+
+fn print_config_import_list_report(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    report: &ConfigImportListReport,
+) -> Result<(), CliError> {
+    let normalized = ConfigImportListReport {
+        importers: report
+            .importers
+            .iter()
+            .map(|item| normalize_import_discovery_item(paths, item))
+            .collect(),
+    };
+    match output {
+        OutputFormat::Human => {
+            if normalized.importers.is_empty() {
+                println!("No importers are registered.");
+                return Ok(());
+            }
+
+            for item in &normalized.importers {
+                let status = if item.detected { "detected" } else { "missing" };
+                println!("- {} [{}]", item.plugin, status);
+                println!("  {}", item.display_name);
+                for source_path in &item.source_paths {
+                    println!("  source: {}", source_path.display());
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(&normalized),
+    }
+}
+
+fn print_config_import_batch_report(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    report: &ConfigImportBatchReport,
+) -> Result<(), CliError> {
+    let normalized = ConfigImportBatchReport {
+        dry_run: report.dry_run,
+        target: report.target,
+        detected_count: report.detected_count,
+        imported_count: report.imported_count,
+        updated_count: report.updated_count,
+        reports: report
+            .reports
+            .iter()
+            .map(|item| normalize_config_import_report(paths, item))
+            .collect(),
+    };
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "{} {} detected importer{} into {} ({} updated)",
+                if normalized.dry_run {
+                    "Dry run:"
+                } else {
+                    "Imported"
+                },
+                normalized.imported_count,
+                if normalized.imported_count == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                match normalized.target {
+                    ImportTarget::Shared => ".vulcan/config.toml",
+                    ImportTarget::Local => ".vulcan/config.local.toml",
+                },
+                normalized.updated_count
+            );
+            if normalized.imported_count == 0 {
+                println!("  no compatible sources were detected");
+            }
+            for item in &normalized.reports {
+                println!(
+                    "  - {}: {}",
+                    item.plugin,
+                    if item.updated {
+                        if item.dry_run {
+                            "would update"
+                        } else {
+                            "updated"
+                        }
+                    } else {
+                        "unchanged"
+                    }
+                );
+                for conflict in &item.conflicts {
+                    println!(
+                        "    warning: conflict on {} from {}",
+                        conflict.key,
+                        conflict.sources.join(", ")
+                    );
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(&normalized),
+    }
+}
+
+fn config_import_batch_changed_files(
+    paths: &VaultPaths,
+    had_gitignore: bool,
+    reports: &[ConfigImportReport],
+) -> Vec<String> {
+    let mut changed = reports
+        .iter()
+        .filter(|report| report.updated)
+        .flat_map(|report| config_import_changed_files(paths, had_gitignore, &report.target_file))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    changed.sort();
+    changed
 }
 
 fn print_config_import_report(
@@ -12285,15 +12637,16 @@ mod tests {
         assert_eq!(
             cli.command,
             Command::Config {
-                command: ConfigCommand::Import {
-                    command: ConfigImportCommand::Tasks {
-                        args: ConfigImportArgs {
-                            dry_run: false,
-                            target: ConfigImportTargetArg::Shared,
-                            no_commit: false,
-                        },
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: Some(ConfigImportCommand::Tasks),
+                    all: false,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: false,
+                        target: ConfigImportTargetArg::Shared,
+                        no_commit: false,
                     },
-                },
+                }),
             }
         );
     }
@@ -12306,15 +12659,16 @@ mod tests {
         assert_eq!(
             cli.command,
             Command::Config {
-                command: ConfigCommand::Import {
-                    command: ConfigImportCommand::PeriodicNotes {
-                        args: ConfigImportArgs {
-                            dry_run: false,
-                            target: ConfigImportTargetArg::Shared,
-                            no_commit: false,
-                        },
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: Some(ConfigImportCommand::PeriodicNotes),
+                    all: false,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: false,
+                        target: ConfigImportTargetArg::Shared,
+                        no_commit: false,
                     },
-                },
+                }),
             }
         );
     }
@@ -12327,15 +12681,16 @@ mod tests {
         assert_eq!(
             cli.command,
             Command::Config {
-                command: ConfigCommand::Import {
-                    command: ConfigImportCommand::Templater {
-                        args: ConfigImportArgs {
-                            dry_run: false,
-                            target: ConfigImportTargetArg::Shared,
-                            no_commit: false,
-                        },
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: Some(ConfigImportCommand::Templater),
+                    all: false,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: false,
+                        target: ConfigImportTargetArg::Shared,
+                        no_commit: false,
                     },
-                },
+                }),
             }
         );
     }
@@ -12387,15 +12742,16 @@ mod tests {
         assert_eq!(
             cli.command,
             Command::Config {
-                command: ConfigCommand::Import {
-                    command: ConfigImportCommand::Kanban {
-                        args: ConfigImportArgs {
-                            dry_run: false,
-                            target: ConfigImportTargetArg::Shared,
-                            no_commit: false,
-                        },
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: Some(ConfigImportCommand::Kanban),
+                    all: false,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: false,
+                        target: ConfigImportTargetArg::Shared,
+                        no_commit: false,
                     },
-                },
+                }),
             }
         );
     }
@@ -12417,16 +12773,82 @@ mod tests {
         assert_eq!(
             cli.command,
             Command::Config {
-                command: ConfigCommand::Import {
-                    command: ConfigImportCommand::Core {
-                        args: ConfigImportArgs {
-                            dry_run: true,
-                            target: ConfigImportTargetArg::Local,
-                            no_commit: true,
-                        },
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: Some(ConfigImportCommand::Core),
+                    all: false,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: true,
+                        target: ConfigImportTargetArg::Local,
+                        no_commit: true,
                     },
-                },
+                }),
             }
+        );
+    }
+
+    #[test]
+    fn parses_config_import_dataview_command() {
+        let cli = Cli::try_parse_from(["vulcan", "config", "import", "dataview"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: Some(ConfigImportCommand::Dataview),
+                    all: false,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: false,
+                        target: ConfigImportTargetArg::Shared,
+                        no_commit: false,
+                    },
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_import_all_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "config",
+            "import",
+            "--all",
+            "--dry-run",
+            "--target",
+            "local",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: None,
+                    all: true,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: true,
+                        target: ConfigImportTargetArg::Local,
+                        no_commit: false,
+                    },
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_init_import_flags() {
+        let cli = Cli::try_parse_from(["vulcan", "init", "--import"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Init(InitArgs {
+                import: true,
+                no_import: false,
+            })
         );
     }
 
