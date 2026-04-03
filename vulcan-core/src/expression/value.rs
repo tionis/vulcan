@@ -1,8 +1,12 @@
-use libc::{localtime_r, time_t, tm};
 use serde_json::Value;
 use std::mem::MaybeUninit;
 
 use crate::expression::functions::{parse_date_like_string, parse_duration_string, parse_wikilink};
+
+#[cfg(unix)]
+use libc::{localtime_r, time_t, tm};
+#[cfg(windows)]
+use libc::{localtime_s, time_t, tm};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataviewValueType {
@@ -147,7 +151,34 @@ fn system_local_offset_ms(timestamp_ms: i64) -> i64 {
     local_ms.saturating_sub(seconds * 1_000)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn system_local_offset_ms(timestamp_ms: i64) -> i64 {
+    let seconds = timestamp_ms.div_euclid(1000);
+    let mut result = MaybeUninit::<tm>::uninit();
+    let time = seconds as time_t;
+
+    // SAFETY: `time` and `result` point to valid memory for the duration of the call.
+    let local = unsafe {
+        if localtime_s(result.as_mut_ptr(), &time) != 0 {
+            return 0;
+        }
+        result.assume_init()
+    };
+
+    let year = i64::from(local.tm_year) + 1900;
+    let month = i64::from(local.tm_mon) + 1;
+    let day = i64::from(local.tm_mday);
+    let hour = i64::from(local.tm_hour);
+    let minute = i64::from(local.tm_min);
+    let second = i64::from(local.tm_sec);
+    let local_ms = timestamp_from_civil(year, month, day)
+        .saturating_add(hour * 3_600_000)
+        .saturating_add(minute * 60_000)
+        .saturating_add(second * 1_000);
+    local_ms.saturating_sub(seconds * 1_000)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn system_local_offset_ms(_timestamp_ms: i64) -> i64 {
     0
 }
