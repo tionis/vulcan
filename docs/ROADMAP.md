@@ -2912,7 +2912,7 @@ scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
 - [x] `--limit <n>` — max results (default: 10)
 - [x] `--output json` returns structured results: `[{ title, url, snippet }]`
 - [x] Pluggable backend via `SearchBackend` trait: `fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>`
-- [ ] Configuration in `.vulcan/config.toml`:
+- [x] Configuration in `.vulcan/config.toml`:
   ```toml
   [web.search]
   backend = "kagi"
