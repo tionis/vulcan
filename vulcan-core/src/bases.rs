@@ -10,12 +10,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum BasesError {
     InvalidPath(RelativePathError),
     Io(std::io::Error),
     Property(PropertyError),
+    Source(String),
     Yaml(serde_yaml::Error),
 }
 
@@ -25,6 +27,7 @@ impl Display for BasesError {
             Self::InvalidPath(error) => write!(formatter, "invalid base file path: {error}"),
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Property(error) => write!(formatter, "{error}"),
+            Self::Source(error) => write!(formatter, "{error}"),
             Self::Yaml(error) => write!(formatter, "{error}"),
         }
     }
@@ -36,6 +39,7 @@ impl Error for BasesError {
             Self::Io(error) => Some(error),
             Self::Property(error) => Some(error),
             Self::Yaml(error) => Some(error),
+            Self::Source(_) => None,
             Self::InvalidPath(error) => Some(error),
         }
     }
@@ -109,6 +113,126 @@ pub struct BasesRow {
     pub group_value: Option<Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BasesSourceRequest {
+    pub filters: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<Value>,
+}
+
+pub trait BasesSource: Send + Sync {
+    fn rows(
+        &self,
+        paths: &VaultPaths,
+        request: &BasesSourceRequest,
+    ) -> Result<Vec<NoteRecord>, BasesError>;
+}
+
+#[derive(Debug, Default)]
+pub struct FileSource;
+
+impl BasesSource for FileSource {
+    fn rows(
+        &self,
+        paths: &VaultPaths,
+        request: &BasesSourceRequest,
+    ) -> Result<Vec<NoteRecord>, BasesError> {
+        query_notes(
+            paths,
+            &NoteQuery {
+                filters: request.filters.clone(),
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .map(|report| report.notes)
+        .map_err(BasesError::Property)
+    }
+}
+
+#[derive(Default)]
+pub struct BasesEvaluator {
+    sources: HashMap<String, Arc<dyn BasesSource>>,
+}
+
+impl BasesEvaluator {
+    #[must_use]
+    pub fn new() -> Self {
+        let mut evaluator = Self::default();
+        evaluator.register_source("file", FileSource);
+        evaluator
+    }
+
+    pub fn register_source<S>(&mut self, name: &str, source: S) -> Option<Arc<dyn BasesSource>>
+    where
+        S: BasesSource + 'static,
+    {
+        self.sources
+            .insert(normalize_source_type(name), Arc::new(source))
+    }
+
+    pub fn evaluate_file(
+        &self,
+        paths: &VaultPaths,
+        relative_path: &str,
+    ) -> Result<BasesEvalReport, BasesError> {
+        let normalized = normalize_base_path(relative_path)?;
+        let source = fs::read_to_string(paths.vault_root().join(&normalized))?;
+        self.evaluate_yaml(paths, &normalized, &source)
+    }
+
+    pub fn evaluate_yaml(
+        &self,
+        paths: &VaultPaths,
+        normalized: &str,
+        yaml: &str,
+    ) -> Result<BasesEvalReport, BasesError> {
+        let parsed = parse_base_file(yaml)?;
+        self.evaluate_parsed(paths, normalized, parsed)
+    }
+
+    fn evaluate_parsed(
+        &self,
+        paths: &VaultPaths,
+        normalized: &str,
+        parsed: ParsedBaseFile,
+    ) -> Result<BasesEvalReport, BasesError> {
+        let ParsedBaseFile {
+            source,
+            filters: base_filters,
+            property_display_names,
+            views: parsed_views,
+            diagnostics: parsed_diagnostics,
+        } = parsed;
+        let mut diagnostics = parsed_diagnostics;
+        let mut views = Vec::new();
+
+        for view in parsed_views {
+            if let Some(evaluated_view) = evaluate_base_view(
+                self,
+                paths,
+                &source,
+                &base_filters,
+                &property_display_names,
+                view,
+                &mut diagnostics,
+            )? {
+                views.push(evaluated_view);
+            }
+        }
+
+        Ok(BasesEvalReport {
+            file: normalized.to_string(),
+            views,
+            diagnostics,
+        })
+    }
+
+    fn source(&self, source_type: &str) -> Option<&Arc<dyn BasesSource>> {
+        self.sources.get(&normalize_source_type(source_type))
+    }
+}
+
 // ── View-spec public structs ────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -152,13 +276,8 @@ pub struct BasesViewEditReport {
 fn serialize_base_file(parsed: &ParsedBaseFile) -> Result<String, BasesError> {
     let mut root = serde_yaml::Mapping::new();
 
-    // source: omit if "notes" and there are filters or views (default implied)
-    // include if non-notes source
-    if parsed.source != "notes" {
-        root.insert(
-            serde_yaml::Value::String("source".to_string()),
-            serde_yaml::Value::String(parsed.source.clone()),
-        );
+    if let Some(source) = serialize_base_source(&parsed.source) {
+        root.insert(serde_yaml::Value::String("source".to_string()), source);
     }
 
     // filters
@@ -204,6 +323,25 @@ fn serialize_base_file(parsed: &ParsedBaseFile) -> Result<String, BasesError> {
     }
 
     serde_yaml::to_string(&serde_yaml::Value::Mapping(root)).map_err(BasesError::Yaml)
+}
+
+fn serialize_base_source(source: &ParsedBaseSource) -> Option<serde_yaml::Value> {
+    if source.source_type == "file" && source.config.is_none() {
+        return None;
+    }
+
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(
+        serde_yaml::Value::String("type".to_string()),
+        serde_yaml::Value::String(source.source_type.clone()),
+    );
+    if let Some(config) = source.config.as_ref() {
+        mapping.insert(
+            serde_yaml::Value::String("config".to_string()),
+            json_to_yaml_value(config),
+        );
+    }
+    Some(serde_yaml::Value::Mapping(mapping))
 }
 
 fn serialize_view(view: &ParsedBaseView) -> serde_yaml::Value {
@@ -346,41 +484,7 @@ fn evaluate_base_from_yaml(
     normalized: &str,
     yaml: &str,
 ) -> Result<BasesEvalReport, BasesError> {
-    let parsed = parse_base_file(yaml)?;
-    let ParsedBaseFile {
-        source: parsed_source,
-        filters: base_filters,
-        property_display_names,
-        views: parsed_views,
-        diagnostics: parsed_diagnostics,
-    } = parsed;
-    let mut diagnostics = parsed_diagnostics;
-    let mut views = Vec::new();
-
-    if parsed_source != "notes" {
-        diagnostics.push(BasesDiagnostic {
-            path: Some("source".to_string()),
-            message: "unsupported base source; only `notes` is implemented".to_string(),
-        });
-    }
-
-    for view in parsed_views {
-        if let Some(evaluated_view) = evaluate_base_view(
-            paths,
-            &base_filters,
-            &property_display_names,
-            view,
-            &mut diagnostics,
-        )? {
-            views.push(evaluated_view);
-        }
-    }
-
-    Ok(BasesEvalReport {
-        file: normalized.to_string(),
-        views,
-        diagnostics,
-    })
+    BasesEvaluator::new().evaluate_yaml(paths, normalized, yaml)
 }
 
 // ── Mutation functions ────────────────────────────────────────────────────────
@@ -553,47 +657,14 @@ pub fn evaluate_base_file(
     paths: &VaultPaths,
     relative_path: &str,
 ) -> Result<BasesEvalReport, BasesError> {
-    let normalized = normalize_base_path(relative_path)?;
-    let source = fs::read_to_string(paths.vault_root().join(&normalized))?;
-    let parsed = parse_base_file(&source)?;
-    let ParsedBaseFile {
-        source: parsed_source,
-        filters: base_filters,
-        property_display_names,
-        views: parsed_views,
-        diagnostics: parsed_diagnostics,
-    } = parsed;
-    let mut diagnostics = parsed_diagnostics;
-    let mut views = Vec::new();
-
-    if parsed_source != "notes" {
-        diagnostics.push(BasesDiagnostic {
-            path: Some("source".to_string()),
-            message: "unsupported base source; only `notes` is implemented".to_string(),
-        });
-    }
-
-    for view in parsed_views {
-        if let Some(evaluated_view) = evaluate_base_view(
-            paths,
-            &base_filters,
-            &property_display_names,
-            view,
-            &mut diagnostics,
-        )? {
-            views.push(evaluated_view);
-        }
-    }
-
-    Ok(BasesEvalReport {
-        file: normalized,
-        views,
-        diagnostics,
-    })
+    BasesEvaluator::new().evaluate_file(paths, relative_path)
 }
 
+#[allow(clippy::too_many_lines)]
 fn evaluate_base_view(
+    evaluator: &BasesEvaluator,
     paths: &VaultPaths,
+    source: &ParsedBaseSource,
     base_filters: &[String],
     property_display_names: &BTreeMap<String, String>,
     view: ParsedBaseView,
@@ -608,16 +679,23 @@ fn evaluate_base_view(
         return Ok(None);
     }
 
-    let notes = match query_notes(
+    let Some(source_impl) = evaluator.source(&source.source_type) else {
+        diagnostics.push(BasesDiagnostic {
+            path: Some("source.type".to_string()),
+            message: format!("unsupported base source type `{}`", source.source_type),
+        });
+        return Ok(None);
+    };
+
+    let notes = match source_impl.rows(
         paths,
-        &NoteQuery {
+        &BasesSourceRequest {
             filters: view_filters.clone(),
-            sort_by: view.sort_by.clone(),
-            sort_descending: view.sort_descending,
+            config: source.config.clone(),
         },
     ) {
-        Ok(report) => report.notes,
-        Err(PropertyError::InvalidFilter(filter)) => {
+        Ok(rows) => rows,
+        Err(BasesError::Property(PropertyError::InvalidFilter(filter))) => {
             diagnostics.push(BasesDiagnostic {
                 path: view
                     .name
@@ -627,7 +705,14 @@ fn evaluate_base_view(
             });
             return Ok(None);
         }
-        Err(error) => return Err(BasesError::Property(error)),
+        Err(BasesError::Source(message)) => {
+            diagnostics.push(BasesDiagnostic {
+                path: Some("source".to_string()),
+                message,
+            });
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
     };
 
     // Build a vault-wide note index for link resolution (asFile / linksTo).
@@ -700,9 +785,24 @@ fn evaluate_base_view(
     }))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+struct ParsedBaseSource {
+    source_type: String,
+    config: Option<Value>,
+}
+
+impl Default for ParsedBaseSource {
+    fn default() -> Self {
+        Self {
+            source_type: "file".to_string(),
+            config: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct ParsedBaseFile {
-    source: String,
+    source: ParsedBaseSource,
     filters: Vec<String>,
     property_display_names: BTreeMap<String, String>,
     views: Vec<ParsedBaseView>,
@@ -732,7 +832,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
     let mut diagnostics = Vec::new();
     let Some(root) = value.as_mapping() else {
         return Ok(ParsedBaseFile {
-            source: "notes".to_string(),
+            source: ParsedBaseSource::default(),
             filters: Vec::new(),
             property_display_names: BTreeMap::new(),
             views: Vec::new(),
@@ -743,11 +843,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
         });
     };
 
-    let source = root
-        .get(serde_yaml::Value::String("source".to_string()))
-        .and_then(serde_yaml::Value::as_str)
-        .unwrap_or("notes")
-        .to_string();
+    let source = parse_base_source(root, &mut diagnostics);
     let filters = root
         .get(serde_yaml::Value::String("filters".to_string()))
         .map_or_else(Vec::new, |value| {
@@ -857,6 +953,62 @@ fn parse_view(
     })
 }
 
+fn parse_base_source(
+    root: &serde_yaml::Mapping,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> ParsedBaseSource {
+    let Some(source) = root.get(serde_yaml::Value::String("source".to_string())) else {
+        return ParsedBaseSource::default();
+    };
+
+    if let Some(source_type) = source.as_str() {
+        return ParsedBaseSource {
+            source_type: normalize_source_type(source_type),
+            config: None,
+        };
+    }
+
+    let Some(source_mapping) = source.as_mapping() else {
+        diagnostics.push(BasesDiagnostic {
+            path: Some("source".to_string()),
+            message: "source must be a string or object with `type` and optional `config`"
+                .to_string(),
+        });
+        return ParsedBaseSource::default();
+    };
+
+    let source_type = source_mapping
+        .get(serde_yaml::Value::String("type".to_string()))
+        .and_then(serde_yaml::Value::as_str)
+        .map_or_else(
+            || {
+                diagnostics.push(BasesDiagnostic {
+                    path: Some("source.type".to_string()),
+                    message: "source.type must be a string".to_string(),
+                });
+                "file".to_string()
+            },
+            normalize_source_type,
+        );
+    let config = source_mapping
+        .get(serde_yaml::Value::String("config".to_string()))
+        .map(yaml_to_json_value);
+
+    for key in source_mapping.keys().filter_map(serde_yaml::Value::as_str) {
+        if !matches!(key, "type" | "config") {
+            diagnostics.push(BasesDiagnostic {
+                path: Some(format!("source.{key}")),
+                message: format!("unsupported source field `{key}`"),
+            });
+        }
+    }
+
+    ParsedBaseSource {
+        source_type,
+        config,
+    }
+}
+
 fn parse_base_filters(
     path: &str,
     value: &serde_yaml::Value,
@@ -962,6 +1114,80 @@ fn strip_matching_quotes(value: &str) -> Option<&str> {
         Some(&value[1..value.len() - 1])
     } else {
         None
+    }
+}
+
+fn normalize_source_type(source_type: &str) -> String {
+    if source_type.eq_ignore_ascii_case("notes") {
+        "file".to_string()
+    } else {
+        source_type.to_ascii_lowercase()
+    }
+}
+
+fn yaml_to_json_value(value: &serde_yaml::Value) -> Value {
+    match value {
+        serde_yaml::Value::Null => Value::Null,
+        serde_yaml::Value::Bool(value_bool) => Value::Bool(*value_bool),
+        serde_yaml::Value::Number(value_number) => value_number.as_i64().map_or_else(
+            || {
+                value_number.as_u64().map_or_else(
+                    || {
+                        value_number
+                            .as_f64()
+                            .and_then(serde_json::Number::from_f64)
+                            .map_or(Value::Null, Value::Number)
+                    },
+                    |value| Value::Number(value.into()),
+                )
+            },
+            |value| Value::Number(value.into()),
+        ),
+        serde_yaml::Value::String(value_text) => Value::String(value_text.clone()),
+        serde_yaml::Value::Sequence(values) => {
+            Value::Array(values.iter().map(yaml_to_json_value).collect())
+        }
+        serde_yaml::Value::Mapping(mapping) => Value::Object(
+            mapping
+                .iter()
+                .map(|(key, value)| (yaml_key_to_string(key), yaml_to_json_value(value)))
+                .collect(),
+        ),
+        serde_yaml::Value::Tagged(value) => yaml_to_json_value(&value.value),
+    }
+}
+
+fn yaml_key_to_string(value: &serde_yaml::Value) -> String {
+    match value {
+        serde_yaml::Value::String(value_text) => value_text.clone(),
+        _ => serde_yaml::to_string(value)
+            .unwrap_or_else(|_| format!("{value:?}"))
+            .trim()
+            .to_string(),
+    }
+}
+
+fn json_to_yaml_value(value: &Value) -> serde_yaml::Value {
+    match value {
+        Value::Null => serde_yaml::Value::Null,
+        Value::Bool(value_bool) => serde_yaml::Value::Bool(*value_bool),
+        Value::Number(value_number) => serde_yaml::to_value(value_number)
+            .unwrap_or_else(|_| serde_yaml::Value::String(value_number.to_string())),
+        Value::String(value_text) => serde_yaml::Value::String(value_text.clone()),
+        Value::Array(values) => {
+            serde_yaml::Value::Sequence(values.iter().map(json_to_yaml_value).collect())
+        }
+        Value::Object(mapping) => serde_yaml::Value::Mapping(
+            mapping
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        serde_yaml::Value::String(key.clone()),
+                        json_to_yaml_value(value),
+                    )
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -1470,6 +1696,7 @@ mod tests {
     use super::*;
     use crate::{scan_vault, ScanMode};
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
     #[test]
@@ -1702,6 +1929,229 @@ SORT file.path ASC"#,
             assert_eq!(original.group_by, roundtripped.group_by);
         }
         assert_eq!(parsed.filters, re_parsed.filters);
+    }
+
+    #[test]
+    fn parser_accepts_structured_source_type_and_config() {
+        let parsed = parse_base_file(
+            "
+            source:
+              type: tasknotes
+              config:
+                type: tasknotesTaskList
+                includeArchived: false
+            views:
+              - type: table
+            ",
+        )
+        .expect("parse should succeed");
+
+        assert_eq!(parsed.source.source_type, "tasknotes");
+        assert_eq!(
+            parsed.source.config,
+            Some(serde_json::json!({
+                "type": "tasknotesTaskList",
+                "includeArchived": false
+            }))
+        );
+
+        let yaml = serialize_base_file(&parsed).expect("serialize should succeed");
+        let roundtripped = parse_base_file(&yaml).expect("re-parse should succeed");
+        assert_eq!(parsed.source, roundtripped.source);
+    }
+
+    #[test]
+    fn parser_normalizes_legacy_notes_source_alias() {
+        let parsed = parse_base_file(
+            "
+            source: notes
+            views:
+              - type: table
+            ",
+        )
+        .expect("parse should succeed");
+
+        assert_eq!(
+            parsed.source,
+            ParsedBaseSource {
+                source_type: "file".to_string(),
+                config: None,
+            }
+        );
+    }
+
+    #[derive(Clone)]
+    struct CapturingSource {
+        requests: Arc<Mutex<Vec<BasesSourceRequest>>>,
+        rows: Vec<NoteRecord>,
+    }
+
+    impl BasesSource for CapturingSource {
+        fn rows(
+            &self,
+            _paths: &VaultPaths,
+            request: &BasesSourceRequest,
+        ) -> Result<Vec<NoteRecord>, BasesError> {
+            self.requests
+                .lock()
+                .expect("requests lock should succeed")
+                .push(request.clone());
+            Ok(self.rows.clone())
+        }
+    }
+
+    fn source_note(path: &str, properties: Value) -> NoteRecord {
+        let file_name = Path::new(path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(path)
+            .to_string();
+        let file_ext = Path::new(path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_string();
+
+        NoteRecord {
+            document_id: format!("doc-{file_name}"),
+            document_path: path.to_string(),
+            file_name,
+            file_ext,
+            file_mtime: 0,
+            file_ctime: 0,
+            file_size: 0,
+            properties,
+            tags: vec![],
+            links: vec![],
+            starred: false,
+            inlinks: vec![],
+            aliases: vec![],
+            frontmatter: Value::Null,
+            list_items: vec![],
+            tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
+        }
+    }
+
+    #[test]
+    fn custom_sources_receive_config_and_use_shared_formula_sort_pipeline() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should be created");
+        fs::write(
+            vault_root.join("custom.base"),
+            concat!(
+                "source:\n",
+                "  type: tasknotes\n",
+                "  config:\n",
+                "    type: tasknotesTaskList\n",
+                "    includeArchived: false\n",
+                "views:\n",
+                "  - name: Custom\n",
+                "    type: table\n",
+                "    filters:\n",
+                "      - 'status = \"open\"'\n",
+                "    order:\n",
+                "      - title\n",
+                "      - urgency_score\n",
+                "    sort:\n",
+                "      by: urgency_score\n",
+                "      desc: true\n",
+                "    groupBy:\n",
+                "      property: status\n",
+                "    formulas:\n",
+                "      urgency_score: priority * 2\n",
+            ),
+        )
+        .expect("base file should be written");
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut evaluator = BasesEvaluator::new();
+        evaluator.register_source(
+            "tasknotes",
+            CapturingSource {
+                requests: Arc::clone(&requests),
+                rows: vec![
+                    source_note(
+                        "Tasks/Beta.md",
+                        serde_json::json!({
+                            "title": "Beta",
+                            "status": "open",
+                            "priority": 3
+                        }),
+                    ),
+                    source_note(
+                        "Tasks/Alpha.md",
+                        serde_json::json!({
+                            "title": "Alpha",
+                            "status": "open",
+                            "priority": 5
+                        }),
+                    ),
+                ],
+            },
+        );
+
+        let paths = VaultPaths::new(&vault_root);
+        let report = evaluator
+            .evaluate_file(&paths, "custom.base")
+            .expect("custom base should evaluate");
+
+        let requests = requests.lock().expect("requests lock should succeed");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].filters, vec!["status = \"open\"".to_string()]);
+        assert_eq!(
+            requests[0].config,
+            Some(serde_json::json!({
+                "type": "tasknotesTaskList",
+                "includeArchived": false
+            }))
+        );
+
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(report.views.len(), 1);
+        assert_eq!(report.views[0].rows.len(), 2);
+        assert_eq!(report.views[0].rows[0].document_path, "Tasks/Alpha.md");
+        assert_eq!(
+            report.views[0].rows[0]
+                .formulas
+                .get("urgency_score")
+                .and_then(Value::as_i64),
+            Some(10)
+        );
+        assert_eq!(
+            report.views[0].rows[0].cells.get("title"),
+            Some(&Value::String("Alpha".to_string()))
+        );
+        assert_eq!(
+            report.views[0].group_by,
+            Some(BasesGroupBy {
+                property: "status".to_string(),
+                display_name: "status".to_string(),
+                descending: false,
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_custom_source_reports_diagnostic() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault root should be created");
+        fs::write(
+            vault_root.join("unsupported.base"),
+            "source:\n  type: missing\nviews:\n  - type: table\n",
+        )
+        .expect("base file should be written");
+
+        let report = evaluate_base_file(&VaultPaths::new(&vault_root), "unsupported.base")
+            .expect("base eval should succeed");
+
+        assert!(report.views.is_empty());
+        assert!(report.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("unsupported base source type `missing`")));
     }
 
     #[test]
