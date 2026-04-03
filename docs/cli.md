@@ -31,14 +31,20 @@ The CLI is designed to be self-describing at runtime.
 
 - `vulcan --help` shows the top-level command groups.
 - `vulcan <command> --help` shows command-specific syntax, caveats, and examples.
-- `vulcan describe` prints the runtime command schema as JSON.
-- `vulcan --output json describe` prints the same schema in compact machine-oriented JSON.
+- `vulcan help` shows the integrated topic index, and `vulcan help <topic>` expands one command or concept.
+- Topics include command docs (`help note get`), concepts (`help filters`, `help sandbox`), and JS/runtime reference entries (`help js`, `help js.vault`).
+- `vulcan describe` prints a compact command inventory for humans.
+- `vulcan --output json describe` prints the runtime command schema in machine-oriented JSON.
+- `vulcan --output json describe --format openai-tools` exports OpenAI function-calling tool definitions.
+- `vulcan --output json describe --format mcp` exports MCP-style tool definitions.
 - `vulcan completions <shell>` generates shell completions.
 
 Useful starting points:
 
 - `vulcan notes --help`
 - `vulcan search --help`
+- `vulcan help filters`
+- `vulcan help query`
 - `vulcan edit --help`
 - `vulcan browse --help`
 - `vulcan query --help`
@@ -78,7 +84,7 @@ Precedence is:
 3. `.obsidian/app.json`
 4. Built-in defaults
 
-`vulcan init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan init --import` to apply every detected importer immediately.
+`vulcan init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan init --import` to apply every detected importer immediately. Use `vulcan init --agent-files` to write the bundled `AGENTS.md` template and default `AI/Skills/*.md` reference files into the vault.
 
 Automatic cache refresh is configured under `[scan]`:
 
@@ -113,7 +119,7 @@ Note resolution rules:
 
 ### Indexing, cache, and local service commands
 
-- `vulcan init [--import|--no-import]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import all detected Obsidian settings immediately.
+- `vulcan init [--import|--no-import] [--agent-files]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import all detected Obsidian settings immediately and optionally write the bundled AGENTS/skills files.
 - `vulcan scan [--full] [--no-commit]`: perform an incremental or full scan and refresh the cache.
 - `vulcan rebuild [--dry-run]`: rebuild the cache from disk.
 - `vulcan repair fts [--dry-run]`: rebuild the full-text search index from cached chunks.
@@ -213,6 +219,9 @@ Behavior:
 
 - `vulcan web search <query> [--backend <name>] [--limit <n>]`: query the configured web search backend and return title/url/snippet results.
 - `vulcan web fetch <url> [--mode markdown|html|raw] [--extract-article] [--save <path>]`: fetch one URL and render or save the response body.
+- `vulcan help [<topic>] [--search <keyword>]`: browse integrated command and concept docs, with `--output json` for structured help consumers.
+- Built-in help topics include `getting-started`, `examples`, `filters`, `query-dsl`, `scripting`, `sandbox`, `js`, `js.vault`, `js.vault.graph`, and `js.vault.note`.
+- `vulcan describe [--format json-schema|openai-tools|mcp]`: export the CLI surface for humans or tool integrations.
 
 Behavior:
 
@@ -758,32 +767,11 @@ Supported shells:
 - `powershell`
 - `zsh`
 
-## Planned commands
+## Later roadmap items
 
 ### Phase A: CLI for LLMs (Roadmap Wave 5)
 
-The highest-priority CLI additions make Vulcan usable as a tool surface for any LLM harness (Claude Code, Codex, Gemini CLI, etc.) without the embedded agent. See `docs/ROADMAP.md` Phase 9.18 for full details.
-
-**Tool discovery for LLMs (9.18.7):**
-
-```
-vulcan describe                              # compact command listing with one-liners
-vulcan describe --format openai-tools        # tool definitions for function calling
-vulcan describe --format mcp                 # MCP tool definitions
-vulcan help <topic> --output json            # structured help for machine consumption
-```
-
-**Other Wave 5 commands:**
-
-```
-vulcan query '...' [--format table|paths|detail|count] [--glob ...]
-vulcan search '...' [--regex <pattern>]
-vulcan web search|fetch
-vulcan git status|log|diff|commit|blame
-vulcan help [<topic>]
-```
-
-**External harness deliverables:** vault AGENTS.md template (written on `vulcan init`), default skills in `AI/Skills/` (bundled, written on `vulcan init` or `vulcan assistant init`), consistent JSON error output on all commands.
+The core Wave 5 CLI surface is implemented. The main remaining external-harness deliverables are the vault `AGENTS.md` template, bundled default skills in `AI/Skills/`, and fully consistent structured JSON error output.
 
 ### Phase B: Embedded Agent (Roadmap Wave 6)
 
@@ -810,25 +798,21 @@ vulcan assistant platforms                   # list configured platforms
 vulcan assistant memory <platform> <user-id> # show user memory
 ```
 
-### CLI Redesign — Command Reorganization (Roadmap 9.18.1, lands last)
+### CLI Redesign — Remaining Command Reorganization (Roadmap 9.18.1, lands last)
 
 The full two-level command hierarchy. This is a pre-alpha clean break that restructures the flat command layout.
 
 ```
-vulcan refactor rename-alias|rename-heading|rename-block-ref|rename-property|merge-tags|rewrite|move|link-mentions
-vulcan refactor suggest mentions|duplicates
-vulcan ls [--glob ...] [--where ...] [--tag ...]   # alias for query with --format paths
 vulcan run <script.js|script-name> [--sandbox strict|fs|net|none] [--timeout 30s]  # strips #! shebang if present
 vulcan run --script <file>          # shebang entry point (for #!/usr/bin/env -S vulcan run --script)
 vulcan run                          # REPL mode (no args)
 vulcan tasks create|complete|reschedule  # new mutations
 ```
 
-**Key changes from current layout:**
+**Key remaining changes from current layout:**
 - `links`, `backlinks` → `note links`, `note backlinks`
-- `rename-*`, `merge-tags`, `rewrite`, `move`, `link-mentions`, `suggest` → `refactor *`
 - `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
-- New: `note get/set/create/append/patch`, `run` (JS runtime + REPL), `web search/fetch`, `help`, `daily *`, `assistant *`
+- New still pending here: `run` (JS runtime + REPL), `assistant *`
 
 ### `canvas` (Roadmap Phase 18)
 
