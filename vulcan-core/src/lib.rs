@@ -46,10 +46,10 @@ pub use config::{
     ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigImportError, ConfigImportMapping,
     ConfigImportReport, ConfigLoadResult, CoreImporter, EmbeddingProviderConfig, GitConfig,
     GitScope, GitTrigger, ImportConflict, ImportTarget, InboxConfig, KanbanConfig, KanbanImporter,
-    LinkResolutionMode, LinkStylePreference, PeriodicConfig, PeriodicNoteConfig,
-    PeriodicNotesImporter, PeriodicStartOfWeek, PluginImporter, ScanConfig, TasksImporter,
-    TemplaterCommandPairConfig, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
-    TemplaterImporter, TemplatesConfig, VaultConfig,
+    LinkResolutionMode, LinkStylePreference, PeriodicCadenceUnit, PeriodicConfig,
+    PeriodicNoteConfig, PeriodicNotesImporter, PeriodicStartOfWeek, PluginImporter, ScanConfig,
+    TasksImporter, TemplaterCommandPairConfig, TemplaterFileTemplateConfig,
+    TemplaterFolderTemplateConfig, TemplaterImporter, TemplatesConfig, VaultConfig,
 };
 pub use dataview_js::{
     evaluate_dataview_js, evaluate_dataview_js_query, DataviewJsError, DataviewJsOutput,
