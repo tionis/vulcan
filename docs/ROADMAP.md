@@ -2710,48 +2710,48 @@ Restructure all existing commands into logical groups. This is a clean break —
 
 **Output format modes**
 
-- [ ] `--format table` — current default: columnar table output
-- [ ] `--format paths` — one file path per line, suitable for piping (like `find` or `rg -l`)
-- [ ] `--format detail` — expanded per-note view: path, frontmatter summary, first N lines of content
-- [ ] `--format count` — just the match count (integer)
-- [ ] `--glob <pattern>` — filter results by file path glob (e.g. `--glob "Projects/**"`)
+- [x] `--format table` — current default: columnar table output
+- [x] `--format paths` — one file path per line, suitable for piping (like `find` or `rg -l`)
+- [x] `--format detail` — expanded per-note view: path, frontmatter summary, first N lines of content
+- [x] `--format count` — just the match count (integer)
+- [x] `--glob <pattern>` — filter results by file path glob (e.g. `--glob "Projects/**"`)
 
 **`ls` alias**
 
-- [ ] `vulcan ls` — thin alias for `vulcan query 'from notes' --format paths`
-- [ ] `--glob <pattern>` — filter by file path glob
-- [ ] `--where <filter>` — property filters (repeatable, AND-combined)
-- [ ] `--tag <tag>` — shorthand tag filter
-- [ ] `--format paths|detail|count` — output format (default: `paths`, unlike `query` which defaults to `table`)
-- [ ] Same underlying implementation as `query` — no new query engine, just different defaults
+- [x] `vulcan ls` — thin alias for `vulcan query 'from notes' --format paths`
+- [x] `--glob <pattern>` — filter by file path glob
+- [x] `--where <filter>` — property filters (repeatable, AND-combined)
+- [x] `--tag <tag>` — shorthand tag filter
+- [x] `--format paths|detail|count` — output format (default: `paths`, unlike `query` which defaults to `table`)
+- [x] Same underlying implementation as `query` — no new query engine, just different defaults
 
 **Regex operator in predicates**
 
-- [ ] New `QueryOperator::Matches` variant for regex matching in `where` clauses
-- [ ] DSL syntax: `from notes where file.name matches "^\d{4}-\d{2}-\d{2}"`
-- [ ] Uses the `regex` crate
-- [ ] Case-insensitive variant: `matches_i`
-- [ ] Applies to string-valued fields only (property values, `file.path`, `file.name`)
+- [x] New `QueryOperator::Matches` variant for regex matching in `where` clauses
+- [x] DSL syntax: `from notes where file.name matches "^\d{4}-\d{2}-\d{2}"`
+- [x] Uses the `regex` crate
+- [x] Case-insensitive variant: `matches_i`
+- [x] Applies to string-valued fields only (property values, `file.path`, `file.name`)
 
 **Regex in search**
 
-- [ ] Extend `search` command with regex support alongside existing `/pattern/` inline syntax
-- [ ] `vulcan search --regex <pattern>` for explicit regex queries
-- [ ] Regex results include line numbers and context (consistent with `--match` in `note get`)
+- [x] Extend `search` command with regex support alongside existing `/pattern/` inline syntax
+- [x] `vulcan search --regex <pattern>` for explicit regex queries
+- [x] Regex results include line numbers and context (consistent with `--match` in `note get`)
 
 #### 9.18.4 Refactor command group
 
 Move existing mutation commands under `refactor` namespace. No behavioral changes — only the command path changes.
 
-- [ ] `vulcan refactor rename-alias` (was `vulcan rename-alias`)
-- [ ] `vulcan refactor rename-heading` (was `vulcan rename-heading`)
-- [ ] `vulcan refactor rename-block-ref` (was `vulcan rename-block-ref`)
-- [ ] `vulcan refactor rename-property` (was `vulcan rename-property`)
-- [ ] `vulcan refactor merge-tags` (was `vulcan merge-tags`)
-- [ ] `vulcan refactor rewrite` (was `vulcan rewrite`)
-- [ ] `vulcan refactor move` (was `vulcan move`)
-- [ ] `vulcan refactor link-mentions` (was `vulcan link-mentions`)
-- [ ] `vulcan refactor suggest mentions|duplicates` (was `vulcan suggest`)
+- [x] `vulcan refactor rename-alias` (was `vulcan rename-alias`)
+- [x] `vulcan refactor rename-heading` (was `vulcan rename-heading`)
+- [x] `vulcan refactor rename-block-ref` (was `vulcan rename-block-ref`)
+- [x] `vulcan refactor rename-property` (was `vulcan rename-property`)
+- [x] `vulcan refactor merge-tags` (was `vulcan merge-tags`)
+- [x] `vulcan refactor rewrite` (was `vulcan rewrite`)
+- [x] `vulcan refactor move` (was `vulcan move`)
+- [x] `vulcan refactor link-mentions` (was `vulcan link-mentions`)
+- [x] `vulcan refactor suggest mentions|duplicates` (was `vulcan suggest`)
 
 #### 9.18.5 JS runtime, REPL, and vault scripting
 

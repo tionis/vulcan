@@ -12,9 +12,9 @@ pub use cli::{
     ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
     DailyCommand, DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GitCommand,
     GraphCommand, InitArgs, KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs,
-    PeriodicSubcommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
-    SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    PeriodicSubcommand, QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand,
+    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -1226,6 +1226,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::RenameHeading { .. }
         | Command::RenameBlockRef { .. }
         | Command::Links { .. }
+        | Command::Ls { .. }
         | Command::Query { .. }
         | Command::Dataview { .. }
         | Command::Tasks { .. }
@@ -1240,6 +1241,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Rewrite { .. }
         | Command::Related { .. }
         | Command::Suggest { .. }
+        | Command::Refactor { .. }
         | Command::Checkpoint { .. } => true,
         Command::Daily { command } => matches!(
             command,
@@ -6611,6 +6613,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Query {
             ref dsl,
             ref json,
+            format,
+            ref glob,
             explain,
             ref export,
         } => {
@@ -6641,13 +6645,56 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             };
             let export = resolve_cli_export(export)?;
             print_query_report(
+                &paths,
                 cli.output,
                 &report,
-                explain,
                 &effective_controls,
-                stdout_is_tty,
-                use_stdout_color,
-                export.as_ref(),
+                QueryReportRenderOptions {
+                    format,
+                    glob: glob.as_deref(),
+                    explain,
+                    stdout_is_tty,
+                    use_color: use_stdout_color,
+                    export: export.as_ref(),
+                },
+            )?;
+            Ok(())
+        }
+        Command::Ls {
+            ref filters,
+            ref glob,
+            ref tag,
+            format,
+            ref export,
+        } => {
+            let mut query_filters = filters.clone();
+            if let Some(tag) = tag.as_deref() {
+                query_filters.push(format!("file.tags has_tag {tag}"));
+            }
+            let note_query = NoteQuery {
+                filters: query_filters,
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            };
+            let notes_report = query_notes(&paths, &note_query).map_err(CliError::operation)?;
+            let ast = QueryAst::from_note_query(&note_query).map_err(CliError::operation)?;
+            let export = resolve_cli_export(export)?;
+            print_query_report(
+                &paths,
+                cli.output,
+                &QueryReport {
+                    query: ast,
+                    notes: notes_report.notes,
+                },
+                &list_controls,
+                QueryReportRenderOptions {
+                    format,
+                    glob: glob.as_deref(),
+                    explain: false,
+                    stdout_is_tty,
+                    use_color: use_stdout_color,
+                    export: export.as_ref(),
+                },
             )?;
             Ok(())
         }
@@ -6869,6 +6916,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         },
         Command::Search {
             ref query,
+            ref regex,
             ref filters,
             mode,
             ref tag,
@@ -6882,10 +6930,24 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             explain,
             ref export,
         } => {
+            let effective_query = match (query.as_deref(), regex.as_deref()) {
+                (Some(_), Some(_)) => {
+                    return Err(CliError::operation(
+                        "provide either a query string or --regex, not both",
+                    ))
+                }
+                (Some(query), None) => query.to_string(),
+                (None, Some(regex)) => format!("/{regex}/"),
+                (None, None) => {
+                    return Err(CliError::operation(
+                        "provide a search query or --regex pattern",
+                    ))
+                }
+            };
             let report = search_vault(
                 &paths,
                 &SearchQuery {
-                    text: query.clone(),
+                    text: effective_query,
                     tag: tag.clone(),
                     path_prefix: path_prefix.clone(),
                     has_property: has_property.clone(),
@@ -6913,6 +6975,174 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             Ok(())
         }
+        Command::Refactor { ref command } => match command {
+            RefactorCommand::RenameAlias {
+                note,
+                old,
+                new,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report =
+                    rename_alias(&paths, note, old, new, *dry_run).map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "rename-alias", &refactor_changed_files(&report))
+                        .map_err(CliError::operation)?;
+                }
+                print_refactor_report(cli.output, &report)
+            }
+            RefactorCommand::RenameHeading {
+                note,
+                old,
+                new,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = rename_heading(&paths, note, old, new, *dry_run)
+                    .map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "rename-heading", &refactor_changed_files(&report))
+                        .map_err(CliError::operation)?;
+                }
+                print_refactor_report(cli.output, &report)
+            }
+            RefactorCommand::RenameBlockRef {
+                note,
+                old,
+                new,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = rename_block_ref(&paths, note, old, new, *dry_run)
+                    .map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "rename-block-ref", &refactor_changed_files(&report))
+                        .map_err(CliError::operation)?;
+                }
+                print_refactor_report(cli.output, &report)
+            }
+            RefactorCommand::RenameProperty {
+                old,
+                new,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report =
+                    rename_property(&paths, old, new, *dry_run).map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "rename-property", &refactor_changed_files(&report))
+                        .map_err(CliError::operation)?;
+                }
+                print_refactor_report(cli.output, &report)
+            }
+            RefactorCommand::MergeTags {
+                source,
+                dest,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report =
+                    merge_tags(&paths, source, dest, *dry_run).map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "merge-tags", &refactor_changed_files(&report))
+                        .map_err(CliError::operation)?;
+                }
+                print_refactor_report(cli.output, &report)
+            }
+            RefactorCommand::Rewrite {
+                filters,
+                find,
+                replace,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = bulk_replace(&paths, filters, find, replace, *dry_run)
+                    .map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "rewrite", &refactor_changed_files(&report))
+                        .map_err(CliError::operation)?;
+                }
+                print_refactor_report(cli.output, &report)
+            }
+            RefactorCommand::Move {
+                source,
+                dest,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let summary =
+                    move_note(&paths, source, dest, *dry_run).map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "move", &move_changed_files(&summary))
+                        .map_err(CliError::operation)?;
+                }
+                print_move_summary(cli.output, &summary)
+            }
+            RefactorCommand::LinkMentions {
+                note,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = link_mentions(&paths, note.as_deref(), *dry_run)
+                    .map_err(CliError::operation)?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "link-mentions", &refactor_changed_files(&report))
+                        .map_err(CliError::operation)?;
+                }
+                print_refactor_report(cli.output, &report)
+            }
+            RefactorCommand::Suggest { command } => match command {
+                SuggestCommand::Mentions { note, export } => {
+                    let report =
+                        suggest_mentions(&paths, note.as_deref()).map_err(CliError::operation)?;
+                    let export = resolve_cli_export(export)?;
+                    print_mention_suggestions_report(
+                        cli.output,
+                        &report,
+                        &list_controls,
+                        stdout_is_tty,
+                        use_stdout_color,
+                        export.as_ref(),
+                    )
+                }
+                SuggestCommand::Duplicates { export } => {
+                    let report = suggest_duplicates(&paths).map_err(CliError::operation)?;
+                    let export = resolve_cli_export(export)?;
+                    print_duplicate_suggestions_report(
+                        cli.output,
+                        &report,
+                        &list_controls,
+                        stdout_is_tty,
+                        use_stdout_color,
+                        export.as_ref(),
+                    )
+                }
+            },
+        },
         Command::Suggest { ref command } => match command {
             SuggestCommand::Mentions { note, export } => {
                 let note = if note.is_none() && interactive_note_selection {
@@ -8001,7 +8231,7 @@ fn print_notes_report(
     }
 }
 
-fn query_report_rows(report: &QueryReport, notes: &[NoteRecord]) -> Vec<Value> {
+fn query_report_rows(report: &QueryReport, notes: &[&NoteRecord]) -> Vec<Value> {
     let query_value = serde_json::to_value(&report.query).unwrap_or(Value::Null);
     notes
         .iter()
@@ -8019,28 +8249,167 @@ fn query_report_rows(report: &QueryReport, notes: &[NoteRecord]) -> Vec<Value> {
         .collect()
 }
 
-fn print_query_report(
-    output: OutputFormat,
+fn query_path_rows(notes: &[&NoteRecord]) -> Vec<Value> {
+    notes
+        .iter()
+        .map(|note| Value::String(note.document_path.clone()))
+        .collect()
+}
+
+fn query_detail_rows(
+    paths: &VaultPaths,
     report: &QueryReport,
+    notes: &[&NoteRecord],
+) -> Vec<Value> {
+    let query_value = serde_json::to_value(&report.query).unwrap_or(Value::Null);
+    notes
+        .iter()
+        .map(|note| {
+            serde_json::json!({
+                "document_path": note.document_path,
+                "properties": note.properties,
+                "preview_lines": load_note_preview_lines(paths, note.document_path.as_str(), 5),
+                "query": query_value,
+            })
+        })
+        .collect()
+}
+
+fn load_note_preview_lines(paths: &VaultPaths, document_path: &str, limit: usize) -> Vec<String> {
+    fs::read_to_string(paths.vault_root().join(document_path))
+        .ok()
+        .map(|content| {
+            content
+                .lines()
+                .map(str::trim_end)
+                .filter(|line| !line.trim().is_empty())
+                .take(limit)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn print_query_detail_human(paths: &VaultPaths, notes: &[&NoteRecord]) {
+    for note in notes {
+        println!("- {}", note.document_path);
+        if let Some(properties) = note.properties.as_object() {
+            if !properties.is_empty() {
+                let summary = properties
+                    .iter()
+                    .take(6)
+                    .map(|(key, value)| format!("{key}={}", render_human_value(value)))
+                    .collect::<Vec<_>>();
+                if !summary.is_empty() {
+                    println!("  properties: {}", summary.join(" | "));
+                }
+            }
+        }
+        for line in load_note_preview_lines(paths, note.document_path.as_str(), 5) {
+            println!("  {line}");
+        }
+        println!();
+    }
+}
+
+fn glob_pattern_regex(pattern: &str) -> Result<Regex, CliError> {
+    let mut regex = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '*' => {
+                if chars.peek().is_some_and(|next| *next == '*') {
+                    chars.next();
+                    regex.push_str(".*");
+                } else {
+                    regex.push_str("[^/]*");
+                }
+            }
+            '?' => regex.push_str("[^/]"),
+            other => regex.push_str(&regex::escape(&other.to_string())),
+        }
+    }
+    regex.push('$');
+    Regex::new(&regex)
+        .map_err(|error| CliError::operation(format!("invalid glob pattern: {error}")))
+}
+
+fn filter_notes_by_glob<'a>(
+    notes: &'a [NoteRecord],
+    glob: Option<&str>,
+) -> Result<Vec<&'a NoteRecord>, CliError> {
+    let Some(glob) = glob else {
+        return Ok(notes.iter().collect());
+    };
+    let matcher = glob_pattern_regex(glob)?;
+    Ok(notes
+        .iter()
+        .filter(|note| matcher.is_match(&note.document_path))
+        .collect())
+}
+
+#[derive(Clone, Copy)]
+struct QueryReportRenderOptions<'a> {
+    format: QueryFormatArg,
+    glob: Option<&'a str>,
     explain: bool,
-    list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_color: bool,
-    export: Option<&ResolvedExport>,
+    export: Option<&'a ResolvedExport>,
+}
+
+fn print_query_report(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    report: &QueryReport,
+    list_controls: &ListOutputControls,
+    options: QueryReportRenderOptions<'_>,
 ) -> Result<(), CliError> {
-    let visible_notes = paginated_items(&report.notes, list_controls);
-    let palette = AnsiPalette::new(use_color);
-    let rows = query_report_rows(report, visible_notes);
+    let filtered_notes = filter_notes_by_glob(&report.notes, options.glob)?;
+    let start = list_controls.offset.min(filtered_notes.len());
+    let end = list_controls.limit.map_or(filtered_notes.len(), |limit| {
+        start.saturating_add(limit).min(filtered_notes.len())
+    });
+    let visible_notes = &filtered_notes[start..end];
+    let palette = AnsiPalette::new(options.use_color);
 
     match output {
         OutputFormat::Human => {
-            if explain || stdout_is_tty {
+            if options.explain
+                || (options.stdout_is_tty && matches!(options.format, QueryFormatArg::Table))
+            {
                 let ast_json = serde_json::to_string_pretty(&report.query)
                     .unwrap_or_else(|_| "{}".to_string());
                 println!("{}", palette.cyan("Query AST:"));
                 println!("{ast_json}");
                 println!();
             }
+            match options.format {
+                QueryFormatArg::Count => {
+                    println!("{}", visible_notes.len());
+                    return Ok(());
+                }
+                QueryFormatArg::Paths => {
+                    let rows = query_path_rows(visible_notes);
+                    for note in visible_notes {
+                        println!("{}", note.document_path);
+                    }
+                    export_rows(&rows, list_controls.fields.as_deref(), options.export)?;
+                    return Ok(());
+                }
+                QueryFormatArg::Detail => {
+                    if visible_notes.is_empty() {
+                        println!("No notes matched.");
+                        return Ok(());
+                    }
+                    let rows = query_detail_rows(paths, report, visible_notes);
+                    print_query_detail_human(paths, visible_notes);
+                    export_rows(&rows, list_controls.fields.as_deref(), options.export)?;
+                    return Ok(());
+                }
+                QueryFormatArg::Table => {}
+            }
+            let rows = query_report_rows(report, visible_notes);
             if visible_notes.is_empty() {
                 println!("No notes matched.");
                 return Ok(());
@@ -8054,11 +8423,26 @@ fn print_query_report(
                     print_note(note);
                 }
             }
-            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            export_rows(&rows, list_controls.fields.as_deref(), options.export)?;
             Ok(())
         }
         OutputFormat::Json => {
-            if explain {
+            if matches!(options.format, QueryFormatArg::Count) {
+                let payload = serde_json::json!({ "count": visible_notes.len() });
+                export_rows(
+                    std::slice::from_ref(&payload),
+                    list_controls.fields.as_deref(),
+                    options.export,
+                )?;
+                return print_json(&payload);
+            }
+            let rows = match options.format {
+                QueryFormatArg::Table => query_report_rows(report, visible_notes),
+                QueryFormatArg::Paths => query_path_rows(visible_notes),
+                QueryFormatArg::Detail => query_detail_rows(paths, report, visible_notes),
+                QueryFormatArg::Count => unreachable!("count handled above"),
+            };
+            if options.explain {
                 let payload = serde_json::json!({
                     "query": report.query,
                     "notes": rows,
@@ -8066,11 +8450,11 @@ fn print_query_report(
                 export_rows(
                     std::slice::from_ref(&payload),
                     list_controls.fields.as_deref(),
-                    export,
+                    options.export,
                 )?;
                 print_json(&payload)
             } else {
-                export_rows(&rows, list_controls.fields.as_deref(), export)?;
+                export_rows(&rows, list_controls.fields.as_deref(), options.export)?;
                 print_json_lines(rows, list_controls.fields.as_deref())
             }
         }
@@ -14606,7 +14990,8 @@ mod tests {
         assert_eq!(
             search.command,
             Command::Search {
-                query: "dashboard".to_string(),
+                query: Some("dashboard".to_string()),
+                regex: None,
                 filters: vec!["reviewed = true".to_string()],
                 mode: SearchMode::Keyword,
                 tag: Some("index".to_string()),
@@ -15052,6 +15437,78 @@ mod tests {
             Command::Scan {
                 full: true,
                 no_commit: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_query_format_and_glob_flags() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "query",
+            "--format",
+            "paths",
+            "--glob",
+            "Projects/**",
+            "from notes where file.name matches \"^2026-\"",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Query {
+                dsl: Some("from notes where file.name matches \"^2026-\"".to_string()),
+                json: None,
+                format: QueryFormatArg::Paths,
+                glob: Some("Projects/**".to_string()),
+                explain: false,
+                export: ExportArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_ls_and_refactor_group_commands() {
+        let ls = Cli::try_parse_from([
+            "vulcan",
+            "ls",
+            "--where",
+            "status = done",
+            "--tag",
+            "project",
+            "--format",
+            "detail",
+        ])
+        .expect("ls should parse");
+        let refactor = Cli::try_parse_from([
+            "vulcan",
+            "refactor",
+            "rename-property",
+            "status",
+            "phase",
+            "--dry-run",
+        ])
+        .expect("refactor should parse");
+
+        assert_eq!(
+            ls.command,
+            Command::Ls {
+                filters: vec!["status = done".to_string()],
+                glob: None,
+                tag: Some("project".to_string()),
+                format: QueryFormatArg::Detail,
+                export: ExportArgs::default(),
+            }
+        );
+        assert_eq!(
+            refactor.command,
+            Command::Refactor {
+                command: RefactorCommand::RenameProperty {
+                    old: "status".to_string(),
+                    new: "phase".to_string(),
+                    dry_run: true,
+                    no_commit: false,
+                },
             }
         );
     }

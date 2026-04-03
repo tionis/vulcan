@@ -80,6 +80,8 @@ pub enum QueryOperator {
     Lte,
     StartsWith,
     Contains,
+    Matches,
+    MatchesI,
 }
 
 impl Display for QueryOperator {
@@ -92,6 +94,8 @@ impl Display for QueryOperator {
             Self::Lte => "<=",
             Self::StartsWith => "starts_with",
             Self::Contains => "contains",
+            Self::Matches => "matches",
+            Self::MatchesI => "matches_i",
         })
     }
 }
@@ -280,6 +284,8 @@ pub fn execute_query_json(paths: &VaultPaths, json: &str) -> Result<NotesReport,
 /// Parse a predicate from the existing filter string format, e.g. `"status = done"`.
 fn parse_predicate_from_filter_string(filter: &str) -> Result<QueryPredicate, QueryError> {
     for (separator, operator) in [
+        (" matches_i ", QueryOperator::MatchesI),
+        (" matches ", QueryOperator::Matches),
         (" contains ", QueryOperator::Contains),
         (" starts_with ", QueryOperator::StartsWith),
         (" >= ", QueryOperator::Gte),
@@ -481,9 +487,11 @@ impl<'a> DslParser<'a> {
             "<=" => QueryOperator::Lte,
             "starts_with" => QueryOperator::StartsWith,
             "contains" => QueryOperator::Contains,
+            "matches" => QueryOperator::Matches,
+            "matches_i" => QueryOperator::MatchesI,
             other => {
                 return Err(QueryError::InvalidDsl(format!(
-                    "unknown operator {other:?}; expected =, >, >=, <, <=, starts_with, or contains"
+                    "unknown operator {other:?}; expected =, >, >=, <, <=, starts_with, contains, matches, or matches_i"
                 )));
             }
         };
@@ -617,6 +625,28 @@ mod tests {
         assert_eq!(ast.predicates[1].field, "priority");
         assert_eq!(ast.predicates[1].operator, QueryOperator::Gt);
         assert_eq!(ast.predicates[1].value, QueryValue::Number(2.0));
+    }
+
+    #[test]
+    fn dsl_where_matches_operator() {
+        let ast = QueryAst::from_dsl("from notes where file.name matches \"^2026-\"").unwrap();
+        assert_eq!(ast.predicates.len(), 1);
+        assert_eq!(ast.predicates[0].operator, QueryOperator::Matches);
+        assert_eq!(
+            ast.predicates[0].value,
+            QueryValue::Text("^2026-".to_string())
+        );
+    }
+
+    #[test]
+    fn dsl_where_matches_i_operator() {
+        let ast = QueryAst::from_dsl("from notes where owner matches_i \"alice\"").unwrap();
+        assert_eq!(ast.predicates.len(), 1);
+        assert_eq!(ast.predicates[0].operator, QueryOperator::MatchesI);
+        assert_eq!(
+            ast.predicates[0].value,
+            QueryValue::Text("alice".to_string())
+        );
     }
 
     #[test]

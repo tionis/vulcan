@@ -50,6 +50,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("backlinks"))
             .and(predicate::str::contains("graph"))
             .and(predicate::str::contains("notes"))
+            .and(predicate::str::contains("ls"))
             .and(predicate::str::contains("dataview"))
             .and(predicate::str::contains("tasks"))
             .and(predicate::str::contains("kanban"))
@@ -72,6 +73,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("rename-alias"))
             .and(predicate::str::contains("rename-heading"))
             .and(predicate::str::contains("rename-block-ref"))
+            .and(predicate::str::contains("refactor"))
             .and(predicate::str::contains("saved"))
             .and(predicate::str::contains("checkpoint"))
             .and(predicate::str::contains("changes"))
@@ -103,7 +105,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Indexing: init, scan, rebuild, repair, watch, serve",
             ))
             .and(predicate::str::contains(
-                "Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff",
+                "Graph and Query: links, backlinks, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, suggest, diff",
             ))
             .and(predicate::str::contains(
                 "Journaling: daily, weekly, monthly, periodic, inbox, template",
@@ -115,7 +117,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Reports and Automation: saved, checkpoint, changes, batch, export, automation",
             ))
             .and(predicate::str::contains(
-                "Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
+                "Mutations: note, edit, update, unset, refactor",
             ))
             .and(predicate::str::contains(
                 "Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions",
@@ -6557,6 +6559,94 @@ fn query_command_results_match_notes_command() {
         query_paths, notes_paths,
         "query DSL and notes --where should return identical results"
     );
+}
+
+#[test]
+fn query_command_matches_operator_filters_notes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "query",
+            "--format",
+            "paths",
+            "from notes where file.name matches \"^D\"",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    assert_eq!(rows, vec![Value::String("Done.md".to_string())]);
+}
+
+#[test]
+fn ls_command_supports_glob_and_count_format() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "ls",
+            "--glob",
+            "D*",
+            "--format",
+            "count",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["count"], Value::Number(1.into()));
+}
+
+#[test]
+fn search_regex_flag_runs_explicit_regex_queries() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,matched_line",
+            "search",
+            "--regex",
+            "release\\s+readiness",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["document_path"], "Done.md");
+    assert!(rows[0]["matched_line"].as_u64().is_some());
 }
 
 #[test]
