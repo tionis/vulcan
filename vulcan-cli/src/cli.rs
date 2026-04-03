@@ -6,9 +6,10 @@ const ROOT_AFTER_HELP: &str = "\
 Command Groups:
   Indexing: init, scan, rebuild, repair, watch, serve
   Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff
+  Journaling: daily, weekly, monthly, periodic, inbox, template
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
-  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template
+  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
   Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions
 
 Docs:
@@ -346,6 +347,7 @@ const CONFIG_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   import core    import Obsidian core settings into Vulcan config
   import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
+  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml
   import templater import Obsidian Templater plugin settings into .vulcan/config.toml
   import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml
 
@@ -357,9 +359,44 @@ Notes:
 Examples:
   vulcan config import core
   vulcan config import kanban
+  vulcan config import periodic-notes
   vulcan config import tasks --dry-run
   vulcan config import templater --target local
   vulcan --output json config import tasks";
+
+const DAILY_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  today       open or create today's daily note
+  show        display one daily note's contents
+  list        list daily notes and extracted schedule events
+  append      append text to one daily note
+
+Notes:
+  `list --week` and `list --month` expand around the current date using the configured periodic week start.
+  `show` defaults to today. `append` creates the daily note first when it does not exist.
+
+Examples:
+  vulcan daily today
+  vulcan daily today --no-edit
+  vulcan daily show 2026-04-03
+  vulcan daily list --week
+  vulcan daily append \"Called Alice\" --heading \"## Log\"";
+
+const PERIODIC_COMMAND_AFTER_HELP: &str = "\
+Behavior:
+  `periodic <type> [date]` opens or creates the configured periodic note for that date.
+  `weekly [date]` and `monthly [date]` are shorthand for `periodic weekly|monthly`.
+
+Subcommands:
+  list        list indexed periodic notes
+  gaps        show missing periodic notes across a date range
+
+Examples:
+  vulcan weekly
+  vulcan monthly 2026-04-03 --no-edit
+  vulcan periodic yearly 2026-01-01
+  vulcan periodic list --type daily
+  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07";
 
 const KANBAN_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -866,6 +903,11 @@ pub enum ConfigImportCommand {
         #[command(flatten)]
         args: ConfigImportArgs,
     },
+    #[command(about = "Import Obsidian Daily Notes and Periodic Notes settings")]
+    PeriodicNotes {
+        #[command(flatten)]
+        args: ConfigImportArgs,
+    },
     #[command(about = "Import Obsidian Tasks plugin settings")]
     Tasks {
         #[command(flatten)]
@@ -900,6 +942,72 @@ pub enum ConfigCommand {
     Import {
         #[command(subcommand)]
         command: ConfigImportCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct PeriodicOpenArgs {
+    #[arg(help = "Reference date for the period (defaults to today)")]
+    pub date: Option<String>,
+    #[arg(long, help = "Create the note without opening it in the editor")]
+    pub no_edit: bool,
+    #[arg(long, help = "Suppress auto-commit for this invocation")]
+    pub no_commit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DailyCommand {
+    #[command(about = "Open or create today's daily note")]
+    Today {
+        #[arg(long, help = "Create the note without opening it in the editor")]
+        no_edit: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Display one daily note's contents")]
+    Show {
+        #[arg(help = "Date to show (defaults to today)")]
+        date: Option<String>,
+    },
+    #[command(about = "List daily notes and extracted schedule events")]
+    List {
+        #[arg(long, help = "Start date for the listing window")]
+        from: Option<String>,
+        #[arg(long, help = "End date for the listing window")]
+        to: Option<String>,
+        #[arg(long, conflicts_with = "month", help = "Use the current week")]
+        week: bool,
+        #[arg(long, conflicts_with = "week", help = "Use the current month")]
+        month: bool,
+    },
+    #[command(about = "Append text to one daily note")]
+    Append {
+        #[arg(help = "Text to append")]
+        text: String,
+        #[arg(long, help = "Optional heading to append under")]
+        heading: Option<String>,
+        #[arg(long, help = "Date to append to (defaults to today)")]
+        date: Option<String>,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum PeriodicSubcommand {
+    #[command(about = "List indexed periodic notes")]
+    List {
+        #[arg(long = "type", help = "Restrict results to one period type")]
+        period_type: Option<String>,
+    },
+    #[command(about = "Show missing periodic notes in a date range")]
+    Gaps {
+        #[arg(long = "type", help = "Restrict gaps to one period type")]
+        period_type: Option<String>,
+        #[arg(long, help = "Start date for the gap window")]
+        from: Option<String>,
+        #[arg(long, help = "End date for the gap window")]
+        to: Option<String>,
     },
 }
 
@@ -1294,6 +1402,46 @@ pub enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    #[command(
+        about = "Open, inspect, and append to daily notes",
+        after_help = DAILY_COMMAND_AFTER_HELP
+    )]
+    Daily {
+        #[command(subcommand)]
+        command: DailyCommand,
+    },
+    #[command(
+        about = "Open or create the weekly note for a date",
+        after_help = PERIODIC_COMMAND_AFTER_HELP
+    )]
+    Weekly {
+        #[command(flatten)]
+        args: PeriodicOpenArgs,
+    },
+    #[command(
+        about = "Open or create the monthly note for a date",
+        after_help = PERIODIC_COMMAND_AFTER_HELP
+    )]
+    Monthly {
+        #[command(flatten)]
+        args: PeriodicOpenArgs,
+    },
+    #[command(
+        about = "Open, list, and inspect periodic notes",
+        after_help = PERIODIC_COMMAND_AFTER_HELP
+    )]
+    Periodic {
+        #[command(subcommand)]
+        command: Option<PeriodicSubcommand>,
+        #[arg(help = "Configured period type to open when no subcommand is used")]
+        period_type: Option<String>,
+        #[arg(help = "Reference date for the period (defaults to today)")]
+        date: Option<String>,
+        #[arg(long, help = "Create the note without opening it in the editor")]
+        no_edit: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Report note, link, property, and embedding changes since a baseline")]
     Changes {

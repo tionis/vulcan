@@ -53,6 +53,10 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("checkpoint"))
             .and(predicate::str::contains("changes"))
             .and(predicate::str::contains("diff"))
+            .and(predicate::str::contains("daily"))
+            .and(predicate::str::contains("weekly"))
+            .and(predicate::str::contains("monthly"))
+            .and(predicate::str::contains("periodic"))
             .and(predicate::str::contains("inbox"))
             .and(predicate::str::contains("template"))
             .and(predicate::str::contains("batch"))
@@ -77,13 +81,16 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff",
             ))
             .and(predicate::str::contains(
+                "Journaling: daily, weekly, monthly, periodic, inbox, template",
+            ))
+            .and(predicate::str::contains(
                 "Semantic: vectors, cluster, related",
             ))
             .and(predicate::str::contains(
                 "Reports and Automation: saved, checkpoint, changes, batch, export, automation",
             ))
             .and(predicate::str::contains(
-                "Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref, inbox, template",
+                "Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
             ))
             .and(predicate::str::contains(
                 "Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions",
@@ -309,6 +316,291 @@ fn config_import_kanban_json_output_reports_mappings() {
     assert!(config.contains("contains_markdown = true"));
     assert!(config.contains("archive_date_separator = \" :: \""));
     assert!(config.contains("show_search = false"));
+}
+
+#[test]
+fn config_import_periodic_notes_json_output_reports_mappings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/periodic-notes"))
+        .expect("periodic plugin dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/daily-notes.json"),
+        r#"{
+          "folder": "Journal/Daily",
+          "format": "YYYY-MM-DD",
+          "template": "Templates/Daily.md"
+        }"#,
+    )
+    .expect("daily notes config should be written");
+    fs::write(
+        vault_root.join(".obsidian/plugins/periodic-notes/data.json"),
+        r#"{
+          "weekly": {
+            "enabled": true,
+            "folder": "Journal/Weekly",
+            "format": "GGGG-[W]WW",
+            "templatePath": "Templates/Weekly.md"
+          },
+          "monthly": {
+            "enabled": true,
+            "folder": "Journal/Monthly",
+            "format": "YYYY-MM",
+            "templatePath": "Templates/Monthly.md"
+          }
+        }"#,
+    )
+    .expect("periodic notes config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "periodic-notes",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["plugin"], "periodic-notes");
+    assert!(json["source_paths"].as_array().is_some_and(|paths| {
+        paths
+            .iter()
+            .any(|path| path == ".obsidian/daily-notes.json")
+            && paths
+                .iter()
+                .any(|path| path == ".obsidian/plugins/periodic-notes/data.json")
+    }));
+    assert!(json["mappings"].as_array().is_some_and(|mappings| mappings
+        .iter()
+        .any(|mapping| mapping["target"] == "periodic.daily.folder"
+            && mapping["value"] == "Journal/Daily")));
+    assert!(json["mappings"].as_array().is_some_and(|mappings| mappings
+        .iter()
+        .any(|mapping| mapping["target"] == "periodic.weekly.format"
+            && mapping["value"] == "GGGG-[W]WW")));
+
+    let rendered =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(rendered.contains("[periodic.daily]"));
+    assert!(rendered.contains("folder = \"Journal/Daily\""));
+    assert!(rendered.contains("template = \"Templates/Daily.md\""));
+    assert!(rendered.contains("[periodic.weekly]"));
+    assert!(rendered.contains("format = \"GGGG-[W]WW\""));
+    assert!(rendered.contains("[periodic.monthly]"));
+}
+
+#[test]
+fn daily_today_creates_note_from_template_and_updates_cache() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates"))
+        .expect("template dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/templates/daily.md"),
+        "# {{title}}\n\n## Log\n",
+    )
+    .expect("daily template should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "daily",
+            "today",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let path = json["path"]
+        .as_str()
+        .expect("path should be present")
+        .to_string();
+    let rendered = fs::read_to_string(vault_root.join(&path))
+        .expect("daily note should be created")
+        .replace("\r\n", "\n");
+
+    assert!(json["created"].as_bool().is_some_and(|created| created));
+    assert!(path.starts_with("Journal/Daily/"));
+    assert!(rendered.contains("## Log"));
+
+    let database =
+        CacheDatabase::open(&VaultPaths::new(&vault_root)).expect("database should open");
+    assert!(document_paths(&database)
+        .iter()
+        .any(|document_path| document_path == &path));
+}
+
+#[test]
+fn daily_append_creates_note_and_appends_under_heading() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "daily",
+            "append",
+            "Called Alice",
+            "--heading",
+            "## Log",
+            "--date",
+            "2026-04-03",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let path = json["path"]
+        .as_str()
+        .expect("path should be present")
+        .to_string();
+    let rendered = fs::read_to_string(vault_root.join(&path))
+        .expect("daily note should be readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(path, "Journal/Daily/2026-04-03.md");
+    assert!(json["created"].as_bool().is_some_and(|created| created));
+    assert!(json["appended"].as_bool().is_some_and(|appended| appended));
+    assert!(rendered.contains("## Log\n\nCalled Alice\n"));
+}
+
+#[test]
+fn daily_list_json_includes_events_in_range() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[periodic.daily]\nschedule_heading = \"Schedule\"\n",
+    )
+    .expect("config should be written");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-04-03.md"),
+        "# 2026-04-03\n\n## Schedule\n- 09:00 Team standup\n- 14:00-15:30 Dentist #personal\n",
+    )
+    .expect("first daily note should be written");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-04-04.md"),
+        "# 2026-04-04\n\n## Schedule\n- all-day Company offsite\n",
+    )
+    .expect("second daily note should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "daily",
+            "list",
+            "--from",
+            "2026-04-03",
+            "--to",
+            "2026-04-04",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["date"], "2026-04-03");
+    assert_eq!(rows[0]["event_count"], 2);
+    assert!(rows[0]["events"].as_array().is_some_and(|events| {
+        events.iter().any(|event| event["title"] == "Team standup")
+            && events.iter().any(|event| event["title"] == "Dentist")
+    }));
+    assert_eq!(rows[1]["date"], "2026-04-04");
+    assert_eq!(rows[1]["event_count"], 1);
+    assert_eq!(rows[1]["events"][0]["start_time"], "all-day");
+}
+
+#[test]
+fn periodic_list_and_gaps_report_expected_notes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir should be created");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-04-01.md"),
+        "# 2026-04-01\n",
+    )
+    .expect("first daily note should be written");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-04-03.md"),
+        "# 2026-04-03\n",
+    )
+    .expect("second daily note should be written");
+    run_scan(&vault_root);
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "periodic",
+            "list",
+            "--type",
+            "daily",
+        ])
+        .assert()
+        .success();
+    let list_rows = parse_stdout_json_lines(&list_assert);
+    assert_eq!(list_rows.len(), 2);
+    assert_eq!(list_rows[0]["path"], "Journal/Daily/2026-04-01.md");
+    assert_eq!(list_rows[1]["path"], "Journal/Daily/2026-04-03.md");
+
+    let gaps_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "periodic",
+            "gaps",
+            "--type",
+            "daily",
+            "--from",
+            "2026-04-01",
+            "--to",
+            "2026-04-03",
+        ])
+        .assert()
+        .success();
+    let gap_rows = parse_stdout_json_lines(&gaps_assert);
+    assert_eq!(gap_rows.len(), 1);
+    assert_eq!(gap_rows[0]["date"], "2026-04-02");
+    assert_eq!(gap_rows[0]["expected_path"], "Journal/Daily/2026-04-02.md");
 }
 
 #[test]

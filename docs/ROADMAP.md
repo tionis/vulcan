@@ -2332,7 +2332,7 @@ Deferred. The Phase 10 daemon will expose task functionality through its own uni
 
 #### 9.16.1 Periodic note configuration
 
-- [ ] Configuration in `.vulcan/config.toml`:
+- [x] Configuration in `.vulcan/config.toml`:
   ```toml
   [periodic.daily]
   enabled = true
@@ -2365,17 +2365,17 @@ Deferred. The Phase 10 daemon will expose task functionality through its own uni
   format = "YYYY"
   template = "yearly"
   ```
-- [ ] Each period type is independently configurable: folder, filename format, template, enabled flag
+- [x] Each period type is independently configurable: folder, filename format, template, enabled flag
 - [ ] Custom period types (future): allow user-defined periods beyond the built-in five (e.g., `[periodic.sprint]` with custom interval). Deferred — the config structure supports it (any `[periodic.<name>]` section), but the resolution and CLI integration land after the five built-in types are working.
 
 #### 9.16.2 Periodic note discovery and resolution
 
-- [ ] `resolve_periodic_note(period, date) -> Option<Path>`: given a period type and date, compute the expected filename and check if it exists
-- [ ] `resolve_daily_note(date) -> Option<Path>`: convenience alias for daily resolution
-- [ ] Reverse resolution: given a note path, determine if it's a periodic note and extract the date (parse filename against configured format)
-- [ ] `file.day` integration (Dataview 9.8.3): use periodic note configuration to resolve `file.day` — a daily note for `2026-03-27` has `file.day = date("2026-03-27")`
-- [ ] Date-to-note linking: provide a lookup function for other phases (Kanban `link-date-to-daily-note`, TaskNotes calendar integration)
-- [ ] Index periodic notes in cache: add `periodic_type` and `periodic_date` columns to documents table (nullable, populated during scan for notes matching periodic patterns)
+- [x] `resolve_periodic_note(period, date) -> Option<Path>`: given a period type and date, compute the expected filename and check if it exists
+- [x] `resolve_daily_note(date) -> Option<Path>`: convenience alias for daily resolution
+- [x] Reverse resolution: given a note path, determine if it's a periodic note and extract the date (parse filename against configured format)
+- [x] `file.day` integration (Dataview 9.8.3): use periodic note configuration to resolve `file.day` — a daily note for `2026-03-27` has `file.day = date("2026-03-27")`
+- [x] Date-to-note linking: provide a lookup function for other phases (Kanban `link-date-to-daily-note`, TaskNotes calendar integration)
+- [x] Index periodic notes in cache: add `periodic_type` and `periodic_date` columns to documents table (nullable, populated during scan for notes matching periodic patterns)
 
 #### 9.16.3 Structured events in daily notes
 
@@ -2403,44 +2403,44 @@ schedule_heading = "Schedule"   # heading to parse events from (optional)
 
 **Cache schema:**
 
-- [ ] `events` table: `id`, `document_id`, `start_time` (TEXT, "HH:MM" or "all-day"), `end_time` (TEXT, nullable), `title`, `metadata` (JSON for @key(value) pairs), `tags` (JSON array), `byte_offset`
-- [ ] Index on `document_id` for per-note queries, index on `start_time` for range queries
-- [ ] Events extracted during scan via `extract_events(content, schedule_heading) -> Vec<Event>`
+- [x] `events` table: `id`, `document_id`, `start_time` (TEXT, "HH:MM" or "all-day"), `end_time` (TEXT, nullable), `title`, `metadata` (JSON for @key(value) pairs), `tags` (JSON array), `byte_offset`
+- [x] Index on `document_id` for per-note queries, index on `start_time` for range queries
+- [x] Events extracted during scan via `extract_events(content, schedule_heading) -> Vec<Event>`
 
 **Queryable via:**
 
-- [ ] `vulcan daily list` aggregates events across daily notes in a date range
+- [x] `vulcan daily list` aggregates events across daily notes in a date range
 - [ ] JS runtime: `vault.daily.today().events`, `vault.events({ from, to })` (see 9.18.5)
 - [ ] Future: calendar UI rendering, one-way `.ics` export
 
 #### 9.16.4 CLI surface
 
-- [ ] `vulcan daily today` — open or create today's daily note
-  - [ ] If note exists: open in `$EDITOR`
-  - [ ] If note doesn't exist: create from template, then open
-  - [ ] `--no-edit` flag: create only, don't open
-- [ ] `vulcan daily show [date]` — display a daily note's content (default: today)
-- [ ] `vulcan daily list [--from <date>] [--to <date>]` — list daily notes in range, with aggregated events (also `--week`, `--month` shorthand)
-- [ ] `vulcan daily append <text> [--heading <name>] [--date <date>]` — append text to a daily note (default: today)
-- [ ] `vulcan weekly [date]`, `vulcan monthly [date]` — same pattern for other periods
-- [ ] `vulcan periodic <type> [date]` — generic command for any configured period type
-- [ ] `vulcan periodic list [--type daily|weekly|monthly|...]` — list periodic notes, optionally filtered by type
-- [ ] `vulcan periodic gaps [--type daily] [--from <date>] [--to <date>]` — show missing periodic notes in a date range (useful for identifying gaps in journaling)
-- [ ] `--output json` on all subcommands
-- [ ] Auto-commit if enabled
+- [x] `vulcan daily today` — open or create today's daily note
+  - [x] If note exists: open in `$EDITOR`
+  - [x] If note doesn't exist: create from template, then open
+  - [x] `--no-edit` flag: create only, don't open
+- [x] `vulcan daily show [date]` — display a daily note's content (default: today)
+- [x] `vulcan daily list [--from <date>] [--to <date>]` — list daily notes in range, with aggregated events (also `--week`, `--month` shorthand)
+- [x] `vulcan daily append <text> [--heading <name>] [--date <date>]` — append text to a daily note (default: today)
+- [x] `vulcan weekly [date]`, `vulcan monthly [date]` — same pattern for other periods
+- [x] `vulcan periodic <type> [date]` — generic command for any configured period type
+- [x] `vulcan periodic list [--type daily|weekly|monthly|...]` — list periodic notes, optionally filtered by type
+- [x] `vulcan periodic gaps [--type daily] [--from <date>] [--to <date>]` — show missing periodic notes in a date range (useful for identifying gaps in journaling)
+- [x] `--output json` on all subcommands
+- [x] Auto-commit if enabled
 
-**Note:** The `daily` commands listed above will be reorganized under the top-level `daily` command group in Phase 9.18.1 (command tree reorganization).
+**Note:** The daily and periodic note commands already live under top-level `daily`, `weekly`, `monthly`, and `periodic` groups. The broader command-tree cleanup in Phase 9.18.1 is still pending for the rest of the CLI.
 
 #### 9.16.4 Settings import
 
-- [ ] Import from Obsidian Daily Notes core plugin: `.obsidian/daily-notes.json`
+- [x] Import from Obsidian Daily Notes core plugin: `.obsidian/daily-notes.json`
   | Setting key | Vulcan mapping |
   |---|---|
   | `folder` | `periodic.daily.folder` |
   | `format` | `periodic.daily.format` |
   | `template` | `periodic.daily.template` |
   | `autorun` | Informational (no CLI equivalent) |
-- [ ] Import from Periodic Notes community plugin: `.obsidian/plugins/periodic-notes/data.json`
+- [x] Import from Periodic Notes community plugin: `.obsidian/plugins/periodic-notes/data.json`
   | Setting key | Vulcan mapping |
   |---|---|
   | `daily.enabled`, `daily.folder`, `daily.format`, `daily.templatePath` | `periodic.daily.*` |
@@ -2448,7 +2448,7 @@ schedule_heading = "Schedule"   # heading to parse events from (optional)
   | `monthly.enabled`, `monthly.folder`, `monthly.format`, `monthly.templatePath` | `periodic.monthly.*` |
   | `quarterly.enabled`, `quarterly.folder`, `quarterly.format`, `quarterly.templatePath` | `periodic.quarterly.*` |
   | `yearly.enabled`, `yearly.folder`, `yearly.format`, `yearly.templatePath` | `periodic.yearly.*` |
-- [ ] `vulcan config import periodic-notes` — import periodic notes settings (implement as `PluginImporter` per 9.17.1; covers both core Daily Notes and community Periodic Notes sources)
+- [x] `vulcan config import periodic-notes` — import periodic notes settings (implement as `PluginImporter` per 9.17.1; covers both core Daily Notes and community Periodic Notes sources)
 
 ### 9.17 Unified settings import infrastructure
 
