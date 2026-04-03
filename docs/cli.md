@@ -399,6 +399,7 @@ Modes:
 Primary keys:
 
 - `Enter`: edit the selected note
+- `Ctrl-V`: toggle the preview pane between the raw file/snippet view and a Dataview inspector for the selected note
 - `Ctrl-N`: create a new note
 - `Ctrl-R`: move or rename the selected note
 - `Ctrl-B`: backlinks view

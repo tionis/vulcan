@@ -12,6 +12,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
@@ -20,17 +21,23 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+use vulcan_core::properties::load_note_index;
 use vulcan_core::search::{SearchMode, SearchSort};
 use vulcan_core::{
-    doctor_vault, evaluate_base_file, git_log, is_git_repo, list_note_identities,
-    list_tagged_note_identities, list_tags, move_note, query_backlinks, query_links, query_notes,
-    scan_vault, search_vault, AutoScanMode, BacklinkRecord, DoctorDiagnosticIssue, DoctorLinkIssue,
+    doctor_vault, evaluate_base_file, evaluate_dataview_js_query, evaluate_dql,
+    evaluate_note_inline_expressions, git_log, is_git_repo, list_note_identities,
+    list_tagged_note_identities, list_tags, load_dataview_blocks, move_note, query_backlinks,
+    query_links, query_notes, scan_vault, search_vault, AutoScanMode, BacklinkRecord,
+    DataviewJsOutput, DoctorDiagnosticIssue, DoctorLinkIssue, DqlEvalError, DqlQueryResult,
     GitLogEntry, NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, ResolutionStatus,
     ScanMode, ScanSummary, SearchHit, SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
 const FULL_TEXT_CONTEXT_SIZE: usize = 18;
+const DATAVIEW_PREVIEW_LINE_LIMIT: usize = 24;
+const DATAVIEW_INLINE_PREVIEW_LIMIT: usize = 4;
+const DATAVIEW_BLOCK_PREVIEW_LIMIT: usize = 6;
 
 pub fn run_browse_tui(
     paths: &VaultPaths,
@@ -435,6 +442,35 @@ impl BrowseMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewMode {
+    File,
+    Dataview,
+}
+
+impl PreviewMode {
+    fn toggle(self) -> Self {
+        match self {
+            Self::File => Self::Dataview,
+            Self::Dataview => Self::File,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Dataview => "dataview",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct CachedDataviewPreview {
+    path: Option<String>,
+    lines: Vec<String>,
+    stale: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MovePrompt {
     source_path: String,
@@ -499,6 +535,8 @@ struct BrowseState {
     background_refresh: Option<BackgroundRefreshState>,
     last_scan_label: String,
     mode: BrowseMode,
+    preview_mode: PreviewMode,
+    dataview_preview: CachedDataviewPreview,
     status: String,
 }
 
@@ -527,6 +565,8 @@ impl BrowseState {
             background_refresh: None,
             last_scan_label,
             mode: BrowseMode::Fuzzy,
+            preview_mode: PreviewMode::File,
+            dataview_preview: CachedDataviewPreview::default(),
             status: "Ready.".to_string(),
         })
     }
@@ -554,11 +594,18 @@ impl BrowseState {
 
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
+                KeyCode::Char('v' | 'V') => {
+                    self.clear_status();
+                    self.toggle_preview_mode();
+                    return BrowseAction::Continue;
+                }
                 KeyCode::Char('e' | 'E') => {
                     self.clear_status();
                     if self.mode == BrowseMode::FullText {
                         if let Err(error) = self.handle_mode_key(key) {
                             self.set_status(error);
+                        } else {
+                            self.refresh_dataview_preview_if_needed();
                         }
                         return BrowseAction::Continue;
                     }
@@ -632,6 +679,7 @@ impl BrowseState {
             KeyCode::Char('/') if self.mode != BrowseMode::Fuzzy => {
                 self.clear_status();
                 self.mode = BrowseMode::Fuzzy;
+                self.refresh_dataview_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Enter => self.edit_selected_path(),
@@ -639,6 +687,8 @@ impl BrowseState {
                 self.clear_status();
                 if let Err(error) = self.handle_mode_key(key) {
                     self.set_status(error);
+                } else {
+                    self.refresh_dataview_preview_if_needed();
                 }
                 BrowseAction::Continue
             }
@@ -654,6 +704,7 @@ impl BrowseState {
             KeyCode::Esc => {
                 self.git_view = None;
                 self.clear_status();
+                self.refresh_dataview_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -677,6 +728,7 @@ impl BrowseState {
             KeyCode::Esc => {
                 self.doctor_view = None;
                 self.clear_status();
+                self.refresh_dataview_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -731,6 +783,7 @@ impl BrowseState {
             KeyCode::Esc => {
                 self.backlinks_view = None;
                 self.clear_status();
+                self.refresh_dataview_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Char('o') => match view.selected_path() {
@@ -769,6 +822,7 @@ impl BrowseState {
             KeyCode::Esc => {
                 self.links_view = None;
                 self.clear_status();
+                self.refresh_dataview_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Char('o') => match view.selected_path() {
@@ -873,6 +927,7 @@ impl BrowseState {
                 .refresh_results(&self.paths, &self.all_notes),
             BrowseMode::Fuzzy => {}
         }
+        self.refresh_dataview_preview_if_needed();
         Ok(())
     }
 
@@ -898,6 +953,8 @@ impl BrowseState {
             view.reload(&self.paths)?;
         }
         self.refresh_last_scan_label();
+        self.invalidate_dataview_preview();
+        self.refresh_dataview_preview_if_needed();
         Ok(())
     }
 
@@ -952,6 +1009,8 @@ impl BrowseState {
             .refresh_results(&self.paths, &self.all_notes);
         self.property_filter.select_path(path);
         self.refresh_last_scan_label();
+        self.invalidate_dataview_preview();
+        self.refresh_dataview_preview_if_needed();
         Ok(())
     }
 
@@ -962,6 +1021,52 @@ impl BrowseState {
             BrowseMode::Tag => self.tag_filter.refresh_preview(),
             BrowseMode::Property => self.property_filter.refresh_preview(),
         }
+        self.refresh_dataview_preview_if_needed();
+    }
+
+    fn uses_note_preview(&self) -> bool {
+        self.git_view.is_none()
+            && self.doctor_view.is_none()
+            && self.backlinks_view.is_none()
+            && self.links_view.is_none()
+            && self.new_note_prompt.is_none()
+            && self.move_prompt.is_none()
+    }
+
+    fn uses_dataview_preview(&self) -> bool {
+        self.uses_note_preview() && self.preview_mode == PreviewMode::Dataview
+    }
+
+    fn toggle_preview_mode(&mut self) {
+        self.preview_mode = self.preview_mode.toggle();
+        if self.preview_mode == PreviewMode::Dataview {
+            self.refresh_dataview_preview();
+        }
+        self.set_status(format!("Preview mode: {}.", self.preview_mode.label()));
+    }
+
+    fn invalidate_dataview_preview(&mut self) {
+        self.dataview_preview.stale = true;
+    }
+
+    fn refresh_dataview_preview_if_needed(&mut self) {
+        if self.uses_dataview_preview() {
+            self.refresh_dataview_preview();
+        }
+    }
+
+    fn refresh_dataview_preview(&mut self) {
+        let selected_path = self.selected_path().map(ToOwned::to_owned);
+        if !self.dataview_preview.stale && self.dataview_preview.path == selected_path {
+            return;
+        }
+
+        self.dataview_preview.path.clone_from(&selected_path);
+        self.dataview_preview.lines = selected_path.map_or_else(
+            || vec!["No matching note selected.".to_string()],
+            |path| build_dataview_preview(&self.paths, &path),
+        );
+        self.dataview_preview.stale = false;
     }
 
     fn selected_path(&self) -> Option<&str> {
@@ -1054,10 +1159,10 @@ impl BrowseState {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
             match self.mode {
-                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Esc quit".to_string(),
-                BrowseMode::FullText => "Keys: type to search, Backspace edit query, Up/Down move, Enter edit, Ctrl-E explain, Ctrl-S sort, Alt-C case, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Esc quit".to_string(),
+                BrowseMode::FullText => "Keys: type to search, Backspace edit query, Up/Down move, Enter edit, Ctrl-V preview, Ctrl-E explain, Ctrl-S sort, Alt-C case, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, / fuzzy, Esc quit".to_string(),
             }
         }
     }
@@ -1180,6 +1285,12 @@ impl BrowseState {
         if let Some(view) = self.links_view.as_ref() {
             return view.preview_title();
         }
+        if self.uses_dataview_preview() {
+            return self.selected_path().map_or_else(
+                || "Dataview Preview".to_string(),
+                |path| format!("Dataview: {path}"),
+            );
+        }
         match self.mode {
             BrowseMode::Fuzzy => self
                 .picker
@@ -1206,6 +1317,15 @@ impl BrowseState {
         }
         if let Some(view) = self.links_view.as_ref() {
             return view.preview_lines();
+        }
+        if self.uses_dataview_preview() {
+            return self
+                .dataview_preview
+                .lines
+                .iter()
+                .cloned()
+                .map(Line::from)
+                .collect();
         }
         match self.mode {
             BrowseMode::Fuzzy => self.picker.preview_lines(),
@@ -1241,6 +1361,9 @@ impl BrowseState {
     }
 
     fn status_bar_line(&self) -> String {
+        let preview_meta = self
+            .uses_note_preview()
+            .then(|| format!(" | Preview: {}", self.preview_mode.label()));
         let full_text_meta = (self.mode == BrowseMode::FullText
             && self.git_view.is_none()
             && self.doctor_view.is_none()
@@ -1265,11 +1388,12 @@ impl BrowseState {
             )
         });
         format!(
-            "Vault: {} | Mode: {} | Notes: {} filtered / {} total | Last scan: {}{}",
+            "Vault: {} | Mode: {} | Notes: {} filtered / {} total{} | Last scan: {}{}",
             self.vault_name(),
             self.active_mode_label(),
             self.filtered_count(),
             self.total_notes(),
+            preview_meta.as_deref().unwrap_or_default(),
             self.last_scan_label,
             if self.background_refresh.is_some() {
                 " | Refresh: background"
@@ -2558,6 +2682,312 @@ impl PropertyFilterState {
     }
 }
 
+fn build_dataview_preview(paths: &VaultPaths, path: &str) -> Vec<String> {
+    let note_index = match load_note_index(paths) {
+        Ok(note_index) => note_index,
+        Err(error) => return vec![format!("Failed to load Dataview note index: {error}")],
+    };
+    let Some(note) = note_index
+        .values()
+        .find(|note| note.document_path.as_str() == path)
+    else {
+        return vec![format!("Selected note is not indexed: {path}")];
+    };
+
+    let inline_results = evaluate_note_inline_expressions(note, &note_index);
+    let blocks = match load_dataview_blocks(paths, path, None) {
+        Ok(blocks) => blocks,
+        Err(DqlEvalError::Message(message))
+            if message.starts_with("no Dataview blocks found in ") =>
+        {
+            Vec::new()
+        }
+        Err(error) => return vec![format!("Failed to load Dataview blocks: {error}")],
+    };
+
+    if inline_results.is_empty() && blocks.is_empty() {
+        return vec!["No Dataview inline expressions or blocks.".to_string()];
+    }
+
+    let mut lines = Vec::new();
+    append_dataview_inline_preview(&mut lines, &inline_results);
+    append_dataview_block_preview(paths, &mut lines, &blocks);
+    truncate_preview_strings(
+        lines,
+        DATAVIEW_PREVIEW_LINE_LIMIT,
+        "Dataview preview truncated",
+    )
+}
+
+fn append_dataview_inline_preview(
+    lines: &mut Vec<String>,
+    inline_results: &[vulcan_core::EvaluatedInlineExpression],
+) {
+    if inline_results.is_empty() {
+        return;
+    }
+
+    lines.push(format!("Inline expressions ({})", inline_results.len()));
+    let visible = inline_results
+        .iter()
+        .take(DATAVIEW_INLINE_PREVIEW_LIMIT)
+        .map(|result| {
+            result.error.as_ref().map_or_else(
+                || {
+                    format!(
+                        "- {} => {}",
+                        result.expression,
+                        render_preview_value(&result.value)
+                    )
+                },
+                |error| format!("- {} => error: {error}", result.expression),
+            )
+        });
+    lines.extend(visible);
+
+    let hidden_count = inline_results
+        .len()
+        .saturating_sub(DATAVIEW_INLINE_PREVIEW_LIMIT);
+    if hidden_count > 0 {
+        lines.push(format!("... {hidden_count} more inline expression(s)"));
+    }
+}
+
+fn append_dataview_block_preview(
+    paths: &VaultPaths,
+    lines: &mut Vec<String>,
+    blocks: &[vulcan_core::DataviewBlockRecord],
+) {
+    if blocks.is_empty() {
+        return;
+    }
+
+    if !lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines.push(format!("Dataview blocks ({})", blocks.len()));
+    for block in blocks {
+        lines.push(format!(
+            "Block {} ({}, line {})",
+            block.block_index, block.language, block.line_number
+        ));
+        let block_lines = dataview_block_preview_lines(paths, block);
+        let visible_lines = block_lines
+            .iter()
+            .take(DATAVIEW_BLOCK_PREVIEW_LIMIT)
+            .map(|line| format!("  {line}"));
+        lines.extend(visible_lines);
+
+        let hidden_count = block_lines
+            .len()
+            .saturating_sub(DATAVIEW_BLOCK_PREVIEW_LIMIT);
+        if hidden_count > 0 {
+            lines.push(format!("  ... {hidden_count} more line(s)"));
+        }
+    }
+}
+
+fn dataview_block_preview_lines(
+    paths: &VaultPaths,
+    block: &vulcan_core::DataviewBlockRecord,
+) -> Vec<String> {
+    match block.language.as_str() {
+        "dataview" => match evaluate_dql(paths, &block.source, Some(&block.file)) {
+            Ok(result) => dql_preview_lines(&result),
+            Err(error) => vec![format!("error: {error}")],
+        },
+        "dataviewjs" => match evaluate_dataview_js_query(paths, &block.source, Some(&block.file)) {
+            Ok(result) => dataview_js_preview_lines(&result),
+            Err(error) => vec![format!("error: {error}")],
+        },
+        language => vec![format!(
+            "error: unsupported Dataview block language `{language}`"
+        )],
+    }
+}
+
+fn dql_preview_lines(result: &DqlQueryResult) -> Vec<String> {
+    let mut lines = match result.query_type {
+        vulcan_core::dql::DqlQueryType::Table => dql_table_preview_lines(result),
+        vulcan_core::dql::DqlQueryType::List => dql_list_preview_lines(result),
+        vulcan_core::dql::DqlQueryType::Task => dql_task_preview_lines(result),
+        vulcan_core::dql::DqlQueryType::Calendar => dql_calendar_preview_lines(result),
+    };
+
+    if result.rows.is_empty() {
+        lines.push("No results.".to_string());
+    } else {
+        lines.push(format!("{} result(s)", result.result_count));
+    }
+
+    for diagnostic in &result.diagnostics {
+        lines.push(format!("Diagnostic: {}", diagnostic.message));
+    }
+    lines
+}
+
+fn dql_table_preview_lines(result: &DqlQueryResult) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !result.columns.is_empty() {
+        lines.push(result.columns.join(" | "));
+    }
+
+    for row in result.rows.iter().take(3) {
+        lines.push(
+            result
+                .columns
+                .iter()
+                .map(|column| render_preview_value(&row[column]))
+                .collect::<Vec<_>>()
+                .join(" | "),
+        );
+    }
+    lines
+}
+
+fn dql_list_preview_lines(result: &DqlQueryResult) -> Vec<String> {
+    result
+        .rows
+        .iter()
+        .take(4)
+        .map(|row| match result.columns.as_slice() {
+            [column] => format!("- {}", render_preview_value(&row[column])),
+            [left, right, ..] => format!(
+                "- {}: {}",
+                render_preview_value(&row[left]),
+                render_preview_value(&row[right])
+            ),
+            [] => format!("- {}", render_preview_value(row)),
+        })
+        .collect()
+}
+
+fn dql_task_preview_lines(result: &DqlQueryResult) -> Vec<String> {
+    result
+        .rows
+        .iter()
+        .take(4)
+        .map(|row| {
+            let file_column = result.columns.first().map_or("File", String::as_str);
+            let file = row[file_column].as_str().unwrap_or("<unknown>");
+            let status = row["status"].as_str().unwrap_or(" ");
+            let text = render_preview_value(&row["text"]);
+            format!("{file}: - [{status}] {text}")
+        })
+        .collect()
+}
+
+fn dql_calendar_preview_lines(result: &DqlQueryResult) -> Vec<String> {
+    result
+        .rows
+        .iter()
+        .take(4)
+        .map(|row| {
+            let file_column = result.columns.get(1).map_or("File", String::as_str);
+            let date = row["date"].as_str().unwrap_or_default();
+            let file = render_preview_value(&row[file_column]);
+            format!("{date}: {file}")
+        })
+        .collect()
+}
+
+fn dataview_js_preview_lines(result: &vulcan_core::DataviewJsResult) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if result.outputs.is_empty() {
+        if let Some(value) = &result.value {
+            lines.push(render_preview_value(value));
+        } else {
+            lines.push("No DataviewJS output.".to_string());
+        }
+        return lines;
+    }
+
+    for output in &result.outputs {
+        match output {
+            DataviewJsOutput::Query { result } => lines.extend(dql_preview_lines(result)),
+            DataviewJsOutput::Table { headers, rows } => {
+                if !headers.is_empty() {
+                    lines.push(headers.join(" | "));
+                }
+                lines.extend(rows.iter().take(3).map(|row| {
+                    row.iter()
+                        .map(render_preview_value)
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                }));
+            }
+            DataviewJsOutput::List { items } => lines.extend(
+                items
+                    .iter()
+                    .take(4)
+                    .map(|item| format!("- {}", render_preview_value(item))),
+            ),
+            DataviewJsOutput::TaskList {
+                tasks,
+                group_by_file: _,
+            } => lines.extend(tasks.iter().take(4).map(dataview_js_task_preview_line)),
+            DataviewJsOutput::Paragraph { text } | DataviewJsOutput::Span { text } => {
+                lines.push(text.clone());
+            }
+            DataviewJsOutput::Header { level, text } => {
+                lines.push(format!("{} {text}", "#".repeat((*level).max(1))));
+            }
+            DataviewJsOutput::Element {
+                element,
+                text,
+                attrs: _,
+            } => {
+                lines.push(format!("<{element}> {text}"));
+            }
+        }
+    }
+
+    lines
+}
+
+fn dataview_js_task_preview_line(task: &Value) -> String {
+    let file = task
+        .get("path")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            task.get("file")
+                .and_then(|file| file.get("path"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("<unknown>");
+    let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
+    let text = task
+        .get("text")
+        .map(render_preview_value)
+        .unwrap_or_default();
+    format!("{file}: - [{status}] {text}")
+}
+
+fn render_preview_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        _ => serde_json::to_string(value).expect("Dataview preview values should serialize"),
+    }
+}
+
+fn truncate_preview_strings(
+    mut lines: Vec<String>,
+    limit: usize,
+    truncated_label: &str,
+) -> Vec<String> {
+    if lines.len() <= limit {
+        return lines;
+    }
+
+    let hidden_count = lines.len() - limit;
+    lines.truncate(limit.saturating_sub(1));
+    lines.push(format!(
+        "... {truncated_label}; {hidden_count} more line(s)"
+    ));
+    lines
+}
+
 fn best_matching_tag<'a>(tags: &'a [NamedCount], query: &str) -> Option<&'a NamedCount> {
     if query.trim().is_empty() {
         return None;
@@ -2808,6 +3238,15 @@ mod tests {
                 (mtime, path),
             )
             .expect("document mtime should update");
+    }
+
+    fn preview_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -3704,6 +4143,103 @@ mod tests {
         assert_eq!(state.mode, BrowseMode::Property);
         assert_eq!(state.filtered_count(), 0);
         assert!(state.property_filter.last_error.is_some());
+    }
+
+    #[test]
+    fn ctrl_v_toggles_dataview_preview_for_selected_note() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Dashboard.md",
+            "---\nstatus: draft\n---\n\n`= this.status`\n\n```dataview\nLIST FROM #project\n```\n",
+        );
+        write_note(
+            temp_dir.path(),
+            "Projects/Alpha.md",
+            "---\nreviewed: true\n---\n\n# Alpha\n#project\n",
+        );
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths,
+            vec![note("Dashboard.md", &[]), note("Projects/Alpha.md", &[])],
+        )
+        .expect("state should build");
+        state.picker.select_path("Dashboard.md");
+
+        assert!(state.preview_title().contains("Dashboard.md"));
+
+        let action = state.handle_key(ctrl('v'));
+
+        assert_eq!(action, BrowseAction::Continue);
+        assert_eq!(state.preview_title(), "Dataview: Dashboard.md");
+        assert_eq!(state.status_line(), "Preview mode: dataview.");
+        assert!(state.status_bar_line().contains("Preview: dataview"));
+
+        let preview = preview_text(&state.preview_lines());
+        assert!(preview.contains("Inline expressions (1)"));
+        assert!(preview.contains("this.status => draft"));
+        assert!(preview.contains("Dataview blocks (1)"));
+        assert!(preview.contains("Block 0 (dataview"));
+
+        state.handle_key(ctrl('v'));
+        assert_eq!(state.status_line(), "Preview mode: file.");
+        assert_eq!(state.preview_title(), "Preview: Dashboard.md");
+    }
+
+    #[test]
+    fn dataview_preview_refreshes_when_selected_note_changes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Alpha.md",
+            "---\nstatus: draft\n---\n\n`= this.status`\n",
+        );
+        write_note(temp_dir.path(), "Beta.md", "# Beta\n");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths, vec![note("Alpha.md", &[]), note("Beta.md", &[])])
+            .expect("state should build");
+        state.picker.select_path("Alpha.md");
+        state.handle_key(ctrl('v'));
+
+        assert!(preview_text(&state.preview_lines()).contains("this.status => draft"));
+
+        state.picker.select_path("Beta.md");
+        state.refresh_dataview_preview_if_needed();
+
+        assert_eq!(state.preview_title(), "Dataview: Beta.md");
+        assert_eq!(
+            preview_text(&state.preview_lines()),
+            "No Dataview inline expressions or blocks."
+        );
+    }
+
+    #[test]
+    fn ctrl_v_switches_full_text_preview_from_snippet_to_dataview_details() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Dashboard.md",
+            "---\nstatus: draft\n---\n\nrelease dashboard\n\n`= this.status`\n",
+        );
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Dashboard.md", &[])]).expect("state should build");
+
+        state.handle_key(ctrl('f'));
+        for character in "dashboard".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+
+        assert!(state.preview_title().contains("Snippet:"));
+        assert!(preview_text(&state.preview_lines()).contains("dashboard"));
+
+        state.handle_key(ctrl('v'));
+
+        assert_eq!(state.preview_title(), "Dataview: Dashboard.md");
+        assert!(preview_text(&state.preview_lines()).contains("this.status => draft"));
     }
 
     #[test]
