@@ -433,7 +433,7 @@ fn dataview_eval_json_output_evaluates_selected_block() {
     );
     assert_eq!(
         json["blocks"][0]["result"]["data"]["result_count"],
-        Value::Number(1.into())
+        Value::Number(2.into())
     );
     assert_eq!(
         json["blocks"][0]["result"]["data"]["rows"][0],
@@ -441,6 +441,14 @@ fn dataview_eval_json_output_evaluates_selected_block() {
             "File": "[[Projects/Alpha]]",
             "status": "active",
             "priority": 1.0
+        })
+    );
+    assert_eq!(
+        json["blocks"][0]["result"]["data"]["rows"][1],
+        serde_json::json!({
+            "File": "[[Dashboard]]",
+            "status": "draft",
+            "priority": [2.0, 3.0]
         })
     );
 }
@@ -521,7 +529,8 @@ fn dataview_eval_human_output_keeps_empty_table_headers() {
 
     assert!(stdout.contains("File | status | priority"));
     assert!(stdout.contains("[[Projects/Alpha]] | active | 1"));
-    assert!(stdout.contains("1 result(s)"));
+    assert!(stdout.contains("[[Dashboard]] | draft | [2.0,3.0]"));
+    assert!(stdout.contains("2 result(s)"));
 }
 
 fn write_tasks_cli_fixture(vault_root: &Path) {

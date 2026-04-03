@@ -2,6 +2,7 @@ use crate::expression::ast::Expr;
 use crate::expression::eval::{evaluate, is_truthy, EvalContext};
 use crate::expression::functions::parse_duration_string;
 use crate::expression::parse::Parser;
+use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::synthetic_file_link;
 use crate::parser::{parse_document, types::InlineFieldKind};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
@@ -551,8 +552,11 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         let loaded_note_index = load_note_index(paths)?;
         let formulas = BTreeMap::new();
         let mut filtered = Vec::with_capacity(notes.len());
+        let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
         for note in notes {
-            let ctx = EvalContext::new(&note, &formulas).with_note_lookup(&loaded_note_index);
+            let ctx = EvalContext::new(&note, &formulas)
+                .with_note_lookup(&loaded_note_index)
+                .with_time_zone(time_zone);
             let mut keep = true;
             for (filter, expr) in &expression_filters {
                 let value = evaluate(expr, &ctx)
@@ -1678,6 +1682,7 @@ pub(crate) enum FilterField {
     FileName,
     FileExt,
     FileMtime,
+    FileTags,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1765,12 +1770,14 @@ fn legacy_filter_needs_expression_fallback(operator: FilterOperator, value: &str
 }
 
 fn is_legacy_filter_field(field: &str) -> bool {
-    matches!(field, "file.path" | "file.name" | "file.ext" | "file.mtime")
-        || (!field.starts_with("file.")
-            && !field.is_empty()
-            && field
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
+    matches!(
+        field,
+        "file.path" | "file.name" | "file.ext" | "file.mtime" | "file.tags"
+    ) || (!field.starts_with("file.")
+        && !field.is_empty()
+        && field
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
 }
 
 type PartitionedNoteQueryFilters = (Vec<String>, Vec<(String, Expr)>);
@@ -1810,6 +1817,7 @@ fn parse_filter_field(field: &str) -> FilterField {
         "file.name" => FilterField::FileName,
         "file.ext" => FilterField::FileExt,
         "file.mtime" => FilterField::FileMtime,
+        "file.tags" => FilterField::FileTags,
         other => FilterField::Property(other.to_string()),
     }
 }
@@ -1926,6 +1934,9 @@ fn filter_sql_clause(
         (FilterField::Property(key), operator, value) => {
             property_scalar_clause(key, operator, value, params)
         }
+        (FilterField::FileTags, FilterOperator::Contains | FilterOperator::HasTag, value) => {
+            file_tags_clause(filter.operator, value, params)
+        }
         (field, FilterOperator::Contains | FilterOperator::HasTag | FilterOperator::Exists, _) => {
             Err(PropertyError::InvalidFilter(match field {
                 FilterField::Property(key) => key.clone(),
@@ -1933,6 +1944,7 @@ fn filter_sql_clause(
                 FilterField::FileName => "file.name".to_string(),
                 FilterField::FileExt => "file.ext".to_string(),
                 FilterField::FileMtime => "file.mtime".to_string(),
+                FilterField::FileTags => "file.tags".to_string(),
             }))
         }
         (field, operator, value) => Ok(file_field_clause(field, operator, value, params)?),
@@ -2056,6 +2068,9 @@ fn file_field_clause(
                 PropertyError::InvalidFilter("file.mtime expects an integer value".to_string())
             })?),
         ),
+        (FilterField::FileTags, FilterValue::Text(_)) => {
+            return file_tags_clause(operator, value, params);
+        }
         _ => {
             return Err(PropertyError::InvalidFilter(match field {
                 FilterField::Property(key) => key.clone(),
@@ -2063,6 +2078,7 @@ fn file_field_clause(
                 FilterField::FileName => "file.name".to_string(),
                 FilterField::FileExt => "file.ext".to_string(),
                 FilterField::FileMtime => "file.mtime".to_string(),
+                FilterField::FileTags => "file.tags".to_string(),
             }))
         }
     };
@@ -2077,6 +2093,45 @@ fn file_field_clause(
             Ok(format!("{column} LIKE ?"))
         }
         _ => Ok(format!("{column} {} ?", sql_comparator(operator)?)),
+    }
+}
+
+fn file_tags_clause(
+    operator: FilterOperator,
+    value: &FilterValue,
+    params: &mut Vec<SqlValue>,
+) -> Result<String, PropertyError> {
+    let FilterValue::Text(value_text) = value else {
+        return Err(PropertyError::InvalidFilter(
+            "file.tags filters expect text values".to_string(),
+        ));
+    };
+    let normalized = value_text.strip_prefix('#').unwrap_or(value_text.as_str());
+    match operator {
+        FilterOperator::Contains => {
+            params.push(SqlValue::Text(normalized.to_string()));
+            Ok(
+                "EXISTS (SELECT 1 FROM tags WHERE tags.document_id = documents.id AND tags.tag_text = ?)"
+                    .to_string(),
+            )
+        }
+        FilterOperator::HasTag => {
+            params.push(SqlValue::Text(normalized.to_string()));
+            params.push(SqlValue::Text(format!("{normalized}/")));
+            params.push(SqlValue::Text(format!("{normalized}0")));
+            Ok("EXISTS (\
+                    SELECT 1 FROM tags \
+                    WHERE tags.document_id = documents.id AND tags.tag_text = ? \
+                    UNION ALL \
+                    SELECT 1 FROM tags \
+                    WHERE tags.document_id = documents.id \
+                    AND tags.tag_text >= ? AND tags.tag_text < ? \
+                )"
+            .to_string())
+        }
+        _ => Err(PropertyError::InvalidFilter(
+            "file.tags only supports contains and has_tag".to_string(),
+        )),
     }
 }
 
@@ -2455,6 +2510,44 @@ mod tests {
                 .map(|note| note.document_path.clone())
                 .collect::<Vec<_>>(),
             vec!["Backlog.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_notes_supports_file_tag_filters_with_subtags() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should be created");
+        fs::write(
+            vault_root.join("Projects/Alpha.md"),
+            "Tag #project/subtag\n",
+        )
+        .expect("alpha note should be written");
+        fs::write(vault_root.join("Projects/Beta.md"), "Tag #project\n")
+            .expect("beta note should be written");
+        fs::write(vault_root.join("Projects/Gamma.md"), "Tag #other\n")
+            .expect("gamma note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report = query_notes(
+            &paths,
+            &NoteQuery {
+                filters: vec!["file.tags has_tag #project".to_string()],
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+        )
+        .expect("tag filter query should succeed");
+
+        assert_eq!(
+            report
+                .notes
+                .iter()
+                .map(|note| note.document_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Projects/Alpha.md", "Projects/Beta.md"]
         );
     }
 

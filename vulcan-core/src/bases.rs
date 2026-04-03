@@ -1,8 +1,9 @@
 use crate::expression::eval::EvalContext;
 use crate::expression::parse_expression;
+use crate::expression::value::DataviewTimeZone;
 use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePathOptions};
 use crate::properties::load_note_index;
-use crate::{query_notes, NoteQuery, NoteRecord, PropertyError, VaultPaths};
+use crate::{load_vault_config, query_notes, NoteQuery, NoteRecord, PropertyError, VaultPaths};
 use serde::Serialize;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -778,6 +779,8 @@ fn evaluate_base_view(
     }
 
     let columns = build_view_columns(property_display_names, &view);
+    let time_zone =
+        DataviewTimeZone::parse(load_vault_config(paths).config.dataview.timezone.as_deref());
     let mut rows = Vec::new();
     for note in notes {
         let formulas = evaluate_formulas(
@@ -786,20 +789,20 @@ fn evaluate_base_view(
             diagnostics,
             view.name.as_deref(),
             &note_index,
+            time_zone,
         );
         let cells = columns
             .iter()
             .map(|column| {
                 (
                     column.key.clone(),
-                    evaluate_base_cell(&note, &formulas, &column.key, &note_index),
+                    evaluate_base_cell(&note, &formulas, &column.key, &note_index, time_zone),
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let group_value = view
-            .group_by
-            .as_ref()
-            .map(|group_by| evaluate_base_cell(&note, &formulas, &group_by.property, &note_index));
+        let group_value = view.group_by.as_ref().map(|group_by| {
+            evaluate_base_cell(&note, &formulas, &group_by.property, &note_index, time_zone)
+        });
         rows.push(BasesRow {
             document_path: note.document_path.clone(),
             file_name: note.file_name.clone(),
@@ -1552,13 +1555,16 @@ fn evaluate_formulas(
     diagnostics: &mut Vec<BasesDiagnostic>,
     view_name: Option<&str>,
     note_index: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> BTreeMap<String, Value> {
     let mut evaluated = BTreeMap::new();
 
     for (name, expression) in formulas {
         match parse_expression(expression) {
             Ok(ast) => {
-                let ctx = EvalContext::new(note, &evaluated).with_note_lookup(note_index);
+                let ctx = EvalContext::new(note, &evaluated)
+                    .with_note_lookup(note_index)
+                    .with_time_zone(time_zone);
                 match crate::expression::eval::evaluate(&ast, &ctx) {
                     Ok(value) => {
                         evaluated.insert(name.clone(), value);
@@ -1771,6 +1777,7 @@ fn evaluate_base_cell(
     formulas: &BTreeMap<String, Value>,
     key: &str,
     note_index: &HashMap<String, NoteRecord>,
+    time_zone: DataviewTimeZone,
 ) -> Value {
     if let Some(value) = formulas.get(key) {
         return value.clone();
@@ -1778,7 +1785,9 @@ fn evaluate_base_cell(
 
     match parse_expression(key) {
         Ok(ast) => {
-            let ctx = EvalContext::new(note, formulas).with_note_lookup(note_index);
+            let ctx = EvalContext::new(note, formulas)
+                .with_note_lookup(note_index)
+                .with_time_zone(time_zone);
             crate::expression::eval::evaluate(&ast, &ctx).unwrap_or(Value::Null)
         }
         Err(_) => Value::Null,

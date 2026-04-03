@@ -4,6 +4,7 @@ pub mod functions;
 pub mod methods;
 pub mod parse;
 pub mod token;
+pub mod value;
 
 use ast::Expr;
 use parse::Parser;

@@ -511,6 +511,7 @@ pub(crate) fn evaluate_callback(
         note: ctx.note,
         formulas: ctx.formulas,
         now_ms: ctx.now_ms,
+        time_zone: ctx.time_zone,
         locals: ctx.locals.clone(),
         note_lookup: ctx.note_lookup,
     };

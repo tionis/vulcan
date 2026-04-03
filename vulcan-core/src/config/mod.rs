@@ -133,6 +133,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # display_result_count = true
 # default_date_format = "MMMM dd, yyyy"
 # default_datetime_format = "h:mm a - MMMM dd, yyyy"
+# timezone = "+02:00"  # optional fixed offset override; default is system local time
 # max_recursive_render_depth = 4
 # primary_column_name = "File"
 # group_column_name = "Group"
@@ -803,6 +804,7 @@ pub struct DataviewConfig {
     pub default_date_format: String,
     #[serde(default = "default_dataview_default_datetime_format")]
     pub default_datetime_format: String,
+    pub timezone: Option<String>,
     #[serde(default = "default_dataview_max_recursive_render_depth")]
     pub max_recursive_render_depth: usize,
     #[serde(default = "default_dataview_primary_column_name")]
@@ -832,6 +834,7 @@ impl Default for DataviewConfig {
             display_result_count: default_dataview_display_result_count(),
             default_date_format: default_dataview_default_date_format(),
             default_datetime_format: default_dataview_default_datetime_format(),
+            timezone: None,
             max_recursive_render_depth: default_dataview_max_recursive_render_depth(),
             primary_column_name: default_dataview_primary_column_name(),
             group_column_name: default_dataview_group_column_name(),
@@ -1142,6 +1145,7 @@ struct PartialDataviewConfig {
     display_result_count: Option<bool>,
     default_date_format: Option<String>,
     default_datetime_format: Option<String>,
+    timezone: Option<String>,
     max_recursive_render_depth: Option<usize>,
     primary_column_name: Option<String>,
     group_column_name: Option<String>,
@@ -1233,6 +1237,8 @@ struct ObsidianDataviewConfig {
     default_date_format: Option<String>,
     #[serde(rename = "defaultDateTimeFormat")]
     default_datetime_format: Option<String>,
+    #[serde(rename = "timezone")]
+    timezone: Option<String>,
     #[serde(rename = "maxRecursiveRenderDepth")]
     max_recursive_render_depth: Option<usize>,
     #[serde(rename = "primaryColumnName", alias = "tableIdColumnName")]
@@ -2800,6 +2806,9 @@ fn apply_obsidian_dataview_defaults(config: &mut VaultConfig, obsidian: Obsidian
     if let Some(format) = obsidian.default_datetime_format {
         config.dataview.default_datetime_format = format;
     }
+    if let Some(timezone) = obsidian.timezone {
+        config.dataview.timezone = Some(timezone);
+    }
     if let Some(depth) = obsidian.max_recursive_render_depth {
         config.dataview.max_recursive_render_depth = depth;
     }
@@ -3270,6 +3279,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(format) = dataview.default_datetime_format {
             config.dataview.default_datetime_format = format;
         }
+        if let Some(timezone) = dataview.timezone {
+            config.dataview.timezone = Some(timezone);
+        }
         if let Some(depth) = dataview.max_recursive_render_depth {
             config.dataview.max_recursive_render_depth = depth;
         }
@@ -3692,6 +3704,7 @@ mod tests {
               "showResultCount": false,
               "defaultDateFormat": "yyyy-MM-dd",
               "defaultDateTimeFormat": "yyyy-MM-dd HH:mm",
+              "timezone": "+02:00",
               "maxRecursiveRenderDepth": 7,
               "tableIdColumnName": "Document",
               "tableGroupColumnName": "Bucket"
@@ -3811,6 +3824,7 @@ mod tests {
             loaded.config.dataview.default_datetime_format,
             "yyyy-MM-dd HH:mm"
         );
+        assert_eq!(loaded.config.dataview.timezone.as_deref(), Some("+02:00"));
         assert_eq!(loaded.config.dataview.max_recursive_render_depth, 7);
         assert_eq!(loaded.config.dataview.primary_column_name, "Document");
         assert_eq!(loaded.config.dataview.group_column_name, "Bucket");
@@ -4142,6 +4156,7 @@ recursive_subtask_completion = true
 display_result_count = false
 default_date_format = "yyyy-MM-dd"
 default_datetime_format = "yyyy-MM-dd HH:mm"
+timezone = "+02:00"
 max_recursive_render_depth = 8
 primary_column_name = "Document"
 group_column_name = "Bucket"
@@ -4338,6 +4353,7 @@ time_format = "HH:mm:ss"
             loaded.config.dataview.default_datetime_format,
             "yyyy-MM-dd HH:mm"
         );
+        assert_eq!(loaded.config.dataview.timezone.as_deref(), Some("+02:00"));
         assert_eq!(loaded.config.dataview.max_recursive_render_depth, 8);
         assert_eq!(loaded.config.dataview.primary_column_name, "Document");
         assert_eq!(loaded.config.dataview.group_column_name, "Bucket");

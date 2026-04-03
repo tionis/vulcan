@@ -2234,6 +2234,7 @@ dependencies = [
  "csv",
  "fs2",
  "ignore",
+ "libc",
  "notify",
  "pulldown-cmark",
  "rayon",

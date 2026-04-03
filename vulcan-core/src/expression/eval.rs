@@ -6,6 +6,7 @@ use crate::expression::ast::{BinOp, Expr, UnOp};
 use crate::expression::functions::call_function;
 use crate::expression::functions::{date_field_value, parse_date_like_string, parse_wikilink};
 use crate::expression::methods::call_method;
+use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::FileMetadataResolver;
 use crate::properties::NoteRecord;
 
@@ -14,6 +15,7 @@ pub struct EvalContext<'a> {
     pub note: &'a NoteRecord,
     pub formulas: &'a BTreeMap<String, Value>,
     pub now_ms: i64,
+    pub time_zone: DataviewTimeZone,
     /// Scoped variables for list.filter/map/reduce callbacks.
     pub locals: BTreeMap<String, Value>,
     /// Vault-wide note index keyed by `file_name` (basename without extension).
@@ -28,6 +30,7 @@ impl<'a> EvalContext<'a> {
             note,
             formulas,
             now_ms: now_millis(),
+            time_zone: DataviewTimeZone::default(),
             locals: BTreeMap::new(),
             note_lookup: None,
         }
@@ -36,6 +39,12 @@ impl<'a> EvalContext<'a> {
     #[must_use]
     pub fn with_note_lookup(mut self, lookup: &'a HashMap<String, NoteRecord>) -> Self {
         self.note_lookup = Some(lookup);
+        self
+    }
+
+    #[must_use]
+    pub fn with_time_zone(mut self, time_zone: DataviewTimeZone) -> Self {
+        self.time_zone = time_zone;
         self
     }
 }
@@ -480,7 +489,7 @@ fn canonical_date_field_name(field: &str) -> String {
     }
 }
 
-fn canonical_file_field_name(field: &str) -> String {
+pub(crate) fn canonical_file_field_name(field: &str) -> String {
     match normalize_field_name(field).as_str() {
         "base-name" => "basename".to_string(),
         "c-day" => "cday".to_string(),
@@ -494,7 +503,7 @@ fn canonical_file_field_name(field: &str) -> String {
     }
 }
 
-fn normalize_field_name(field: &str) -> String {
+pub(crate) fn normalize_field_name(field: &str) -> String {
     let stripped = strip_field_formatting(field);
     let mut normalized = String::new();
     let mut last_was_hyphen = false;
@@ -888,6 +897,7 @@ fn now_millis() -> i64 {
 mod tests {
     use super::*;
     use crate::expression::parse::Parser;
+    use crate::expression::value::DataviewTimeZone;
     use serde_json::json;
 
     fn eval(input: &str) -> Value {
@@ -929,6 +939,46 @@ mod tests {
         let formulas = BTreeMap::new();
         let mut ctx = EvalContext::new(&note, &formulas);
         ctx.now_ms = now_ms;
+        ctx.time_zone = DataviewTimeZone::FixedOffsetMinutes(0);
+        evaluate(&expr, &ctx).unwrap()
+    }
+
+    fn eval_with_now_and_time_zone(input: &str, now_ms: i64, time_zone: DataviewTimeZone) -> Value {
+        let expr = Parser::new(input).unwrap().parse().unwrap();
+        let note = NoteRecord {
+            document_id: "note-id".to_string(),
+            document_path: "folder/note.md".to_string(),
+            file_name: "note".to_string(),
+            file_ext: "md".to_string(),
+            file_mtime: 1_700_000_000,
+            file_ctime: 1_600_000_000,
+            file_size: 1234,
+            properties: serde_json::json!({
+                "status": "done",
+                "count": 42,
+                "tags": ["a", "b"],
+                "due": "2026-04",
+                "due date": "2026-04",
+                "estimate": "1d 3h",
+                "author": "[[alice]]",
+                "Mixed CASE": "loud",
+                "snake_case": "yes"
+            }),
+            tags: vec!["#tag1".to_string(), "#tag2/nested".to_string()],
+            links: vec!["other.md".to_string()],
+            starred: false,
+            inlinks: vec!["[[home]]".to_string()],
+            aliases: vec!["Note Alias".to_string()],
+            frontmatter: serde_json::json!({"Date": "2026-04-18", "status": "done"}),
+            list_items: vec![],
+            tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
+        };
+        let formulas = BTreeMap::new();
+        let mut ctx = EvalContext::new(&note, &formulas);
+        ctx.now_ms = now_ms;
+        ctx.time_zone = time_zone;
         evaluate(&expr, &ctx).unwrap()
     }
 
@@ -1144,6 +1194,31 @@ mod tests {
         assert_eq!(
             eval_with_now("date(eoy)", now_ms),
             serde_json::json!(parse_date_string("2026-12-31").unwrap())
+        );
+    }
+
+    #[test]
+    fn eval_date_shortcuts_and_localtime_use_configured_timezone() {
+        use crate::expression::functions::parse_date_string;
+
+        let now_ms = parse_date_string("2026-04-17T22:30:00Z").unwrap();
+        let tz = DataviewTimeZone::FixedOffsetMinutes(120);
+
+        assert_eq!(
+            eval_with_now_and_time_zone("date(now)", now_ms, tz),
+            serde_json::json!(parse_date_string("2026-04-18T00:30:00").unwrap())
+        );
+        assert_eq!(
+            eval_with_now_and_time_zone("date(today)", now_ms, tz),
+            serde_json::json!(parse_date_string("2026-04-18").unwrap())
+        );
+        assert_eq!(
+            eval_with_now_and_time_zone(
+                r#"dateformat(localtime(date("2026-04-17T22:00:00Z")), "yyyy-MM-dd HH:mm")"#,
+                now_ms,
+                tz
+            ),
+            Value::String("2026-04-18 00:00".to_string())
         );
     }
 

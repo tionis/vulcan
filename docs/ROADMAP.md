@@ -1212,7 +1212,7 @@ Implement the full `file.*` implicit metadata namespace that Dataview exposes on
 Extend the expression evaluator to support Dataview's full type system and expression language. This is the foundation for DQL evaluation and inline expressions.
 
 **Type system:**
-- [ ] Extend the value representation to support all 8 Dataview types: Text, Number, Boolean, Date, Duration, Link, List, Object
+- [x] Extend the value representation to support all 8 Dataview types: Text, Number, Boolean, Date, Duration, Link, List, Object
 - [x] Date type with sub-field access: `.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`, `.millisecond`, `.weekday`, `.week`, `.weekyear`
 - [x] Date literal shortcuts: `date(today)`, `date(now)`, `date(tomorrow)`, `date(yesterday)`, `date(sow)`, `date(eow)`, `date(som)`, `date(eom)`, `date(soy)`, `date(eoy)`
 - [x] Duration type with compound units: `dur(1d 3h 20m)`, individual unit abbreviations (`s`, `m`, `h`, `d`, `w`, `mo`, `yr`)
@@ -1220,7 +1220,7 @@ Extend the expression evaluator to support Dataview's full type system and expre
 - [x] Type coercion: Date - Date → Duration, Date ± Duration → Date, Duration + Duration → Duration, String + Number → String (concatenation), String * Number → String (repeat)
 - [x] Null ordering: `null` is less than all non-null values; `null` first in ascending sort, last in descending; `null` propagates through most arithmetic/function calls
 - [x] GROUP BY null handling: rows with `null` group key form a separate group with `key = null`
-- [ ] Date timezone semantics: `date(today)`, `date(now)`, etc. use system local timezone; `localtime(date)` converts UTC to local; timezone override configurable via `.vulcan/config.toml`
+- [x] Date timezone semantics: `date(today)`, `date(now)`, etc. use system local timezone; `localtime(date)` converts UTC to local; timezone override configurable via `.vulcan/config.toml`
 - [x] `typeof(value)` introspection returning type name strings
 
 **Expression language extensions:**
@@ -1284,13 +1284,13 @@ Implement a parser for Dataview Query Language (DQL) that compiles to Vulcan's i
   - [x] LIMIT clause: integer cap on result count
   - [x] TABLE column expressions: arbitrary expressions evaluated per note (reuse extended expression evaluator)
   - [x] LIST display expression: optional per-note expression
-- [ ] Compile FROM clauses to source/filter primitives (tag → `tags` table filter, folder → `documents.path` prefix, links → `links` table join, outgoing → forward `links` join)
-- [ ] Compile WHERE expressions to `FilterExpression` structs (shared with Bases and `--where` CLI flag)
+- [x] Compile FROM clauses to source/filter primitives (tag → `tags` table filter, folder → `documents.path` prefix, links → `links` table join, outgoing → forward `links` join)
+- [x] Compile WHERE expressions to `FilterExpression` structs (shared with Bases and `--where` CLI flag)
 - [x] Data commands executed in source order (except FROM which is always first); multiple WHERE, SORT, FLATTEN, GROUP BY clauses allowed and composed sequentially
 - [x] Computed GROUP BY: `GROUP BY (expr) AS name` with arbitrary expression
 - [x] Computed FLATTEN: `FLATTEN (expr) AS name` assigns flattened result to a new field; if expression returns non-array, treat as single-element array
 - [x] Multiple blocks per note: a note can contain multiple `` ```dataview `` blocks; `--block <n>` selects by 0-based index, default evaluates all
-- [ ] Error recovery: malformed DQL produces diagnostics, not panics
+- [x] Error recovery: malformed DQL produces diagnostics, not panics
 - [x] Unit tests: parse each clause type, boolean FROM combinations, nested WHERE expressions, lambda expressions, link indexing, `WITHOUT ID`, `AS` aliases, computed GROUP BY/FLATTEN, multiple data commands, malformed input
 - [x] Integration test: round-trip DQL parse → AST → evaluation against a test vault
 
