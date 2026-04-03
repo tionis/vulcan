@@ -157,6 +157,7 @@ const BASES_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   eval         evaluate a .base file and print its current rows
   tui          inspect a .base file interactively
+  create       create a note that matches the first Bases view context
   view-add     add a validated view definition
   view-delete  remove a view definition
   view-rename  rename a view
@@ -165,9 +166,11 @@ Subcommands:
 Notes:
   view-* commands rewrite the parsed .base model instead of patching YAML text blindly.
   Mutating bases commands support --dry-run and --no-commit.
+  `create` derives folder and equality frontmatter from the first view; the TUI `n` hotkey uses the current view.
 
 Examples:
   vulcan bases eval release.base
+  vulcan bases create release.base --title \"Launch Plan\"
   vulcan bases tui release.base
   vulcan bases view-add release.base Inbox --filter 'status = idea' --column file.name";
 
@@ -426,6 +429,17 @@ pub enum BasesCommand {
         file: String,
         #[command(flatten)]
         export: ExportArgs,
+    },
+    #[command(about = "Create a note from the first Bases view context")]
+    Create {
+        #[arg(help = "Vault-relative path to the .base file")]
+        file: String,
+        #[arg(long, help = "Optional note title; defaults to Untitled")]
+        title: Option<String>,
+        #[arg(long, help = "Preview the derived path, properties, and template")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Open an interactive TUI for a .base file")]
     Tui {

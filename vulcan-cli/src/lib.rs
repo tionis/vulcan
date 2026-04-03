@@ -46,16 +46,17 @@ use vulcan_core::{
     index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
     link_mentions, list_checkpoints, list_kanban_boards, list_saved_reports, list_vector_models,
     load_dataview_blocks, load_kanban_board, load_saved_report, load_tasks_blocks,
-    load_vault_config, merge_tags, move_kanban_card, move_note, parse_tasks_query, query_backlinks,
-    query_change_report, query_graph_analytics, query_graph_components, query_graph_dead_ends,
-    query_graph_hubs, query_graph_moc_candidates, query_graph_path, query_graph_trends,
-    query_links, query_notes, query_related_notes, query_vector_neighbors,
-    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
-    resolve_note_reference, save_saved_report, scan_vault_with_progress, search_vault,
-    suggest_duplicates, suggest_mentions, task_upcoming_occurrences, vector_duplicates,
-    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BaseViewGroupBy,
-    BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
+    load_vault_config, merge_tags, move_kanban_card, move_note, parse_tasks_query,
+    plan_base_note_create, query_backlinks, query_change_report, query_graph_analytics,
+    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
+    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
+    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
+    repair_vectors_with_progress, resolve_note_reference, save_saved_report,
+    scan_vault_with_progress, search_vault, suggest_duplicates, suggest_mentions,
+    task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec,
+    BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
     CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
     ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
     DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
@@ -713,6 +714,19 @@ struct TemplateInsertReport {
     note: String,
     mode: String,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct BasesCreateReport {
+    pub(crate) file: String,
+    pub(crate) view_name: Option<String>,
+    pub(crate) view_index: usize,
+    pub(crate) dry_run: bool,
+    pub(crate) path: String,
+    pub(crate) folder: Option<String>,
+    pub(crate) template: Option<String>,
+    pub(crate) properties: BTreeMap<String, Value>,
+    pub(crate) filters: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2027,6 +2041,138 @@ fn run_template_insert_command(
         mode: mode.as_str().to_string(),
         warnings: template.warning.into_iter().collect(),
     })
+}
+
+pub(crate) fn create_note_from_bases_view(
+    paths: &VaultPaths,
+    file: &str,
+    view_index: usize,
+    title: Option<&str>,
+    dry_run: bool,
+) -> Result<BasesCreateReport, CliError> {
+    let context = plan_base_note_create(paths, file, view_index).map_err(CliError::operation)?;
+    let path = allocate_bases_note_path(paths, &context, title)?;
+    let contents = render_bases_note_contents(paths, &context, &path)?;
+
+    if !dry_run {
+        let absolute = paths.vault_root().join(&path);
+        if let Some(parent) = absolute.parent() {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
+        }
+        fs::write(&absolute, contents).map_err(CliError::operation)?;
+    }
+
+    Ok(BasesCreateReport {
+        file: context.file,
+        view_name: context.view_name,
+        view_index: context.view_index,
+        dry_run,
+        path,
+        folder: context.folder,
+        template: context.template,
+        properties: context.properties,
+        filters: context.filters,
+    })
+}
+
+fn allocate_bases_note_path(
+    paths: &VaultPaths,
+    context: &BasesCreateContext,
+    title: Option<&str>,
+) -> Result<String, CliError> {
+    let stem = sanitize_new_note_title(title.unwrap_or("Untitled"));
+    let folder_prefix = context
+        .folder
+        .as_deref()
+        .filter(|folder| !folder.is_empty())
+        .map_or_else(String::new, |folder| format!("{folder}/"));
+
+    for index in 0.. {
+        let suffix = if index == 0 {
+            String::new()
+        } else {
+            format!(" {}", index + 1)
+        };
+        let candidate = format!("{folder_prefix}{stem}{suffix}.md");
+        let normalized = normalize_relative_input_path(
+            &candidate,
+            RelativePathOptions {
+                expected_extension: Some("md"),
+                append_extension_if_missing: false,
+            },
+        )
+        .map_err(CliError::operation)?;
+        if !paths.vault_root().join(&normalized).exists() {
+            return Ok(normalized);
+        }
+    }
+
+    Err(CliError::operation("failed to allocate a note path"))
+}
+
+fn sanitize_new_note_title(title: &str) -> String {
+    let trimmed = title.trim();
+    let trimmed = trimmed.strip_suffix(".md").unwrap_or(trimmed);
+    let sanitized = trimmed
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            _ if character.is_control() => '-',
+            _ => character,
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim().trim_matches('.').to_string();
+    if sanitized.is_empty() {
+        "Untitled".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn render_bases_note_contents(
+    paths: &VaultPaths,
+    context: &BasesCreateContext,
+    relative_path: &str,
+) -> Result<String, CliError> {
+    let config = load_vault_config(paths).config;
+    let rendered_template = if let Some(template_name) = context.template.as_deref() {
+        let templates = discover_templates(
+            paths,
+            config.templates.obsidian_folder.as_deref(),
+            config.templates.templater_folder.as_deref(),
+        )?;
+        let template = resolve_template_file(paths, &templates.templates, template_name)?;
+        render_template_contents(
+            &fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?,
+            &template_variables_for_path(relative_path, TemplateTimestamp::current()),
+            &config.templates,
+        )
+    } else {
+        String::new()
+    };
+    let (template_frontmatter, template_body) =
+        parse_frontmatter_document(&rendered_template, true).map_err(CliError::operation)?;
+    let derived_frontmatter = build_bases_create_frontmatter(&context.properties)?;
+    let merged_frontmatter = merge_template_frontmatter(derived_frontmatter, template_frontmatter);
+
+    render_note_from_parts(merged_frontmatter.as_ref(), &template_body).map_err(CliError::operation)
+}
+
+fn build_bases_create_frontmatter(
+    properties: &BTreeMap<String, Value>,
+) -> Result<Option<YamlMapping>, CliError> {
+    if properties.is_empty() {
+        return Ok(None);
+    }
+
+    let mut mapping = YamlMapping::new();
+    for (key, value) in properties {
+        mapping.insert(
+            YamlValue::String(key.clone()),
+            serde_yaml::to_value(value).map_err(CliError::operation)?,
+        );
+    }
+    Ok(Some(mapping))
 }
 
 enum TemplateCommandResult {
@@ -3448,6 +3594,24 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     export.as_ref(),
                 )?;
                 Ok(())
+            }
+            BasesCommand::Create {
+                ref file,
+                ref title,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report =
+                    create_note_from_bases_view(&paths, file, 0, title.as_deref(), *dry_run)?;
+                if !dry_run {
+                    run_incremental_scan(&paths, cli.output, use_stderr_color)?;
+                    auto_commit
+                        .commit(&paths, "bases-create", std::slice::from_ref(&report.path))
+                        .map_err(CliError::operation)?;
+                }
+                print_bases_create_report(cli.output, &report)
             }
             BasesCommand::Tui { file } => {
                 let report = evaluate_base_file(&paths, file).map_err(CliError::operation)?;
@@ -5704,6 +5868,47 @@ fn print_bases_view_edit_report(
                 let path = diag.path.as_deref().unwrap_or("(root)");
                 println!("  warning [{path}]: {}", diag.message);
             }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_bases_create_report(
+    output: OutputFormat,
+    report: &BasesCreateReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!("Would create {} from {}.", report.path, report.file);
+            } else {
+                println!("Created {} from {}.", report.path, report.file);
+            }
+
+            let view = report
+                .view_name
+                .as_deref()
+                .map_or_else(|| format!("#{}", report.view_index + 1), ToOwned::to_owned);
+            println!("View: {view}");
+            println!(
+                "Folder: {}",
+                report.folder.as_deref().unwrap_or("<vault root>")
+            );
+            println!(
+                "Template: {}",
+                report.template.as_deref().unwrap_or("<none>")
+            );
+
+            if report.properties.is_empty() {
+                println!("Properties: <none>");
+            } else {
+                println!("Properties:");
+                for (key, value) in &report.properties {
+                    println!("  {key}: {}", render_human_value(value));
+                }
+            }
+
             Ok(())
         }
         OutputFormat::Json => print_json(report),
@@ -9295,6 +9500,128 @@ mod tests {
         );
     }
 
+    fn write_bases_create_fixture(vault_root: &Path, with_template: bool) {
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        if with_template {
+            fs::create_dir_all(vault_root.join(".vulcan/templates"))
+                .expect("template dir should exist");
+            fs::write(
+                vault_root.join(".vulcan/templates/Project.md"),
+                concat!(
+                    "---\n",
+                    "owner: Template Owner\n",
+                    "tags:\n",
+                    "  - base\n",
+                    "---\n",
+                    "# {{title}}\n\n",
+                    "Template body.\n",
+                ),
+            )
+            .expect("template should be written");
+        }
+        fs::write(
+            vault_root.join("release.base"),
+            if with_template {
+                concat!(
+                    "create_template: Project\n",
+                    "filters:\n",
+                    "  - 'file.folder = \"Projects\"'\n",
+                    "views:\n",
+                    "  - name: Inbox\n",
+                    "    type: table\n",
+                    "    filters:\n",
+                    "      - 'status = todo'\n",
+                    "      - 'priority = 2'\n",
+                )
+            } else {
+                concat!(
+                    "filters:\n",
+                    "  - 'file.folder = \"Projects\"'\n",
+                    "views:\n",
+                    "  - name: Inbox\n",
+                    "    type: table\n",
+                    "    filters:\n",
+                    "      - 'status = todo'\n",
+                )
+            },
+        )
+        .expect("base file should be written");
+    }
+
+    #[test]
+    fn bases_create_dry_run_does_not_write_note() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        write_bases_create_fixture(temp_dir.path(), false);
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let report = create_note_from_bases_view(&paths, "release.base", 0, None, true)
+            .expect("bases create should succeed");
+
+        assert_eq!(report.path, "Projects/Untitled.md");
+        assert!(!temp_dir.path().join("Projects/Untitled.md").exists());
+    }
+
+    #[test]
+    fn bases_create_writes_template_with_derived_frontmatter() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        write_bases_create_fixture(temp_dir.path(), true);
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let report =
+            create_note_from_bases_view(&paths, "release.base", 0, Some("Launch Plan"), false)
+                .expect("bases create should succeed");
+
+        assert_eq!(report.path, "Projects/Launch Plan.md");
+        let source = fs::read_to_string(temp_dir.path().join(&report.path))
+            .expect("created note should be readable");
+        let (frontmatter, body) =
+            parse_frontmatter_document(&source, false).expect("created note should parse");
+        let frontmatter = YamlValue::Mapping(frontmatter.expect("frontmatter should exist"));
+
+        assert_eq!(frontmatter["status"], YamlValue::String("todo".to_string()));
+        assert_eq!(frontmatter["priority"], YamlValue::Number(2_i64.into()));
+        assert_eq!(
+            frontmatter["owner"],
+            YamlValue::String("Template Owner".to_string())
+        );
+        assert_eq!(
+            frontmatter["tags"],
+            serde_yaml::from_str::<YamlValue>("- base\n").expect("tag yaml should parse")
+        );
+        assert!(body.contains("# Launch Plan"));
+        assert!(body.contains("Template body."));
+    }
+
+    #[test]
+    fn bases_create_auto_commit_creates_git_commit() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        write_bases_create_fixture(temp_dir.path(), false);
+        fs::write(
+            temp_dir.path().join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .expect("config should be written");
+
+        run_from([
+            "vulcan",
+            "--vault",
+            temp_dir.path().to_str().expect("temp dir should be utf8"),
+            "bases",
+            "create",
+            "release.base",
+            "--title",
+            "Launch Plan",
+        ])
+        .expect("bases create should succeed");
+
+        assert!(temp_dir.path().join("Projects/Launch Plan.md").exists());
+        assert_eq!(
+            git_head_summary(temp_dir.path()),
+            "vulcan bases-create: Projects/Launch Plan.md"
+        );
+    }
+
     #[test]
     fn diff_command_uses_git_head_for_modified_note() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -9806,6 +10133,16 @@ mod tests {
         .expect("cli should parse");
         let bases = Cli::try_parse_from(["vulcan", "bases", "eval", "release.base"])
             .expect("cli should parse");
+        let bases_create = Cli::try_parse_from([
+            "vulcan",
+            "bases",
+            "create",
+            "release.base",
+            "--title",
+            "Launch Plan",
+            "--dry-run",
+        ])
+        .expect("cli should parse");
         let bases_tui = Cli::try_parse_from(["vulcan", "bases", "tui", "release.base"])
             .expect("cli should parse");
         let suggest_mentions = Cli::try_parse_from(["vulcan", "suggest", "mentions", "Home"])
@@ -10061,6 +10398,17 @@ mod tests {
                 command: BasesCommand::Eval {
                     file: "release.base".to_string(),
                     export: ExportArgs::default(),
+                },
+            }
+        );
+        assert_eq!(
+            bases_create.command,
+            Command::Bases {
+                command: BasesCommand::Create {
+                    file: "release.base".to_string(),
+                    title: Some("Launch Plan".to_string()),
+                    dry_run: true,
+                    no_commit: false,
                 },
             }
         );

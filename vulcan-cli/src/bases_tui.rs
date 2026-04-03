@@ -1,3 +1,4 @@
+use crate::create_note_from_bases_view;
 use crate::editor::{open_in_editor, with_terminal_suspended};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::execute;
@@ -64,6 +65,36 @@ fn run_event_loop(
             match state.handle_key(key) {
                 TuiAction::Continue => {}
                 TuiAction::Quit => break,
+                TuiAction::CreateNote => {
+                    let paths = state.paths.clone();
+                    let base_file = state.base_file.clone();
+                    let view_index = state.active_view;
+                    let mut created_path = None;
+                    let create_result = with_terminal_suspended(terminal, || {
+                        let report = create_note_from_bases_view(
+                            &paths, &base_file, view_index, None, false,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        created_path = Some(report.path.clone());
+                        let absolute = paths.vault_root().join(&report.path);
+                        open_in_editor(&absolute)?;
+                        scan_vault(&paths, ScanMode::Incremental)
+                            .map_err(|error| error.to_string())?;
+                        Ok(())
+                    });
+                    match create_result {
+                        Ok(()) => {
+                            if let Err(error) = state.reload_report() {
+                                state.set_status(error);
+                            } else {
+                                let created_path =
+                                    created_path.unwrap_or_else(|| "new note".to_string());
+                                state.set_status(format!("Created {created_path}."));
+                            }
+                        }
+                        Err(error) => state.set_status(error.to_string()),
+                    }
+                }
                 TuiAction::OpenBaseEditor => {
                     let path = state.paths.vault_root().join(&state.base_file);
                     let edit_result = with_terminal_suspended(terminal, || open_in_editor(&path));
@@ -327,7 +358,8 @@ fn draw_status(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
             }
         )),
         Line::from("Keys: q quit, / filter, g group, d diagnostics, Enter preview"),
-        Line::from("      e edit property, o edit note, b edit .base, tab next view"),
+        Line::from("      e edit property, n create note, o edit note, b edit .base"),
+        Line::from("      tab next view"),
     ];
     if let Some(message) = state.status_message.as_deref() {
         lines.push(Line::from(message.to_string()));
@@ -347,7 +379,7 @@ fn draw_status(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
 fn draw_preview_status(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
     let mut lines = vec![
         Line::from("Preview keys: Esc close, j/k scroll, PgUp/PgDn page"),
-        Line::from("              e edit property, o edit note, b edit .base"),
+        Line::from("              e edit property, n create note, o edit note, b edit .base"),
     ];
     if let Some(message) = state.status_message.as_deref() {
         lines.push(Line::from(message.to_string()));
@@ -419,6 +451,7 @@ enum InputMode {
 enum TuiAction {
     Continue,
     Quit,
+    CreateNote,
     OpenSelectedNoteEditor(String),
     OpenBaseEditor,
 }
@@ -579,6 +612,14 @@ impl BasesTuiState {
                 }
                 TuiAction::Continue
             }
+            KeyCode::Char('n') => {
+                if self.active_view().is_some() {
+                    TuiAction::CreateNote
+                } else {
+                    self.set_status("No active view to create from.");
+                    TuiAction::Continue
+                }
+            }
             KeyCode::Char('o') => self.selected_row_path().map_or_else(
                 || {
                     self.set_status("No selected note to edit.");
@@ -608,6 +649,7 @@ impl BasesTuiState {
                     self.set_status("No selected row to edit.");
                 }
             }
+            KeyCode::Char('n') => return TuiAction::CreateNote,
             KeyCode::Char('o') => {
                 return self.selected_row_path().map_or_else(
                     || {
@@ -1188,5 +1230,14 @@ mod tests {
             ("status".to_string(), None)
         );
         assert!(parse_property_edit_input("=").is_err());
+    }
+
+    #[test]
+    fn n_hotkey_creates_note_from_active_view() {
+        let mut state = sample_state();
+
+        let action = state.handle_key(KeyEvent::from(KeyCode::Char('n')));
+
+        assert_eq!(action, TuiAction::CreateNote);
     }
 }
