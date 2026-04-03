@@ -173,6 +173,7 @@ Shared behavior:
 - `vulcan daily today [--no-edit] [--no-commit]`: open or create today's daily note.
 - `vulcan daily show [date]`: print one daily note's contents. Defaults to today.
 - `vulcan daily list [--from <date>] [--to <date>] [--week] [--month]`: list daily notes and extracted schedule events across a date window.
+- `vulcan daily export-ics [--from <date>] [--to <date>] [--week] [--month] [--path <file.ics>] [--calendar-name <name>]`: export extracted daily-note events as an ICS calendar. Without `--path`, the calendar is written to stdout.
 - `vulcan daily append <text> [--heading <heading>] [--date <date>] [--no-commit]`: append text to one daily note, creating it first when needed.
 - `vulcan weekly [date] [--no-edit] [--no-commit]`: open or create the weekly note containing the given date.
 - `vulcan monthly [date] [--no-edit] [--no-commit]`: open or create the monthly note containing the given date.
@@ -183,7 +184,9 @@ Shared behavior:
 Behavior:
 
 - Periodic note defaults come from `[periodic.*]` in `.vulcan/config.toml`.
+- Custom period types use the same config map: define `[periodic.<name>]` with `unit = "days|weeks|months|quarters|years"`, `interval = <n>`, and an optional `anchor_date = "YYYY-MM-DD"` to align the cycle.
 - `daily list` uses the configured weekly start when `--week` is selected and includes parsed schedule events from the `events` cache table.
+- `daily export-ics` uses the same cached events and emits a one-way RFC 5545 calendar export.
 - Periodic note creation uses the configured periodic template name when it resolves successfully; otherwise Vulcan creates a blank note and reports the template warning.
 - These commands participate in auto-commit when they mutate note files and vault git auto-commit is enabled.
 

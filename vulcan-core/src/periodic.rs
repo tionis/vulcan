@@ -1,11 +1,95 @@
 use crate::config::{PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicStartOfWeek};
-use std::fmt::Write as _;
+use crate::{CacheDatabase, VaultPaths};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::fmt::{Display, Formatter, Write as _};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeriodicNoteMatch {
     pub period_type: String,
     pub start_date: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeriodicEvent {
+    pub start_time: String,
+    pub end_time: Option<String>,
+    pub title: String,
+    pub metadata: Value,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DailyNoteEvents {
+    pub date: String,
+    pub path: String,
+    pub events: Vec<PeriodicEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeriodicEventOccurrence {
+    pub date: String,
+    pub path: String,
+    pub start_time: String,
+    pub end_time: Option<String>,
+    pub title: String,
+    pub metadata: Value,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeriodicIcsExport {
+    pub calendar_name: String,
+    pub note_count: usize,
+    pub event_count: usize,
+    pub content: String,
+}
+
+#[derive(Debug)]
+pub enum PeriodicError {
+    Cache(crate::CacheError),
+    Json(serde_json::Error),
+    Sqlite(rusqlite::Error),
+}
+
+impl Display for PeriodicError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cache(error) => write!(formatter, "{error}"),
+            Self::Json(error) => write!(formatter, "{error}"),
+            Self::Sqlite(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for PeriodicError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Cache(error) => Some(error),
+            Self::Json(error) => Some(error),
+            Self::Sqlite(error) => Some(error),
+        }
+    }
+}
+
+impl From<crate::CacheError> for PeriodicError {
+    fn from(error: crate::CacheError) -> Self {
+        Self::Cache(error)
+    }
+}
+
+impl From<rusqlite::Error> for PeriodicError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error)
+    }
+}
+
+impl From<serde_json::Error> for PeriodicError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +240,345 @@ pub fn today_utc_string() -> String {
         .try_into()
         .unwrap_or(i64::MAX);
     civil_from_days(seconds.div_euclid(86_400)).iso_string()
+}
+
+pub fn load_events_for_periodic_note(
+    paths: &VaultPaths,
+    relative_path: &str,
+) -> Result<Vec<PeriodicEvent>, PeriodicError> {
+    let database = CacheDatabase::open(paths)?;
+    let mut statement = database.connection().prepare(
+        "
+        SELECT events.start_time, events.end_time, events.title, events.metadata_json, events.tags_json
+        FROM events
+        JOIN documents ON documents.id = events.document_id
+        WHERE documents.path = ?1
+        ORDER BY
+            CASE WHEN events.start_time = 'all-day' THEN 0 ELSE 1 END,
+            events.start_time,
+            events.byte_offset
+        ",
+    )?;
+    let rows = statement.query_map([relative_path], deserialize_periodic_event_row)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(PeriodicError::from)
+}
+
+pub fn list_daily_note_events(
+    paths: &VaultPaths,
+    start: &str,
+    end: &str,
+) -> Result<Vec<DailyNoteEvents>, PeriodicError> {
+    let database = CacheDatabase::open(paths)?;
+    let mut statement = database.connection().prepare(
+        "
+        SELECT
+            documents.periodic_date,
+            documents.path,
+            events.start_time,
+            events.end_time,
+            events.title,
+            events.metadata_json,
+            events.tags_json
+        FROM documents
+        LEFT JOIN events ON events.document_id = documents.id
+        WHERE documents.periodic_type = 'daily'
+          AND documents.periodic_date >= ?1
+          AND documents.periodic_date <= ?2
+        ORDER BY
+            documents.periodic_date,
+            documents.path,
+            CASE WHEN events.start_time = 'all-day' THEN 0 ELSE 1 END,
+            events.start_time,
+            events.byte_offset
+        ",
+    )?;
+    let rows = statement.query_map([start, end], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+        ))
+    })?;
+
+    let mut items = Vec::<DailyNoteEvents>::new();
+    for row in rows {
+        let (date, path, start_time, end_time, title, metadata_json, tags_json) = row?;
+        let needs_new_item = items
+            .last()
+            .map_or(true, |item| item.date != date || item.path != path);
+        if needs_new_item {
+            items.push(DailyNoteEvents {
+                date: date.clone(),
+                path: path.clone(),
+                events: Vec::new(),
+            });
+        }
+
+        if let Some(start_time) = start_time {
+            let event = PeriodicEvent {
+                start_time,
+                end_time,
+                title: title.unwrap_or_default(),
+                metadata: deserialize_metadata(metadata_json.as_deref())?,
+                tags: deserialize_tags(tags_json.as_deref())?,
+            };
+            if let Some(item) = items.last_mut() {
+                item.events.push(event);
+            }
+        }
+    }
+
+    Ok(items)
+}
+
+pub fn list_events_between(
+    paths: &VaultPaths,
+    start: &str,
+    end: &str,
+) -> Result<Vec<PeriodicEventOccurrence>, PeriodicError> {
+    let daily_notes = list_daily_note_events(paths, start, end)?;
+    Ok(daily_notes
+        .into_iter()
+        .flat_map(|note| {
+            let date = note.date;
+            let path = note.path;
+            note.events
+                .into_iter()
+                .map(move |event| PeriodicEventOccurrence {
+                    date: date.clone(),
+                    path: path.clone(),
+                    start_time: event.start_time,
+                    end_time: event.end_time,
+                    title: event.title,
+                    metadata: event.metadata,
+                    tags: event.tags,
+                })
+        })
+        .collect())
+}
+
+pub fn export_daily_events_to_ics(
+    paths: &VaultPaths,
+    start: &str,
+    end: &str,
+    calendar_name: Option<&str>,
+) -> Result<PeriodicIcsExport, PeriodicError> {
+    let daily_notes = list_daily_note_events(paths, start, end)?;
+    let events = daily_event_occurrences(&daily_notes);
+    let calendar_name = calendar_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Vulcan Daily Events")
+        .to_string();
+    let content = render_ics_calendar(&calendar_name, &events);
+
+    Ok(PeriodicIcsExport {
+        calendar_name,
+        note_count: daily_notes.len(),
+        event_count: events.len(),
+        content,
+    })
+}
+
+fn daily_event_occurrences(daily_notes: &[DailyNoteEvents]) -> Vec<PeriodicEventOccurrence> {
+    daily_notes
+        .iter()
+        .flat_map(|note| {
+            note.events
+                .iter()
+                .cloned()
+                .map(|event| PeriodicEventOccurrence {
+                    date: note.date.clone(),
+                    path: note.path.clone(),
+                    start_time: event.start_time,
+                    end_time: event.end_time,
+                    title: event.title,
+                    metadata: event.metadata,
+                    tags: event.tags,
+                })
+        })
+        .collect()
+}
+
+fn render_ics_calendar(calendar_name: &str, events: &[PeriodicEventOccurrence]) -> String {
+    let dtstamp = current_utc_timestamp();
+    let mut content = String::new();
+    content.push_str("BEGIN:VCALENDAR\r\n");
+    content.push_str("VERSION:2.0\r\n");
+    content.push_str("PRODID:-//Vulcan//Periodic Notes//EN\r\n");
+    content.push_str("CALSCALE:GREGORIAN\r\n");
+    let _ = writeln!(content, "X-WR-CALNAME:{}\r", escape_ics_text(calendar_name));
+    for event in events {
+        write_ics_event(&mut content, event, &dtstamp);
+    }
+    content.push_str("END:VCALENDAR\r\n");
+    content
+}
+
+fn write_ics_event(content: &mut String, event: &PeriodicEventOccurrence, dtstamp: &str) {
+    content.push_str("BEGIN:VEVENT\r\n");
+    let uid_source = format!(
+        "{}|{}|{}|{}|{}",
+        event.path,
+        event.date,
+        event.start_time,
+        event.end_time.as_deref().unwrap_or(""),
+        event.title
+    );
+    let _ = writeln!(
+        content,
+        "UID:{}@vulcan\r",
+        blake3::hash(uid_source.as_bytes()).to_hex()
+    );
+    let _ = writeln!(content, "DTSTAMP:{dtstamp}\r");
+    write_ics_event_times(content, event);
+    let _ = writeln!(content, "SUMMARY:{}\r", escape_ics_text(&event.title));
+    if let Some(location) = event.metadata.get("location").and_then(Value::as_str) {
+        let _ = writeln!(content, "LOCATION:{}\r", escape_ics_text(location));
+    }
+    if !event.tags.is_empty() {
+        let _ = writeln!(
+            content,
+            "CATEGORIES:{}\r",
+            event
+                .tags
+                .iter()
+                .map(|tag| escape_ics_text(tag))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
+    let description = event_description(event);
+    if !description.is_empty() {
+        let _ = writeln!(content, "DESCRIPTION:{}\r", escape_ics_text(&description));
+    }
+    content.push_str("END:VEVENT\r\n");
+}
+
+fn write_ics_event_times(content: &mut String, event: &PeriodicEventOccurrence) {
+    if event.start_time == "all-day" {
+        let _ = writeln!(
+            content,
+            "DTSTART;VALUE=DATE:{}\r",
+            compact_ics_date(&event.date)
+        );
+        let next_day = add_days(
+            parse_iso_date(&event.date).unwrap_or(DateParts {
+                year: 1970,
+                month: 1,
+                day: 1,
+            }),
+            1,
+        );
+        let _ = writeln!(
+            content,
+            "DTEND;VALUE=DATE:{}\r",
+            compact_ics_date(&next_day.iso_string())
+        );
+        return;
+    }
+
+    if let Some(start_at) = compact_ics_datetime(&event.date, &event.start_time) {
+        let _ = writeln!(content, "DTSTART:{start_at}\r");
+        if let Some(end_time) = event.end_time.as_deref() {
+            if let Some(end_at) = compact_ics_datetime(&event.date, end_time) {
+                let _ = writeln!(content, "DTEND:{end_at}\r");
+            }
+        }
+    }
+}
+
+fn deserialize_periodic_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeriodicEvent> {
+    let metadata_json: String = row.get(3)?;
+    let tags_json: String = row.get(4)?;
+    Ok(PeriodicEvent {
+        start_time: row.get(0)?,
+        end_time: row.get(1)?,
+        title: row.get(2)?,
+        metadata: deserialize_metadata(Some(&metadata_json)).map_err(to_sqlite_error)?,
+        tags: deserialize_tags(Some(&tags_json)).map_err(to_sqlite_error)?,
+    })
+}
+
+fn deserialize_metadata(raw: Option<&str>) -> Result<Value, PeriodicError> {
+    raw.filter(|value| !value.is_empty())
+        .map(serde_json::from_str)
+        .transpose()?
+        .map_or(Ok(Value::Null), Ok)
+}
+
+fn deserialize_tags(raw: Option<&str>) -> Result<Vec<String>, PeriodicError> {
+    raw.filter(|value| !value.is_empty())
+        .map(serde_json::from_str)
+        .transpose()?
+        .map_or(Ok(Vec::new()), Ok)
+}
+
+fn to_sqlite_error(error: PeriodicError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+}
+
+fn compact_ics_date(date: &str) -> String {
+    date.replace('-', "")
+}
+
+fn compact_ics_datetime(date: &str, time: &str) -> Option<String> {
+    let (hours, minutes) = time.split_once(':')?;
+    Some(format!(
+        "{}T{}{}00",
+        compact_ics_date(date),
+        hours.trim(),
+        minutes.trim()
+    ))
+}
+
+fn escape_ics_text(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace(';', "\\;")
+        .replace(',', "\\,")
+}
+
+fn event_description(event: &PeriodicEventOccurrence) -> String {
+    let mut lines = vec![format!("Source: {}", event.path)];
+    if !event.tags.is_empty() {
+        lines.push(format!("Tags: {}", event.tags.join(", ")));
+    }
+    if let Some(metadata) = event.metadata.as_object() {
+        for (key, value) in metadata {
+            let rendered = match value {
+                Value::Null => continue,
+                Value::String(text) => text.clone(),
+                _ => value.to_string(),
+            };
+            lines.push(format!("{key}: {rendered}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn current_utc_timestamp() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX);
+    let date = civil_from_days(seconds.div_euclid(86_400));
+    let seconds_of_day = seconds.rem_euclid(86_400);
+    let hour = seconds_of_day.div_euclid(3_600);
+    let minute = seconds_of_day.rem_euclid(3_600).div_euclid(60);
+    let second = seconds_of_day.rem_euclid(60);
+    format!(
+        "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
+        date.year, date.month, date.day, hour, minute, second
+    )
 }
 
 fn normalize_folder(folder: &Path) -> String {
@@ -728,7 +1151,10 @@ fn civil_from_days(days: i64) -> DateParts {
 mod tests {
     use super::*;
     use crate::config::{PeriodicCadenceUnit, PeriodicConfig};
+    use crate::{scan_vault, ScanMode, VaultPaths};
+    use std::fs;
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn daily_paths_render_and_resolve() {
@@ -871,5 +1297,61 @@ mod tests {
                 start_date: "2026-04-01".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn loads_daily_events_and_exports_ics() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[periodic.daily]\nschedule_heading = \"Schedule\"\n",
+        )
+        .expect("config should be written");
+        fs::create_dir_all(vault_root.join("Journal/Daily"))
+            .expect("daily directory should be created");
+        fs::write(
+            vault_root.join("Journal/Daily/2026-04-03.md"),
+            "# 2026-04-03\n\n## Schedule\n- 09:00-10:00 Team standup @location(Zoom)\n- 14:00 Dentist #personal\n",
+        )
+        .expect("first daily note should be written");
+        fs::write(
+            vault_root.join("Journal/Daily/2026-04-04.md"),
+            "# 2026-04-04\n\n## Schedule\n- all-day Company offsite\n",
+        )
+        .expect("second daily note should be written");
+
+        let paths = VaultPaths::new(vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let daily = list_daily_note_events(&paths, "2026-04-03", "2026-04-04")
+            .expect("daily events should load");
+        assert_eq!(daily.len(), 2);
+        assert_eq!(daily[0].path, "Journal/Daily/2026-04-03.md");
+        assert_eq!(daily[0].events.len(), 2);
+        assert_eq!(daily[0].events[0].title, "Team standup");
+        assert_eq!(
+            daily[0].events[0].metadata.get("location"),
+            Some(&Value::String("Zoom".to_string()))
+        );
+        assert_eq!(daily[1].events[0].start_time, "all-day");
+
+        let occurrences = list_events_between(&paths, "2026-04-03", "2026-04-04")
+            .expect("event occurrences should load");
+        assert_eq!(occurrences.len(), 3);
+        assert_eq!(occurrences[2].title, "Company offsite");
+
+        let ics = export_daily_events_to_ics(&paths, "2026-04-03", "2026-04-04", Some("Journal"))
+            .expect("ics export should succeed");
+        assert_eq!(ics.calendar_name, "Journal");
+        assert_eq!(ics.note_count, 2);
+        assert_eq!(ics.event_count, 3);
+        assert!(ics.content.contains("BEGIN:VCALENDAR\r\n"));
+        assert!(ics.content.contains("SUMMARY:Team standup\r\n"));
+        assert!(ics.content.contains("LOCATION:Zoom\r\n"));
+        assert!(ics.content.contains("DTSTART:20260403T090000\r\n"));
+        assert!(ics.content.contains("DTSTART;VALUE=DATE:20260404\r\n"));
+        assert!(ics.content.contains("CATEGORIES:#personal\r\n"));
     }
 }

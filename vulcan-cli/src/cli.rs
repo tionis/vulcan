@@ -369,6 +369,7 @@ Subcommands:
   today       open or create today's daily note
   show        display one daily note's contents
   list        list daily notes and extracted schedule events
+  export-ics  export extracted daily-note events as an ICS calendar
   append      append text to one daily note
 
 Notes:
@@ -380,6 +381,7 @@ Examples:
   vulcan daily today --no-edit
   vulcan daily show 2026-04-03
   vulcan daily list --week
+  vulcan daily export-ics --month --path Journal.ics
   vulcan daily append \"Called Alice\" --heading \"## Log\"";
 
 const PERIODIC_COMMAND_AFTER_HELP: &str = "\
@@ -979,6 +981,21 @@ pub enum DailyCommand {
         week: bool,
         #[arg(long, conflicts_with = "week", help = "Use the current month")]
         month: bool,
+    },
+    #[command(about = "Export daily-note events as an ICS calendar")]
+    ExportIcs {
+        #[arg(long, help = "Start date for the export window")]
+        from: Option<String>,
+        #[arg(long, help = "End date for the export window")]
+        to: Option<String>,
+        #[arg(long, conflicts_with = "month", help = "Use the current week")]
+        week: bool,
+        #[arg(long, conflicts_with = "week", help = "Use the current month")]
+        month: bool,
+        #[arg(long, help = "Write the generated calendar to this .ics file")]
+        path: Option<PathBuf>,
+        #[arg(long, help = "Calendar name to embed in the ICS export")]
+        calendar_name: Option<String>,
     },
     #[command(about = "Append text to one daily note")]
     Append {

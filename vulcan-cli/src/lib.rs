@@ -43,14 +43,15 @@ use vulcan_core::{
     create_checkpoint, doctor_fix, doctor_vault, drop_vector_model, evaluate_base_file,
     evaluate_dataview_js_query, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, expected_periodic_note_path,
-    export_static_search_index, git_status, index_vectors_with_progress, initialize_vault,
-    inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints, list_kanban_boards,
-    list_saved_reports, list_vector_models, load_dataview_blocks, load_kanban_board,
-    load_saved_report, load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card,
-    move_note, parse_tasks_query, period_range_for_date, plan_base_note_create, query_backlinks,
-    query_change_report, query_graph_analytics, query_graph_components, query_graph_dead_ends,
-    query_graph_hubs, query_graph_moc_candidates, query_graph_path, query_graph_trends,
-    query_links, query_notes, query_related_notes, query_vector_neighbors,
+    export_daily_events_to_ics, export_static_search_index, git_status,
+    index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
+    link_mentions, list_checkpoints, list_daily_note_events, list_kanban_boards,
+    list_saved_reports, list_vector_models, load_dataview_blocks, load_events_for_periodic_note,
+    load_kanban_board, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
+    move_kanban_card, move_note, parse_tasks_query, period_range_for_date, plan_base_note_create,
+    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
+    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
+    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
     rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
     rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
     resolve_note_reference, resolve_periodic_note, save_saved_report, scan_vault_with_progress,
@@ -787,6 +788,17 @@ struct DailyAppendReport {
     warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct DailyIcsExportReport {
+    from: String,
+    to: String,
+    calendar_name: String,
+    note_count: usize,
+    event_count: usize,
+    path: Option<String>,
+    content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct BasesCreateReport {
     pub(crate) file: String,
@@ -1050,7 +1062,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Checkpoint { .. } => true,
         Command::Daily { command } => matches!(
             command,
-            DailyCommand::Show { .. } | DailyCommand::List { .. }
+            DailyCommand::Show { .. } | DailyCommand::List { .. } | DailyCommand::ExportIcs { .. }
         ),
         Command::Periodic { command, .. } => {
             matches!(command, Some(PeriodicSubcommand::List { .. }))
@@ -2316,39 +2328,19 @@ fn load_daily_events_for_path(
     paths: &VaultPaths,
     relative_path: &str,
 ) -> Result<Vec<PeriodicEventReport>, CliError> {
-    let database = CacheDatabase::open(paths).map_err(CliError::operation)?;
-    let mut statement = database
-        .connection()
-        .prepare(
-            "
-            SELECT events.start_time, events.end_time, events.title, events.metadata_json, events.tags_json
-            FROM events
-            JOIN documents ON documents.id = events.document_id
-            WHERE documents.path = ?1
-            ORDER BY
-                CASE WHEN events.start_time = 'all-day' THEN 0 ELSE 1 END,
-                events.start_time,
-                events.byte_offset
-            ",
-        )
-        .map_err(CliError::operation)?;
-    let rows = statement
-        .query_map([relative_path], |row| {
-            let metadata_json: String = row.get(3)?;
-            let tags_json: String = row.get(4)?;
-            let metadata = serde_json::from_str::<Value>(&metadata_json).unwrap_or(Value::Null);
-            let tags = serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default();
-            Ok(PeriodicEventReport {
-                start_time: row.get(0)?,
-                end_time: row.get(1)?,
-                title: row.get(2)?,
-                metadata,
-                tags,
-            })
+    load_events_for_periodic_note(paths, relative_path)
+        .map(|events| {
+            events
+                .into_iter()
+                .map(|event| PeriodicEventReport {
+                    start_time: event.start_time,
+                    end_time: event.end_time,
+                    title: event.title,
+                    metadata: event.metadata,
+                    tags: event.tags,
+                })
+                .collect()
         })
-        .map_err(CliError::operation)?;
-
-    rows.collect::<Result<Vec<_>, _>>()
         .map_err(CliError::operation)
 }
 
@@ -2424,87 +2416,69 @@ fn run_daily_list_command(
 ) -> Result<Vec<DailyListItem>, CliError> {
     let config = load_vault_config(paths).config;
     let (start, end) = resolve_daily_list_window(&config.periodic, from, to, week, month)?;
-    let database = CacheDatabase::open(paths).map_err(CliError::operation)?;
-    let mut statement = database
-        .connection()
-        .prepare(
-            "
-            SELECT
-                documents.periodic_date,
-                documents.path,
-                events.start_time,
-                events.end_time,
-                events.title,
-                events.metadata_json,
-                events.tags_json
-            FROM documents
-            LEFT JOIN events ON events.document_id = documents.id
-            WHERE documents.periodic_type = 'daily'
-              AND documents.periodic_date >= ?1
-              AND documents.periodic_date <= ?2
-            ORDER BY
-                documents.periodic_date,
-                documents.path,
-                CASE WHEN events.start_time = 'all-day' THEN 0 ELSE 1 END,
-                events.start_time,
-                events.byte_offset
-            ",
-        )
-        .map_err(CliError::operation)?;
-    let rows = statement
-        .query_map([start.as_str(), end.as_str()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<String>>(6)?,
-            ))
+    list_daily_note_events(paths, &start, &end)
+        .map(|items| {
+            items
+                .into_iter()
+                .map(|item| {
+                    let events = item
+                        .events
+                        .into_iter()
+                        .map(|event| PeriodicEventReport {
+                            start_time: event.start_time,
+                            end_time: event.end_time,
+                            title: event.title,
+                            metadata: event.metadata,
+                            tags: event.tags,
+                        })
+                        .collect::<Vec<_>>();
+                    DailyListItem {
+                        period_type: "daily".to_string(),
+                        date: item.date,
+                        path: item.path,
+                        event_count: events.len(),
+                        events,
+                    }
+                })
+                .collect()
         })
+        .map_err(CliError::operation)
+}
+
+fn run_daily_export_ics_command(
+    paths: &VaultPaths,
+    from: Option<&str>,
+    to: Option<&str>,
+    week: bool,
+    month: bool,
+    path: Option<&Path>,
+    calendar_name: Option<&str>,
+) -> Result<DailyIcsExportReport, CliError> {
+    let config = load_vault_config(paths).config;
+    let (start, end) = resolve_daily_list_window(&config.periodic, from, to, week, month)?;
+    let export = export_daily_events_to_ics(paths, &start, &end, calendar_name)
         .map_err(CliError::operation)?;
 
-    let mut items = Vec::<DailyListItem>::new();
-    for row in rows {
-        let (date, path, start_time, end_time, title, metadata_json, tags_json) =
-            row.map_err(CliError::operation)?;
-        let needs_new_item = items
-            .last()
-            .map_or(true, |item| item.date != date || item.path != path);
-        if needs_new_item {
-            items.push(DailyListItem {
-                period_type: "daily".to_string(),
-                date: date.clone(),
-                path: path.clone(),
-                event_count: 0,
-                events: Vec::new(),
-            });
+    let written_path = path.map(|path| path.to_string_lossy().into_owned());
+    if let Some(path) = path {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
         }
-
-        if let Some(start_time) = start_time {
-            let metadata = metadata_json
-                .as_deref()
-                .and_then(|json| serde_json::from_str::<Value>(json).ok())
-                .unwrap_or(Value::Null);
-            let tags = tags_json
-                .as_deref()
-                .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
-                .unwrap_or_default();
-            if let Some(item) = items.last_mut() {
-                item.events.push(PeriodicEventReport {
-                    start_time,
-                    end_time,
-                    title: title.unwrap_or_default(),
-                    metadata,
-                    tags,
-                });
-                item.event_count = item.events.len();
-            }
-        }
+        fs::write(path, &export.content).map_err(CliError::operation)?;
     }
 
-    Ok(items)
+    Ok(DailyIcsExportReport {
+        from: start,
+        to: end,
+        calendar_name: export.calendar_name,
+        note_count: export.note_count,
+        event_count: export.event_count,
+        path: written_path,
+        content: export.content,
+    })
 }
 
 fn run_daily_append_command(
@@ -5253,6 +5227,25 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let report =
                     run_daily_list_command(&paths, from.as_deref(), to.as_deref(), *week, *month)?;
                 print_daily_list_report(cli.output, &report, &list_controls)
+            }
+            DailyCommand::ExportIcs {
+                from,
+                to,
+                week,
+                month,
+                path,
+                calendar_name,
+            } => {
+                let report = run_daily_export_ics_command(
+                    &paths,
+                    from.as_deref(),
+                    to.as_deref(),
+                    *week,
+                    *month,
+                    path.as_deref(),
+                    calendar_name.as_deref(),
+                )?;
+                print_daily_export_ics_report(cli.output, &report)
             }
             DailyCommand::Append {
                 text,
@@ -8479,6 +8472,29 @@ fn print_daily_list_report(
     }
 }
 
+fn print_daily_export_ics_report(
+    output: OutputFormat,
+    report: &DailyIcsExportReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if let Some(path) = report.path.as_deref() {
+                println!(
+                    "Wrote {} event(s) from {} daily note(s) to {}",
+                    report.event_count, report.note_count, path
+                );
+                println!("Range: {} to {}", report.from, report.to);
+                println!("Calendar: {}", report.calendar_name);
+                Ok(())
+            } else {
+                print!("{}", report.content);
+                Ok(())
+            }
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_daily_append_report(
     output: OutputFormat,
     report: &DailyAppendReport,
@@ -10466,6 +10482,35 @@ mod tests {
                     heading: Some("## Log".to_string()),
                     date: Some("2026-04-03".to_string()),
                     no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_daily_export_ics_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "daily",
+            "export-ics",
+            "--month",
+            "--path",
+            "journal.ics",
+            "--calendar-name",
+            "Journal",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Daily {
+                command: DailyCommand::ExportIcs {
+                    from: None,
+                    to: None,
+                    week: false,
+                    month: true,
+                    path: Some(PathBuf::from("journal.ics")),
+                    calendar_name: Some("Journal".to_string()),
                 },
             }
         );

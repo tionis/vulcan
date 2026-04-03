@@ -540,6 +540,69 @@ fn daily_list_json_includes_events_in_range() {
 }
 
 #[test]
+fn daily_export_ics_writes_calendar_file() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[periodic.daily]\nschedule_heading = \"Schedule\"\n",
+    )
+    .expect("config should be written");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-04-03.md"),
+        "# 2026-04-03\n\n## Schedule\n- 09:00-10:00 Team standup @location(Zoom)\n- 14:00 Dentist #personal\n",
+    )
+    .expect("first daily note should be written");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-04-04.md"),
+        "# 2026-04-04\n\n## Schedule\n- all-day Company offsite\n",
+    )
+    .expect("second daily note should be written");
+    run_scan(&vault_root);
+
+    let calendar_path = vault_root.join("exports/journal.ics");
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "daily",
+            "export-ics",
+            "--from",
+            "2026-04-03",
+            "--to",
+            "2026-04-04",
+            "--path",
+            calendar_path
+                .to_str()
+                .expect("calendar path should be valid utf-8"),
+            "--calendar-name",
+            "Journal",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let rendered = fs::read_to_string(&calendar_path).expect("calendar file should be written");
+
+    assert_eq!(json["from"], "2026-04-03");
+    assert_eq!(json["to"], "2026-04-04");
+    assert_eq!(json["calendar_name"], "Journal");
+    assert_eq!(json["note_count"], 2);
+    assert_eq!(json["event_count"], 3);
+    assert_eq!(json["path"], calendar_path.to_string_lossy().as_ref());
+    assert!(rendered.contains("BEGIN:VCALENDAR\r\n"));
+    assert!(rendered.contains("SUMMARY:Team standup\r\n"));
+    assert!(rendered.contains("LOCATION:Zoom\r\n"));
+    assert!(rendered.contains("DTSTART;VALUE=DATE:20260404\r\n"));
+}
+
+#[test]
 fn periodic_list_and_gaps_report_expected_notes() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

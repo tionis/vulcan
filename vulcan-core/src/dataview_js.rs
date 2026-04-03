@@ -160,6 +160,10 @@ mod runtime {
         parse_duration_string,
     };
     use crate::file_metadata::FileMetadataResolver;
+    use crate::periodic::{
+        list_daily_note_events, list_events_between, load_events_for_periodic_note,
+        resolve_periodic_note, today_utc_string,
+    };
     use crate::properties::{load_note_index, NoteRecord};
     use crate::resolve_note_reference;
     use crate::VaultPaths;
@@ -171,6 +175,7 @@ mod runtime {
         paths: VaultPaths,
         current_file: Option<String>,
         note_index: std::collections::HashMap<String, NoteRecord>,
+        periodic_config: crate::PeriodicConfig,
     }
 
     #[derive(Debug, Clone, Serialize)]
@@ -1675,7 +1680,26 @@ const dv = {
 };
 
 dv.func = buildDvFunctions(dv);
+const vault = {
+  daily: {
+    today() {
+      return JSON.parse(__vulcan_vault_daily_json(__vulcan_today()));
+    },
+    get(date) {
+      return JSON.parse(__vulcan_vault_daily_json(String(date)));
+    },
+    range(from, to) {
+      return new DataArray(JSON.parse(__vulcan_vault_daily_range_json(String(from), String(to))));
+    },
+  },
+  events(options = {}) {
+    return new DataArray(
+      JSON.parse(__vulcan_vault_events_json(options?.from ?? null, options?.to ?? null))
+    );
+  },
+};
 globalThis.dv = dv;
+globalThis.vault = vault;
 globalThis.this = dv.current();
 globalThis.eval = undefined;
 globalThis.Function = undefined;
@@ -1686,8 +1710,8 @@ globalThis.Function = undefined;
         source: &str,
         current_file: Option<&str>,
     ) -> Result<DataviewJsResult, DataviewJsError> {
-        let config = load_vault_config(paths).config.dataview;
-        if !config.enable_dataview_js {
+        let loaded_config = load_vault_config(paths).config;
+        if !loaded_config.dataview.enable_dataview_js {
             return Err(DataviewJsError::Disabled);
         }
 
@@ -1697,15 +1721,16 @@ globalThis.Function = undefined;
             paths: paths.clone(),
             current_file: current_file.map(ToOwned::to_owned),
             note_index,
+            periodic_config: loaded_config.periodic.clone(),
         });
         let outputs = Arc::new(Mutex::new(Vec::new()));
         let runtime =
             Runtime::new().map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        runtime.set_memory_limit(config.js_memory_limit_bytes);
-        runtime.set_max_stack_size(config.js_max_stack_size_bytes);
+        runtime.set_memory_limit(loaded_config.dataview.js_memory_limit_bytes);
+        runtime.set_max_stack_size(loaded_config.dataview.js_max_stack_size_bytes);
 
         let deadline = Instant::now();
-        let timeout_seconds = config.js_timeout_seconds;
+        let timeout_seconds = loaded_config.dataview.js_timeout_seconds;
         runtime.set_interrupt_handler(Some(Box::new(move || {
             deadline.elapsed().as_secs() >= u64::try_from(timeout_seconds).unwrap_or(u64::MAX)
         })));
@@ -1843,6 +1868,69 @@ globalThis.Function = undefined;
                             .unwrap_or(Value::Null),
                     )
                 }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        globals
+            .set("__vulcan_today", Func::from(today_utc_string))
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let vault_daily_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_vault_daily_json",
+                Func::from(move |ctx: Ctx<'_>, date: String| {
+                    to_json_string(
+                        &ctx,
+                        load_daily_page_object(
+                            &vault_daily_state.paths,
+                            &vault_daily_state.periodic_config,
+                            &vault_daily_state.note_index,
+                            &date,
+                        )
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let vault_daily_range_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_vault_daily_range_json",
+                Func::from(move |ctx: Ctx<'_>, from: String, to: String| {
+                    to_json_string(
+                        &ctx,
+                        load_daily_range_objects(
+                            &vault_daily_range_state.paths,
+                            &vault_daily_range_state.note_index,
+                            &from,
+                            &to,
+                        )
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let vault_events_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_vault_events_json",
+                Func::from(
+                    move |ctx: Ctx<'_>, from: Option<String>, to: Option<String>| {
+                        let (from, to) =
+                            normalize_daily_event_range(from.as_deref(), to.as_deref()).map_err(
+                                |error| Exception::throw_message(&ctx, &error.to_string()),
+                            )?;
+                        to_json_string(
+                            &ctx,
+                            list_events_between(&vault_events_state.paths, &from, &to).map_err(
+                                |error| Exception::throw_message(&ctx, &error.to_string()),
+                            )?,
+                        )
+                    },
+                ),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
@@ -2087,6 +2175,118 @@ globalThis.Function = undefined;
             .unwrap_or_else(Map::new);
         fields.insert("file".to_string(), FileMetadataResolver::object(note));
         Value::Object(fields)
+    }
+
+    fn load_daily_page_object(
+        paths: &VaultPaths,
+        periodic_config: &crate::PeriodicConfig,
+        note_index: &std::collections::HashMap<String, NoteRecord>,
+        date: &str,
+    ) -> Result<Value, DataviewJsError> {
+        let normalized_date = normalize_daily_event_date(Some(date))?;
+        let Some(path) = resolve_periodic_note(
+            paths.vault_root(),
+            periodic_config,
+            "daily",
+            &normalized_date,
+        ) else {
+            return Ok(Value::Null);
+        };
+        let Some(note) = note_by_path(note_index, &path) else {
+            return Ok(Value::Null);
+        };
+        let events = load_events_for_periodic_note(paths, &path)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        Ok(decorate_daily_page_object(note, &normalized_date, events))
+    }
+
+    fn load_daily_range_objects(
+        paths: &VaultPaths,
+        note_index: &std::collections::HashMap<String, NoteRecord>,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<Value>, DataviewJsError> {
+        let (from, to) = normalize_daily_event_range(Some(from), Some(to))?;
+        let daily_notes = list_daily_note_events(paths, &from, &to)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        Ok(daily_notes
+            .into_iter()
+            .filter_map(|note| {
+                note_by_path(note_index, &note.path)
+                    .map(|record| decorate_daily_page_object(record, &note.date, note.events))
+            })
+            .collect())
+    }
+
+    fn decorate_daily_page_object(
+        note: &NoteRecord,
+        date: &str,
+        events: Vec<crate::PeriodicEvent>,
+    ) -> Value {
+        let mut page = page_object(note);
+        if let Value::Object(ref mut fields) = page {
+            fields.insert(
+                "events".to_string(),
+                serde_json::to_value(events).unwrap_or(Value::Null),
+            );
+            fields.insert(
+                "periodic".to_string(),
+                serde_json::json!({
+                    "type": "daily",
+                    "date": date,
+                    "path": note.document_path,
+                }),
+            );
+        }
+        page
+    }
+
+    fn normalize_daily_event_range(
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> Result<(String, String), DataviewJsError> {
+        let today = today_utc_string();
+        let from_date = match from {
+            Some(value) => normalize_daily_event_date(Some(value))?,
+            None if to.is_some() => normalize_daily_event_date(to)?,
+            None => today.clone(),
+        };
+        let to_date = match to {
+            Some(value) => normalize_daily_event_date(Some(value))?,
+            None if from.is_some() => from_date.clone(),
+            None => today,
+        };
+        if from_date > to_date {
+            return Err(DataviewJsError::Message(format!(
+                "start date must be before or equal to end date: {from_date} > {to_date}"
+            )));
+        }
+        Ok((from_date, to_date))
+    }
+
+    fn normalize_daily_event_date(raw: Option<&str>) -> Result<String, DataviewJsError> {
+        let value = raw
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("today");
+        if value.eq_ignore_ascii_case("today") {
+            return Ok(today_utc_string());
+        }
+        let bytes = value.as_bytes();
+        let valid_shape = bytes.len() == 10
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit());
+        if valid_shape && parse_date_like_string(value).is_some() {
+            Ok(value.to_string())
+        } else {
+            Err(DataviewJsError::Message(format!(
+                "invalid daily note date: {value}"
+            )))
+        }
     }
 
     fn read_text_file(
@@ -2423,6 +2623,72 @@ globalThis.Function = undefined;
                 }]
             );
             assert_eq!(result.value, Some(Value::String("draft".to_string())));
+        }
+
+        #[test]
+        fn dataviewjs_exposes_vault_daily_namespace_and_events() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+            fs::write(
+                vault_root.join(".vulcan/config.toml"),
+                "[periodic.daily]\nschedule_heading = \"Schedule\"\n",
+            )
+            .expect("config should be written");
+            fs::create_dir_all(vault_root.join("Journal/Daily"))
+                .expect("daily directory should be created");
+            fs::write(
+                vault_root.join("Journal/Daily/2026-04-03.md"),
+                "# 2026-04-03\n\nstatus: active\n\n## Schedule\n- 09:00-10:00 Team standup @location(Zoom)\n- 14:00 Dentist #personal\n",
+            )
+            .expect("first daily note should be written");
+            fs::write(
+                vault_root.join("Journal/Daily/2026-04-04.md"),
+                "# 2026-04-04\n\n## Schedule\n- all-day Company offsite\n",
+            )
+            .expect("second daily note should be written");
+
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const note = vault.daily.get("2026-04-03");
+                const range = vault.daily.range("2026-04-03", "2026-04-04");
+                const events = vault.events({ from: "2026-04-03", to: "2026-04-04" });
+                dv.table(
+                  ["name", "range", "events", "location", "source"],
+                  [[
+                    note.file.name,
+                    range.length,
+                    events.length,
+                    note.events[0].metadata.location,
+                    events[2].path
+                  ]]
+                );
+                "#,
+                Some("Journal/Daily/2026-04-03.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            assert!(
+                matches!(&result.outputs[0], DataviewJsOutput::Table { headers, rows }
+                if headers == &vec![
+                    "name".to_string(),
+                    "range".to_string(),
+                    "events".to_string(),
+                    "location".to_string(),
+                    "source".to_string(),
+                ]
+                && rows == &vec![vec![
+                    Value::String("2026-04-03".to_string()),
+                    Value::from(2),
+                    Value::from(3),
+                    Value::String("Zoom".to_string()),
+                    Value::String("Journal/Daily/2026-04-04.md".to_string()),
+                ]])
+            );
         }
 
         #[test]
