@@ -1662,8 +1662,8 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 
 #### 9.11.5 TUI and WebUI (future)
 
-- [ ] Browse TUI: `o` hotkey on Kanban `.md` files opens a board view with columns displayed side-by-side
-- [ ] WebUI: Kanban board rendered as interactive drag-and-drop columns (depends on Phase 13/14)
+- [x] Browse TUI: `o` hotkey on Kanban `.md` files opens a board view with columns displayed side-by-side
+- [-] WebUI: Kanban board rendered as interactive drag-and-drop columns (moved to Phase 13.3 Vault browser / WebUI work)
 
 ### 9.12 AI assistant
 
@@ -3434,6 +3434,7 @@ trait SyncBackend: Send + Sync {
 - [ ] Tag cloud / tag browser
 - [ ] Property explorer: browse notes by property values
 - [ ] Bases view rendering: display evaluated bases views as tables
+- [ ] Kanban board rendering: interactive drag-and-drop columns backed by the indexed Kanban model from 9.11
 
 ---
 

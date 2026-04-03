@@ -199,6 +199,7 @@ Notes:
   Printable characters always extend the active query or prompt; browse actions use Enter or Ctrl shortcuts.
   Ctrl-E edits from fuzzy/tag/property modes; in Ctrl-F mode it toggles the explain pane.
   In Ctrl-F mode, Ctrl-S cycles result sort order and Alt-C toggles global match-case.
+  In fuzzy/tag/property modes, `o` opens a selected Kanban board when the query is empty.
   After edits, creates, and moves, Vulcan rescans affected files and refreshes the browser.
   In backlinks/outgoing-link views, `o` opens the selected .base file in the Bases TUI.
 
