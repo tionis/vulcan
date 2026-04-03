@@ -2673,16 +2673,13 @@ fn run_periodic_gaps_command(
             if resolve_periodic_note(paths.vault_root(), &config.periodic, &period_type, &current)
                 .is_none()
             {
-                let expected_path = expected_periodic_note_path(
-                    &config.periodic,
-                    &period_type,
-                    &current,
-                )
-                .ok_or_else(|| {
-                    CliError::operation(format!(
+                let expected_path =
+                    expected_periodic_note_path(&config.periodic, &period_type, &current)
+                        .ok_or_else(|| {
+                            CliError::operation(format!(
                         "failed to resolve expected note path for `{period_type}` and {current}"
                     ))
-                })?;
+                        })?;
                 gaps.push(PeriodicGapItem {
                     period_type: period_type.clone(),
                     date: current.clone(),
