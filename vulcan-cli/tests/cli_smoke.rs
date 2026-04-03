@@ -5,9 +5,31 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
+use std::process::Command as ProcessCommand;
 use std::thread;
 use tempfile::TempDir;
 use vulcan_core::{CacheDatabase, VaultPaths};
+
+fn run_git_ok(vault_root: &Path, args: &[&str]) {
+    let status = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(vault_root)
+        .args(args)
+        .status()
+        .expect("git should launch");
+    assert!(status.success(), "git command failed: {args:?}");
+}
+
+fn init_git_repo(vault_root: &Path) {
+    run_git_ok(vault_root, &["init"]);
+    run_git_ok(vault_root, &["config", "user.name", "Vulcan Test"]);
+    run_git_ok(vault_root, &["config", "user.email", "vulcan@example.com"]);
+}
+
+fn commit_all(vault_root: &Path, message: &str) {
+    run_git_ok(vault_root, &["add", "."]);
+    run_git_ok(vault_root, &["commit", "-m", message]);
+}
 
 #[test]
 fn help_mentions_global_flags_and_core_commands() {
@@ -58,6 +80,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("weekly"))
             .and(predicate::str::contains("monthly"))
             .and(predicate::str::contains("periodic"))
+            .and(predicate::str::contains("git"))
             .and(predicate::str::contains("inbox"))
             .and(predicate::str::contains("template"))
             .and(predicate::str::contains("batch"))
@@ -94,7 +117,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
             ))
             .and(predicate::str::contains(
-                "Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions",
+                "Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, open, describe, completions",
             ))
             .and(predicate::str::contains("User guide: docs/cli.md"))
             .and(predicate::str::contains(
@@ -1077,6 +1100,216 @@ fn daily_export_ics_writes_calendar_file() {
     assert!(rendered.contains("SUMMARY:Team standup\r\n"));
     assert!(rendered.contains("LOCATION:Zoom\r\n"));
     assert!(rendered.contains("DTSTART;VALUE=DATE:20260404\r\n"));
+}
+
+#[test]
+fn git_status_json_output_lists_only_vault_changes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    init_git_repo(&vault_root);
+    fs::write(vault_root.join("Home.md"), "home\n").expect("home note should be written");
+    fs::write(vault_root.join(".vulcan/cache.db"), "cache\n").expect("cache should be written");
+    commit_all(&vault_root, "Initial");
+
+    fs::write(vault_root.join("Home.md"), "home updated\n").expect("home note should update");
+    run_git_ok(&vault_root, &["add", "Home.md"]);
+    fs::write(vault_root.join("Draft.md"), "draft\n").expect("draft note should be written");
+    fs::write(vault_root.join(".vulcan/cache.db"), "cache2\n").expect("cache should update");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "git",
+            "status",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["clean"], false);
+    assert_eq!(json["staged"], serde_json::json!(["Home.md"]));
+    assert_eq!(json["unstaged"], serde_json::json!([]));
+    assert_eq!(json["untracked"], serde_json::json!(["Draft.md"]));
+}
+
+#[test]
+fn git_log_json_output_lists_recent_commits() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    init_git_repo(&vault_root);
+    fs::write(vault_root.join("Home.md"), "home\n").expect("home note should be written");
+    commit_all(&vault_root, "Add home");
+    fs::write(vault_root.join("Other.md"), "other\n").expect("other note should be written");
+    commit_all(&vault_root, "Add other");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "git",
+            "log",
+            "--limit",
+            "2",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["limit"], 2);
+    assert_eq!(json["entries"][0]["summary"], "Add other");
+    assert_eq!(json["entries"][1]["summary"], "Add home");
+}
+
+#[test]
+fn git_diff_json_output_reports_changed_paths_and_filters_internal_state() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    init_git_repo(&vault_root);
+    fs::write(vault_root.join("Home.md"), "home\n").expect("home note should be written");
+    fs::write(vault_root.join(".vulcan/cache.db"), "cache\n").expect("cache should be written");
+    commit_all(&vault_root, "Initial");
+
+    fs::write(vault_root.join("Home.md"), "home updated\n").expect("home note should update");
+    fs::write(vault_root.join(".vulcan/cache.db"), "cache2\n").expect("cache should update");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "git",
+            "diff",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["path"], Value::Null);
+    assert_eq!(json["changed_paths"], serde_json::json!(["Home.md"]));
+    assert!(json["diff"]
+        .as_str()
+        .is_some_and(|diff| diff.contains("Home.md") && !diff.contains(".vulcan/cache.db")));
+}
+
+#[test]
+fn git_commit_json_output_stages_vault_files_but_skips_internal_state() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    init_git_repo(&vault_root);
+    fs::write(vault_root.join("Home.md"), "home\n").expect("home note should be written");
+    fs::write(vault_root.join(".vulcan/cache.db"), "cache\n").expect("cache should be written");
+    commit_all(&vault_root, "Initial");
+
+    fs::write(vault_root.join("Home.md"), "home updated\n").expect("home note should update");
+    fs::write(vault_root.join(".vulcan/cache.db"), "cache2\n").expect("cache should update");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "git",
+            "commit",
+            "-m",
+            "Update home",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let status = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(&vault_root)
+        .args(["status", "--short"])
+        .output()
+        .expect("git status should launch");
+
+    assert_eq!(json["committed"], true);
+    assert_eq!(json["message"], "Update home");
+    assert_eq!(json["files"], serde_json::json!(["Home.md"]));
+    assert!(json["sha"].as_str().is_some_and(|sha| !sha.is_empty()));
+    let rendered_status =
+        String::from_utf8(status.stdout).expect("git status output should be valid utf-8");
+    assert!(rendered_status.contains(".vulcan/cache.db"));
+    assert!(!rendered_status.contains("Home.md"));
+}
+
+#[test]
+fn git_blame_json_output_returns_line_metadata() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    init_git_repo(&vault_root);
+    fs::write(vault_root.join("Home.md"), "alpha\nbeta\n").expect("home note should be written");
+    commit_all(&vault_root, "Initial");
+    fs::write(vault_root.join("Home.md"), "alpha\nbeta updated\n")
+        .expect("home note should update");
+    run_git_ok(&vault_root, &["add", "Home.md"]);
+    run_git_ok(&vault_root, &["commit", "-m", "Update beta"]);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "git",
+            "blame",
+            "Home.md",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["path"], "Home.md");
+    assert_eq!(json["lines"][0]["line_number"], 1);
+    assert_eq!(json["lines"][0]["line"], "alpha");
+    assert_eq!(json["lines"][1]["line_number"], 2);
+    assert_eq!(json["lines"][1]["line"], "beta updated");
+    assert_eq!(json["lines"][1]["summary"], "Update beta");
+    assert_eq!(json["lines"][1]["author_name"], "Vulcan Test");
+}
+
+#[test]
+fn git_help_documents_sandboxed_operations() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["git", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("status")
+                .and(predicate::str::contains("log"))
+                .and(predicate::str::contains("diff"))
+                .and(predicate::str::contains("commit"))
+                .and(predicate::str::contains("blame"))
+                .and(predicate::str::contains("`.vulcan/`")),
+        );
 }
 
 #[test]

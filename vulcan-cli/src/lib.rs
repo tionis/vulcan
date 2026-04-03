@@ -10,10 +10,11 @@ mod template_engine;
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
     ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
-    DailyCommand, DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GraphCommand, InitArgs,
-    KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, RefreshMode,
-    RepairCommand, SavedCommand, SearchMode, SearchSortArg, SuggestCommand, TasksCommand,
-    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, VectorQueueCommand, VectorsCommand,
+    DailyCommand, DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GitCommand,
+    GraphCommand, InitArgs, KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs,
+    PeriodicSubcommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
+    SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand,
+    VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -49,28 +50,29 @@ use vulcan_core::{
     cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault, drop_vector_model,
     evaluate_base_file, evaluate_dataview_js_query, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, expected_periodic_note_path,
-    export_daily_events_to_ics, export_static_search_index, git_status,
-    index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
-    link_mentions, list_checkpoints, list_daily_note_events, list_kanban_boards,
-    list_saved_reports, list_vector_models, load_dataview_blocks, load_events_for_periodic_note,
-    load_kanban_board, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
-    move_kanban_card, move_note, parse_dql_with_diagnostics, parse_tasks_query,
-    period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
-    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
-    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
-    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
-    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, repair_vectors_with_progress, resolve_link, resolve_note_reference,
-    resolve_periodic_note, save_saved_report, scan_vault_with_progress, search_vault,
-    step_period_start, suggest_duplicates, suggest_mentions, task_upcoming_occurrences,
-    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
-    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesCreateContext, BasesEvalReport,
-    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterQuery, ClusterReport, ConfigImportReport, CoreImporter,
-    DataviewImporter, DataviewJsOutput, DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    EvaluatedInlineExpression, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    export_daily_events_to_ics, export_static_search_index, git_blame, git_commit, git_diff,
+    git_recent_log, git_status, index_vectors_with_progress, initialize_vault, inspect_cache,
+    inspect_vector_queue, link_mentions, list_checkpoints, list_daily_note_events,
+    list_kanban_boards, list_saved_reports, list_vector_models, load_dataview_blocks,
+    load_events_for_periodic_note, load_kanban_board, load_saved_report, load_tasks_blocks,
+    load_vault_config, merge_tags, move_kanban_card, move_note, parse_dql_with_diagnostics,
+    parse_tasks_query, period_range_for_date, plan_base_note_create, query_backlinks,
+    query_change_report, query_graph_analytics, query_graph_components, query_graph_dead_ends,
+    query_graph_hubs, query_graph_moc_candidates, query_graph_path, query_graph_trends,
+    query_links, query_notes, query_related_notes, query_vector_neighbors,
+    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, repair_fts, repair_vectors_with_progress, resolve_link,
+    resolve_note_reference, resolve_periodic_note, save_saved_report, scan_vault_with_progress,
+    search_vault, step_period_start, suggest_duplicates, suggest_mentions,
+    task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec,
+    BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
+    ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsOutput, DataviewJsResult,
+    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
+    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
     GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
     GraphTrendsReport, ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport,
     KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
@@ -567,6 +569,25 @@ struct DiffReport {
     changed: bool,
     changed_kinds: Vec<String>,
     diff: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct GitLogReport {
+    limit: usize,
+    entries: Vec<GitLogEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct GitDiffReport {
+    path: Option<String>,
+    changed_paths: Vec<String>,
+    diff: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct GitBlameReport {
+    path: String,
+    lines: Vec<GitBlameLine>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1437,6 +1458,63 @@ fn diff_report_from_change_anchor(
         status,
         changed_kinds,
         diff: None,
+    })
+}
+
+fn normalize_git_scope_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
+fn filter_vault_git_paths(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|path| path != ".vulcan" && !path.starts_with(".vulcan/"))
+        .collect()
+}
+
+fn run_git_log_command(paths: &VaultPaths, limit: usize) -> Result<GitLogReport, CliError> {
+    let entries = git_recent_log(paths.vault_root(), limit).map_err(CliError::operation)?;
+    Ok(GitLogReport { limit, entries })
+}
+
+fn run_git_diff_group_command(
+    paths: &VaultPaths,
+    path: Option<&str>,
+) -> Result<GitDiffReport, CliError> {
+    let normalized_path = path.map(normalize_git_scope_path);
+    let changed_paths = if let Some(path) = normalized_path.as_deref() {
+        let changed = filter_vault_git_paths(
+            git_status(paths.vault_root())
+                .map_err(CliError::operation)?
+                .changed_paths(),
+        );
+        changed
+            .into_iter()
+            .filter(|candidate| candidate == path)
+            .collect()
+    } else {
+        filter_vault_git_paths(
+            git_status(paths.vault_root())
+                .map_err(CliError::operation)?
+                .changed_paths(),
+        )
+    };
+    let diff =
+        git_diff(paths.vault_root(), normalized_path.as_deref()).map_err(CliError::operation)?;
+
+    Ok(GitDiffReport {
+        path: normalized_path,
+        changed_paths,
+        diff,
+    })
+}
+
+fn run_git_blame_command(paths: &VaultPaths, path: &str) -> Result<GitBlameReport, CliError> {
+    let normalized = normalize_git_scope_path(path);
+    let lines = git_blame(paths.vault_root(), &normalized).map_err(CliError::operation)?;
+    Ok(GitBlameReport {
+        path: normalized,
+        lines,
     })
 }
 
@@ -6784,6 +6862,35 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_daily_append_report(cli.output, &report)
             }
         },
+        Command::Git { ref command } => match command {
+            GitCommand::Status => {
+                let mut report = git_status(paths.vault_root()).map_err(CliError::operation)?;
+                report.staged = filter_vault_git_paths(report.staged);
+                report.unstaged = filter_vault_git_paths(report.unstaged);
+                report.untracked = filter_vault_git_paths(report.untracked);
+                report.clean = report.staged.is_empty()
+                    && report.unstaged.is_empty()
+                    && report.untracked.is_empty();
+                print_git_status_report(cli.output, &report)
+            }
+            GitCommand::Log { limit } => {
+                let report = run_git_log_command(&paths, *limit)?;
+                print_git_log_report(cli.output, &report)
+            }
+            GitCommand::Diff { path } => {
+                let report = run_git_diff_group_command(&paths, path.as_deref())?;
+                print_git_diff_group_report(cli.output, &report)
+            }
+            GitCommand::Commit { message } => {
+                let report =
+                    git_commit(paths.vault_root(), message).map_err(CliError::operation)?;
+                print_git_commit_report(cli.output, &report)
+            }
+            GitCommand::Blame { path } => {
+                let report = run_git_blame_command(&paths, path)?;
+                print_git_blame_report(cli.output, &report)
+            }
+        },
         Command::Weekly { ref args } => {
             let report = run_periodic_open_command(
                 &paths,
@@ -9577,6 +9684,124 @@ fn print_diff_report(output: OutputFormat, report: &DiffReport) -> Result<(), Cl
                 );
             } else {
                 println!("No changes in {} since {}.", report.path, report.anchor);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_status_report(
+    output: OutputFormat,
+    report: &vulcan_core::GitStatusReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.clean {
+                println!("Working tree clean.");
+                return Ok(());
+            }
+            if !report.staged.is_empty() {
+                println!("Staged:");
+                for path in &report.staged {
+                    println!("- {path}");
+                }
+            }
+            if !report.unstaged.is_empty() {
+                println!("Unstaged:");
+                for path in &report.unstaged {
+                    println!("- {path}");
+                }
+            }
+            if !report.untracked.is_empty() {
+                println!("Untracked:");
+                for path in &report.untracked {
+                    println!("- {path}");
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_log_report(output: OutputFormat, report: &GitLogReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.entries.is_empty() {
+                println!("No commits.");
+                return Ok(());
+            }
+            for entry in &report.entries {
+                println!(
+                    "- {} {} ({}, {})",
+                    entry.commit.chars().take(8).collect::<String>(),
+                    entry.summary,
+                    entry.author_name,
+                    entry.committed_at
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_diff_group_report(
+    output: OutputFormat,
+    report: &GitDiffReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.diff.trim().is_empty() {
+                if let Some(path) = &report.path {
+                    println!("No changes in {path}.");
+                } else {
+                    println!("Working tree clean.");
+                }
+            } else {
+                print!("{}", report.diff);
+                if !report.diff.ends_with('\n') {
+                    println!();
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_commit_report(output: OutputFormat, report: &GitCommitReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.committed {
+                let sha = report.sha.as_deref().unwrap_or_default();
+                println!(
+                    "Committed {} file(s) as {}: {}",
+                    report.files.len(),
+                    sha.chars().take(8).collect::<String>(),
+                    report.message
+                );
+            } else {
+                println!("{}", report.message);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_blame_report(output: OutputFormat, report: &GitBlameReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            for line in &report.lines {
+                println!(
+                    "{:>4} {} {:<16} | {}",
+                    line.line_number,
+                    line.commit.chars().take(8).collect::<String>(),
+                    line.author_name,
+                    line.line
+                );
             }
             Ok(())
         }
@@ -12575,6 +12800,76 @@ mod tests {
                     month: true,
                     path: Some(PathBuf::from("journal.ics")),
                     calendar_name: Some("Journal".to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_git_status_command() {
+        let cli = Cli::try_parse_from(["vulcan", "git", "status"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Git {
+                command: GitCommand::Status,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_git_log_command() {
+        let cli = Cli::try_parse_from(["vulcan", "git", "log", "--limit", "5"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Git {
+                command: GitCommand::Log { limit: 5 },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_git_diff_command() {
+        let cli =
+            Cli::try_parse_from(["vulcan", "git", "diff", "Home.md"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Git {
+                command: GitCommand::Diff {
+                    path: Some("Home.md".to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_git_commit_command() {
+        let cli = Cli::try_parse_from(["vulcan", "git", "commit", "-m", "Update notes"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Git {
+                command: GitCommand::Commit {
+                    message: "Update notes".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_git_blame_command() {
+        let cli =
+            Cli::try_parse_from(["vulcan", "git", "blame", "Home.md"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Git {
+                command: GitCommand::Blame {
+                    path: "Home.md".to_string(),
                 },
             }
         );

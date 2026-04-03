@@ -3029,14 +3029,14 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a to
 
 **Depends on:** Phase 9.3 (git module). Provides sandboxed git access for the AI assistant (9.12) without requiring full shell access.
 
-- [ ] `vulcan git status` — working tree status (staged, modified, untracked)
-- [ ] `vulcan git log [--limit <n>]` — recent commit history (default: 10)
-- [ ] `vulcan git diff [<path>]` — show diff (optionally scoped to a note)
-- [ ] `vulcan git commit -m <message>` — create a commit (stages vault files only, not `.vulcan/`)
-- [ ] `vulcan git blame <path>` — per-line blame for a note
-- [ ] `--output json` on all subcommands
-- [ ] Implementation: shell out to `git` binary with controlled arguments (no arbitrary command injection)
-- [ ] Validation: refuse dangerous operations (force push, reset --hard, etc.)
+- [x] `vulcan git status` — working tree status (staged, modified, untracked)
+- [x] `vulcan git log [--limit <n>]` — recent commit history (default: 10)
+- [x] `vulcan git diff [<path>]` — show diff (optionally scoped to a note)
+- [x] `vulcan git commit -m <message>` — create a commit (stages vault files only, not `.vulcan/`)
+- [x] `vulcan git blame <path>` — per-line blame for a note
+- [x] `--output json` on all subcommands
+- [x] Implementation: shell out to `git` binary with controlled arguments (no arbitrary command injection)
+- [x] Validation: refuse dangerous operations (force push, reset --hard, etc.)
 
 #### 9.18.9 Task mutations (integrated into unified `tasks` CLI)
 

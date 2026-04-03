@@ -193,6 +193,20 @@ Behavior:
 - Periodic note creation uses the configured periodic template name when it resolves successfully; otherwise Vulcan creates a blank note and reports the template warning.
 - These commands participate in auto-commit when they mutate note files and vault git auto-commit is enabled.
 
+### Git commands
+
+- `vulcan git status`: show staged, unstaged, and untracked vault files while filtering out `.vulcan/` internals.
+- `vulcan git log [--limit <n>]`: show recent commit history for the vault repository.
+- `vulcan git diff [path]`: show the current diff for one vault-relative path or for all eligible changed files.
+- `vulcan git commit -m <message>`: stage changed vault files and create a commit, skipping `.vulcan/`.
+- `vulcan git blame <path>`: show per-line authorship for one tracked vault-relative file.
+
+Behavior:
+
+- All `git` subcommands support `--output json`.
+- `git diff` and `git blame` take vault-relative file paths, not note aliases.
+- `git commit` refuses to stage `.vulcan/` state even when it is dirty.
+
 ### Bases commands
 
 `vulcan bases` now covers both read and write workflows:
@@ -780,7 +794,7 @@ vulcan tasks create|complete|reschedule  # new mutations
 - `links`, `backlinks` → `note links`, `note backlinks`
 - `rename-*`, `merge-tags`, `rewrite`, `move`, `link-mentions`, `suggest` → `refactor *`
 - `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
-- New: `note get/set/create/append/patch`, `run` (JS runtime + REPL), `web search/fetch`, `git *`, `help`, `daily *`, `assistant *`
+- New: `note get/set/create/append/patch`, `run` (JS runtime + REPL), `web search/fetch`, `help`, `daily *`, `assistant *`
 
 ### `canvas` (Roadmap Phase 18)
 

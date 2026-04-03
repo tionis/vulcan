@@ -10,7 +10,7 @@ Command Groups:
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
   Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
-  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions
+  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, open, describe, completions
 
 Docs:
   User guide: docs/cli.md
@@ -262,6 +262,26 @@ Examples:
   vulcan note get Dashboard --heading Tasks --match TODO --context 1
   vulcan note get Dashboard --block-ref status-card
   vulcan note get Dashboard --lines 10-20 --raw";
+
+const GIT_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  status       show staged, unstaged, and untracked vault files
+  log          show recent commits in the vault repository
+  diff         show the current diff for one path or the whole vault
+  commit       stage changed vault files and create a commit
+  blame        show per-line authorship for one tracked file
+
+Notes:
+  `commit` stages vault files only and skips `.vulcan/`.
+  `diff` accepts an optional vault-relative path; without one it prints the full working-tree diff for eligible files.
+  `blame` and path-scoped `diff` operate on vault-relative file paths, not note aliases.
+
+Examples:
+  vulcan git status
+  vulcan git log --limit 5
+  vulcan git diff Home.md
+  vulcan git commit -m \"Update daily notes\"
+  vulcan git blame Projects/Alpha.md";
 
 const DIFF_COMMAND_AFTER_HELP: &str = "\
 Comparison source:
@@ -1090,6 +1110,36 @@ pub enum DailyCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum GitCommand {
+    #[command(about = "Show staged, unstaged, and untracked files")]
+    Status,
+    #[command(about = "Show recent commit history")]
+    Log {
+        #[arg(
+            long,
+            default_value_t = 10,
+            help = "Maximum number of commits to return"
+        )]
+        limit: usize,
+    },
+    #[command(about = "Show the current diff for one path or the whole vault")]
+    Diff {
+        #[arg(help = "Optional vault-relative path to diff")]
+        path: Option<String>,
+    },
+    #[command(about = "Stage changed vault files and create a commit")]
+    Commit {
+        #[arg(short = 'm', long, help = "Commit message to use")]
+        message: String,
+    },
+    #[command(about = "Show per-line blame for one tracked file")]
+    Blame {
+        #[arg(help = "Vault-relative path to blame")]
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum PeriodicSubcommand {
     #[command(about = "List indexed periodic notes")]
     List {
@@ -1636,6 +1686,14 @@ pub enum Command {
     Daily {
         #[command(subcommand)]
         command: DailyCommand,
+    },
+    #[command(
+        about = "Inspect and mutate the vault git repository",
+        after_help = GIT_COMMAND_AFTER_HELP
+    )]
+    Git {
+        #[command(subcommand)]
+        command: GitCommand,
     },
     #[command(
         about = "Open or create the weekly note for a date",
