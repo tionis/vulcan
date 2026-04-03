@@ -2027,6 +2027,7 @@ fn run_inbox_command(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_template_command(
     paths: &VaultPaths,
     name: Option<&str>,
@@ -2065,7 +2066,8 @@ fn run_template_command(
     let now = TemplateTimestamp::current();
     let template = resolve_template_file(paths, &templates.templates, template_name)?;
     let output_path = template_output_path(&template.name, output_path, &now)?;
-    let template_source = fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
+    let template_source =
+        fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
     let rendered = render_template_request(TemplateRenderRequest {
         paths,
         vault_config: &config,
@@ -2123,6 +2125,7 @@ fn run_template_command(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_template_insert_command(
     paths: &VaultPaths,
     template_name: &str,
@@ -2152,7 +2155,8 @@ fn run_template_insert_command(
     let target_path = resolved.path;
     let target_absolute = paths.vault_root().join(&target_path);
     let target_source = fs::read_to_string(&target_absolute).map_err(CliError::operation)?;
-    let template_source = fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
+    let template_source =
+        fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
     let rendered_template = render_template_request(TemplateRenderRequest {
         paths,
         vault_config: &config,
@@ -2215,7 +2219,8 @@ fn run_template_preview_command(
     let template = resolve_template_file(paths, &templates.templates, template_name)?;
     let now = TemplateTimestamp::current();
     let output_path = template_output_path(&template.name, output_path, &now)?;
-    let template_source = fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
+    let template_source =
+        fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
     let rendered = render_template_request(TemplateRenderRequest {
         paths,
         vault_config: &config,
@@ -11274,7 +11279,7 @@ mod tests {
             false,
             false,
         )
-            .expect("template list should succeed");
+        .expect("template list should succeed");
         let TemplateCommandResult::List(report) = result else {
             panic!("template command should list templates");
         };
@@ -11330,7 +11335,7 @@ mod tests {
             false,
             false,
         )
-            .expect("template list should succeed");
+        .expect("template list should succeed");
         let TemplateCommandResult::List(report) = result else {
             panic!("template command should list templates");
         };
