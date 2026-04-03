@@ -481,6 +481,7 @@ Most vault-mutating commands support `--no-commit`. Preview-capable mutations al
 
 Common mutating commands:
 
+- `note`
 - `move`
 - `link-mentions`
 - `rewrite`
@@ -518,6 +519,36 @@ Behavior:
 - `trigger = "mutation"` commits successful mutating commands.
 - `trigger = "scan"` also allows `scan` and `watch` to auto-commit external changes after they are indexed.
 - `--no-commit` suppresses auto-commit for one invocation even when the vault config enables it.
+
+### `note`
+
+`vulcan note` groups selector-aware single-note CRUD commands for automation and agent workflows.
+
+Examples:
+
+```bash
+vulcan note get Dashboard --heading Tasks --match TODO --context 1
+vulcan note get Dashboard --block-ref done-item --raw
+vulcan note set Dashboard --no-frontmatter < body.md
+vulcan note create Inbox/Idea --template brief --frontmatter status=idea
+vulcan note append Dashboard "Shipped" --heading "## Done"
+vulcan note patch Dashboard --find "/TODO \\d+/" --replace DONE --all --dry-run
+```
+
+Behavior:
+
+- `note get` reads one note from disk and can compose `--heading`, `--block-ref`, `--lines`, `--match`, `--context`, and `--no-frontmatter`.
+- `note get --raw` prints only the selected content; without `--raw`, line-oriented selectors show line numbers in human output.
+- `note get --output json` returns the selected `content`, parsed `frontmatter`, and selection `metadata`.
+- `note set` reads replacement content from stdin by default; `--file <path>` switches the input source.
+- `note set --no-frontmatter` preserves the leading YAML block byte-for-byte and replaces only the note body.
+- `note create` creates an empty note when stdin is a TTY, or merges piped stdin content with an optional template body when provided.
+- `note create --frontmatter key=value` adds or overrides top-level frontmatter keys after template rendering.
+- `note append` accepts literal text or `-` to read appended content from stdin.
+- `note patch` accepts literal strings or `/regex/` patterns. It fails when the pattern matches more than once unless `--all` is passed.
+- `note patch --dry-run` reports the planned replacements without modifying the note.
+- Mutating note commands rescan the vault incrementally after a successful write and participate in auto-commit unless `--no-commit` is passed.
+- `--check` on `set`, `create`, `append`, and `patch` runs non-blocking doctor-like diagnostics for the resulting note and includes those diagnostics in JSON output.
 
 ## Inbox and templates
 
@@ -681,17 +712,6 @@ Supported shells:
 ### Phase A: CLI for LLMs (Roadmap Wave 5)
 
 The highest-priority CLI additions make Vulcan usable as a tool surface for any LLM harness (Claude Code, Codex, Gemini CLI, etc.) without the embedded agent. See `docs/ROADMAP.md` Phase 9.18 for full details.
-
-**Note CRUD (9.18.2):**
-
-```
-vulcan note get <note> [--heading|--block-ref|--lines|--match|--context N|--no-frontmatter|--raw]
-vulcan note set <note> [--file|--no-frontmatter|--check]
-vulcan note create <path> [--template|--frontmatter k=v|--check]
-vulcan note append <note> <text> [--heading|--check]
-vulcan note patch <note> --find <str|regex> --replace <str> [--all|--check|--dry-run]
-vulcan note doctor|links|backlinks|diff <note>
-```
 
 **Tool discovery for LLMs (9.18.7):**
 

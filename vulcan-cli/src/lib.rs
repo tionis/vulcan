@@ -10,9 +10,9 @@ mod template_engine;
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
     ConfigImportArgs, ConfigImportCommand, ConfigImportTargetArg, DailyCommand, DataviewCommand,
-    ExportArgs, ExportCommand, ExportFormat, GraphCommand, KanbanCommand, OutputFormat,
-    PeriodicOpenArgs, PeriodicSubcommand, RefreshMode, RepairCommand, SavedCommand, SearchMode,
-    SearchSortArg, SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs,
+    ExportArgs, ExportCommand, ExportFormat, GraphCommand, KanbanCommand, NoteCommand,
+    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, RefreshMode, RepairCommand, SavedCommand,
+    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs,
     TemplateSubcommand, VectorQueueCommand, VectorsCommand,
 };
 
@@ -24,6 +24,7 @@ use crate::template_engine::{
 };
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
+use regex::Regex;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -41,7 +42,7 @@ use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, 
 use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::expression::parse_expression;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
-use vulcan_core::properties::load_note_index;
+use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     add_kanban_card, archive_kanban_card, bases_view_add, bases_view_delete, bases_view_edit,
     bases_view_rename, bulk_replace, bulk_set_property, cache_vacuum, cluster_vectors,
@@ -53,37 +54,39 @@ use vulcan_core::{
     link_mentions, list_checkpoints, list_daily_note_events, list_kanban_boards,
     list_saved_reports, list_vector_models, load_dataview_blocks, load_events_for_periodic_note,
     load_kanban_board, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
-    move_kanban_card, move_note, parse_tasks_query, period_range_for_date, plan_base_note_create,
-    query_backlinks, query_change_report, query_graph_analytics, query_graph_components,
-    query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates, query_graph_path,
-    query_graph_trends, query_links, query_notes, query_related_notes, query_vector_neighbors,
-    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, repair_vectors_with_progress,
-    resolve_note_reference, resolve_periodic_note, save_saved_report, scan_vault_with_progress,
-    search_vault, step_period_start, suggest_duplicates, suggest_mentions,
-    task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec,
-    BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
-    ConfigImportReport, CoreImporter, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    move_kanban_card, move_note, parse_dql_with_diagnostics, parse_tasks_query,
+    period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
+    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
+    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
+    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
+    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    repair_fts, repair_vectors_with_progress, resolve_link, resolve_note_reference,
+    resolve_periodic_note, save_saved_report, scan_vault_with_progress, search_vault,
+    step_period_start, suggest_duplicates, suggest_mentions, task_upcoming_occurrences,
+    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
+    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesCreateContext, BasesEvalReport,
+    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, ConfigImportReport, CoreImporter,
+    DataviewJsOutput, DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
     EvaluatedInlineExpression, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
     GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
     GraphTrendsReport, ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport,
     KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
-    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
-    PeriodicNotesImporter, PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport,
-    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksImporter,
-    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
-    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
-    VectorRepairReport, WatchOptions, WatchReport,
+    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter, PluginImporter, QueryAst,
+    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
+    RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TasksImporter, TasksQueryResult, TemplaterImporter,
+    TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
+    VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 
 #[derive(Debug)]
@@ -880,6 +883,84 @@ enum TemplateInsertionError {
 struct OpenReport {
     path: String,
     uri: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct NoteGetReport {
+    path: String,
+    content: String,
+    frontmatter: Option<Value>,
+    metadata: NoteGetMetadata,
+    #[serde(skip)]
+    display_lines: Vec<NoteDisplayLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteGetMetadata {
+    heading: Option<String>,
+    block_ref: Option<String>,
+    lines: Option<String>,
+    match_pattern: Option<String>,
+    context: usize,
+    no_frontmatter: bool,
+    raw: bool,
+    match_count: usize,
+    line_spans: Vec<NoteGetLineSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteGetLineSpan {
+    start_line: usize,
+    end_line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NoteDisplayLine {
+    line_number: usize,
+    text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteSetReport {
+    path: String,
+    checked: bool,
+    preserved_frontmatter: bool,
+    diagnostics: Vec<DoctorDiagnosticIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteCreateReport {
+    path: String,
+    created: bool,
+    checked: bool,
+    template: Option<String>,
+    engine: Option<String>,
+    warnings: Vec<String>,
+    diagnostics: Vec<DoctorDiagnosticIssue>,
+    #[serde(skip)]
+    changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteAppendReport {
+    path: String,
+    appended: bool,
+    checked: bool,
+    heading: Option<String>,
+    diagnostics: Vec<DoctorDiagnosticIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NotePatchReport {
+    path: String,
+    dry_run: bool,
+    checked: bool,
+    pattern: String,
+    regex: bool,
+    replace: String,
+    match_count: usize,
+    changes: Vec<RefactorChange>,
+    diagnostics: Vec<DoctorDiagnosticIssue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3675,6 +3756,1132 @@ fn markdown_heading_level(line: &str) -> Option<usize> {
         .then_some(hashes)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceLine {
+    number: usize,
+    raw: String,
+    text: String,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NoteGetOptions<'a> {
+    note: &'a str,
+    heading: Option<&'a str>,
+    block_ref: Option<&'a str>,
+    lines: Option<&'a str>,
+    match_pattern: Option<&'a str>,
+    context: usize,
+    no_frontmatter: bool,
+    raw: bool,
+}
+
+#[derive(Debug, Clone)]
+enum NotePatchMatcher {
+    Literal(String),
+    Regex(Regex),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NotePatchOptions<'a> {
+    note: &'a str,
+    find: &'a str,
+    replace: &'a str,
+    replace_all: bool,
+    check: bool,
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NotePatchApplication {
+    updated_content: String,
+    match_count: usize,
+    changes: Vec<RefactorChange>,
+    regex: bool,
+}
+
+fn run_note_get_command(
+    paths: &VaultPaths,
+    options: NoteGetOptions<'_>,
+) -> Result<NoteGetReport, CliError> {
+    let NoteGetOptions {
+        note,
+        heading,
+        block_ref,
+        lines,
+        match_pattern,
+        context,
+        no_frontmatter,
+        raw,
+    } = options;
+    let (relative_path, source) = read_existing_note_source(paths, note)?;
+    let config = load_vault_config(paths).config;
+    let parsed = vulcan_core::parse_document(&source, &config);
+    let source_lines = build_source_lines(&source);
+
+    let mut selected = (0..source_lines.len()).collect::<Vec<_>>();
+    if let Some(heading) = heading {
+        let allowed = heading_line_indices(&source, &source_lines, &parsed, heading)?;
+        selected = intersect_sorted_line_indices(&selected, &allowed);
+    }
+    if let Some(block_ref) = block_ref {
+        let allowed = block_ref_line_indices(&source_lines, &parsed, block_ref)?;
+        selected = intersect_sorted_line_indices(&selected, &allowed);
+    }
+    if let Some(spec) = lines {
+        selected = select_line_range(&selected, spec)?;
+    }
+
+    let mut match_count = 0;
+    if let Some(pattern) = match_pattern {
+        let regex = Regex::new(pattern).map_err(CliError::operation)?;
+        let (filtered, hits) = select_matching_lines(&selected, &source_lines, &regex, context);
+        selected = filtered;
+        match_count = hits;
+    }
+
+    if no_frontmatter {
+        selected = strip_frontmatter_lines(&selected, &source, &source_lines);
+    }
+
+    let line_spans = selected_line_spans(&selected, &source_lines);
+    let selected_content = render_selected_raw_content(&selected, &source_lines);
+    let frontmatter = parsed
+        .frontmatter
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(CliError::operation)?;
+
+    Ok(NoteGetReport {
+        path: relative_path,
+        content: selected_content,
+        frontmatter,
+        metadata: NoteGetMetadata {
+            heading: heading.map(ToOwned::to_owned),
+            block_ref: block_ref.map(ToOwned::to_owned),
+            lines: lines.map(ToOwned::to_owned),
+            match_pattern: match_pattern.map(ToOwned::to_owned),
+            context,
+            no_frontmatter,
+            raw,
+            match_count,
+            line_spans,
+        },
+        display_lines: selected
+            .iter()
+            .map(|index| NoteDisplayLine {
+                line_number: source_lines[*index].number,
+                text: source_lines[*index].text.clone(),
+            })
+            .collect(),
+    })
+}
+
+fn run_note_set_command(
+    paths: &VaultPaths,
+    note: &str,
+    file: Option<&PathBuf>,
+    no_frontmatter: bool,
+    check: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<NoteSetReport, CliError> {
+    let (relative_path, existing) = read_existing_note_source(paths, note)?;
+    let replacement = note_set_input_text(file)?;
+    let updated = if no_frontmatter {
+        preserve_existing_frontmatter(&existing, &replacement)
+    } else {
+        replacement
+    };
+    fs::write(paths.vault_root().join(&relative_path), &updated).map_err(CliError::operation)?;
+    let diagnostics = maybe_check_note(paths, &relative_path, &updated, check)?;
+    run_incremental_scan(paths, output, use_stderr_color)?;
+
+    Ok(NoteSetReport {
+        path: relative_path,
+        checked: check,
+        preserved_frontmatter: no_frontmatter,
+        diagnostics,
+    })
+}
+
+fn run_note_create_command(
+    paths: &VaultPaths,
+    path: &str,
+    template: Option<&str>,
+    frontmatter: &[String],
+    check: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<NoteCreateReport, CliError> {
+    let requested_path = normalize_note_path(path)?;
+
+    let config = load_vault_config(paths).config;
+    let mut warnings = Vec::new();
+    let mut rendered_template = None;
+    let mut frontmatter_mapping = parse_frontmatter_bindings(frontmatter)?;
+    let mut body = read_optional_stdin_text().map_err(CliError::operation)?;
+    let mut final_path = requested_path.clone();
+    let mut changed_paths = Vec::new();
+
+    if let Some(template_name) = template {
+        let templates = discover_templates(
+            paths,
+            config.templates.obsidian_folder.as_deref(),
+            config.templates.templater_folder.as_deref(),
+        )?;
+        let template_file = resolve_template_file(paths, &templates.templates, template_name)?;
+        let template_source =
+            fs::read_to_string(&template_file.absolute_path).map_err(CliError::operation)?;
+        let vars = HashMap::new();
+        let rendered = render_template_request(TemplateRenderRequest {
+            paths,
+            vault_config: &config,
+            templates: &templates.templates,
+            template_path: Some(&template_file.absolute_path),
+            template_text: &template_source,
+            target_path: &requested_path,
+            target_contents: None,
+            engine: TemplateEngineKind::Auto,
+            vars: &vars,
+            allow_mutations: true,
+            run_mode: TemplateRunMode::Create,
+        })?;
+        let (template_frontmatter, template_body) =
+            parse_frontmatter_document(&rendered.content, true).map_err(CliError::operation)?;
+        frontmatter_mapping = merge_explicit_frontmatter(template_frontmatter, frontmatter_mapping);
+        body = merge_note_create_bodies(&template_body, &body);
+        final_path.clone_from(&rendered.target_path);
+        warnings.extend(template_file.warning);
+        warnings.extend(rendered.warnings.clone());
+        warnings.extend(rendered.diagnostics.clone());
+        changed_paths.extend(rendered.changed_paths.clone());
+        rendered_template = Some((template_name.to_string(), rendered));
+    }
+
+    let absolute_path = paths.vault_root().join(&final_path);
+    if absolute_path.exists() {
+        return Err(CliError::operation(format!(
+            "destination note already exists: {final_path}"
+        )));
+    }
+
+    let final_content =
+        render_note_from_parts(frontmatter_mapping.as_ref(), &body).map_err(CliError::operation)?;
+    if let Some(parent) = absolute_path.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    fs::write(&absolute_path, &final_content).map_err(CliError::operation)?;
+    let diagnostics = maybe_check_note(paths, &final_path, &final_content, check)?;
+    run_incremental_scan(paths, output, use_stderr_color)?;
+    changed_paths.push(final_path.clone());
+    changed_paths.sort();
+    changed_paths.dedup();
+
+    Ok(NoteCreateReport {
+        path: final_path,
+        created: true,
+        checked: check,
+        template: rendered_template
+            .as_ref()
+            .map(|(template_name, _)| template_name.clone()),
+        engine: rendered_template
+            .as_ref()
+            .map(|(_, rendered)| rendered.engine.as_str().to_string()),
+        warnings,
+        diagnostics,
+        changed_paths,
+    })
+}
+
+fn run_note_append_command(
+    paths: &VaultPaths,
+    note: &str,
+    text: &str,
+    heading: Option<&str>,
+    check: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<NoteAppendReport, CliError> {
+    let (relative_path, existing) = read_existing_note_source(paths, note)?;
+    let appended_text = note_append_input_text(text)?;
+    let updated = if let Some(heading) = heading {
+        append_under_heading(&existing, heading, &appended_text)
+    } else {
+        append_at_end(&existing, &appended_text)
+    };
+    fs::write(paths.vault_root().join(&relative_path), &updated).map_err(CliError::operation)?;
+    let diagnostics = maybe_check_note(paths, &relative_path, &updated, check)?;
+    run_incremental_scan(paths, output, use_stderr_color)?;
+
+    Ok(NoteAppendReport {
+        path: relative_path,
+        appended: true,
+        checked: check,
+        heading: heading.map(ToOwned::to_owned),
+        diagnostics,
+    })
+}
+
+fn run_note_patch_command(
+    paths: &VaultPaths,
+    options: NotePatchOptions<'_>,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<NotePatchReport, CliError> {
+    let NotePatchOptions {
+        note,
+        find,
+        replace,
+        replace_all,
+        check,
+        dry_run,
+    } = options;
+    let (relative_path, existing) = read_existing_note_source(paths, note)?;
+    let matcher = parse_note_patch_matcher(find)?;
+    let application = apply_note_patch(&existing, &matcher, replace, replace_all)?;
+    if !dry_run {
+        fs::write(
+            paths.vault_root().join(&relative_path),
+            &application.updated_content,
+        )
+        .map_err(CliError::operation)?;
+        run_incremental_scan(paths, output, use_stderr_color)?;
+    }
+    let diagnostics = maybe_check_note(paths, &relative_path, &application.updated_content, check)?;
+
+    Ok(NotePatchReport {
+        path: relative_path,
+        dry_run,
+        checked: check,
+        pattern: find.to_string(),
+        regex: application.regex,
+        replace: replace.to_string(),
+        match_count: application.match_count,
+        changes: application.changes,
+        diagnostics,
+    })
+}
+
+fn read_existing_note_source(paths: &VaultPaths, note: &str) -> Result<(String, String), CliError> {
+    let relative_path = resolve_existing_note_path(paths, note)?;
+    let source =
+        fs::read_to_string(paths.vault_root().join(&relative_path)).map_err(CliError::operation)?;
+    Ok((relative_path, source))
+}
+
+fn resolve_existing_note_path(paths: &VaultPaths, note: &str) -> Result<String, CliError> {
+    match resolve_note_reference(paths, note) {
+        Ok(resolved) => Ok(resolved.path),
+        Err(GraphQueryError::AmbiguousIdentifier { .. }) => Err(CliError::operation(format!(
+            "note identifier '{note}' is ambiguous"
+        ))),
+        Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. }) => {
+            let normalized = normalize_note_path(note)?;
+            if paths.vault_root().join(&normalized).is_file() {
+                Ok(normalized)
+            } else {
+                Err(CliError::operation(format!("note not found: {note}")))
+            }
+        }
+        Err(error) => Err(CliError::operation(error)),
+    }
+}
+
+fn normalize_note_path(path: &str) -> Result<String, CliError> {
+    normalize_relative_input_path(
+        path,
+        RelativePathOptions {
+            expected_extension: Some("md"),
+            append_extension_if_missing: true,
+        },
+    )
+    .map_err(CliError::operation)
+}
+
+fn note_set_input_text(file: Option<&PathBuf>) -> Result<String, CliError> {
+    if let Some(file) = file {
+        return fs::read_to_string(file).map_err(CliError::operation);
+    }
+    if io::stdin().is_terminal() {
+        return Err(CliError::operation(
+            "`note set` requires replacement content on stdin or --file <path>",
+        ));
+    }
+    let mut buffer = String::new();
+    io::stdin()
+        .read_to_string(&mut buffer)
+        .map_err(CliError::operation)?;
+    Ok(buffer)
+}
+
+fn note_append_input_text(text: &str) -> Result<String, CliError> {
+    if text != "-" {
+        return Ok(text.to_string());
+    }
+
+    let mut buffer = String::new();
+    io::stdin()
+        .read_to_string(&mut buffer)
+        .map_err(CliError::operation)?;
+    Ok(buffer)
+}
+
+fn read_optional_stdin_text() -> io::Result<String> {
+    if io::stdin().is_terminal() {
+        return Ok(String::new());
+    }
+
+    let mut buffer = String::new();
+    io::stdin().read_to_string(&mut buffer)?;
+    Ok(buffer)
+}
+
+fn preserve_existing_frontmatter(existing: &str, body: &str) -> String {
+    find_frontmatter_block(existing).map_or_else(
+        || body.to_string(),
+        |(_, _, body_start)| {
+            let mut rendered = existing[..body_start].to_string();
+            rendered.push_str(body);
+            rendered
+        },
+    )
+}
+
+fn merge_note_create_bodies(template_body: &str, stdin_body: &str) -> String {
+    match (
+        template_body.trim().is_empty(),
+        stdin_body.trim().is_empty(),
+    ) {
+        (true, true) => String::new(),
+        (false, true) => template_body.to_string(),
+        (true, false) => stdin_body.to_string(),
+        (false, false) => merge_body_sections(template_body, stdin_body, true),
+    }
+}
+
+fn parse_frontmatter_bindings(bindings: &[String]) -> Result<Option<YamlMapping>, CliError> {
+    if bindings.is_empty() {
+        return Ok(None);
+    }
+
+    let mut mapping = YamlMapping::new();
+    for binding in bindings {
+        let Some((key, value)) = binding.split_once('=') else {
+            return Err(CliError::operation(format!(
+                "frontmatter bindings must use key=value syntax: {binding}"
+            )));
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(CliError::operation(format!(
+                "frontmatter bindings need a non-empty key: {binding}"
+            )));
+        }
+        let parsed =
+            serde_yaml::from_str::<YamlValue>(value.trim()).map_err(CliError::operation)?;
+        mapping.insert(YamlValue::String(key.to_string()), parsed);
+    }
+
+    Ok(Some(mapping))
+}
+
+fn merge_explicit_frontmatter(
+    existing: Option<YamlMapping>,
+    explicit: Option<YamlMapping>,
+) -> Option<YamlMapping> {
+    match (existing, explicit) {
+        (None, None) => None,
+        (Some(mapping), None) | (None, Some(mapping)) => Some(mapping),
+        (Some(mut existing), Some(explicit)) => {
+            for (key, value) in explicit {
+                existing.insert(key, value);
+            }
+            Some(existing)
+        }
+    }
+}
+
+fn build_source_lines(source: &str) -> Vec<SourceLine> {
+    let mut offset = 0usize;
+    source
+        .split_inclusive('\n')
+        .enumerate()
+        .map(|(index, raw_line)| {
+            let line = SourceLine {
+                number: index + 1,
+                raw: raw_line.to_string(),
+                text: raw_line.trim_end_matches(['\n', '\r']).to_string(),
+                start: offset,
+                end: offset + raw_line.len(),
+            };
+            offset += raw_line.len();
+            line
+        })
+        .collect()
+}
+
+fn heading_line_indices(
+    source: &str,
+    source_lines: &[SourceLine],
+    parsed: &vulcan_core::ParsedDocument,
+    heading: &str,
+) -> Result<Vec<usize>, CliError> {
+    let matches = parsed
+        .headings
+        .iter()
+        .filter(|candidate| candidate.text == heading)
+        .collect::<Vec<_>>();
+    let heading = match matches.as_slice() {
+        [] => {
+            return Err(CliError::operation(format!(
+                "no heading named '{heading}' found"
+            )))
+        }
+        [heading] => *heading,
+        _ => {
+            return Err(CliError::operation(format!(
+                "multiple heading entries named '{heading}'"
+            )))
+        }
+    };
+    let end = parsed
+        .headings
+        .iter()
+        .filter(|candidate| candidate.byte_offset > heading.byte_offset)
+        .find(|candidate| candidate.level <= heading.level)
+        .map_or(source.len(), |candidate| candidate.byte_offset);
+    Ok(line_indices_for_byte_range(
+        source_lines,
+        heading.byte_offset,
+        end,
+    ))
+}
+
+fn block_ref_line_indices(
+    source_lines: &[SourceLine],
+    parsed: &vulcan_core::ParsedDocument,
+    block_ref: &str,
+) -> Result<Vec<usize>, CliError> {
+    let matches = parsed
+        .block_refs
+        .iter()
+        .filter(|candidate| candidate.block_id_text == block_ref)
+        .collect::<Vec<_>>();
+    let block_ref = match matches.as_slice() {
+        [] => {
+            return Err(CliError::operation(format!(
+                "no block ref named '{block_ref}' found"
+            )))
+        }
+        [block_ref] => *block_ref,
+        _ => {
+            return Err(CliError::operation(format!(
+                "multiple block refs named '{block_ref}'"
+            )))
+        }
+    };
+    Ok(line_indices_for_byte_range(
+        source_lines,
+        block_ref.target_block_byte_start,
+        block_ref.target_block_byte_end,
+    ))
+}
+
+fn line_indices_for_byte_range(
+    source_lines: &[SourceLine],
+    start: usize,
+    end: usize,
+) -> Vec<usize> {
+    source_lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.start < end && line.end > start)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn intersect_sorted_line_indices(current: &[usize], allowed: &[usize]) -> Vec<usize> {
+    let mut left = 0usize;
+    let mut right = 0usize;
+    let mut intersection = Vec::new();
+    while left < current.len() && right < allowed.len() {
+        match current[left].cmp(&allowed[right]) {
+            std::cmp::Ordering::Less => left += 1,
+            std::cmp::Ordering::Greater => right += 1,
+            std::cmp::Ordering::Equal => {
+                intersection.push(current[left]);
+                left += 1;
+                right += 1;
+            }
+        }
+    }
+    intersection
+}
+
+fn select_line_range(current: &[usize], spec: &str) -> Result<Vec<usize>, CliError> {
+    if current.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::operation("line range must not be empty"));
+    }
+
+    let length = current.len();
+    let (start, end) = if let Some(last_count) = trimmed.strip_prefix('-') {
+        let count = parse_positive_usize(last_count, "line range")?;
+        let start = length.saturating_sub(count).saturating_add(1);
+        (start.max(1), length)
+    } else if let Some((start, end)) = trimmed.split_once('-') {
+        let start = parse_positive_usize(start, "line range start")?;
+        let end = if end.trim().is_empty() {
+            length
+        } else {
+            parse_positive_usize(end, "line range end")?
+        };
+        (start, end)
+    } else {
+        let line = parse_positive_usize(trimmed, "line range")?;
+        (line, line)
+    };
+
+    if start == 0 || end == 0 || start > end {
+        return Err(CliError::operation(format!("invalid line range: {spec}")));
+    }
+
+    let start_index = start.saturating_sub(1).min(length);
+    let end_index = end.min(length);
+    Ok(current[start_index..end_index].to_vec())
+}
+
+fn parse_positive_usize(value: &str, label: &str) -> Result<usize, CliError> {
+    let parsed = value.trim().parse::<usize>().map_err(CliError::operation)?;
+    if parsed == 0 {
+        return Err(CliError::operation(format!("{label} must be >= 1")));
+    }
+    Ok(parsed)
+}
+
+fn select_matching_lines(
+    current: &[usize],
+    source_lines: &[SourceLine],
+    pattern: &Regex,
+    context: usize,
+) -> (Vec<usize>, usize) {
+    let hit_positions = current
+        .iter()
+        .enumerate()
+        .filter_map(|(position, index)| {
+            pattern
+                .is_match(&source_lines[*index].text)
+                .then_some(position)
+        })
+        .collect::<Vec<_>>();
+
+    if hit_positions.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    let mut selected_positions = Vec::new();
+    for hit_position in &hit_positions {
+        let start = hit_position.saturating_sub(context);
+        let end = (*hit_position + context + 1).min(current.len());
+        for position in start..end {
+            if selected_positions.last() != Some(&position) {
+                selected_positions.push(position);
+            }
+        }
+    }
+
+    (
+        selected_positions
+            .into_iter()
+            .map(|position| current[position])
+            .collect(),
+        hit_positions.len(),
+    )
+}
+
+fn strip_frontmatter_lines(
+    current: &[usize],
+    source: &str,
+    source_lines: &[SourceLine],
+) -> Vec<usize> {
+    let Some((_, _, body_start)) = find_frontmatter_block(source) else {
+        return current.to_vec();
+    };
+
+    current
+        .iter()
+        .copied()
+        .filter(|index| source_lines[*index].start >= body_start)
+        .collect()
+}
+
+fn selected_line_spans(selected: &[usize], source_lines: &[SourceLine]) -> Vec<NoteGetLineSpan> {
+    if selected.is_empty() {
+        return Vec::new();
+    }
+
+    let mut spans = Vec::new();
+    let mut start_index = selected[0];
+    let mut previous_index = selected[0];
+
+    for current_index in selected.iter().copied().skip(1) {
+        if current_index != previous_index + 1 {
+            spans.push(NoteGetLineSpan {
+                start_line: source_lines[start_index].number,
+                end_line: source_lines[previous_index].number,
+            });
+            start_index = current_index;
+        }
+        previous_index = current_index;
+    }
+
+    spans.push(NoteGetLineSpan {
+        start_line: source_lines[start_index].number,
+        end_line: source_lines[previous_index].number,
+    });
+    spans
+}
+
+fn render_selected_raw_content(selected: &[usize], source_lines: &[SourceLine]) -> String {
+    let mut rendered = String::new();
+    for index in selected {
+        rendered.push_str(&source_lines[*index].raw);
+    }
+    rendered
+}
+
+fn parse_note_patch_matcher(pattern: &str) -> Result<NotePatchMatcher, CliError> {
+    if pattern.is_empty() {
+        return Err(CliError::operation("`note patch --find` must not be empty"));
+    }
+
+    if let Some(regex_body) = pattern.strip_prefix('/') {
+        let Some(regex_body) = regex_body.strip_suffix('/') else {
+            return Err(CliError::operation(
+                "regex patterns must use /.../ syntax, for example `/TODO \\d+/`",
+            ));
+        };
+        if regex_body.is_empty() {
+            return Err(CliError::operation("regex patterns must not be empty"));
+        }
+        return Regex::new(regex_body)
+            .map(NotePatchMatcher::Regex)
+            .map_err(CliError::operation);
+    }
+
+    Ok(NotePatchMatcher::Literal(pattern.to_string()))
+}
+
+fn apply_note_patch(
+    source: &str,
+    matcher: &NotePatchMatcher,
+    replace: &str,
+    all: bool,
+) -> Result<NotePatchApplication, CliError> {
+    match matcher {
+        NotePatchMatcher::Literal(find) => {
+            let patch_matches = source
+                .match_indices(find)
+                .map(|(start, matched)| {
+                    (
+                        start,
+                        start + matched.len(),
+                        matched.to_string(),
+                        replace.to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            build_note_patch_application(source, patch_matches, all, false)
+        }
+        NotePatchMatcher::Regex(regex) => {
+            let patch_matches = regex
+                .find_iter(source)
+                .map(|matched| {
+                    if matched.start() == matched.end() {
+                        Err(CliError::operation(
+                            "regex patterns for `note patch` must not match empty strings",
+                        ))
+                    } else {
+                        Ok((
+                            matched.start(),
+                            matched.end(),
+                            matched.as_str().to_string(),
+                            regex.replace(matched.as_str(), replace).into_owned(),
+                        ))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            build_note_patch_application(source, patch_matches, all, true)
+        }
+    }
+}
+
+fn build_note_patch_application(
+    source: &str,
+    matches: Vec<(usize, usize, String, String)>,
+    all: bool,
+    regex: bool,
+) -> Result<NotePatchApplication, CliError> {
+    match matches.len() {
+        0 => Err(CliError::operation("pattern not found in note")),
+        count if count > 1 && !all => Err(CliError::operation(format!(
+            "pattern matched {count} times; rerun with --all to replace every match"
+        ))),
+        _ => {
+            let mut updated = source.to_string();
+            for (start, end, _, replacement) in matches.iter().rev() {
+                updated.replace_range(*start..*end, replacement);
+            }
+            Ok(NotePatchApplication {
+                updated_content: updated,
+                match_count: matches.len(),
+                changes: matches
+                    .into_iter()
+                    .map(|(_, _, before, after)| RefactorChange { before, after })
+                    .collect(),
+                regex,
+            })
+        }
+    }
+}
+
+fn maybe_check_note(
+    paths: &VaultPaths,
+    relative_path: &str,
+    content: &str,
+    check: bool,
+) -> Result<Vec<DoctorDiagnosticIssue>, CliError> {
+    if !check {
+        return Ok(Vec::new());
+    }
+
+    diagnose_note_contents(paths, relative_path, content)
+}
+
+fn diagnose_note_contents(
+    paths: &VaultPaths,
+    relative_path: &str,
+    content: &str,
+) -> Result<Vec<DoctorDiagnosticIssue>, CliError> {
+    let config = load_vault_config(paths).config;
+    let parsed = vulcan_core::parse_document(content, &config);
+    let mut diagnostics = parsed
+        .diagnostics
+        .iter()
+        .map(|diagnostic| DoctorDiagnosticIssue {
+            document_path: Some(relative_path.to_string()),
+            message: diagnostic.message.clone(),
+            byte_range: diagnostic.byte_range.as_ref().map(|range| DoctorByteRange {
+                start: range.start,
+                end: range.end,
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(indexed) =
+        extract_indexed_properties(&parsed, &config).map_err(CliError::operation)?
+    {
+        diagnostics.extend(indexed.diagnostics.into_iter().map(|diagnostic| {
+            DoctorDiagnosticIssue {
+                document_path: Some(relative_path.to_string()),
+                message: diagnostic.message,
+                byte_range: None,
+            }
+        }));
+    }
+
+    diagnostics.extend(dataview_parse_diagnostics(relative_path, &parsed));
+    diagnostics.extend(link_resolution_diagnostics(
+        paths,
+        relative_path,
+        &config,
+        &parsed,
+    )?);
+    diagnostics.sort_by(|left, right| {
+        left.document_path
+            .cmp(&right.document_path)
+            .then(left.message.cmp(&right.message))
+            .then_with(|| match (&left.byte_range, &right.byte_range) {
+                (Some(left), Some(right)) => {
+                    left.start.cmp(&right.start).then(left.end.cmp(&right.end))
+                }
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+    });
+    diagnostics.dedup();
+    Ok(diagnostics)
+}
+
+fn dataview_parse_diagnostics(
+    relative_path: &str,
+    parsed: &vulcan_core::ParsedDocument,
+) -> Vec<DoctorDiagnosticIssue> {
+    parsed
+        .dataview_blocks
+        .iter()
+        .filter(|block| block.language == "dataview")
+        .filter_map(|block| {
+            let output = parse_dql_with_diagnostics(&block.text);
+            output
+                .diagnostics
+                .first()
+                .map(|diagnostic| DoctorDiagnosticIssue {
+                    document_path: Some(relative_path.to_string()),
+                    message: format!(
+                        "Dataview block {} at line {} failed to parse: {}",
+                        block.block_index, block.line_number, diagnostic.message
+                    ),
+                    byte_range: Some(DoctorByteRange {
+                        start: block.byte_range.start,
+                        end: block.byte_range.end,
+                    }),
+                })
+        })
+        .collect()
+}
+
+fn link_resolution_diagnostics(
+    paths: &VaultPaths,
+    relative_path: &str,
+    config: &vulcan_core::VaultConfig,
+    parsed: &vulcan_core::ParsedDocument,
+) -> Result<Vec<DoctorDiagnosticIssue>, CliError> {
+    let resolver_documents = build_resolver_documents(paths, relative_path, parsed)?;
+    let mut target_documents = HashMap::new();
+    let mut diagnostics = Vec::new();
+
+    for link in &parsed.links {
+        let resolution = resolve_link(
+            &resolver_documents,
+            &vulcan_core::ResolverLink {
+                source_document_id: relative_path.to_string(),
+                source_path: relative_path.to_string(),
+                target_path_candidate: link.target_path_candidate.clone(),
+                link_kind: link.link_kind,
+            },
+            config.link_resolution,
+        );
+        match resolution.problem {
+            Some(LinkResolutionProblem::Unresolved) => diagnostics.push(DoctorDiagnosticIssue {
+                document_path: Some(relative_path.to_string()),
+                message: format!("Unresolved link target `{}`", link.raw_text),
+                byte_range: Some(DoctorByteRange {
+                    start: link.byte_offset,
+                    end: link.byte_offset + link.raw_text.len(),
+                }),
+            }),
+            Some(LinkResolutionProblem::Ambiguous(matches)) => {
+                diagnostics.push(DoctorDiagnosticIssue {
+                    document_path: Some(relative_path.to_string()),
+                    message: format!(
+                        "Ambiguous link target `{}` matched {}",
+                        link.raw_text,
+                        matches.join(", ")
+                    ),
+                    byte_range: Some(DoctorByteRange {
+                        start: link.byte_offset,
+                        end: link.byte_offset + link.raw_text.len(),
+                    }),
+                });
+            }
+            None => {
+                let Some(target_path) = resolution.resolved_target_id else {
+                    continue;
+                };
+                if let Some(target_heading) = link.target_heading.as_deref() {
+                    let target = load_target_document(
+                        paths,
+                        relative_path,
+                        parsed,
+                        &target_path,
+                        &mut target_documents,
+                    )?;
+                    if !target
+                        .headings
+                        .iter()
+                        .any(|heading| heading.text == target_heading)
+                    {
+                        diagnostics.push(DoctorDiagnosticIssue {
+                            document_path: Some(relative_path.to_string()),
+                            message: format!(
+                                "Broken heading link `{}`: heading `{target_heading}` was not found in {target_path}",
+                                link.raw_text
+                            ),
+                            byte_range: Some(DoctorByteRange {
+                                start: link.byte_offset,
+                                end: link.byte_offset + link.raw_text.len(),
+                            }),
+                        });
+                    }
+                }
+                if let Some(target_block) = link.target_block.as_deref() {
+                    let target = load_target_document(
+                        paths,
+                        relative_path,
+                        parsed,
+                        &target_path,
+                        &mut target_documents,
+                    )?;
+                    if !target
+                        .block_refs
+                        .iter()
+                        .any(|block_ref| block_ref.block_id_text == target_block)
+                    {
+                        diagnostics.push(DoctorDiagnosticIssue {
+                            document_path: Some(relative_path.to_string()),
+                            message: format!(
+                                "Broken block link `{}`: block `^{target_block}` was not found in {target_path}",
+                                link.raw_text
+                            ),
+                            byte_range: Some(DoctorByteRange {
+                                start: link.byte_offset,
+                                end: link.byte_offset + link.raw_text.len(),
+                            }),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(diagnostics)
+}
+
+fn build_resolver_documents(
+    paths: &VaultPaths,
+    relative_path: &str,
+    parsed: &vulcan_core::ParsedDocument,
+) -> Result<Vec<vulcan_core::ResolverDocument>, CliError> {
+    if let Ok(note_index) = load_note_index(paths) {
+        let mut documents = note_index
+            .into_values()
+            .map(|note| vulcan_core::ResolverDocument {
+                id: note.document_path.clone(),
+                path: note.document_path,
+                filename: note.file_name,
+                aliases: note.aliases,
+            })
+            .collect::<Vec<_>>();
+        if let Some(existing) = documents
+            .iter_mut()
+            .find(|document| document.path == relative_path)
+        {
+            existing.aliases.clone_from(&parsed.aliases);
+        } else {
+            documents.push(resolver_document_from_parsed(relative_path, parsed));
+        }
+        return Ok(documents);
+    }
+
+    let mut documents = Vec::new();
+    for path in discover_markdown_note_paths(paths.vault_root()).map_err(CliError::operation)? {
+        if path == relative_path {
+            documents.push(resolver_document_from_parsed(relative_path, parsed));
+            continue;
+        }
+        let source =
+            fs::read_to_string(paths.vault_root().join(&path)).map_err(CliError::operation)?;
+        let parsed_document =
+            vulcan_core::parse_document(&source, &load_vault_config(paths).config);
+        documents.push(resolver_document_from_parsed(&path, &parsed_document));
+    }
+
+    if !documents
+        .iter()
+        .any(|document| document.path == relative_path)
+    {
+        documents.push(resolver_document_from_parsed(relative_path, parsed));
+    }
+    Ok(documents)
+}
+
+fn resolver_document_from_parsed(
+    relative_path: &str,
+    parsed: &vulcan_core::ParsedDocument,
+) -> vulcan_core::ResolverDocument {
+    let filename = Path::new(relative_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(relative_path)
+        .to_string();
+    vulcan_core::ResolverDocument {
+        id: relative_path.to_string(),
+        path: relative_path.to_string(),
+        filename,
+        aliases: parsed.aliases.clone(),
+    }
+}
+
+fn load_target_document<'a>(
+    paths: &VaultPaths,
+    current_path: &str,
+    current_parsed: &vulcan_core::ParsedDocument,
+    target_path: &str,
+    cache: &'a mut HashMap<String, vulcan_core::ParsedDocument>,
+) -> Result<&'a vulcan_core::ParsedDocument, CliError> {
+    if target_path == current_path {
+        cache
+            .entry(target_path.to_string())
+            .or_insert_with(|| current_parsed.clone());
+    } else {
+        let config = load_vault_config(paths).config;
+        if !cache.contains_key(target_path) {
+            let source = fs::read_to_string(paths.vault_root().join(target_path))
+                .map_err(CliError::operation)?;
+            cache.insert(
+                target_path.to_string(),
+                vulcan_core::parse_document(&source, &config),
+            );
+        }
+    }
+    cache
+        .get(target_path)
+        .ok_or_else(|| CliError::operation(format!("failed to load target note {target_path}")))
+}
+
+fn discover_markdown_note_paths(root: &Path) -> io::Result<Vec<String>> {
+    fn walk(root: &Path, current: &Path, paths: &mut Vec<String>) -> io::Result<()> {
+        for entry in fs::read_dir(current)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_name = entry.file_name();
+            if file_name.to_string_lossy() == ".vulcan" {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, paths)?;
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(io::Error::other)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                paths.push(relative);
+            }
+        }
+        Ok(())
+    }
+
+    let mut paths = Vec::new();
+    if root.is_dir() {
+        walk(root, root, &mut paths)?;
+    }
+    paths.sort();
+    Ok(paths)
+}
+
 fn run_open_command(
     paths: &VaultPaths,
     note: Option<&str>,
@@ -4350,6 +5557,133 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let refresh_mode = refresh_mode_for_target(&paths, cli, RefreshTarget::Browse);
             browse_tui::run_browse_tui(&paths, refresh_mode, no_commit).map_err(CliError::operation)
         }
+        Command::Note { ref command } => match command {
+            NoteCommand::Get {
+                note,
+                heading,
+                block_ref,
+                lines,
+                match_pattern,
+                context,
+                no_frontmatter,
+                raw,
+            } => {
+                let report = run_note_get_command(
+                    &paths,
+                    NoteGetOptions {
+                        note,
+                        heading: heading.as_deref(),
+                        block_ref: block_ref.as_deref(),
+                        lines: lines.as_deref(),
+                        match_pattern: match_pattern.as_deref(),
+                        context: *context,
+                        no_frontmatter: *no_frontmatter,
+                        raw: *raw,
+                    },
+                )?;
+                print_note_get_report(cli.output, &report)
+            }
+            NoteCommand::Set {
+                note,
+                file,
+                no_frontmatter,
+                check,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_note_set_command(
+                    &paths,
+                    note,
+                    file.as_ref(),
+                    *no_frontmatter,
+                    *check,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                auto_commit
+                    .commit(&paths, "note-set", std::slice::from_ref(&report.path))
+                    .map_err(CliError::operation)?;
+                print_note_set_report(cli.output, &report)
+            }
+            NoteCommand::Create {
+                path,
+                template,
+                frontmatter,
+                check,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_note_create_command(
+                    &paths,
+                    path,
+                    template.as_deref(),
+                    frontmatter,
+                    *check,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                auto_commit
+                    .commit(&paths, "note-create", &report.changed_paths)
+                    .map_err(CliError::operation)?;
+                print_note_create_report(cli.output, &report)
+            }
+            NoteCommand::Append {
+                note,
+                text,
+                heading,
+                check,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_note_append_command(
+                    &paths,
+                    note,
+                    text,
+                    heading.as_deref(),
+                    *check,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                auto_commit
+                    .commit(&paths, "note-append", std::slice::from_ref(&report.path))
+                    .map_err(CliError::operation)?;
+                print_note_append_report(cli.output, &report)
+            }
+            NoteCommand::Patch {
+                note,
+                find,
+                replace,
+                all,
+                check,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_note_patch_command(
+                    &paths,
+                    NotePatchOptions {
+                        note,
+                        find,
+                        replace,
+                        replace_all: *all,
+                        check: *check,
+                        dry_run: *dry_run,
+                    },
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "note-patch", std::slice::from_ref(&report.path))
+                        .map_err(CliError::operation)?;
+                }
+                print_note_patch_report(cli.output, &report)
+            }
+        },
         Command::Completions { shell } => {
             let mut command = Cli::command();
             generate(shell, &mut command, "vulcan", &mut io::stdout());
@@ -6992,6 +8326,126 @@ fn print_init_summary(output: OutputFormat, summary: &InitSummary) -> Result<(),
             Ok(())
         }
         OutputFormat::Json => print_json(summary),
+    }
+}
+
+fn print_note_get_report(output: OutputFormat, report: &NoteGetReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.metadata.raw
+                || (report.metadata.lines.is_none() && report.metadata.match_pattern.is_none())
+            {
+                print!("{}", report.content);
+            } else {
+                let mut previous_line = None;
+                for line in &report.display_lines {
+                    if previous_line.is_some_and(|line_number| line.line_number != line_number + 1)
+                    {
+                        println!("--");
+                    }
+                    println!("{}: {}", line.line_number, line.text);
+                    previous_line = Some(line.line_number);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_note_set_report(output: OutputFormat, report: &NoteSetReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "Updated {}{}.",
+                report.path,
+                if report.preserved_frontmatter {
+                    " (preserved frontmatter)"
+                } else {
+                    ""
+                }
+            );
+            print_note_check_warnings(&report.path, &report.diagnostics);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_note_create_report(
+    output: OutputFormat,
+    report: &NoteCreateReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Created {}.", report.path);
+            if let Some(template) = report.template.as_deref() {
+                let engine = report.engine.as_deref().unwrap_or("auto");
+                println!("Template: {template} ({engine})");
+            }
+            for warning in &report.warnings {
+                eprintln!("warning: {warning}");
+            }
+            print_note_check_warnings(&report.path, &report.diagnostics);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_note_append_report(
+    output: OutputFormat,
+    report: &NoteAppendReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if let Some(heading) = report.heading.as_deref() {
+                println!("Appended to {} under {}.", report.path, heading);
+            } else {
+                println!("Appended to {}.", report.path);
+            }
+            print_note_check_warnings(&report.path, &report.diagnostics);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_note_patch_report(output: OutputFormat, report: &NotePatchReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!(
+                    "Dry run: would patch {} ({} match{}).",
+                    report.path,
+                    report.match_count,
+                    if report.match_count == 1 { "" } else { "es" }
+                );
+            } else {
+                println!(
+                    "Patched {} ({} match{}).",
+                    report.path,
+                    report.match_count,
+                    if report.match_count == 1 { "" } else { "es" }
+                );
+            }
+            for change in &report.changes {
+                println!("- {} -> {}", change.before, change.after);
+            }
+            print_note_check_warnings(&report.path, &report.diagnostics);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_note_check_warnings(path: &str, diagnostics: &[DoctorDiagnosticIssue]) {
+    for diagnostic in diagnostics {
+        eprintln!(
+            "warning: {}: {}",
+            diagnostic.document_path.as_deref().unwrap_or(path),
+            diagnostic.message
+        );
     }
 }
 
@@ -10671,6 +12125,74 @@ mod tests {
                     text: "Called Alice".to_string(),
                     heading: Some("## Log".to_string()),
                     date: Some("2026-04-03".to_string()),
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_get_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "note",
+            "get",
+            "Dashboard",
+            "--heading",
+            "Tasks",
+            "--match",
+            "TODO",
+            "--context",
+            "1",
+            "--raw",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::Get {
+                    note: "Dashboard".to_string(),
+                    heading: Some("Tasks".to_string()),
+                    block_ref: None,
+                    lines: None,
+                    match_pattern: Some("TODO".to_string()),
+                    context: 1,
+                    no_frontmatter: false,
+                    raw: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_patch_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "note",
+            "patch",
+            "Dashboard",
+            "--find",
+            "/TODO \\d+/",
+            "--replace",
+            "DONE",
+            "--all",
+            "--check",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::Patch {
+                    note: "Dashboard".to_string(),
+                    find: "/TODO \\d+/".to_string(),
+                    replace: "DONE".to_string(),
+                    all: true,
+                    check: true,
+                    dry_run: true,
                     no_commit: true,
                 },
             }

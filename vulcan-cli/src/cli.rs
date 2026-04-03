@@ -9,7 +9,7 @@ Command Groups:
   Journaling: daily, weekly, monthly, periodic, inbox, template
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
-  Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
+  Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
   Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions
 
 Docs:
@@ -220,6 +220,48 @@ Examples:
   vulcan edit Projects/Alpha
   vulcan edit
   vulcan edit --new Inbox/Idea";
+
+const NOTE_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  get         read one note, optionally with heading, block, line, or regex selectors
+  set         replace one note's contents from stdin or --file
+  create      create a new note, optionally from a template and extra frontmatter
+  append      append text to the end of a note or under a heading
+  patch       perform a guarded single-note find/replace
+
+Notes:
+  `--check` runs non-blocking doctor-like diagnostics for the resulting note.
+  Mutating note commands support --no-commit; `patch` also supports --dry-run.
+  `note get --output json` returns content, parsed frontmatter, and selection metadata.
+
+Examples:
+  vulcan note get Projects/Alpha --heading Status
+  vulcan note set Projects/Alpha --no-frontmatter < body.md
+  vulcan note create Inbox/Idea --template daily --frontmatter status=idea
+  vulcan note append Projects/Alpha \"Shipped\" --heading \"## Log\"
+  vulcan note patch Projects/Alpha --find TODO --replace DONE";
+
+const NOTE_GET_COMMAND_AFTER_HELP: &str = "\
+Selectors:
+  --heading <name>        limit to one heading section, including nested subheadings
+  --block-ref <id>        limit to the block tagged with ^<id>
+  --lines <range>         limit to a 1-based line range within the current selection
+  --match <regex>         keep only lines matching the regex
+  --context <n>           include N surrounding lines around each --match hit
+  --no-frontmatter        strip a leading YAML frontmatter block from the output
+  --raw                   print only the selected content without line numbers
+
+Line range syntax:
+  1-10    first ten lines
+  50-     line 50 through the end
+  -5      last five lines
+  7       only line 7
+
+Examples:
+  vulcan note get Dashboard
+  vulcan note get Dashboard --heading Tasks --match TODO --context 1
+  vulcan note get Dashboard --block-ref status-card
+  vulcan note get Dashboard --lines 10-20 --raw";
 
 const DIFF_COMMAND_AFTER_HELP: &str = "\
 Comparison source:
@@ -1234,6 +1276,98 @@ pub enum TemplateSubcommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum NoteCommand {
+    #[command(
+        about = "Read one note, optionally narrowed by selectors",
+        after_help = NOTE_GET_COMMAND_AFTER_HELP
+    )]
+    Get {
+        #[arg(help = "Note path, filename, or alias to read")]
+        note: String,
+        #[arg(long, help = "Extract one heading section by exact heading text")]
+        heading: Option<String>,
+        #[arg(long = "block-ref", help = "Extract one block by block reference id")]
+        block_ref: Option<String>,
+        #[arg(long, help = "Select a 1-based line range such as 1-10, 50-, or -5")]
+        lines: Option<String>,
+        #[arg(long = "match", help = "Filter selected lines with a regex")]
+        match_pattern: Option<String>,
+        #[arg(long, default_value_t = 0, help = "Context lines around each match")]
+        context: usize,
+        #[arg(long, help = "Strip a leading YAML frontmatter block from the output")]
+        no_frontmatter: bool,
+        #[arg(long, help = "Print only the selected content without line numbers")]
+        raw: bool,
+    },
+    #[command(about = "Replace one note's contents from stdin or a file")]
+    Set {
+        #[arg(help = "Note path, filename, or alias to overwrite")]
+        note: String,
+        #[arg(long, help = "Read replacement content from a file instead of stdin")]
+        file: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Preserve the existing YAML frontmatter and only replace the body"
+        )]
+        no_frontmatter: bool,
+        #[arg(
+            long,
+            help = "Run non-blocking doctor-like diagnostics after the write"
+        )]
+        check: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Create a new note from optional stdin content and template context")]
+    Create {
+        #[arg(help = "New relative note path to create")]
+        path: String,
+        #[arg(long, help = "Render a template before creating the note")]
+        template: Option<String>,
+        #[arg(
+            long = "frontmatter",
+            action = ArgAction::Append,
+            help = "Add or override a top-level frontmatter key using key=value syntax"
+        )]
+        frontmatter: Vec<String>,
+        #[arg(long, help = "Run non-blocking doctor-like diagnostics after creation")]
+        check: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Append text to a note or under a heading")]
+    Append {
+        #[arg(help = "Note path, filename, or alias to update")]
+        note: String,
+        #[arg(help = "Text to append, or `-` to read from stdin")]
+        text: String,
+        #[arg(long, help = "Append under this exact heading, creating it if needed")]
+        heading: Option<String>,
+        #[arg(long, help = "Run non-blocking doctor-like diagnostics after append")]
+        check: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Find and replace inside a single note with guarded match counts")]
+    Patch {
+        #[arg(help = "Note path, filename, or alias to update")]
+        note: String,
+        #[arg(long, help = "Literal text or /regex/ pattern to find")]
+        find: String,
+        #[arg(long, help = "Replacement text")]
+        replace: String,
+        #[arg(long, help = "Allow replacing more than one match")]
+        all: bool,
+        #[arg(long, help = "Run non-blocking doctor-like diagnostics after patching")]
+        check: bool,
+        #[arg(long, help = "Report the planned patch without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TemplateEngineArg {
     Native,
@@ -1593,6 +1727,14 @@ pub enum Command {
     Browse {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
+    },
+    #[command(
+        about = "Read and mutate one note with selector-aware CRUD commands",
+        after_help = NOTE_COMMAND_AFTER_HELP
+    )]
+    Note {
+        #[command(subcommand)]
+        command: NoteCommand,
     },
     #[command(
         about = "Open a note in $VISUAL/$EDITOR and refresh the cache afterwards",

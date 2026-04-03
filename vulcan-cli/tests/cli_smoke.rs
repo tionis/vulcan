@@ -32,6 +32,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("tasks"))
             .and(predicate::str::contains("kanban"))
             .and(predicate::str::contains("browse"))
+            .and(predicate::str::contains("note"))
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("suggest"))
             .and(predicate::str::contains("search"))
@@ -90,7 +91,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Reports and Automation: saved, checkpoint, changes, batch, export, automation",
             ))
             .and(predicate::str::contains(
-                "Mutations: edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
+                "Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
             ))
             .and(predicate::str::contains(
                 "Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions",
@@ -482,6 +483,317 @@ fn daily_append_creates_note_and_appends_under_heading() {
     assert!(json["created"].as_bool().is_some_and(|created| created));
     assert!(json["appended"].as_bool().is_some_and(|appended| appended));
     assert!(rendered.contains("## Log\n\nCalled Alice\n"));
+}
+
+#[test]
+fn note_get_json_output_supports_composable_selectors() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "get",
+            "Dashboard",
+            "--heading",
+            "Tasks",
+            "--match",
+            "TODO",
+            "--context",
+            "1",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["path"], "Dashboard.md");
+    assert_eq!(json["frontmatter"]["status"], "active");
+    assert_eq!(
+        json["content"],
+        "Before\nTODO first\nContext after\n### Nested\nTODO nested\n"
+    );
+    assert_eq!(json["metadata"]["heading"], "Tasks");
+    assert_eq!(json["metadata"]["match_pattern"], "TODO");
+    assert_eq!(json["metadata"]["match_count"], 2);
+    assert_eq!(json["metadata"]["line_spans"][0]["start_line"], 10);
+    assert_eq!(json["metadata"]["line_spans"][0]["end_line"], 14);
+}
+
+#[test]
+fn note_get_human_output_adds_line_numbers_unless_raw() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "note",
+            "get",
+            "Dashboard",
+            "--match",
+            "TODO",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("11: TODO first").and(predicate::str::contains("--")));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "note",
+            "get",
+            "Dashboard",
+            "--match",
+            "TODO",
+            "--raw",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("TODO first")
+                .and(predicate::str::contains("TODO nested"))
+                .and(predicate::str::contains("11:").not())
+                .and(predicate::str::contains("--").not()),
+        );
+}
+
+#[test]
+fn note_set_preserves_frontmatter_and_reports_check_diagnostics() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "set",
+            "Dashboard",
+            "--no-frontmatter",
+            "--check",
+        ])
+        .write_stdin("Replacement line\n\n[[Missing]]\n")
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let rendered = fs::read_to_string(vault_root.join("Dashboard.md"))
+        .expect("Dashboard.md should be readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(json["path"], "Dashboard.md");
+    assert_eq!(json["preserved_frontmatter"], true);
+    assert_eq!(json["checked"], true);
+    assert!(json["diagnostics"]
+        .as_array()
+        .is_some_and(
+            |diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Unresolved link target")))
+        ));
+    assert!(rendered.starts_with("---\nstatus: active\ntags:\n  - project\n---\n"));
+    assert!(rendered.contains("Replacement line"));
+    assert!(!rendered.contains("Intro line"));
+}
+
+#[test]
+fn note_create_uses_template_and_frontmatter_bindings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates"))
+        .expect("template directory should be created");
+    fs::write(
+        vault_root.join(".vulcan/templates/brief.md"),
+        concat!(
+            "---\n",
+            "status: draft\n",
+            "tags:\n",
+            "  - seed\n",
+            "---\n",
+            "# {{title}}\n",
+            "\n",
+            "Template body\n",
+        ),
+    )
+    .expect("template should be written");
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "create",
+            "Inbox/Idea",
+            "--template",
+            "brief",
+            "--frontmatter",
+            "reviewed=true",
+        ])
+        .write_stdin("Extra details\n")
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let rendered = fs::read_to_string(vault_root.join("Inbox/Idea.md"))
+        .expect("created note should be readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(json["path"], "Inbox/Idea.md");
+    assert_eq!(json["template"], "brief");
+    assert_eq!(json["engine"], "native");
+    assert!(rendered.contains("status: draft"));
+    assert!(rendered.contains("reviewed: true"));
+    assert!(rendered.contains("# Idea"));
+    assert!(rendered.contains("Template body\n\nExtra details\n"));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault_root_str, "note", "create", "Inbox/Idea"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn note_append_under_heading_reports_check_diagnostics() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "append",
+            "Dashboard",
+            "-",
+            "--heading",
+            "## Done",
+            "--check",
+        ])
+        .write_stdin("[[Missing]]\n")
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let rendered = fs::read_to_string(vault_root.join("Dashboard.md"))
+        .expect("Dashboard.md should be readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(json["path"], "Dashboard.md");
+    assert_eq!(json["heading"], "## Done");
+    assert!(json["diagnostics"]
+        .as_array()
+        .is_some_and(
+            |diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Unresolved link target")))
+        ));
+    assert!(rendered.contains("## Done\n\n[[Missing]]\n\nFinished line"));
+}
+
+#[test]
+fn note_patch_enforces_match_safety_and_supports_regex_dry_runs() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should be created");
+    fs::write(
+        vault_root.join("Patch.md"),
+        "TODO 2026-04-03\nTODO 2026-05-01\n",
+    )
+    .expect("Patch.md should be written");
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "note",
+            "patch",
+            "Patch",
+            "--find",
+            "TODO",
+            "--replace",
+            "DONE",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("rerun with --all"));
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "patch",
+            "Patch",
+            "--find",
+            "/2026-\\d{2}-\\d{2}/",
+            "--replace",
+            "DATE",
+            "--all",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let rendered = fs::read_to_string(vault_root.join("Patch.md"))
+        .expect("Patch.md should be readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(json["path"], "Patch.md");
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["regex"], true);
+    assert_eq!(json["match_count"], 2);
+    assert_eq!(json["changes"][0]["before"], "2026-04-03");
+    assert_eq!(json["changes"][0]["after"], "DATE");
+    assert_eq!(rendered, "TODO 2026-04-03\nTODO 2026-05-01\n");
 }
 
 #[test]
@@ -5386,6 +5698,11 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .as_array()
         .expect("commands should be an array")
         .iter()
+        .any(|command| command["name"] == "note"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
         .any(|command| command["name"] == "tasks"));
     assert!(json["commands"]
         .as_array()
@@ -5403,6 +5720,14 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .and_then(|command| command["after_help"].as_str())
         .expect("template after_help should be present")
         .contains("Template source:"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .find(|command| command["name"] == "note")
+        .and_then(|command| command["after_help"].as_str())
+        .expect("note after_help should be present")
+        .contains("Subcommands:"));
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")
@@ -6104,6 +6429,34 @@ fn run_incremental_scan(vault_root: &Path) {
         ])
         .assert()
         .success();
+}
+
+fn write_note_crud_sample(vault_root: &Path) {
+    fs::create_dir_all(vault_root).expect("vault root should be created");
+    fs::write(
+        vault_root.join("Dashboard.md"),
+        concat!(
+            "---\n",
+            "status: active\n",
+            "tags:\n",
+            "  - project\n",
+            "---\n",
+            "# Dashboard\n",
+            "\n",
+            "Intro line\n",
+            "## Tasks\n",
+            "Before\n",
+            "TODO first\n",
+            "Context after\n",
+            "### Nested\n",
+            "TODO nested\n",
+            "## Done\n",
+            "Finished line\n",
+            "- Item line\n",
+            "^done-item\n",
+        ),
+    )
+    .expect("Dashboard.md should be written");
 }
 
 fn write_test_editor(base: &Path, body: &str) -> String {

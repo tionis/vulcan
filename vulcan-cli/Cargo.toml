@@ -24,6 +24,7 @@ clap_complete.workspace = true
 crossterm.workspace = true
 csv.workspace = true
 ratatui.workspace = true
+regex.workspace = true
 reqwest = { workspace = true, optional = true }
 rquickjs = { workspace = true, optional = true }
 serde.workspace = true
