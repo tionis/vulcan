@@ -10,7 +10,7 @@ Command Groups:
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
   Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref
-  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, open, describe, completions
+  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions
 
 Docs:
   User guide: docs/cli.md
@@ -282,6 +282,21 @@ Examples:
   vulcan git diff Home.md
   vulcan git commit -m \"Update daily notes\"
   vulcan git blame Projects/Alpha.md";
+
+const WEB_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  search      query the configured web search backend
+  fetch       fetch one URL as markdown, html, or raw content
+
+Notes:
+  `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.
+  `web fetch --extract-article` prefers `<article>`/`<main>` content when present.
+  `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.
+
+Examples:
+  vulcan web search \"release notes\" --limit 5
+  vulcan web fetch https://example.com --mode markdown
+  vulcan web fetch https://example.com --mode raw --save page.bin";
 
 const DIFF_COMMAND_AFTER_HELP: &str = "\
 Comparison source:
@@ -1140,6 +1155,41 @@ pub enum GitCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum WebCommand {
+    #[command(about = "Query the configured web search backend")]
+    Search {
+        #[arg(help = "Search query to send to the backend")]
+        query: String,
+        #[arg(long, help = "Override the configured search backend")]
+        backend: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 10,
+            help = "Maximum number of results to return"
+        )]
+        limit: usize,
+    },
+    #[command(about = "Fetch one URL as markdown, html, or raw content")]
+    Fetch {
+        #[arg(help = "URL to fetch")]
+        url: String,
+        #[arg(long, value_enum, default_value_t = WebFetchMode::Markdown)]
+        mode: WebFetchMode,
+        #[arg(long, help = "Write fetched output to this path")]
+        save: Option<PathBuf>,
+        #[arg(long, help = "Prefer article-like content when converting HTML")]
+        extract_article: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WebFetchMode {
+    Markdown,
+    Html,
+    Raw,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum PeriodicSubcommand {
     #[command(about = "List indexed periodic notes")]
     List {
@@ -1694,6 +1744,14 @@ pub enum Command {
     Git {
         #[command(subcommand)]
         command: GitCommand,
+    },
+    #[command(
+        about = "Fetch and search external web content",
+        after_help = WEB_COMMAND_AFTER_HELP
+    )]
+    Web {
+        #[command(subcommand)]
+        command: WebCommand,
     },
     #[command(
         about = "Open or create the weekly note for a date",

@@ -81,6 +81,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("monthly"))
             .and(predicate::str::contains("periodic"))
             .and(predicate::str::contains("git"))
+            .and(predicate::str::contains("web"))
             .and(predicate::str::contains("inbox"))
             .and(predicate::str::contains("template"))
             .and(predicate::str::contains("batch"))
@@ -117,7 +118,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref",
             ))
             .and(predicate::str::contains(
-                "Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, open, describe, completions",
+                "Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions",
             ))
             .and(predicate::str::contains("User guide: docs/cli.md"))
             .and(predicate::str::contains(
@@ -1309,6 +1310,137 @@ fn git_help_documents_sandboxed_operations() {
                 .and(predicate::str::contains("commit"))
                 .and(predicate::str::contains("blame"))
                 .and(predicate::str::contains("`.vulcan/`")),
+        );
+}
+
+#[test]
+fn web_search_json_output_uses_configured_backend_and_env_key() {
+    let server = MockWebServer::spawn();
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            "[web.search]\nbackend = \"kagi\"\napi_key_env = \"TEST_KAGI_TOKEN\"\nbase_url = \"{}\"\n",
+            server.url("/api/v0/search")
+        ),
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("TEST_KAGI_TOKEN", "test-token")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "web",
+            "search",
+            "release notes",
+            "--limit",
+            "2",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    server.shutdown();
+
+    assert_eq!(json["backend"], "kagi");
+    assert_eq!(json["query"], "release notes");
+    assert_eq!(json["results"][0]["title"], "Release Notes");
+    assert_eq!(json["results"][1]["url"], "https://example.com/status");
+}
+
+#[test]
+fn web_fetch_markdown_json_output_extracts_article_content() {
+    let server = MockWebServer::spawn();
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "web",
+            "fetch",
+            &server.url("/article"),
+            "--mode",
+            "markdown",
+            "--extract-article",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    server.shutdown();
+
+    assert_eq!(json["status"], 200);
+    assert_eq!(json["content_type"], "text/html");
+    assert_eq!(json["mode"], "markdown");
+    assert!(json["content"]
+        .as_str()
+        .is_some_and(|content| content.contains("Release Summary")
+            && content.contains("Shipped & stable.")
+            && !content.contains("skip me")));
+}
+
+#[test]
+fn web_fetch_raw_save_writes_response_body() {
+    let server = MockWebServer::spawn();
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    let output_path = temp_dir.path().join("page.bin");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "web",
+            "fetch",
+            &server.url("/raw"),
+            "--mode",
+            "raw",
+            "--save",
+            output_path
+                .to_str()
+                .expect("output path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    server.shutdown();
+    let rendered = fs::read(&output_path).expect("saved output should be readable");
+
+    assert_eq!(json["status"], 200);
+    assert_eq!(json["saved"], output_path.to_string_lossy().as_ref());
+    assert_eq!(rendered, b"raw-body");
+}
+
+#[test]
+fn web_help_documents_modes_and_backends() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["web", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("search")
+                .and(predicate::str::contains("fetch"))
+                .and(predicate::str::contains("robots.txt"))
+                .and(predicate::str::contains("[web.search]")),
         );
 }
 
@@ -7671,9 +7803,135 @@ impl MockEmbeddingServer {
     }
 }
 
+struct MockWebServer {
+    address: String,
+    shutdown_tx: std::sync::mpsc::Sender<()>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl MockWebServer {
+    fn spawn() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should support nonblocking mode");
+        let address = listener
+            .local_addr()
+            .expect("listener should expose its local address");
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+
+        let handle = thread::spawn(move || loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
+
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .expect("stream should support blocking mode");
+                    let request = read_header_request(&mut stream);
+                    if request.path.starts_with("/api/v0/search") {
+                        let auth = request
+                            .headers
+                            .get("authorization")
+                            .cloned()
+                            .unwrap_or_default();
+                        let status_line = if auth == "Bot test-token" {
+                            "HTTP/1.1 200 OK"
+                        } else {
+                            "HTTP/1.1 401 Unauthorized"
+                        };
+                        let body = if auth == "Bot test-token" {
+                            serde_json::json!({
+                                "data": [
+                                    {
+                                        "title": "Release Notes",
+                                        "url": "https://example.com/release",
+                                        "snippet": "Everything that shipped this week."
+                                    },
+                                    {
+                                        "title": "Status Update",
+                                        "url": "https://example.com/status",
+                                        "snippet": "Current project status."
+                                    }
+                                ]
+                            })
+                            .to_string()
+                        } else {
+                            serde_json::json!({ "error": "unauthorized" }).to_string()
+                        };
+                        write_http_response(
+                            &mut stream,
+                            status_line,
+                            "application/json",
+                            body.as_bytes(),
+                        );
+                    } else if request.path == "/robots.txt" {
+                        write_http_response(
+                            &mut stream,
+                            "HTTP/1.1 200 OK",
+                            "text/plain",
+                            b"User-agent: *\nDisallow:\n",
+                        );
+                    } else if request.path == "/article" {
+                        write_http_response(
+                            &mut stream,
+                            "HTTP/1.1 200 OK",
+                            "text/html",
+                            br"<!doctype html><html><body><nav>skip me</nav><article><h1>Release Summary</h1><p>Shipped &amp; stable.</p></article></body></html>",
+                        );
+                    } else if request.path == "/raw" {
+                        write_http_response(
+                            &mut stream,
+                            "HTTP/1.1 200 OK",
+                            "application/octet-stream",
+                            b"raw-body",
+                        );
+                    } else {
+                        write_http_response(
+                            &mut stream,
+                            "HTTP/1.1 404 Not Found",
+                            "text/plain",
+                            b"not found",
+                        );
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("unexpected mock server error: {error}"),
+            }
+        });
+
+        Self {
+            address: format!("http://{address}"),
+            shutdown_tx,
+            handle: Some(handle),
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.address, path)
+    }
+
+    fn shutdown(mut self) {
+        let _ = self.shutdown_tx.send(());
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("mock server should join");
+        }
+    }
+}
+
 #[derive(Debug)]
 struct CapturedRequest {
     body: Value,
+}
+
+#[derive(Debug)]
+struct CapturedHeaderRequest {
+    path: String,
+    headers: std::collections::BTreeMap<String, String>,
 }
 
 fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
@@ -7718,6 +7976,58 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
     CapturedRequest {
         body: serde_json::from_slice(&body_bytes).expect("request body should parse"),
     }
+}
+
+fn read_header_request(stream: &mut std::net::TcpStream) -> CapturedHeaderRequest {
+    let mut buffer = Vec::new();
+
+    loop {
+        let mut chunk = [0_u8; 1024];
+        let bytes_read = stream.read(&mut chunk).expect("request should be readable");
+        if bytes_read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+        if find_subslice(&buffer, b"\r\n\r\n").is_some() {
+            break;
+        }
+    }
+
+    let request = String::from_utf8(buffer).expect("request should be utf8");
+    let mut lines = request.lines();
+    let request_line = lines
+        .next()
+        .expect("request should start with a request line");
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .expect("request line should include a path")
+        .to_string();
+    let headers = lines
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect();
+
+    CapturedHeaderRequest { path, headers }
+}
+
+fn write_http_response(
+    stream: &mut std::net::TcpStream,
+    status_line: &str,
+    content_type: &str,
+    body: &[u8],
+) {
+    let headers = format!(
+        "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(headers.as_bytes())
+        .expect("headers should write");
+    stream.write_all(body).expect("body should write");
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {

@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -2940,6 +2940,112 @@
                 "short": null,
                 "value_names": [
                   "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Fetch and search external web content",
+        "after_help": "Subcommands:\n  search      query the configured web search backend\n  fetch       fetch one URL as markdown, html, or raw content\n\nNotes:\n  `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.\n  `web fetch --extract-article` prefers `<article>`/`<main>` content when present.\n  `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.\n\nExamples:\n  vulcan web search \"release notes\" --limit 5\n  vulcan web fetch https://example.com --mode markdown\n  vulcan web fetch https://example.com --mode raw --save page.bin",
+        "name": "web",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Query the configured web search backend",
+            "name": "search",
+            "options": [
+              {
+                "help": "Search query to send to the backend",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "Override the configured search backend",
+                "id": "backend",
+                "long": "backend",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BACKEND"
+                ]
+              },
+              {
+                "help": "Maximum number of results to return",
+                "id": "limit",
+                "long": "limit",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Fetch one URL as markdown, html, or raw content",
+            "name": "fetch",
+            "options": [
+              {
+                "help": "URL to fetch",
+                "id": "url",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "URL"
+                ]
+              },
+              {
+                "help": null,
+                "id": "mode",
+                "long": "mode",
+                "possible_values": [
+                  "markdown",
+                  "html",
+                  "raw"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "MODE"
+                ]
+              },
+              {
+                "help": "Write fetched output to this path",
+                "id": "save",
+                "long": "save",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SAVE"
+                ]
+              },
+              {
+                "help": "Prefer article-like content when converting HTML",
+                "id": "extract_article",
+                "long": "extract-article",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXTRACT_ARTICLE"
                 ]
               }
             ],
