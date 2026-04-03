@@ -78,7 +78,7 @@ Precedence is:
 3. `.obsidian/app.json`
 4. Built-in defaults
 
-`vulcan init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`.
+`vulcan init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan init --import` to apply every detected importer immediately.
 
 Automatic cache refresh is configured under `[scan]`:
 
@@ -113,7 +113,7 @@ Note resolution rules:
 
 ### Indexing, cache, and local service commands
 
-- `vulcan init`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules.
+- `vulcan init [--import|--no-import]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import all detected Obsidian settings immediately.
 - `vulcan scan [--full] [--no-commit]`: perform an incremental or full scan and refresh the cache.
 - `vulcan rebuild [--dry-run]`: rebuild the cache from disk.
 - `vulcan repair fts [--dry-run]`: rebuild the full-text search index from cached chunks.
@@ -131,10 +131,13 @@ Note resolution rules:
 ### Config import commands
 
 - `vulcan config import core [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian core settings from `.obsidian/app.json`, `.obsidian/templates.json`, and `.obsidian/types.json`.
+- `vulcan config import dataview [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Dataview plugin settings.
 - `vulcan config import kanban [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Kanban plugin settings.
 - `vulcan config import periodic-notes [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Daily Notes core plugin settings plus the community Periodic Notes plugin settings.
 - `vulcan config import tasks [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Tasks plugin settings.
 - `vulcan config import templater [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Templater plugin settings.
+- `vulcan config import --all [--dry-run] [--target <shared|local>] [--no-commit]`: run every detected importer in registry order and aggregate the results.
+- `vulcan config import --list`: show every registered importer together with detection status and source paths.
 
 Shared behavior:
 
