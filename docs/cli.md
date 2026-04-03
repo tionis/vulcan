@@ -158,6 +158,7 @@ Note resolution rules:
 `vulcan bases` now covers both read and write workflows:
 
 - `vulcan bases eval <file.base>`: evaluate a `.base` file against the indexed vault state.
+- `vulcan bases create <file.base> [--title <title>] [--dry-run] [--no-commit]`: create a note matching the first view context.
 - `vulcan bases tui <file.base>`: open the interactive Bases TUI.
 - `vulcan bases view-add <file.base> <name> ...`: add a view definition.
 - `vulcan bases view-delete <file.base> <name> [--dry-run] [--no-commit]`: delete a view.
@@ -168,6 +169,7 @@ Important behavior:
 
 - View mutations operate on the parsed `.base` model and write it back through the serializer.
 - Unsupported Bases constructs surface as diagnostics instead of being silently ignored.
+- `bases create` derives the note folder from `file.folder = ...` and `file.inFolder(...)` filters, and pre-populates equality filters like `status = todo` into frontmatter.
 - `view-*` commands support `--dry-run` where the result can be previewed, and `--no-commit` to suppress auto-commit for that invocation.
 
 ### Semantic and vector commands

@@ -1379,7 +1379,7 @@
       },
       {
         "about": "Evaluate and maintain Bases views",
-        "after_help": "Subcommands:\n  eval         evaluate a .base file and print its current rows\n  tui          inspect a .base file interactively\n  view-add     add a validated view definition\n  view-delete  remove a view definition\n  view-rename  rename a view\n  view-edit    adjust filters, columns, sort, and grouping\n\nNotes:\n  view-* commands rewrite the parsed .base model instead of patching YAML text blindly.\n  Mutating bases commands support --dry-run and --no-commit.\n\nExamples:\n  vulcan bases eval release.base\n  vulcan bases tui release.base\n  vulcan bases view-add release.base Inbox --filter 'status = idea' --column file.name",
+        "after_help": "Subcommands:\n  eval         evaluate a .base file and print its current rows\n  tui          inspect a .base file interactively\n  create       create a note that matches the first Bases view context\n  view-add     add a validated view definition\n  view-delete  remove a view definition\n  view-rename  rename a view\n  view-edit    adjust filters, columns, sort, and grouping\n\nNotes:\n  view-* commands rewrite the parsed .base model instead of patching YAML text blindly.\n  Mutating bases commands support --dry-run and --no-commit.\n  `create` derives folder and equality frontmatter from the first view; the TUI `n` hotkey uses the current view.\n\nExamples:\n  vulcan bases eval release.base\n  vulcan bases create release.base --title \"Launch Plan\"\n  vulcan bases tui release.base\n  vulcan bases view-add release.base Inbox --filter 'status = idea' --column file.name",
         "name": "bases",
         "options": [],
         "subcommands": [
@@ -1421,6 +1421,63 @@
                 "short": null,
                 "value_names": [
                   "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Create a note from the first Bases view context",
+            "name": "create",
+            "options": [
+              {
+                "help": "Vault-relative path to the .base file",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "Optional note title; defaults to Untitled",
+                "id": "title",
+                "long": "title",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TITLE"
+                ]
+              },
+              {
+                "help": "Preview the derived path, properties, and template",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
                 ]
               }
             ],

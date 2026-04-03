@@ -1882,7 +1882,11 @@ fn bases_and_describe_help_document_runtime_surfaces() {
         .success()
         .stdout(
             predicate::str::contains("Evaluate and maintain Bases views")
+                .and(predicate::str::contains("create"))
                 .and(predicate::str::contains("view-add"))
+                .and(predicate::str::contains(
+                    "`create` derives folder and equality frontmatter from the first view; the TUI `n` hotkey uses the current view.",
+                ))
                 .and(predicate::str::contains(
                     "Mutating bases commands support --dry-run and --no-commit.",
                 )),
