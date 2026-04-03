@@ -8,10 +8,10 @@ mod serve;
 
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
-    ConfigImportCommand, DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GraphCommand,
-    KanbanCommand, OutputFormat, RefreshMode, RepairCommand, SavedCommand, SearchMode,
-    SearchSortArg, SuggestCommand, TasksCommand, TemplateSubcommand, VectorQueueCommand,
-    VectorsCommand,
+    ConfigImportArgs, ConfigImportCommand, ConfigImportTargetArg, DataviewCommand, ExportArgs,
+    ExportCommand, ExportFormat, GraphCommand, KanbanCommand, OutputFormat, RefreshMode,
+    RepairCommand, SavedCommand, SearchMode, SearchSortArg, SuggestCommand, TasksCommand,
+    TemplateSubcommand, VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -42,7 +42,6 @@ use vulcan_core::{
     create_checkpoint, doctor_fix, doctor_vault, drop_vector_model, evaluate_base_file,
     evaluate_dataview_js_query, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, export_static_search_index, git_status,
-    import_kanban_plugin_config, import_tasks_plugin_config, import_templater_plugin_config,
     index_vectors_with_progress, initialize_vault, inspect_cache, inspect_vector_queue,
     link_mentions, list_checkpoints, list_kanban_boards, list_saved_reports, list_vector_models,
     load_dataview_blocks, load_kanban_board, load_saved_report, load_tasks_blocks,
@@ -59,18 +58,19 @@ use vulcan_core::{
     BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
     CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
     ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
-    DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
-    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression,
-    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    InitSummary, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
-    KanbanMoveReport, KanbanTaskStatus, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, QueryAst, QueryReport, RebuildQuery, RebuildReport,
-    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksQueryResult,
+    ConfigImportReport, CoreImporter, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    EvaluatedInlineExpression, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
+    NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PluginImporter,
+    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorReport, RelatedNoteHit,
+    RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TasksImporter, TasksQueryResult, TemplaterImporter,
     TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
     VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
     VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
@@ -4556,55 +4556,17 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         },
         Command::Config { ref command } => match command {
             ConfigCommand::Import { command } => match command {
-                ConfigImportCommand::Templater { no_commit } => {
-                    let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                    warn_auto_commit_if_needed(&auto_commit);
-                    let had_gitignore = paths.gitignore_file().exists();
-                    let report =
-                        import_templater_plugin_config(&paths).map_err(CliError::operation)?;
-                    if report.updated {
-                        auto_commit
-                            .commit(
-                                &paths,
-                                "config-import-templater",
-                                &config_import_changed_files(&paths, had_gitignore),
-                            )
-                            .map_err(CliError::operation)?;
-                    }
-                    print_config_import_report(cli.output, &report)
+                ConfigImportCommand::Core { args } => {
+                    run_config_import(&paths, cli.output, &CoreImporter, args)
                 }
-                ConfigImportCommand::Kanban { no_commit } => {
-                    let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                    warn_auto_commit_if_needed(&auto_commit);
-                    let had_gitignore = paths.gitignore_file().exists();
-                    let report =
-                        import_kanban_plugin_config(&paths).map_err(CliError::operation)?;
-                    if report.updated {
-                        auto_commit
-                            .commit(
-                                &paths,
-                                "config-import-kanban",
-                                &config_import_changed_files(&paths, had_gitignore),
-                            )
-                            .map_err(CliError::operation)?;
-                    }
-                    print_config_import_report(cli.output, &report)
+                ConfigImportCommand::Templater { args } => {
+                    run_config_import(&paths, cli.output, &TemplaterImporter, args)
                 }
-                ConfigImportCommand::Tasks { no_commit } => {
-                    let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                    warn_auto_commit_if_needed(&auto_commit);
-                    let had_gitignore = paths.gitignore_file().exists();
-                    let report = import_tasks_plugin_config(&paths).map_err(CliError::operation)?;
-                    if report.updated {
-                        auto_commit
-                            .commit(
-                                &paths,
-                                "config-import-tasks",
-                                &config_import_changed_files(&paths, had_gitignore),
-                            )
-                            .map_err(CliError::operation)?;
-                    }
-                    print_config_import_report(cli.output, &report)
+                ConfigImportCommand::Kanban { args } => {
+                    run_config_import(&paths, cli.output, &KanbanImporter, args)
+                }
+                ConfigImportCommand::Tasks { args } => {
+                    run_config_import(&paths, cli.output, &TasksImporter, args)
                 }
             },
         },
@@ -5241,7 +5203,7 @@ fn print_batch_run_report(output: OutputFormat, report: &BatchRunReport) -> Resu
             }
             Ok(())
         }
-        OutputFormat::Json => print_json(report),
+        OutputFormat::Json => print_json(&report),
     }
 }
 
@@ -5390,7 +5352,7 @@ fn print_rebuild_report(
             }
             Ok(())
         }
-        OutputFormat::Json => print_json(report),
+        OutputFormat::Json => print_json(&report),
     }
 }
 
@@ -5410,7 +5372,7 @@ fn print_repair_fts_report(output: OutputFormat, report: &RepairFtsReport) -> Re
             }
             Ok(())
         }
-        OutputFormat::Json => print_json(report),
+        OutputFormat::Json => print_json(&report),
     }
 }
 
@@ -6112,28 +6074,95 @@ fn print_init_summary(output: OutputFormat, summary: &InitSummary) -> Result<(),
     }
 }
 
+fn config_import_target(target: ConfigImportTargetArg) -> ImportTarget {
+    match target {
+        ConfigImportTargetArg::Shared => ImportTarget::Shared,
+        ConfigImportTargetArg::Local => ImportTarget::Local,
+    }
+}
+
+fn run_config_import(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    importer: &dyn PluginImporter,
+    args: &ConfigImportArgs,
+) -> Result<(), CliError> {
+    let target = config_import_target(args.target);
+    let report = if args.dry_run {
+        importer
+            .dry_run_to(paths, target)
+            .map_err(CliError::operation)?
+    } else {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, args.no_commit);
+        warn_auto_commit_if_needed(&auto_commit);
+        let had_gitignore = paths.gitignore_file().exists();
+        let report = importer
+            .import(paths, target)
+            .map_err(CliError::operation)?;
+        if report.updated {
+            auto_commit
+                .commit(
+                    paths,
+                    &format!("config-import-{}", importer.name()),
+                    &config_import_changed_files(paths, had_gitignore, &report.target_file),
+                )
+                .map_err(CliError::operation)?;
+        }
+        report
+    };
+
+    print_config_import_report(output, paths, &report)
+}
+
 fn print_config_import_report(
     output: OutputFormat,
-    report: &vulcan_core::ConfigImportReport,
+    paths: &VaultPaths,
+    report: &ConfigImportReport,
 ) -> Result<(), CliError> {
+    let report = normalize_config_import_report(paths, report);
     match output {
         OutputFormat::Human => {
             println!(
-                "Imported {} settings from {} into {} ({}, {})",
+                "{} {} settings from {} into {} ({}, {})",
+                if report.dry_run {
+                    "Dry run:"
+                } else {
+                    "Imported"
+                },
                 report.plugin,
-                report.source_path.display(),
-                report.config_path.display(),
+                if report.source_paths.is_empty() {
+                    report.source_path.display().to_string()
+                } else if report.source_paths.len() == 1 {
+                    report.source_paths[0].display().to_string()
+                } else {
+                    format!("{} source files", report.source_paths.len())
+                },
+                report.target_file.display(),
                 if report.created_config {
-                    "created config"
+                    if report.dry_run {
+                        "would create config"
+                    } else {
+                        "created config"
+                    }
                 } else {
                     "existing config"
                 },
                 if report.updated {
-                    "updated"
+                    if report.dry_run {
+                        "would update"
+                    } else {
+                        "updated"
+                    }
                 } else {
                     "unchanged"
                 }
             );
+            if report.source_paths.len() > 1 {
+                println!("  sources:");
+                for source_path in &report.source_paths {
+                    println!("    {}", source_path.display());
+                }
+            }
             for mapping in &report.mappings {
                 println!(
                     "  {} -> {} = {}",
@@ -6142,10 +6171,39 @@ fn print_config_import_report(
                     render_config_import_value(&mapping.value)?
                 );
             }
+            for conflict in &report.conflicts {
+                println!(
+                    "  warning: conflict on {} from {} (kept {})",
+                    conflict.key,
+                    conflict.sources.join(", "),
+                    render_config_import_value(&conflict.kept_value)?
+                );
+            }
             Ok(())
         }
-        OutputFormat::Json => print_json(report),
+        OutputFormat::Json => print_json(&report),
     }
+}
+
+fn normalize_config_import_report(
+    paths: &VaultPaths,
+    report: &ConfigImportReport,
+) -> ConfigImportReport {
+    let mut report = report.clone();
+    report.source_path = relativize_config_import_path(paths, &report.source_path);
+    report.source_paths = report
+        .source_paths
+        .iter()
+        .map(|path| relativize_config_import_path(paths, path))
+        .collect();
+    report.config_path = relativize_config_import_path(paths, &report.config_path);
+    report.target_file = relativize_config_import_path(paths, &report.target_file);
+    report
+}
+
+fn relativize_config_import_path(paths: &VaultPaths, path: &Path) -> PathBuf {
+    path.strip_prefix(paths.vault_root())
+        .map_or_else(|_| path.to_path_buf(), Path::to_path_buf)
 }
 
 fn render_config_import_value(value: &Value) -> Result<String, CliError> {
@@ -6180,8 +6238,16 @@ fn print_scan_summary(output: OutputFormat, summary: &ScanSummary, use_color: bo
     }
 }
 
-fn config_import_changed_files(paths: &VaultPaths, had_gitignore: bool) -> Vec<String> {
-    let mut changed = vec![".vulcan/config.toml".to_string()];
+fn config_import_changed_files(
+    paths: &VaultPaths,
+    had_gitignore: bool,
+    target_file: &Path,
+) -> Vec<String> {
+    let relative_target = target_file.strip_prefix(paths.vault_root()).map_or_else(
+        |_| target_file.display().to_string(),
+        |path| path.display().to_string(),
+    );
+    let mut changed = vec![relative_target];
     if !had_gitignore && paths.gitignore_file().exists() {
         changed.push(".vulcan/.gitignore".to_string());
     }
@@ -9440,7 +9506,13 @@ mod tests {
             cli.command,
             Command::Config {
                 command: ConfigCommand::Import {
-                    command: ConfigImportCommand::Tasks { no_commit: false },
+                    command: ConfigImportCommand::Tasks {
+                        args: ConfigImportArgs {
+                            dry_run: false,
+                            target: ConfigImportTargetArg::Shared,
+                            no_commit: false,
+                        },
+                    },
                 },
             }
         );
@@ -9455,7 +9527,13 @@ mod tests {
             cli.command,
             Command::Config {
                 command: ConfigCommand::Import {
-                    command: ConfigImportCommand::Templater { no_commit: false },
+                    command: ConfigImportCommand::Templater {
+                        args: ConfigImportArgs {
+                            dry_run: false,
+                            target: ConfigImportTargetArg::Shared,
+                            no_commit: false,
+                        },
+                    },
                 },
             }
         );
@@ -9470,10 +9548,142 @@ mod tests {
             cli.command,
             Command::Config {
                 command: ConfigCommand::Import {
-                    command: ConfigImportCommand::Kanban { no_commit: false },
+                    command: ConfigImportCommand::Kanban {
+                        args: ConfigImportArgs {
+                            dry_run: false,
+                            target: ConfigImportTargetArg::Shared,
+                            no_commit: false,
+                        },
+                    },
                 },
             }
         );
+    }
+
+    #[test]
+    fn parses_config_import_core_command_with_shared_flags() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "config",
+            "import",
+            "core",
+            "--dry-run",
+            "--target",
+            "local",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Import {
+                    command: ConfigImportCommand::Core {
+                        args: ConfigImportArgs {
+                            dry_run: true,
+                            target: ConfigImportTargetArg::Local,
+                            no_commit: true,
+                        },
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn config_import_dry_run_does_not_write_target_file() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let plugin_dir = temp_dir
+            .path()
+            .join(".obsidian/plugins/obsidian-tasks-plugin");
+        fs::create_dir_all(&plugin_dir).expect("tasks plugin dir should be created");
+        fs::write(
+            plugin_dir.join("data.json"),
+            r##"{
+              "globalFilter": "#task",
+              "globalQuery": "not done",
+              "removeGlobalFilter": true,
+              "setCreatedDate": false
+            }"##,
+        )
+        .expect("tasks config should be written");
+
+        run_from([
+            "vulcan",
+            "--vault",
+            temp_dir.path().to_str().expect("vault path should be utf8"),
+            "config",
+            "import",
+            "tasks",
+            "--dry-run",
+        ])
+        .expect("config import dry run should succeed");
+
+        assert!(!temp_dir.path().join(".vulcan/config.toml").exists());
+    }
+
+    #[test]
+    fn config_import_target_local_writes_local_config_file() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let obsidian_dir = temp_dir.path().join(".obsidian");
+        fs::create_dir_all(&obsidian_dir).expect("obsidian dir should be created");
+        fs::write(
+            obsidian_dir.join("app.json"),
+            r#"{
+              "useMarkdownLinks": true,
+              "strictLineBreaks": true
+            }"#,
+        )
+        .expect("core app config should be written");
+
+        run_from([
+            "vulcan",
+            "--vault",
+            temp_dir.path().to_str().expect("vault path should be utf8"),
+            "config",
+            "import",
+            "core",
+            "--target",
+            "local",
+        ])
+        .expect("core import should succeed");
+
+        let local_config = fs::read_to_string(temp_dir.path().join(".vulcan/config.local.toml"))
+            .expect("local config should exist");
+        assert!(local_config.contains("[links]"));
+        assert!(local_config.contains("style = \"markdown\""));
+        assert!(local_config.contains("strict_line_breaks = true"));
+        assert!(!temp_dir.path().join(".vulcan/config.toml").exists());
+    }
+
+    #[test]
+    fn config_import_dry_run_target_local_does_not_write_local_file() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let obsidian_dir = temp_dir.path().join(".obsidian");
+        fs::create_dir_all(&obsidian_dir).expect("obsidian dir should be created");
+        fs::write(
+            obsidian_dir.join("templates.json"),
+            r#"{
+              "dateFormat": "DD/MM/YYYY",
+              "timeFormat": "HH:mm"
+            }"#,
+        )
+        .expect("templates config should be written");
+
+        run_from([
+            "vulcan",
+            "--vault",
+            temp_dir.path().to_str().expect("vault path should be utf8"),
+            "config",
+            "import",
+            "core",
+            "--dry-run",
+            "--target",
+            "local",
+        ])
+        .expect("core dry run should succeed");
+
+        assert!(!temp_dir.path().join(".vulcan/config.local.toml").exists());
     }
 
     #[test]

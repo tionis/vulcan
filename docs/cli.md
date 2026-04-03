@@ -128,6 +128,20 @@ Note resolution rules:
 - `vulcan changes [--checkpoint <name>]`: report note, link, property, and embedding changes since the last scan or a named checkpoint.
 - `vulcan diff [note] [--since <checkpoint>]`: show one note's changes since git `HEAD`, the last scan, or a named checkpoint.
 
+### Config import commands
+
+- `vulcan config import core [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian core settings from `.obsidian/app.json`, `.obsidian/templates.json`, and `.obsidian/types.json`.
+- `vulcan config import kanban [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Kanban plugin settings.
+- `vulcan config import tasks [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Tasks plugin settings.
+- `vulcan config import templater [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Templater plugin settings.
+
+Shared behavior:
+
+- `--dry-run` prints the mapping and target file without writing either `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+- `--target local` writes to `.vulcan/config.local.toml`; the default target is the shared `.vulcan/config.toml`.
+- `--output json` returns the full import report, including target file, whether the run was a dry run, the mappings applied, and any detected conflicts.
+- When vault auto-commit is enabled for mutations, config imports participate unless `--no-commit` is passed.
+
 ### Query, graph, and reporting commands
 
 - `vulcan links [note]`: list outgoing links for a note.

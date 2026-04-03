@@ -2460,52 +2460,52 @@ schedule_heading = "Schedule"   # heading to parse events from (optional)
 
 Define a trait that all importers implement, replacing the current free-standing `import_*_plugin_config` functions:
 
-- [ ] `PluginImporter` trait in `vulcan-core::config`:
+- [x] `PluginImporter` trait in `vulcan-core::config`:
   - `fn name(&self) -> &str` — importer identifier (e.g., `"tasks"`, `"core"`, `"dataview"`)
   - `fn display_name(&self) -> &str` — human-readable name (e.g., `"Obsidian Tasks plugin"`)
   - `fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf>` — files this importer reads from
   - `fn detect(&self, paths: &VaultPaths) -> bool` — whether the source is present and importable
   - `fn import(&self, paths: &VaultPaths, target: ImportTarget) -> Result<ConfigImportReport, ConfigImportError>` — perform the import
   - `fn dry_run(&self, paths: &VaultPaths) -> Result<ConfigImportReport, ConfigImportError>` — compute what would change without writing
-- [ ] `ImportTarget` enum: `Shared` (config.toml, default) | `Local` (config.local.toml)
-- [ ] Extend `ConfigImportReport` with `target_file: PathBuf` and `dry_run: bool`
-- [ ] Importer registry: `fn all_importers() -> Vec<Box<dyn PluginImporter>>` — returns all known importers in priority order
-- [ ] Extract shared TOML merge logic from the current duplicated `write_*_import()` functions into a single `merge_import_into_toml()` helper
-- [ ] Refactor existing `import_tasks_plugin_config`, `import_templater_plugin_config`, `import_kanban_plugin_config` to implement `PluginImporter`
-- [ ] Import idempotency: re-running any import updates existing config without duplicating entries (already the case — verify trait implementations preserve this)
-- [ ] Unit test: trait dispatch works for all existing importers
-- [ ] Unit test: `dry_run` returns accurate diff without writing files
+- [x] `ImportTarget` enum: `Shared` (config.toml, default) | `Local` (config.local.toml)
+- [x] Extend `ConfigImportReport` with `target_file: PathBuf` and `dry_run: bool`
+- [x] Importer registry: `fn all_importers() -> Vec<Box<dyn PluginImporter>>` — returns all known importers in priority order
+- [x] Extract shared TOML merge logic from the current duplicated `write_*_import()` functions into a single `merge_import_into_toml()` helper
+- [x] Refactor existing `import_tasks_plugin_config`, `import_templater_plugin_config`, `import_kanban_plugin_config` to implement `PluginImporter`
+- [x] Import idempotency: re-running any import updates existing config without duplicating entries (already the case — verify trait implementations preserve this)
+- [x] Unit test: trait dispatch works for all existing importers
+- [x] Unit test: `dry_run` returns accurate diff without writing files
 
 #### 9.17.2 Shared CLI flags
 
 Add shared flags to the import CLI surface, replacing the per-variant `no_commit` with shared arguments:
 
-- [ ] `--dry-run` flag on all import subcommands and on `vulcan config import` itself — calls `dry_run()` instead of `import()`, prints what would change without writing
-- [ ] `--target shared|local` flag (default: `shared`) — selects `config.toml` or `config.local.toml` as write target
-- [ ] `--no-commit` flag retained (suppress auto-commit for this invocation)
-- [ ] Global `--output json|human` already works — verify all import report rendering respects it
-- [ ] Extract shared CLI dispatch handler: the current three near-identical match arms in `lib.rs` become a single `run_import(importer, flags, paths)` function that handles auto-commit, dry-run gating, target selection, and report printing
-- [ ] CLI test: `--dry-run` does not write to disk
-- [ ] CLI test: `--target local` writes to `config.local.toml`
-- [ ] CLI test: flags compose correctly (`--dry-run --target local` previews what would go into `config.local.toml`)
+- [x] `--dry-run` flag on all import subcommands and on `vulcan config import` itself — calls `dry_run()` instead of `import()`, prints what would change without writing
+- [x] `--target shared|local` flag (default: `shared`) — selects `config.toml` or `config.local.toml` as write target
+- [x] `--no-commit` flag retained (suppress auto-commit for this invocation)
+- [x] Global `--output json|human` already works — verify all import report rendering respects it
+- [x] Extract shared CLI dispatch handler: the current three near-identical match arms in `lib.rs` become a single `run_import(importer, flags, paths)` function that handles auto-commit, dry-run gating, target selection, and report printing
+- [x] CLI test: `--dry-run` does not write to disk
+- [x] CLI test: `--target local` writes to `config.local.toml`
+- [x] CLI test: flags compose correctly (`--dry-run --target local` previews what would go into `config.local.toml`)
 
 #### 9.17.3 Conflict detection
 
-- [ ] When multiple importers set the same Vulcan config key (during `--all`), detect and warn
-- [ ] Resolution: last writer wins (importers run in a fixed order: core first, then plugins alphabetically). Emit a warning listing the key, both sources, and which value was kept.
-- [ ] `ConfigImportReport` gains `conflicts: Vec<ImportConflict>` with `key`, `sources`, `kept_value`
-- [ ] Human output shows conflicts as warnings; JSON output includes them in the report object
-- [ ] Unit test: two importers setting the same key produces a conflict warning
+- [x] When multiple importers set the same Vulcan config key (during `--all`), detect and warn
+- [x] Resolution: last writer wins (importers run in a fixed order: core first, then plugins alphabetically). Emit a warning listing the key, both sources, and which value was kept.
+- [x] `ConfigImportReport` gains `conflicts: Vec<ImportConflict>` with `key`, `sources`, `kept_value`
+- [x] Human output shows conflicts as warnings; JSON output includes them in the report object
+- [x] Unit test: two importers setting the same key produces a conflict warning
 
 #### 9.17.4 Core settings importer (`vulcan config import core`)
 
 Import Obsidian's core settings files, which are currently only used as runtime fallback defaults during `load_vault_config`. Explicit import makes the vault self-contained — removing `.obsidian/` does not change behavior.
 
-- [ ] `CoreImporter` implementing `PluginImporter`, reading from up to three source files:
+- [x] `CoreImporter` implementing `PluginImporter`, reading from up to three source files:
   - `.obsidian/app.json` — link style, link resolution mode, attachment folder, strict line breaks
   - `.obsidian/templates.json` — date format, time format, template folder
   - `.obsidian/types.json` — property type definitions
-- [ ] Import mappings:
+- [x] Import mappings:
   | Source file | Source key | Vulcan config key |
   |---|---|---|
   | `app.json` | `useMarkdownLinks` | `links.style` |
@@ -2516,10 +2516,10 @@ Import Obsidian's core settings files, which are currently only used as runtime 
   | `templates.json` | `timeFormat` | `templates.time_format` |
   | `templates.json` | `folder` | `templates.obsidian_folder` |
   | `types.json` | (all entries) | `property_types.*` |
-- [ ] `vulcan config import core` CLI subcommand with all shared flags
-- [ ] Missing source files are individually skipped (not all-or-nothing) — report which were found
-- [ ] Unit test: import from all three source files, verify config output
-- [ ] Unit test: partial sources (e.g., only `app.json` present) import correctly
+- [x] `vulcan config import core` CLI subcommand with all shared flags
+- [x] Missing source files are individually skipped (not all-or-nothing) — report which were found
+- [x] Unit test: import from all three source files, verify config output
+- [x] Unit test: partial sources (e.g., only `app.json` present) import correctly
 
 #### 9.17.5 Dataview settings importer (`vulcan config import dataview`)
 
