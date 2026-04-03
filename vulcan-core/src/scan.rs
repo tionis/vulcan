@@ -1,6 +1,7 @@
 use crate::cache::{drop_fts_triggers, rebuild_fts_index, restore_fts_triggers, CacheError};
 use crate::extraction::extract_attachment_chunks;
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
+use crate::periodic::match_periodic_note_path;
 use crate::properties::{
     extract_indexed_properties, indexed_inline_property_value, rebuild_property_catalog,
     refresh_property_catalog_for_documents, IndexedProperties,
@@ -215,6 +216,7 @@ struct PreparedFullScanDocument {
 struct PreparedNoteContent {
     source: String,
     parsed: Box<ParsedDocument>,
+    periodic: Option<crate::PeriodicNoteMatch>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -581,6 +583,7 @@ fn prepare_derived_content(
             };
             let source = decode_note_source(bytes, &file.absolute_path)?;
             Ok(PreparedDerivedContent::Note(PreparedNoteContent {
+                periodic: match_periodic_note_path(&config.periodic, &file.relative_path),
                 parsed: Box::new(parse_document(&source, config)),
                 source,
             }))
@@ -723,6 +726,12 @@ fn apply_incremental_scan(
                             None
                         }
                     },
+                    match &derived {
+                        PreparedDerivedContent::Note(note) => note.periodic.as_ref(),
+                        PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => {
+                            None
+                        }
+                    },
                     current_version,
                 )?;
                 match &derived {
@@ -733,8 +742,7 @@ fn apply_incremental_scan(
                             &item.file.filename,
                             is_new,
                             config,
-                            note.source.as_str(),
-                            &note.parsed,
+                            note,
                         )?;
                         result.requires_link_resolution = true;
                         result.requires_property_catalog_refresh = true;
@@ -989,6 +997,7 @@ fn prepare_full_scan_document(
             DocumentKind::Note => {
                 let source = decode_note_source(bytes, &file.absolute_path)?;
                 PreparedDerivedContent::Note(PreparedNoteContent {
+                    periodic: match_periodic_note_path(&config.periodic, &file.relative_path),
                     parsed: Box::new(parse_document(&source, config)),
                     source,
                 })
@@ -1054,6 +1063,7 @@ fn insert_or_update_document(
     file: &DiscoveredFile,
     content_hash: &[u8],
     raw_frontmatter: Option<&str>,
+    periodic: Option<&crate::PeriodicNoteMatch>,
     parser_version: u32,
 ) -> Result<(), ScanError> {
     transaction.execute(
@@ -1065,17 +1075,21 @@ fn insert_or_update_document(
             extension,
             content_hash,
             raw_frontmatter,
+            periodic_type,
+            periodic_date,
             file_size,
             file_mtime,
             parser_version,
             indexed_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         ON CONFLICT(path) DO UPDATE SET
             filename = excluded.filename,
             extension = excluded.extension,
             content_hash = excluded.content_hash,
             raw_frontmatter = excluded.raw_frontmatter,
+            periodic_type = excluded.periodic_type,
+            periodic_date = excluded.periodic_date,
             file_size = excluded.file_size,
             file_mtime = excluded.file_mtime,
             parser_version = excluded.parser_version,
@@ -1088,6 +1102,12 @@ fn insert_or_update_document(
             file.extension,
             content_hash,
             raw_frontmatter,
+            periodic
+                .as_ref()
+                .map(|periodic| periodic.period_type.as_str()),
+            periodic
+                .as_ref()
+                .map(|periodic| periodic.start_date.as_str()),
             file.file_size,
             file.file_mtime,
             parser_version,
@@ -1113,19 +1133,15 @@ fn apply_prepared_full_scan_document(
             PreparedDerivedContent::Note(note) => note.parsed.raw_frontmatter.as_deref(),
             PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => None,
         },
+        match &prepared.derived {
+            PreparedDerivedContent::Note(note) => note.periodic.as_ref(),
+            PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => None,
+        },
         document_index_version(prepared.file.kind, config),
     )?;
     match &prepared.derived {
         PreparedDerivedContent::Note(note) => {
-            replace_derived_rows(
-                transaction,
-                id,
-                &prepared.file.filename,
-                true,
-                config,
-                note.source.as_str(),
-                &note.parsed,
-            )?;
+            replace_derived_rows(transaction, id, &prepared.file.filename, true, config, note)?;
         }
         PreparedDerivedContent::Attachment(chunks) => {
             replace_attachment_rows(transaction, id, &prepared.file.filename, true, chunks)?;
@@ -1176,8 +1192,7 @@ fn replace_derived_rows(
     document_title: &str,
     is_new: bool,
     config: &crate::VaultConfig,
-    source: &str,
-    parsed: &ParsedDocument,
+    note: &PreparedNoteContent,
 ) -> Result<(), ScanError> {
     let reusable_chunk_ids = if is_new {
         HashMap::new()
@@ -1187,6 +1202,7 @@ fn replace_derived_rows(
     if !is_new {
         clear_derived_rows(transaction, document_id)?;
     }
+    let parsed = note.parsed.as_ref();
     insert_headings(transaction, document_id, &parsed.headings)?;
     insert_block_refs(transaction, document_id, &parsed.block_refs)?;
     insert_links(transaction, document_id, &parsed.links)?;
@@ -1218,7 +1234,20 @@ fn replace_derived_rows(
         &list_item_ids,
         config,
     )?;
-    insert_kanban_board(transaction, document_id, parsed, source, config)?;
+    insert_events(
+        transaction,
+        document_id,
+        parsed,
+        config,
+        note.periodic.as_ref(),
+    )?;
+    insert_kanban_board(
+        transaction,
+        document_id,
+        parsed,
+        note.source.as_str(),
+        config,
+    )?;
     insert_dataview_blocks(transaction, document_id, &parsed.dataview_blocks)?;
     insert_tasks_blocks(transaction, document_id, &parsed.tasks_blocks)?;
     insert_inline_expressions(transaction, document_id, &parsed.inline_expressions)?;
@@ -2014,6 +2043,217 @@ fn insert_list_items(
     Ok(list_item_ids)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexedEvent {
+    start_time: String,
+    end_time: Option<String>,
+    title: String,
+    metadata_json: String,
+    tags_json: String,
+    byte_offset: i64,
+}
+
+fn insert_events(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    parsed: &ParsedDocument,
+    config: &crate::VaultConfig,
+    periodic: Option<&crate::PeriodicNoteMatch>,
+) -> Result<(), ScanError> {
+    let events = extract_events(parsed, config, periodic)?;
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let mut statement = transaction.prepare_cached(
+        "
+        INSERT INTO events (
+            id,
+            document_id,
+            start_time,
+            end_time,
+            title,
+            metadata_json,
+            tags_json,
+            byte_offset
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ",
+    )?;
+    for event in events {
+        statement.execute(params![
+            Ulid::new().to_string(),
+            document_id,
+            event.start_time,
+            event.end_time,
+            event.title,
+            event.metadata_json,
+            event.tags_json,
+            event.byte_offset,
+        ])?;
+    }
+
+    Ok(())
+}
+
+fn extract_events(
+    parsed: &ParsedDocument,
+    config: &crate::VaultConfig,
+    periodic: Option<&crate::PeriodicNoteMatch>,
+) -> Result<Vec<IndexedEvent>, ScanError> {
+    let Some(periodic) = periodic else {
+        return Ok(Vec::new());
+    };
+    if periodic.period_type != "daily" {
+        return Ok(Vec::new());
+    }
+    let Some(schedule_heading) = config
+        .periodic
+        .note("daily")
+        .and_then(|daily| daily.schedule_heading.as_deref())
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut events = Vec::new();
+    for item in &parsed.list_items {
+        if item.section_heading.as_deref() != Some(schedule_heading) {
+            continue;
+        }
+        if let Some(event) = parse_event_from_list_item(item)? {
+            events.push(event);
+        }
+    }
+    Ok(events)
+}
+
+fn parse_event_from_list_item(
+    item: &crate::RawListItem,
+) -> Result<Option<IndexedEvent>, ScanError> {
+    let text = item.text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+
+    let (start_time, end_time, remainder) = if let Some(remainder) = text.strip_prefix("all-day") {
+        ("all-day".to_string(), None, remainder.trim_start())
+    } else {
+        let Some((time_token, remainder)) = text.split_once(char::is_whitespace) else {
+            return Ok(None);
+        };
+        let (start, end) = parse_event_time_token(time_token);
+        let Some(start) = start else {
+            return Ok(None);
+        };
+        (start.to_string(), end.map(str::to_string), remainder.trim())
+    };
+
+    if remainder.is_empty() {
+        return Ok(None);
+    }
+
+    let (title, metadata) = strip_event_annotations(remainder);
+    if title.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(IndexedEvent {
+        start_time,
+        end_time,
+        title,
+        metadata_json: serde_json::to_string(&Value::Object(metadata))
+            .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+        tags_json: serde_json::to_string(&item.tags)
+            .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+        byte_offset: i64::try_from(item.byte_offset).map_err(|_| ScanError::MetadataOverflow {
+            field: "events.byte_offset",
+            path: PathBuf::from("events"),
+        })?,
+    }))
+}
+
+fn parse_event_time_token(token: &str) -> (Option<&str>, Option<&str>) {
+    let Some((start, end)) = token.split_once('-') else {
+        return (parse_clock_time(token), None);
+    };
+    (parse_clock_time(start), parse_clock_time(end))
+}
+
+fn parse_clock_time(token: &str) -> Option<&str> {
+    let bytes = token.as_bytes();
+    if bytes.len() != 5 || bytes[2] != b':' {
+        return None;
+    }
+    if !bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| index == 2 || byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let hour = token[..2].parse::<u8>().ok()?;
+    let minute = token[3..].parse::<u8>().ok()?;
+    (hour < 24 && minute < 60).then_some(token)
+}
+
+fn strip_event_annotations(text: &str) -> (String, serde_json::Map<String, Value>) {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut title = String::new();
+    let mut metadata = serde_json::Map::new();
+    let mut index = 0_usize;
+
+    while index < chars.len() {
+        let current = chars[index];
+        let at_boundary = index == 0 || chars[index - 1].is_whitespace();
+
+        if current == '@' && at_boundary {
+            let mut key_end = index + 1;
+            while key_end < chars.len()
+                && (chars[key_end].is_ascii_alphanumeric() || matches!(chars[key_end], '_' | '-'))
+            {
+                key_end += 1;
+            }
+            if key_end < chars.len() && chars[key_end] == '(' {
+                let mut value_end = key_end + 1;
+                while value_end < chars.len() && chars[value_end] != ')' {
+                    value_end += 1;
+                }
+                if value_end < chars.len() && chars[value_end] == ')' {
+                    let key = chars[index + 1..key_end].iter().collect::<String>();
+                    let value = chars[key_end + 1..value_end]
+                        .iter()
+                        .collect::<String>()
+                        .trim()
+                        .to_string();
+                    if !key.is_empty() && !value.is_empty() {
+                        metadata.insert(key, Value::String(value));
+                        index = value_end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if current == '#' && at_boundary {
+            let mut tag_end = index + 1;
+            while tag_end < chars.len() && !chars[tag_end].is_whitespace() {
+                tag_end += 1;
+            }
+            index = tag_end;
+            continue;
+        }
+
+        title.push(current);
+        index += 1;
+    }
+
+    (
+        title.split_whitespace().collect::<Vec<_>>().join(" "),
+        metadata,
+    )
+}
+
 fn insert_dataview_blocks(
     transaction: &Transaction<'_>,
     document_id: &str,
@@ -2202,6 +2442,7 @@ fn clear_derived_rows(
     // Static SQL strings so prepare_cached can reuse them across calls.
     static CLEAR_STATEMENTS: &[&str] = &[
         "DELETE FROM kanban_boards WHERE document_id = ?1",
+        "DELETE FROM events WHERE document_id = ?1",
         "DELETE FROM task_properties WHERE task_id IN (SELECT id FROM tasks WHERE document_id = ?1)",
         "DELETE FROM tasks WHERE document_id = ?1",
         "DELETE FROM list_items WHERE document_id = ?1",
@@ -3037,6 +3278,46 @@ mod tests {
         assert_eq!(beta_tasks[0]["id"], Value::String("BETA-1".to_string()));
     }
 
+    fn periodic_document_rows(connection: &rusqlite::Connection) -> Vec<(String, String, String)> {
+        connection
+            .prepare(
+                "
+                SELECT path, periodic_type, periodic_date
+                FROM documents
+                WHERE periodic_type IS NOT NULL
+                ORDER BY path
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn daily_event_rows(
+        connection: &rusqlite::Connection,
+        path: &str,
+    ) -> Vec<(String, Option<String>, String, String, String)> {
+        connection
+            .prepare(
+                "
+                SELECT events.start_time, events.end_time, events.title, events.metadata_json, events.tags_json
+                FROM events
+                JOIN documents ON documents.id = events.document_id
+                WHERE documents.path = ?1
+                ORDER BY events.byte_offset
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([path], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
     fn assert_dataview_search_excludes_js_block_contents(paths: &VaultPaths) {
         let search = search_vault(
             paths,
@@ -3258,6 +3539,99 @@ mod tests {
         assert_dashboard_task_metadata(&paths);
         assert_project_task_metadata(&paths);
         assert_dataview_search_excludes_js_block_contents(&paths);
+    }
+
+    #[test]
+    fn scan_indexes_periodic_notes_and_daily_events() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[periodic.daily]\nschedule_heading = \"Schedule\"\n",
+        )
+        .expect("config should be written");
+        fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir should exist");
+        fs::create_dir_all(vault_root.join("Journal/Weekly")).expect("weekly dir should exist");
+        fs::write(
+            vault_root.join("Journal/Daily/2026-04-03.md"),
+            concat!(
+                "# Daily\n\n",
+                "## Schedule\n",
+                "- 09:00 Team standup\n",
+                "- 09:00-10:00 Team standup @location(Zoom)\n",
+                "- 14:00-15:30 Dentist #personal\n",
+                "- all-day Company offsite\n",
+                "- not an event\n",
+            ),
+        )
+        .expect("daily note should be written");
+        fs::write(vault_root.join("Journal/Weekly/2026-W14.md"), "# Weekly\n")
+            .expect("weekly note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let connection = database.connection();
+
+        assert_eq!(
+            periodic_document_rows(connection),
+            vec![
+                (
+                    "Journal/Daily/2026-04-03.md".to_string(),
+                    "daily".to_string(),
+                    "2026-04-03".to_string(),
+                ),
+                (
+                    "Journal/Weekly/2026-W14.md".to_string(),
+                    "weekly".to_string(),
+                    "2026-03-30".to_string(),
+                ),
+            ]
+        );
+        assert_eq!(count_rows(connection, "events"), 4);
+        assert_eq!(
+            daily_event_rows(connection, "Journal/Daily/2026-04-03.md"),
+            vec![
+                (
+                    "09:00".to_string(),
+                    None,
+                    "Team standup".to_string(),
+                    "{}".to_string(),
+                    "[]".to_string(),
+                ),
+                (
+                    "09:00".to_string(),
+                    Some("10:00".to_string()),
+                    "Team standup".to_string(),
+                    "{\"location\":\"Zoom\"}".to_string(),
+                    "[]".to_string(),
+                ),
+                (
+                    "14:00".to_string(),
+                    Some("15:30".to_string()),
+                    "Dentist".to_string(),
+                    "{}".to_string(),
+                    "[\"#personal\"]".to_string(),
+                ),
+                (
+                    "all-day".to_string(),
+                    None,
+                    "Company offsite".to_string(),
+                    "{}".to_string(),
+                    "[]".to_string(),
+                ),
+            ]
+        );
+
+        let note_index = load_note_index(&paths).expect("note index should load");
+        let note = note_index
+            .get("2026-04-03")
+            .expect("daily note should be indexed");
+        assert_eq!(
+            FileMetadataResolver::field(note, "day"),
+            Value::String("2026-04-03".to_string())
+        );
     }
 
     #[test]

@@ -166,6 +166,10 @@ pub struct NoteRecord {
     #[serde(skip)]
     pub frontmatter: Value,
     #[serde(skip)]
+    pub periodic_type: Option<String>,
+    #[serde(skip)]
+    pub periodic_date: Option<String>,
+    #[serde(skip)]
     pub list_items: Vec<NoteListItemRecord>,
     #[serde(skip)]
     pub tasks: Vec<NoteTaskRecord>,
@@ -489,7 +493,9 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             documents.file_mtime,
             documents.file_size,
             COALESCE(properties.canonical_json, '{}'),
-            COALESCE(properties.raw_yaml, '')
+            COALESCE(properties.raw_yaml, ''),
+            documents.periodic_type,
+            documents.periodic_date
         FROM documents
         LEFT JOIN properties ON properties.document_id = documents.id
         WHERE documents.extension = 'md'",
@@ -506,6 +512,8 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
             let file_mtime: i64 = row.get(4)?;
             let canonical_json: String = row.get(6)?;
             let raw_yaml: String = row.get(7)?;
+            let periodic_type: Option<String> = row.get(8)?;
+            let periodic_date: Option<String> = row.get(9)?;
             let properties = serde_json::from_str::<Value>(&canonical_json).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
                     6,
@@ -530,6 +538,8 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
                     inlinks: Vec::new(),
                     aliases: Vec::new(),
                     frontmatter: parse_frontmatter_json_object(&raw_yaml),
+                    periodic_type,
+                    periodic_date,
                     list_items: Vec::new(),
                     tasks: Vec::new(),
                     raw_inline_expressions: Vec::new(),
@@ -620,7 +630,8 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
     let config = crate::load_vault_config(paths).config;
     let mut stmt = connection.prepare(
         "SELECT d.id, d.path, d.filename, d.extension, d.file_mtime, d.file_size, \
-         COALESCE(p.canonical_json, '{}'), COALESCE(p.raw_yaml, '') \
+         COALESCE(p.canonical_json, '{}'), COALESCE(p.raw_yaml, ''), \
+         d.periodic_type, d.periodic_date \
          FROM documents d LEFT JOIN properties p ON p.document_id = d.id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -634,12 +645,24 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
             row.get::<_, i64>(5)?,
             props_json,
             row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
         ))
     })?;
     let mut doc_ids_and_notes = Vec::new();
     for row in rows {
-        let (document_id, path, file_name, file_ext, file_mtime, file_size, props_json, raw_yaml) =
-            row?;
+        let (
+            document_id,
+            path,
+            file_name,
+            file_ext,
+            file_mtime,
+            file_size,
+            props_json,
+            raw_yaml,
+            periodic_type,
+            periodic_date,
+        ) = row?;
         let properties =
             serde_json::from_str(&props_json).unwrap_or(Value::Object(serde_json::Map::default()));
         doc_ids_and_notes.push((
@@ -659,6 +682,8 @@ pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>
                 inlinks: vec![],
                 aliases: vec![],
                 frontmatter: parse_frontmatter_json_object(&raw_yaml),
+                periodic_type,
+                periodic_date,
                 list_items: vec![],
                 tasks: vec![],
                 raw_inline_expressions: vec![],

@@ -627,6 +627,8 @@ mod tests {
             inlinks: vec![],
             aliases: vec![],
             frontmatter: serde_json::json!({}),
+            periodic_type: None,
+            periodic_date: None,
             list_items: vec![],
             tasks: vec![],
             raw_inline_expressions: vec![],

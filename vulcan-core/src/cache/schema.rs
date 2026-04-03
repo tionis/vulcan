@@ -2,6 +2,7 @@ use rusqlite::Transaction;
 
 pub const TABLES_TO_CLEAR: &[&str] = &[
     "kanban_boards",
+    "events",
     "task_properties",
     "tasks",
     "list_items",
@@ -639,6 +640,37 @@ pub fn apply_schema_v14(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
 
         CREATE INDEX IF NOT EXISTS idx_kanban_boards_format
             ON kanban_boards(format);
+        ",
+    )?;
+    Ok(())
+}
+
+pub fn apply_schema_v15(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        ALTER TABLE documents ADD COLUMN periodic_type TEXT;
+        ALTER TABLE documents ADD COLUMN periodic_date TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_documents_periodic_type
+            ON documents(periodic_type);
+        CREATE INDEX IF NOT EXISTS idx_documents_periodic_type_date
+            ON documents(periodic_type, periodic_date);
+
+        CREATE TABLE IF NOT EXISTS events (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            start_time TEXT NOT NULL,
+            end_time TEXT,
+            title TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            tags_json TEXT NOT NULL,
+            byte_offset INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_events_document_id
+            ON events(document_id);
+        CREATE INDEX IF NOT EXISTS idx_events_start_time
+            ON events(start_time);
         ",
     )?;
     Ok(())
