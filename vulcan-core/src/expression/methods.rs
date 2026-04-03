@@ -936,7 +936,7 @@ mod tests {
             serde_json::json!(false)
         );
         assert_eq!(
-            eval(r#"reduce([1, 2, 3], (accum, curr) => accum + curr)"#),
+            eval(r"reduce([1, 2, 3], (accum, curr) => accum + curr)"),
             serde_json::json!(6)
         );
     }
@@ -1132,7 +1132,7 @@ mod tests {
     #[test]
     fn constructor_and_object_functions() {
         assert_eq!(eval(r#"number("18 years")"#), serde_json::json!(18));
-        assert_eq!(eval(r#"string(18)"#), serde_json::json!("18"));
+        assert_eq!(eval(r"string(18)"), serde_json::json!("18"));
         assert_eq!(
             eval(r#"dateformat(date("12/31/2022", "MM/dd/yyyy"), "yyyy-MM-dd")"#),
             serde_json::json!("2022-12-31")

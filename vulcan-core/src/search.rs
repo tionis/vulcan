@@ -3699,75 +3699,43 @@ mod tests {
         let mixed_paths = VaultPaths::new(&vault_root);
         scan_vault(&mixed_paths, ScanMode::Full).expect("scan should succeed");
 
-        let bracket_done = search_vault(
-            &mixed_paths,
-            &SearchQuery {
-                text: "release [status:done]".to_string(),
-                ..SearchQuery::default()
-            },
-        )
-        .expect("bracket status search should succeed");
-        let where_done = search_vault(
-            &mixed_paths,
-            &SearchQuery {
-                text: "release".to_string(),
-                filters: vec!["status = done".to_string()],
-                ..SearchQuery::default()
-            },
-        )
-        .expect("where status search should succeed");
+        let search_paths = |text: &str, filters: &[&str]| {
+            search_vault(
+                &mixed_paths,
+                &SearchQuery {
+                    text: text.to_string(),
+                    filters: filters.iter().map(|filter| (*filter).to_string()).collect(),
+                    ..SearchQuery::default()
+                },
+            )
+            .expect("search should succeed")
+            .hits
+            .into_iter()
+            .map(|hit| hit.document_path)
+            .collect::<Vec<_>>()
+        };
+        let explained_search = |text: &str| {
+            search_vault(
+                &mixed_paths,
+                &SearchQuery {
+                    text: text.to_string(),
+                    explain: true,
+                    ..SearchQuery::default()
+                },
+            )
+            .expect("explained search should succeed")
+        };
+
         assert_eq!(
-            bracket_done
-                .hits
-                .iter()
-                .map(|hit| hit.document_path.clone())
-                .collect::<Vec<_>>(),
-            where_done
-                .hits
-                .iter()
-                .map(|hit| hit.document_path.clone())
-                .collect::<Vec<_>>()
+            search_paths("release [status:done]", &[]),
+            search_paths("release", &["status = done"])
+        );
+        assert_eq!(
+            search_paths("release [notes:null]", &[]),
+            search_paths("release", &["notes = null"])
         );
 
-        let bracket_null = search_vault(
-            &mixed_paths,
-            &SearchQuery {
-                text: "release [notes:null]".to_string(),
-                ..SearchQuery::default()
-            },
-        )
-        .expect("bracket null search should succeed");
-        let where_null = search_vault(
-            &mixed_paths,
-            &SearchQuery {
-                text: "release".to_string(),
-                filters: vec!["notes = null".to_string()],
-                ..SearchQuery::default()
-            },
-        )
-        .expect("where null search should succeed");
-        assert_eq!(
-            bracket_null
-                .hits
-                .iter()
-                .map(|hit| hit.document_path.clone())
-                .collect::<Vec<_>>(),
-            where_null
-                .hits
-                .iter()
-                .map(|hit| hit.document_path.clone())
-                .collect::<Vec<_>>()
-        );
-
-        let bracket_exists = search_vault(
-            &mixed_paths,
-            &SearchQuery {
-                text: "[aliases]".to_string(),
-                explain: true,
-                ..SearchQuery::default()
-            },
-        )
-        .expect("bracket exists search should succeed");
+        let bracket_exists = explained_search("[aliases]");
         let mut bracket_exists_paths = bracket_exists
             .hits
             .iter()
@@ -3788,19 +3756,7 @@ mod tests {
             .iter()
             .any(|line| line == "WHERE [aliases]"));
 
-        let bracket_or = search_vault(
-            &mixed_paths,
-            &SearchQuery {
-                text: "[status:done OR backlog]".to_string(),
-                ..SearchQuery::default()
-            },
-        )
-        .expect("bracket OR search should succeed");
-        let mut bracket_or_paths = bracket_or
-            .hits
-            .iter()
-            .map(|hit| hit.document_path.clone())
-            .collect::<Vec<_>>();
+        let mut bracket_or_paths = search_paths("[status:done OR backlog]", &[]);
         bracket_or_paths.sort();
         assert_eq!(
             bracket_or_paths,
@@ -3922,44 +3878,42 @@ mod tests {
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
         let database = CacheDatabase::open(&paths).expect("database should open");
-        database
-            .connection()
-            .execute(
-                "UPDATE documents SET file_mtime = ? WHERE path = ?",
-                rusqlite::params![300_i64, "Alpha.md"],
-            )
-            .expect("alpha mtime should update");
-        database
-            .connection()
-            .execute(
-                "UPDATE documents SET file_mtime = ? WHERE path = ?",
-                rusqlite::params![100_i64, "Beta.md"],
-            )
-            .expect("beta mtime should update");
-        database
-            .connection()
-            .execute(
-                "UPDATE documents SET file_mtime = ? WHERE path = ?",
-                rusqlite::params![200_i64, "Gamma.md"],
-            )
-            .expect("gamma mtime should update");
-
-        let path_desc = search_vault(
-            &paths,
-            &SearchQuery {
-                text: "dashboard".to_string(),
-                sort: Some(SearchSort::PathDesc),
-                explain: true,
-                ..SearchQuery::default()
-            },
-        )
-        .expect("path-desc search should succeed");
-        assert_eq!(
-            path_desc
+        let set_mtime = |path: &str, mtime: i64| {
+            database
+                .connection()
+                .execute(
+                    "UPDATE documents SET file_mtime = ? WHERE path = ?",
+                    rusqlite::params![mtime, path],
+                )
+                .expect("document mtime should update");
+        };
+        let hit_paths = |report: &SearchReport| {
+            report
                 .hits
                 .iter()
                 .map(|hit| hit.document_path.clone())
-                .collect::<Vec<_>>(),
+                .collect::<Vec<_>>()
+        };
+        set_mtime("Alpha.md", 300);
+        set_mtime("Beta.md", 100);
+        set_mtime("Gamma.md", 200);
+
+        let sorted_search = |sort| {
+            search_vault(
+                &paths,
+                &SearchQuery {
+                    text: "dashboard".to_string(),
+                    sort: Some(sort),
+                    explain: true,
+                    ..SearchQuery::default()
+                },
+            )
+            .expect("sorted search should succeed")
+        };
+
+        let path_desc = sorted_search(SearchSort::PathDesc);
+        assert_eq!(
+            hit_paths(&path_desc),
             vec![
                 "Gamma.md".to_string(),
                 "Beta.md".to_string(),
@@ -3973,22 +3927,9 @@ mod tests {
             .iter()
             .any(|line| line == "SORT path-desc"));
 
-        let modified_newest = search_vault(
-            &paths,
-            &SearchQuery {
-                text: "dashboard".to_string(),
-                sort: Some(SearchSort::ModifiedNewest),
-                explain: true,
-                ..SearchQuery::default()
-            },
-        )
-        .expect("modified-newest search should succeed");
+        let modified_newest = sorted_search(SearchSort::ModifiedNewest);
         assert_eq!(
-            modified_newest
-                .hits
-                .iter()
-                .map(|hit| hit.document_path.clone())
-                .collect::<Vec<_>>(),
+            hit_paths(&modified_newest),
             vec![
                 "Alpha.md".to_string(),
                 "Gamma.md".to_string(),
@@ -4012,11 +3953,7 @@ mod tests {
         )
         .expect("created-oldest search should succeed");
         assert_eq!(
-            created_oldest
-                .hits
-                .iter()
-                .map(|hit| hit.document_path.clone())
-                .collect::<Vec<_>>(),
+            hit_paths(&created_oldest),
             vec![
                 "Beta.md".to_string(),
                 "Gamma.md".to_string(),

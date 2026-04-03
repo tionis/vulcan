@@ -3636,413 +3636,112 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn kanban_metadata_key_names(keys: &[KanbanMetadataKeyConfig]) -> Vec<String> {
-        keys.iter()
-            .map(|key| match key {
-                KanbanMetadataKeyConfig::Detailed(field) => field.metadata_key.clone(),
-                KanbanMetadataKeyConfig::Key(key) => key.clone(),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn missing_files_use_builtin_defaults() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let paths = VaultPaths::new(temp_dir.path());
-
-        let loaded = load_vault_config(&paths);
-
-        assert_eq!(loaded.config, VaultConfig::default());
-        assert!(loaded.diagnostics.is_empty());
-    }
-
-    #[test]
-    fn obsidian_settings_seed_defaults_and_property_types() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let vault_root = temp_dir.path();
-        fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
-        fs::write(
-            vault_root.join(".obsidian/app.json"),
-            r##"{
-              "useMarkdownLinks": true,
-              "newLinkFormat": "relative",
-              "attachmentFolderPath": "/",
-              "strictLineBreaks": true
-            }"##,
-        )
-        .expect("app config should be written");
-        fs::write(
-            vault_root.join(".obsidian/types.json"),
-            r##"{
-              "status": "text",
-              "priority": { "type": "number" }
-            }"##,
-        )
-        .expect("types config should be written");
-        fs::write(
-            vault_root.join(".obsidian/templates.json"),
-            r#"{
-              "folder": "Shared Templates",
-              "dateFormat": "dddd, MMMM Do YYYY",
-              "timeFormat": "hh:mm A"
-            }"#,
-        )
-        .expect("templates config should be written");
-        fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
-            .expect("dataview plugin dir should be created");
-        fs::write(
-            vault_root.join(".obsidian/plugins/dataview/data.json"),
-            r#"{
-              "inlineQueryPrefix": "dv:",
-              "inlineJsQueryPrefix": "$dv:",
-              "enableDataviewJs": false,
-              "enableInlineDataviewJs": true,
-              "taskCompletionTracking": true,
-              "taskCompletionUseEmojiShorthand": true,
-              "taskCompletionText": "done-on",
-              "recursiveSubTaskCompletion": true,
-              "showResultCount": false,
-              "defaultDateFormat": "yyyy-MM-dd",
-              "defaultDateTimeFormat": "yyyy-MM-dd HH:mm",
-              "timezone": "+02:00",
-              "maxRecursiveRenderDepth": 7,
-              "tableIdColumnName": "Document",
-              "tableGroupColumnName": "Bucket"
-            }"#,
-        )
-        .expect("dataview config should be written");
-        fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-kanban"))
-            .expect("kanban plugin dir should be created");
-        fs::write(
-            vault_root.join(".obsidian/plugins/obsidian-kanban/data.json"),
-            r##"{
-              "date-trigger": "DUE",
-              "time-trigger": "AT",
-              "date-format": "DD/MM/YYYY",
-              "time-format": "HH:mm:ss",
-              "date-display-format": "ddd DD MMM",
-              "date-time-display-format": "ddd DD MMM HH:mm:ss",
-              "link-date-to-daily-note": true,
-              "metadata-keys": [
-                {
-                  "metadataKey": "status",
-                  "label": "Status",
-                  "shouldHideLabel": true,
-                  "containsMarkdown": true
-                },
-                { "metadataKey": "owner", "label": "Owner" }
-              ],
-              "archive-with-date": true,
-              "append-archive-date": true,
-              "archive-date-format": "DD/MM/YYYY HH:mm:ss",
-              "archive-date-separator": " :: ",
-              "new-card-insertion-method": "prepend",
-              "new-line-trigger": "enter",
-              "new-note-folder": "Cards/Ideas",
-              "new-note-template": "Kanban Card",
-              "hide-card-count": true,
-              "hide-tags-in-title": true,
-              "hide-tags-display": true,
-              "inline-metadata-position": "metadata-table",
-              "lane-width": 320,
-              "full-list-lane-width": true,
-              "list-collapse": [true, false],
-              "max-archive-size": 50,
-              "show-checkboxes": true,
-              "move-dates": true,
-              "move-tags": false,
-              "move-task-metadata": true,
-              "show-add-list": false,
-              "show-archive-all": false,
-              "show-board-settings": false,
-              "show-relative-date": true,
-              "show-search": false,
-              "show-set-view": false,
-              "show-view-as-markdown": false,
-              "date-picker-week-start": 1,
-              "table-sizing": {
-                "Title": 240,
-                "Tags": 96
-              },
-              "tag-action": "kanban",
-              "tag-colors": [
-                {
-                  "tagKey": "#urgent",
-                  "color": "#ffffff",
-                  "backgroundColor": "#cc0000"
-                }
-              ],
-              "tag-sort": [
-                { "tag": "#urgent" }
-              ],
-              "date-colors": [
-                {
-                  "isToday": true,
-                  "backgroundColor": "#2d6cdf",
-                  "color": "#ffffff"
-                }
-              ]
-            }"##,
-        )
-        .expect("kanban config should be written");
-        let paths = VaultPaths::new(vault_root);
-
-        let loaded = load_vault_config(&paths);
-
-        assert!(loaded.diagnostics.is_empty());
-        assert_eq!(loaded.config.link_style, LinkStylePreference::Markdown);
-        assert_eq!(loaded.config.link_resolution, LinkResolutionMode::Relative);
-        assert_eq!(loaded.config.attachment_folder, PathBuf::from("."));
-        assert!(loaded.config.strict_line_breaks);
-        assert_eq!(loaded.config.scan.default_mode, AutoScanMode::Blocking);
-        assert_eq!(loaded.config.scan.browse_mode, AutoScanMode::Background);
-        assert_eq!(loaded.config.templates.date_format, "dddd, MMMM Do YYYY");
-        assert_eq!(loaded.config.templates.time_format, "hh:mm A");
-        assert_eq!(
-            loaded.config.templates.obsidian_folder,
-            Some(PathBuf::from("Shared Templates"))
-        );
-        assert_eq!(
-            loaded.config.property_types.get("status"),
-            Some(&"text".to_string())
-        );
-        assert_eq!(
-            loaded.config.property_types.get("priority"),
-            Some(&"number".to_string())
-        );
-        assert_eq!(loaded.config.dataview.inline_query_prefix, "dv:");
-        assert_eq!(loaded.config.dataview.inline_js_query_prefix, "$dv:");
-        assert!(!loaded.config.dataview.enable_dataview_js);
-        assert!(loaded.config.dataview.enable_inline_dataview_js);
-        assert!(loaded.config.dataview.task_completion_tracking);
-        assert!(loaded.config.dataview.task_completion_use_emoji_shorthand);
-        assert_eq!(loaded.config.dataview.task_completion_text, "done-on");
-        assert!(loaded.config.dataview.recursive_subtask_completion);
-        assert!(!loaded.config.dataview.display_result_count);
-        assert_eq!(loaded.config.dataview.default_date_format, "yyyy-MM-dd");
-        assert_eq!(
-            loaded.config.dataview.default_datetime_format,
-            "yyyy-MM-dd HH:mm"
-        );
-        assert_eq!(loaded.config.dataview.timezone.as_deref(), Some("+02:00"));
-        assert_eq!(loaded.config.dataview.max_recursive_render_depth, 7);
-        assert_eq!(loaded.config.dataview.primary_column_name, "Document");
-        assert_eq!(loaded.config.dataview.group_column_name, "Bucket");
-        assert_eq!(loaded.config.kanban.date_trigger, "DUE");
-        assert_eq!(loaded.config.kanban.time_trigger, "AT");
-        assert_eq!(loaded.config.kanban.date_format, "DD/MM/YYYY");
-        assert_eq!(loaded.config.kanban.time_format, "HH:mm:ss");
-        assert_eq!(
-            loaded.config.kanban.date_display_format.as_deref(),
-            Some("ddd DD MMM")
-        );
-        assert_eq!(
-            loaded.config.kanban.date_time_display_format.as_deref(),
-            Some("ddd DD MMM HH:mm:ss")
-        );
-        assert!(loaded.config.kanban.link_date_to_daily_note);
-        assert_eq!(
-            kanban_metadata_key_names(&loaded.config.kanban.metadata_keys),
-            vec!["status".to_string(), "owner".to_string()]
-        );
-        assert_eq!(
-            loaded.config.kanban.metadata_keys[0],
-            KanbanMetadataKeyConfig::Detailed(KanbanMetadataFieldConfig {
-                metadata_key: "status".to_string(),
-                label: Some("Status".to_string()),
-                should_hide_label: true,
-                contains_markdown: true,
-            })
-        );
-        assert!(loaded.config.kanban.archive_with_date);
-        assert!(loaded.config.kanban.append_archive_date);
-        assert_eq!(
-            loaded.config.kanban.archive_date_format,
-            "DD/MM/YYYY HH:mm:ss"
-        );
-        assert_eq!(
-            loaded.config.kanban.archive_date_separator.as_deref(),
-            Some(" :: ")
-        );
-        assert_eq!(loaded.config.kanban.new_card_insertion_method, "prepend");
-        assert_eq!(
-            loaded.config.kanban.new_line_trigger.as_deref(),
-            Some("enter")
-        );
-        assert_eq!(
-            loaded.config.kanban.new_note_folder.as_deref(),
-            Some("Cards/Ideas")
-        );
-        assert_eq!(
-            loaded.config.kanban.new_note_template.as_deref(),
-            Some("Kanban Card")
-        );
-        assert!(loaded.config.kanban.hide_card_count);
-        assert!(loaded.config.kanban.hide_tags_in_title);
-        assert!(loaded.config.kanban.hide_tags_display);
-        assert_eq!(
-            loaded.config.kanban.inline_metadata_position.as_deref(),
-            Some("metadata-table")
-        );
-        assert_eq!(loaded.config.kanban.lane_width, Some(320));
-        assert_eq!(loaded.config.kanban.full_list_lane_width, Some(true));
-        assert_eq!(loaded.config.kanban.list_collapse, vec![true, false]);
-        assert_eq!(loaded.config.kanban.max_archive_size, Some(50));
-        assert!(loaded.config.kanban.show_checkboxes);
-        assert_eq!(loaded.config.kanban.move_dates, Some(true));
-        assert_eq!(loaded.config.kanban.move_tags, Some(false));
-        assert_eq!(loaded.config.kanban.move_task_metadata, Some(true));
-        assert_eq!(loaded.config.kanban.show_add_list, Some(false));
-        assert_eq!(loaded.config.kanban.show_archive_all, Some(false));
-        assert_eq!(loaded.config.kanban.show_board_settings, Some(false));
-        assert_eq!(loaded.config.kanban.show_relative_date, Some(true));
-        assert_eq!(loaded.config.kanban.show_search, Some(false));
-        assert_eq!(loaded.config.kanban.show_set_view, Some(false));
-        assert_eq!(loaded.config.kanban.show_view_as_markdown, Some(false));
-        assert_eq!(loaded.config.kanban.date_picker_week_start, Some(1));
-        assert_eq!(loaded.config.kanban.table_sizing.get("Title"), Some(&240));
-        assert_eq!(loaded.config.kanban.tag_action.as_deref(), Some("kanban"));
-        assert_eq!(
-            loaded.config.kanban.tag_colors,
-            vec![KanbanTagColorConfig {
-                tag_key: "#urgent".to_string(),
-                color: Some("#ffffff".to_string()),
-                background_color: Some("#cc0000".to_string()),
-            }]
-        );
-        assert_eq!(
-            loaded.config.kanban.tag_sort,
-            vec![KanbanTagSortConfig {
-                tag: "#urgent".to_string()
-            }]
-        );
-        assert_eq!(
-            loaded.config.kanban.date_colors,
-            vec![KanbanDateColorConfig {
-                is_today: Some(true),
-                is_before: None,
-                is_after: None,
-                distance: None,
-                unit: None,
-                direction: None,
-                color: Some("#ffffff".to_string()),
-                background_color: Some("#2d6cdf".to_string()),
-            }]
-        );
-    }
-
-    #[test]
-    fn templater_plugin_settings_seed_defaults() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let vault_root = temp_dir.path();
-        fs::create_dir_all(vault_root.join(".obsidian/plugins/templater-obsidian"))
-            .expect("templater plugin dir should be created");
-        fs::write(
-            vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
-            r##"{
-              "command_timeout": 9,
-              "templates_folder": "Templater/Templates",
-              "templates_pairs": [
-                ["slugify", "node scripts/slugify.js"],
-                ["", ""]
-              ],
-              "trigger_on_file_creation": true,
-              "auto_jump_to_cursor": true,
-              "enable_system_commands": true,
-              "shell_path": "/bin/zsh",
-              "user_scripts_folder": "Scripts/User",
-              "enable_folder_templates": false,
-              "folder_templates": [
-                { "folder": "Daily", "template": "Daily Template" },
-                { "folder": "", "template": "" }
-              ],
-              "enable_file_templates": true,
-              "file_templates": [
-                { "regex": "^Projects/.*\\\\.md$", "template": "Project Template" },
-                { "regex": "", "template": "" }
-              ],
-              "syntax_highlighting": false,
-              "syntax_highlighting_mobile": true,
-              "enabled_templates_hotkeys": ["Daily", ""],
-              "startup_templates": ["Startup", ""],
-              "intellisense_render": 3
-            }"##,
-        )
-        .expect("templater config should be written");
-
-        let loaded = load_vault_config(&VaultPaths::new(vault_root));
-
-        assert!(loaded.diagnostics.is_empty());
-        assert_eq!(
-            loaded.config.templates.templater_folder,
-            Some(PathBuf::from("Templater/Templates"))
-        );
-        assert_eq!(loaded.config.templates.command_timeout, 9);
-        assert_eq!(
-            loaded.config.templates.templates_pairs,
-            vec![TemplaterCommandPairConfig {
-                name: "slugify".to_string(),
-                command: "node scripts/slugify.js".to_string(),
-            }]
-        );
-        assert!(loaded.config.templates.trigger_on_file_creation);
-        assert!(loaded.config.templates.auto_jump_to_cursor);
-        assert!(loaded.config.templates.enable_system_commands);
-        assert_eq!(
-            loaded.config.templates.shell_path,
-            Some(PathBuf::from("/bin/zsh"))
-        );
-        assert_eq!(
-            loaded.config.templates.user_scripts_folder,
-            Some(PathBuf::from("Scripts/User"))
-        );
-        assert!(!loaded.config.templates.enable_folder_templates);
-        assert_eq!(
-            loaded.config.templates.folder_templates,
-            vec![TemplaterFolderTemplateConfig {
-                folder: PathBuf::from("Daily"),
-                template: "Daily Template".to_string(),
-            }]
-        );
-        assert!(loaded.config.templates.enable_file_templates);
-        assert_eq!(
-            loaded.config.templates.file_templates,
-            vec![TemplaterFileTemplateConfig {
-                regex: "^Projects/.*\\\\.md$".to_string(),
-                template: "Project Template".to_string(),
-            }]
-        );
-        assert!(!loaded.config.templates.syntax_highlighting);
-        assert!(loaded.config.templates.syntax_highlighting_mobile);
-        assert_eq!(
-            loaded.config.templates.enabled_templates_hotkeys,
-            vec!["Daily".to_string()]
-        );
-        assert_eq!(
-            loaded.config.templates.startup_templates,
-            vec!["Startup".to_string()]
-        );
-        assert_eq!(loaded.config.templates.intellisense_render, 3);
-    }
-
-    #[test]
-    fn vulcan_config_overrides_obsidian_values() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let vault_root = temp_dir.path();
-        fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
-        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
-        fs::write(
-            vault_root.join(".obsidian/app.json"),
-            r#"{
-              "useMarkdownLinks": true,
-              "newLinkFormat": "relative",
-              "attachmentFolderPath": "attachments"
-            }"#,
-        )
-        .expect("app config should be written");
-        fs::write(
-            vault_root.join(".vulcan/config.toml"),
-            r###"[scan]
+    const OBSIDIAN_APP_JSON: &str = r#"{
+      "useMarkdownLinks": true,
+      "newLinkFormat": "relative",
+      "attachmentFolderPath": "/",
+      "strictLineBreaks": true
+    }"#;
+    const OBSIDIAN_TYPES_JSON: &str = r#"{
+      "status": "text",
+      "priority": { "type": "number" }
+    }"#;
+    const OBSIDIAN_TEMPLATES_JSON: &str = r#"{
+      "folder": "Shared Templates",
+      "dateFormat": "dddd, MMMM Do YYYY",
+      "timeFormat": "hh:mm A"
+    }"#;
+    const OBSIDIAN_DATAVIEW_JSON: &str = r#"{
+      "inlineQueryPrefix": "dv:",
+      "inlineJsQueryPrefix": "$dv:",
+      "enableDataviewJs": false,
+      "enableInlineDataviewJs": true,
+      "taskCompletionTracking": true,
+      "taskCompletionUseEmojiShorthand": true,
+      "taskCompletionText": "done-on",
+      "recursiveSubTaskCompletion": true,
+      "showResultCount": false,
+      "defaultDateFormat": "yyyy-MM-dd",
+      "defaultDateTimeFormat": "yyyy-MM-dd HH:mm",
+      "timezone": "+02:00",
+      "maxRecursiveRenderDepth": 7,
+      "tableIdColumnName": "Document",
+      "tableGroupColumnName": "Bucket"
+    }"#;
+    const OBSIDIAN_KANBAN_JSON: &str = r##"{
+      "date-trigger": "DUE",
+      "time-trigger": "AT",
+      "date-format": "DD/MM/YYYY",
+      "time-format": "HH:mm:ss",
+      "date-display-format": "ddd DD MMM",
+      "date-time-display-format": "ddd DD MMM HH:mm:ss",
+      "link-date-to-daily-note": true,
+      "metadata-keys": [
+        {
+          "metadataKey": "status",
+          "label": "Status",
+          "shouldHideLabel": true,
+          "containsMarkdown": true
+        },
+        { "metadataKey": "owner", "label": "Owner" }
+      ],
+      "archive-with-date": true,
+      "append-archive-date": true,
+      "archive-date-format": "DD/MM/YYYY HH:mm:ss",
+      "archive-date-separator": " :: ",
+      "new-card-insertion-method": "prepend",
+      "new-line-trigger": "enter",
+      "new-note-folder": "Cards/Ideas",
+      "new-note-template": "Kanban Card",
+      "hide-card-count": true,
+      "hide-tags-in-title": true,
+      "hide-tags-display": true,
+      "inline-metadata-position": "metadata-table",
+      "lane-width": 320,
+      "full-list-lane-width": true,
+      "list-collapse": [true, false],
+      "max-archive-size": 50,
+      "show-checkboxes": true,
+      "move-dates": true,
+      "move-tags": false,
+      "move-task-metadata": true,
+      "show-add-list": false,
+      "show-archive-all": false,
+      "show-board-settings": false,
+      "show-relative-date": true,
+      "show-search": false,
+      "show-set-view": false,
+      "show-view-as-markdown": false,
+      "date-picker-week-start": 1,
+      "table-sizing": {
+        "Title": 240,
+        "Tags": 96
+      },
+      "tag-action": "kanban",
+      "tag-colors": [
+        {
+          "tagKey": "#urgent",
+          "color": "#ffffff",
+          "backgroundColor": "#cc0000"
+        }
+      ],
+      "tag-sort": [
+        { "tag": "#urgent" }
+      ],
+      "date-colors": [
+        {
+          "isToday": true,
+          "backgroundColor": "#2d6cdf",
+          "color": "#ffffff"
+        }
+      ]
+    }"##;
+    const VULCAN_OVERRIDE_APP_JSON: &str = r#"{
+      "useMarkdownLinks": true,
+      "newLinkFormat": "relative",
+      "attachmentFolderPath": "attachments"
+    }"#;
+    const VULCAN_OVERRIDE_CONFIG_TOML: &str = r###"[scan]
 default_mode = "off"
 browse_mode = "blocking"
 
@@ -4164,236 +3863,55 @@ group_column_name = "Bucket"
 [templates]
 date_format = "DD/MM/YYYY"
 time_format = "HH:mm:ss"
-"###,
-        )
-        .expect("vulcan config should be written");
-        let paths = VaultPaths::new(vault_root);
-
-        let loaded = load_vault_config(&paths);
-
-        assert!(loaded.diagnostics.is_empty());
-        assert_eq!(loaded.config.scan.default_mode, AutoScanMode::Off);
-        assert_eq!(loaded.config.scan.browse_mode, AutoScanMode::Blocking);
-        assert_eq!(loaded.config.chunking.strategy, ChunkingStrategy::Fixed);
-        assert_eq!(loaded.config.chunking.target_size, 512);
-        assert_eq!(loaded.config.chunking.overlap, 64);
-        assert_eq!(loaded.config.link_resolution, LinkResolutionMode::Absolute);
-        assert_eq!(loaded.config.link_style, LinkStylePreference::Wikilink);
-        assert_eq!(loaded.config.attachment_folder, PathBuf::from("assets"));
-        assert_eq!(
-            loaded
-                .config
-                .embedding
-                .as_ref()
-                .expect("embedding config should be present")
-                .model,
-            "nomic-embed-text"
-        );
-        assert_eq!(
-            loaded
-                .config
-                .embedding
-                .as_ref()
-                .expect("embedding config should be present")
-                .provider_name(),
-            "openai-compatible"
-        );
-        assert_eq!(
-            loaded
-                .config
-                .extraction
-                .as_ref()
-                .expect("extraction config should be present")
-                .extensions,
-            vec!["pdf".to_string(), "png".to_string()]
-        );
-        assert!(loaded.config.git.auto_commit);
-        assert_eq!(loaded.config.git.trigger, GitTrigger::Scan);
-        assert_eq!(loaded.config.git.message, "vault sync: {count}");
-        assert_eq!(loaded.config.git.scope, GitScope::All);
-        assert_eq!(
-            loaded.config.git.exclude,
-            vec![".obsidian/workspace.json".to_string()]
-        );
-        assert_eq!(loaded.config.inbox.path, "Capture/Inbox.md");
-        assert_eq!(loaded.config.inbox.format, "* {datetime} {text}");
-        assert!(!loaded.config.inbox.timestamp);
-        assert_eq!(loaded.config.inbox.heading.as_deref(), Some("## Notes"));
-        assert_eq!(loaded.config.tasks.global_filter, Some("#work".to_string()));
-        assert_eq!(
-            loaded.config.tasks.global_query,
-            Some("not done".to_string())
-        );
-        assert!(loaded.config.tasks.remove_global_filter);
-        assert!(loaded.config.tasks.set_created_date);
-        assert_eq!(
-            loaded.config.tasks.recurrence_on_completion,
-            Some("next-line".to_string())
-        );
-        assert_eq!(
-            loaded.config.tasks.statuses.todo,
-            vec![" ".to_string(), "!".to_string()]
-        );
-        assert_eq!(
-            loaded.config.tasks.statuses.completed,
-            vec!["x".to_string(), "v".to_string()]
-        );
-        assert_eq!(
-            loaded.config.tasks.statuses.in_progress,
-            vec!["/".to_string(), ">".to_string()]
-        );
-        assert_eq!(
-            loaded.config.tasks.statuses.cancelled,
-            vec!["-".to_string()]
-        );
-        assert!(loaded.config.tasks.statuses.non_task.is_empty());
-        assert_eq!(loaded.config.kanban.date_trigger, "DUE");
-        assert_eq!(loaded.config.kanban.time_trigger, "AT");
-        assert_eq!(loaded.config.kanban.date_format, "DD/MM/YYYY");
-        assert_eq!(loaded.config.kanban.time_format, "HH:mm:ss");
-        assert_eq!(
-            loaded.config.kanban.date_display_format.as_deref(),
-            Some("ddd DD MMM")
-        );
-        assert_eq!(
-            loaded.config.kanban.date_time_display_format.as_deref(),
-            Some("ddd DD MMM HH:mm:ss")
-        );
-        assert!(loaded.config.kanban.link_date_to_daily_note);
-        assert_eq!(
-            kanban_metadata_key_names(&loaded.config.kanban.metadata_keys),
-            vec!["status".to_string(), "owner".to_string()]
-        );
-        assert!(loaded.config.kanban.archive_with_date);
-        assert!(loaded.config.kanban.append_archive_date);
-        assert_eq!(
-            loaded.config.kanban.archive_date_format,
-            "DD/MM/YYYY HH:mm:ss"
-        );
-        assert_eq!(
-            loaded.config.kanban.archive_date_separator.as_deref(),
-            Some(" :: ")
-        );
-        assert_eq!(loaded.config.kanban.new_card_insertion_method, "prepend");
-        assert_eq!(
-            loaded.config.kanban.new_line_trigger.as_deref(),
-            Some("enter")
-        );
-        assert_eq!(
-            loaded.config.kanban.new_note_folder.as_deref(),
-            Some("Cards/Ideas")
-        );
-        assert_eq!(
-            loaded.config.kanban.new_note_template.as_deref(),
-            Some("Kanban Card")
-        );
-        assert!(loaded.config.kanban.hide_card_count);
-        assert!(loaded.config.kanban.hide_tags_in_title);
-        assert!(loaded.config.kanban.hide_tags_display);
-        assert_eq!(
-            loaded.config.kanban.inline_metadata_position.as_deref(),
-            Some("metadata-table")
-        );
-        assert_eq!(loaded.config.kanban.lane_width, Some(300));
-        assert_eq!(loaded.config.kanban.full_list_lane_width, Some(true));
-        assert_eq!(loaded.config.kanban.list_collapse, vec![true, false]);
-        assert_eq!(loaded.config.kanban.max_archive_size, Some(42));
-        assert!(loaded.config.kanban.show_checkboxes);
-        assert_eq!(loaded.config.kanban.move_dates, Some(true));
-        assert_eq!(loaded.config.kanban.move_tags, Some(false));
-        assert_eq!(loaded.config.kanban.move_task_metadata, Some(true));
-        assert_eq!(loaded.config.kanban.show_add_list, Some(false));
-        assert_eq!(loaded.config.kanban.show_archive_all, Some(false));
-        assert_eq!(loaded.config.kanban.show_board_settings, Some(false));
-        assert_eq!(loaded.config.kanban.show_relative_date, Some(true));
-        assert_eq!(loaded.config.kanban.show_search, Some(false));
-        assert_eq!(loaded.config.kanban.show_set_view, Some(false));
-        assert_eq!(loaded.config.kanban.show_view_as_markdown, Some(false));
-        assert_eq!(loaded.config.kanban.date_picker_week_start, Some(1));
-        assert_eq!(loaded.config.kanban.table_sizing.get("Title"), Some(&240));
-        assert_eq!(loaded.config.kanban.tag_action.as_deref(), Some("kanban"));
-        assert_eq!(
-            loaded.config.kanban.tag_colors,
-            vec![KanbanTagColorConfig {
-                tag_key: "#urgent".to_string(),
-                color: Some("#ffffff".to_string()),
-                background_color: Some("#cc0000".to_string()),
-            }]
-        );
-        assert_eq!(
-            loaded.config.kanban.tag_sort,
-            vec![KanbanTagSortConfig {
-                tag: "#urgent".to_string()
-            }]
-        );
-        assert_eq!(
-            loaded.config.kanban.date_colors,
-            vec![KanbanDateColorConfig {
-                is_today: Some(true),
-                is_before: None,
-                is_after: None,
-                distance: None,
-                unit: None,
-                direction: None,
-                color: Some("#ffffff".to_string()),
-                background_color: Some("#2d6cdf".to_string()),
-            }]
-        );
-        assert_eq!(loaded.config.dataview.inline_query_prefix, "inline:");
-        assert_eq!(loaded.config.dataview.inline_js_query_prefix, "$inline:");
-        assert!(!loaded.config.dataview.enable_dataview_js);
-        assert!(loaded.config.dataview.enable_inline_dataview_js);
-        assert!(loaded.config.dataview.task_completion_tracking);
-        assert!(loaded.config.dataview.task_completion_use_emoji_shorthand);
-        assert_eq!(loaded.config.dataview.task_completion_text, "done-on");
-        assert!(loaded.config.dataview.recursive_subtask_completion);
-        assert!(!loaded.config.dataview.display_result_count);
-        assert_eq!(loaded.config.dataview.default_date_format, "yyyy-MM-dd");
-        assert_eq!(
-            loaded.config.dataview.default_datetime_format,
-            "yyyy-MM-dd HH:mm"
-        );
-        assert_eq!(loaded.config.dataview.timezone.as_deref(), Some("+02:00"));
-        assert_eq!(loaded.config.dataview.max_recursive_render_depth, 8);
-        assert_eq!(loaded.config.dataview.primary_column_name, "Document");
-        assert_eq!(loaded.config.dataview.group_column_name, "Bucket");
-        assert_eq!(loaded.config.templates.date_format, "DD/MM/YYYY");
-        assert_eq!(loaded.config.templates.time_format, "HH:mm:ss");
-    }
-
-    #[test]
-    fn templater_settings_follow_vulcan_and_local_precedence() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let vault_root = temp_dir.path();
-        fs::create_dir_all(vault_root.join(".obsidian/plugins/templater-obsidian"))
-            .expect("templater plugin dir should be created");
-        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
-        fs::write(
-            vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
-            r##"{
-              "command_timeout": 5,
-              "templates_folder": "Templater/Templates",
-              "templates_pairs": [["slugify", "node scripts/slugify.js"]],
-              "trigger_on_file_creation": false,
-              "auto_jump_to_cursor": false,
-              "enable_system_commands": false,
-              "shell_path": "/bin/bash",
-              "user_scripts_folder": "Scripts/User",
-              "enable_folder_templates": true,
-              "folder_templates": [{ "folder": "Daily", "template": "Daily Template" }],
-              "enable_file_templates": false,
-              "file_templates": [{ "regex": "^Projects/.*\\\\.md$", "template": "Project Template" }],
-              "syntax_highlighting": true,
-              "syntax_highlighting_mobile": false,
-              "enabled_templates_hotkeys": ["Daily"],
-              "startup_templates": ["Startup"],
-              "intellisense_render": 1
-            }"##,
-        )
-        .expect("templater config should be written");
-        fs::write(
-            vault_root.join(".vulcan/config.toml"),
-            r###"[templates]
+"###;
+    const TEMPLATER_PLUGIN_DEFAULTS_JSON: &str = r#"{
+      "command_timeout": 9,
+      "templates_folder": "Templater/Templates",
+      "templates_pairs": [
+        ["slugify", "node scripts/slugify.js"],
+        ["", ""]
+      ],
+      "trigger_on_file_creation": true,
+      "auto_jump_to_cursor": true,
+      "enable_system_commands": true,
+      "shell_path": "/bin/zsh",
+      "user_scripts_folder": "Scripts/User",
+      "enable_folder_templates": false,
+      "folder_templates": [
+        { "folder": "Daily", "template": "Daily Template" },
+        { "folder": "", "template": "" }
+      ],
+      "enable_file_templates": true,
+      "file_templates": [
+        { "regex": "^Projects/.*\\\\.md$", "template": "Project Template" },
+        { "regex": "", "template": "" }
+      ],
+      "syntax_highlighting": false,
+      "syntax_highlighting_mobile": true,
+      "enabled_templates_hotkeys": ["Daily", ""],
+      "startup_templates": ["Startup", ""],
+      "intellisense_render": 3
+    }"#;
+    const TEMPLATER_PRECEDENCE_PLUGIN_JSON: &str = r#"{
+      "command_timeout": 5,
+      "templates_folder": "Templater/Templates",
+      "templates_pairs": [["slugify", "node scripts/slugify.js"]],
+      "trigger_on_file_creation": false,
+      "auto_jump_to_cursor": false,
+      "enable_system_commands": false,
+      "shell_path": "/bin/bash",
+      "user_scripts_folder": "Scripts/User",
+      "enable_folder_templates": true,
+      "folder_templates": [{ "folder": "Daily", "template": "Daily Template" }],
+      "enable_file_templates": false,
+      "file_templates": [{ "regex": "^Projects/.*\\\\.md$", "template": "Project Template" }],
+      "syntax_highlighting": true,
+      "syntax_highlighting_mobile": false,
+      "enabled_templates_hotkeys": ["Daily"],
+      "startup_templates": ["Startup"],
+      "intellisense_render": 1
+    }"#;
+    const SHARED_TEMPLATER_CONFIG_TOML: &str = r#"[templates]
 templater_folder = "Shared/Templater"
 command_timeout = 12
 templates_pairs = [{ name = "slugify", command = "bun run slugify" }]
@@ -4411,12 +3929,8 @@ syntax_highlighting_mobile = true
 enabled_templates_hotkeys = ["Shared Daily"]
 startup_templates = ["Shared Startup"]
 intellisense_render = 4
-"###,
-        )
-        .expect("shared config should be written");
-        fs::write(
-            vault_root.join(".vulcan/config.local.toml"),
-            r###"[templates]
+"#;
+    const LOCAL_TEMPLATER_CONFIG_TOML: &str = r#"[templates]
 command_timeout = 20
 templater_folder = "Device/Templates"
 shell_path = "/bin/zsh"
@@ -4424,23 +3938,410 @@ user_scripts_folder = "Scripts/Device"
 enabled_templates_hotkeys = ["Device Daily"]
 startup_templates = ["Device Startup"]
 intellisense_render = 2
-"###,
-        )
-        .expect("local config should be written");
+"#;
+
+    fn kanban_metadata_key_names(keys: &[KanbanMetadataKeyConfig]) -> Vec<String> {
+        keys.iter()
+            .map(|key| match key {
+                KanbanMetadataKeyConfig::Detailed(field) => field.metadata_key.clone(),
+                KanbanMetadataKeyConfig::Key(key) => key.clone(),
+            })
+            .collect()
+    }
+
+    fn write_test_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent dir should be created");
+        }
+        fs::write(path, contents).expect("test file should be written");
+    }
+
+    fn setup_obsidian_seed_vault(vault_root: &Path) {
+        write_test_file(&vault_root.join(".obsidian/app.json"), OBSIDIAN_APP_JSON);
+        write_test_file(
+            &vault_root.join(".obsidian/types.json"),
+            OBSIDIAN_TYPES_JSON,
+        );
+        write_test_file(
+            &vault_root.join(".obsidian/templates.json"),
+            OBSIDIAN_TEMPLATES_JSON,
+        );
+        write_test_file(
+            &vault_root.join(".obsidian/plugins/dataview/data.json"),
+            OBSIDIAN_DATAVIEW_JSON,
+        );
+        write_test_file(
+            &vault_root.join(".obsidian/plugins/obsidian-kanban/data.json"),
+            OBSIDIAN_KANBAN_JSON,
+        );
+    }
+
+    fn assert_obsidian_seed_core_defaults(config: &VaultConfig) {
+        assert_eq!(config.link_style, LinkStylePreference::Markdown);
+        assert_eq!(config.link_resolution, LinkResolutionMode::Relative);
+        assert_eq!(config.attachment_folder, PathBuf::from("."));
+        assert!(config.strict_line_breaks);
+        assert_eq!(config.scan.default_mode, AutoScanMode::Blocking);
+        assert_eq!(config.scan.browse_mode, AutoScanMode::Background);
+        assert_eq!(config.templates.date_format, "dddd, MMMM Do YYYY");
+        assert_eq!(config.templates.time_format, "hh:mm A");
+        assert_eq!(
+            config.templates.obsidian_folder,
+            Some(PathBuf::from("Shared Templates"))
+        );
+        assert_eq!(
+            config.property_types.get("status"),
+            Some(&"text".to_string())
+        );
+        assert_eq!(
+            config.property_types.get("priority"),
+            Some(&"number".to_string())
+        );
+    }
+
+    fn assert_obsidian_seed_dataview_defaults(config: &VaultConfig) {
+        assert_eq!(config.dataview.inline_query_prefix, "dv:");
+        assert_eq!(config.dataview.inline_js_query_prefix, "$dv:");
+        assert!(!config.dataview.enable_dataview_js);
+        assert!(config.dataview.enable_inline_dataview_js);
+        assert!(config.dataview.task_completion_tracking);
+        assert!(config.dataview.task_completion_use_emoji_shorthand);
+        assert_eq!(config.dataview.task_completion_text, "done-on");
+        assert!(config.dataview.recursive_subtask_completion);
+        assert!(!config.dataview.display_result_count);
+        assert_eq!(config.dataview.default_date_format, "yyyy-MM-dd");
+        assert_eq!(config.dataview.default_datetime_format, "yyyy-MM-dd HH:mm");
+        assert_eq!(config.dataview.timezone.as_deref(), Some("+02:00"));
+        assert_eq!(config.dataview.max_recursive_render_depth, 7);
+        assert_eq!(config.dataview.primary_column_name, "Document");
+        assert_eq!(config.dataview.group_column_name, "Bucket");
+    }
+
+    fn assert_obsidian_seed_kanban_defaults(config: &VaultConfig) {
+        assert_eq!(config.kanban.date_trigger, "DUE");
+        assert_eq!(config.kanban.time_trigger, "AT");
+        assert_eq!(config.kanban.date_format, "DD/MM/YYYY");
+        assert_eq!(config.kanban.time_format, "HH:mm:ss");
+        assert_eq!(
+            config.kanban.date_display_format.as_deref(),
+            Some("ddd DD MMM")
+        );
+        assert_eq!(
+            config.kanban.date_time_display_format.as_deref(),
+            Some("ddd DD MMM HH:mm:ss")
+        );
+        assert!(config.kanban.link_date_to_daily_note);
+        assert_eq!(
+            kanban_metadata_key_names(&config.kanban.metadata_keys),
+            vec!["status".to_string(), "owner".to_string()]
+        );
+        assert_eq!(
+            config.kanban.metadata_keys[0],
+            KanbanMetadataKeyConfig::Detailed(KanbanMetadataFieldConfig {
+                metadata_key: "status".to_string(),
+                label: Some("Status".to_string()),
+                should_hide_label: true,
+                contains_markdown: true,
+            })
+        );
+        assert!(config.kanban.archive_with_date);
+        assert!(config.kanban.append_archive_date);
+        assert_eq!(config.kanban.archive_date_format, "DD/MM/YYYY HH:mm:ss");
+        assert_eq!(
+            config.kanban.archive_date_separator.as_deref(),
+            Some(" :: ")
+        );
+        assert_eq!(config.kanban.new_card_insertion_method, "prepend");
+        assert_eq!(config.kanban.new_line_trigger.as_deref(), Some("enter"));
+        assert_eq!(
+            config.kanban.new_note_folder.as_deref(),
+            Some("Cards/Ideas")
+        );
+        assert_eq!(
+            config.kanban.new_note_template.as_deref(),
+            Some("Kanban Card")
+        );
+        assert!(config.kanban.hide_card_count);
+        assert!(config.kanban.hide_tags_in_title);
+        assert!(config.kanban.hide_tags_display);
+        assert_eq!(
+            config.kanban.inline_metadata_position.as_deref(),
+            Some("metadata-table")
+        );
+        assert_eq!(config.kanban.lane_width, Some(320));
+        assert_eq!(config.kanban.full_list_lane_width, Some(true));
+        assert_eq!(config.kanban.list_collapse, vec![true, false]);
+        assert_eq!(config.kanban.max_archive_size, Some(50));
+        assert!(config.kanban.show_checkboxes);
+        assert_eq!(config.kanban.move_dates, Some(true));
+        assert_eq!(config.kanban.move_tags, Some(false));
+        assert_eq!(config.kanban.move_task_metadata, Some(true));
+        assert_eq!(config.kanban.show_add_list, Some(false));
+        assert_eq!(config.kanban.show_archive_all, Some(false));
+        assert_eq!(config.kanban.show_board_settings, Some(false));
+        assert_eq!(config.kanban.show_relative_date, Some(true));
+        assert_eq!(config.kanban.show_search, Some(false));
+        assert_eq!(config.kanban.show_set_view, Some(false));
+        assert_eq!(config.kanban.show_view_as_markdown, Some(false));
+        assert_eq!(config.kanban.date_picker_week_start, Some(1));
+        assert_eq!(config.kanban.table_sizing.get("Title"), Some(&240));
+        assert_eq!(config.kanban.tag_action.as_deref(), Some("kanban"));
+        assert_eq!(
+            config.kanban.tag_colors,
+            vec![KanbanTagColorConfig {
+                tag_key: "#urgent".to_string(),
+                color: Some("#ffffff".to_string()),
+                background_color: Some("#cc0000".to_string()),
+            }]
+        );
+        assert_eq!(
+            config.kanban.tag_sort,
+            vec![KanbanTagSortConfig {
+                tag: "#urgent".to_string()
+            }]
+        );
+        assert_eq!(
+            config.kanban.date_colors,
+            vec![KanbanDateColorConfig {
+                is_today: Some(true),
+                is_before: None,
+                is_after: None,
+                distance: None,
+                unit: None,
+                direction: None,
+                color: Some("#ffffff".to_string()),
+                background_color: Some("#2d6cdf".to_string()),
+            }]
+        );
+    }
+
+    fn setup_override_vault(vault_root: &Path) {
+        write_test_file(
+            &vault_root.join(".obsidian/app.json"),
+            VULCAN_OVERRIDE_APP_JSON,
+        );
+        write_test_file(
+            &vault_root.join(".vulcan/config.toml"),
+            VULCAN_OVERRIDE_CONFIG_TOML,
+        );
+    }
+
+    fn assert_override_core_sections(config: &VaultConfig) {
+        assert_eq!(config.scan.default_mode, AutoScanMode::Off);
+        assert_eq!(config.scan.browse_mode, AutoScanMode::Blocking);
+        assert_eq!(config.chunking.strategy, ChunkingStrategy::Fixed);
+        assert_eq!(config.chunking.target_size, 512);
+        assert_eq!(config.chunking.overlap, 64);
+        assert_eq!(config.link_resolution, LinkResolutionMode::Absolute);
+        assert_eq!(config.link_style, LinkStylePreference::Wikilink);
+        assert_eq!(config.attachment_folder, PathBuf::from("assets"));
+        assert_eq!(
+            config
+                .embedding
+                .as_ref()
+                .expect("embedding config should be present")
+                .model,
+            "nomic-embed-text"
+        );
+        assert_eq!(
+            config
+                .embedding
+                .as_ref()
+                .expect("embedding config should be present")
+                .provider_name(),
+            "openai-compatible"
+        );
+        assert_eq!(
+            config
+                .extraction
+                .as_ref()
+                .expect("extraction config should be present")
+                .extensions,
+            vec!["pdf".to_string(), "png".to_string()]
+        );
+        assert!(config.git.auto_commit);
+        assert_eq!(config.git.trigger, GitTrigger::Scan);
+        assert_eq!(config.git.message, "vault sync: {count}");
+        assert_eq!(config.git.scope, GitScope::All);
+        assert_eq!(
+            config.git.exclude,
+            vec![".obsidian/workspace.json".to_string()]
+        );
+        assert_eq!(config.inbox.path, "Capture/Inbox.md");
+        assert_eq!(config.inbox.format, "* {datetime} {text}");
+        assert!(!config.inbox.timestamp);
+        assert_eq!(config.inbox.heading.as_deref(), Some("## Notes"));
+    }
+
+    fn assert_override_tasks_and_kanban(config: &VaultConfig) {
+        assert_eq!(config.tasks.global_filter, Some("#work".to_string()));
+        assert_eq!(config.tasks.global_query, Some("not done".to_string()));
+        assert!(config.tasks.remove_global_filter);
+        assert!(config.tasks.set_created_date);
+        assert_eq!(
+            config.tasks.recurrence_on_completion,
+            Some("next-line".to_string())
+        );
+        assert_eq!(
+            config.tasks.statuses.todo,
+            vec![" ".to_string(), "!".to_string()]
+        );
+        assert_eq!(
+            config.tasks.statuses.completed,
+            vec!["x".to_string(), "v".to_string()]
+        );
+        assert_eq!(
+            config.tasks.statuses.in_progress,
+            vec!["/".to_string(), ">".to_string()]
+        );
+        assert_eq!(config.tasks.statuses.cancelled, vec!["-".to_string()]);
+        assert!(config.tasks.statuses.non_task.is_empty());
+        assert_eq!(config.kanban.date_trigger, "DUE");
+        assert_eq!(config.kanban.time_trigger, "AT");
+        assert_eq!(config.kanban.date_format, "DD/MM/YYYY");
+        assert_eq!(config.kanban.time_format, "HH:mm:ss");
+        assert_eq!(config.kanban.lane_width, Some(300));
+        assert_eq!(config.kanban.max_archive_size, Some(42));
+        assert_eq!(config.kanban.show_search, Some(false));
+        assert_eq!(config.kanban.tag_action.as_deref(), Some("kanban"));
+        assert_eq!(
+            kanban_metadata_key_names(&config.kanban.metadata_keys),
+            vec!["status".to_string(), "owner".to_string()]
+        );
+    }
+
+    fn assert_override_dataview_and_templates(config: &VaultConfig) {
+        assert_eq!(config.dataview.inline_query_prefix, "inline:");
+        assert_eq!(config.dataview.inline_js_query_prefix, "$inline:");
+        assert!(!config.dataview.enable_dataview_js);
+        assert!(config.dataview.enable_inline_dataview_js);
+        assert!(config.dataview.task_completion_tracking);
+        assert!(config.dataview.task_completion_use_emoji_shorthand);
+        assert_eq!(config.dataview.task_completion_text, "done-on");
+        assert!(config.dataview.recursive_subtask_completion);
+        assert!(!config.dataview.display_result_count);
+        assert_eq!(config.dataview.default_date_format, "yyyy-MM-dd");
+        assert_eq!(config.dataview.default_datetime_format, "yyyy-MM-dd HH:mm");
+        assert_eq!(config.dataview.timezone.as_deref(), Some("+02:00"));
+        assert_eq!(config.dataview.max_recursive_render_depth, 8);
+        assert_eq!(config.dataview.primary_column_name, "Document");
+        assert_eq!(config.dataview.group_column_name, "Bucket");
+        assert_eq!(config.templates.date_format, "DD/MM/YYYY");
+        assert_eq!(config.templates.time_format, "HH:mm:ss");
+    }
+
+    fn setup_templater_precedence_vault(vault_root: &Path) {
+        write_test_file(
+            &vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
+            TEMPLATER_PRECEDENCE_PLUGIN_JSON,
+        );
+        write_test_file(
+            &vault_root.join(".vulcan/config.toml"),
+            SHARED_TEMPLATER_CONFIG_TOML,
+        );
+        write_test_file(
+            &vault_root.join(".vulcan/config.local.toml"),
+            LOCAL_TEMPLATER_CONFIG_TOML,
+        );
+    }
+
+    fn assert_templater_precedence(config: &VaultConfig) {
+        assert_eq!(
+            config.templates.templater_folder,
+            Some(PathBuf::from("Device/Templates"))
+        );
+        assert_eq!(config.templates.command_timeout, 20);
+        assert_eq!(
+            config.templates.templates_pairs,
+            vec![TemplaterCommandPairConfig {
+                name: "slugify".to_string(),
+                command: "bun run slugify".to_string(),
+            }]
+        );
+        assert!(config.templates.trigger_on_file_creation);
+        assert!(config.templates.auto_jump_to_cursor);
+        assert!(config.templates.enable_system_commands);
+        assert_eq!(config.templates.shell_path, Some(PathBuf::from("/bin/zsh")));
+        assert_eq!(
+            config.templates.user_scripts_folder,
+            Some(PathBuf::from("Scripts/Device"))
+        );
+        assert!(!config.templates.enable_folder_templates);
+        assert_eq!(
+            config.templates.folder_templates,
+            vec![TemplaterFolderTemplateConfig {
+                folder: PathBuf::from("Projects"),
+                template: "Project Template".to_string(),
+            }]
+        );
+        assert!(config.templates.enable_file_templates);
+        assert_eq!(
+            config.templates.file_templates,
+            vec![TemplaterFileTemplateConfig {
+                regex: "^Daily/.*\\.md$".to_string(),
+                template: "Daily Template".to_string(),
+            }]
+        );
+        assert!(!config.templates.syntax_highlighting);
+        assert!(config.templates.syntax_highlighting_mobile);
+        assert_eq!(
+            config.templates.enabled_templates_hotkeys,
+            vec!["Device Daily".to_string()]
+        );
+        assert_eq!(
+            config.templates.startup_templates,
+            vec!["Device Startup".to_string()]
+        );
+        assert_eq!(config.templates.intellisense_render, 2);
+    }
+
+    #[test]
+    fn missing_files_use_builtin_defaults() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let loaded = load_vault_config(&paths);
+
+        assert_eq!(loaded.config, VaultConfig::default());
+        assert!(loaded.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn obsidian_settings_seed_defaults_and_property_types() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        setup_obsidian_seed_vault(vault_root);
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_obsidian_seed_core_defaults(&loaded.config);
+        assert_obsidian_seed_dataview_defaults(&loaded.config);
+        assert_obsidian_seed_kanban_defaults(&loaded.config);
+    }
+
+    #[test]
+    fn templater_plugin_settings_seed_defaults() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        write_test_file(
+            &vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
+            TEMPLATER_PLUGIN_DEFAULTS_JSON,
+        );
 
         let loaded = load_vault_config(&VaultPaths::new(vault_root));
 
         assert!(loaded.diagnostics.is_empty());
         assert_eq!(
             loaded.config.templates.templater_folder,
-            Some(PathBuf::from("Device/Templates"))
+            Some(PathBuf::from("Templater/Templates"))
         );
-        assert_eq!(loaded.config.templates.command_timeout, 20);
+        assert_eq!(loaded.config.templates.command_timeout, 9);
         assert_eq!(
             loaded.config.templates.templates_pairs,
             vec![TemplaterCommandPairConfig {
                 name: "slugify".to_string(),
-                command: "bun run slugify".to_string(),
+                command: "node scripts/slugify.js".to_string(),
             }]
         );
         assert!(loaded.config.templates.trigger_on_file_creation);
@@ -4452,35 +4353,61 @@ intellisense_render = 2
         );
         assert_eq!(
             loaded.config.templates.user_scripts_folder,
-            Some(PathBuf::from("Scripts/Device"))
+            Some(PathBuf::from("Scripts/User"))
         );
         assert!(!loaded.config.templates.enable_folder_templates);
         assert_eq!(
             loaded.config.templates.folder_templates,
             vec![TemplaterFolderTemplateConfig {
-                folder: PathBuf::from("Projects"),
-                template: "Project Template".to_string(),
+                folder: PathBuf::from("Daily"),
+                template: "Daily Template".to_string(),
             }]
         );
         assert!(loaded.config.templates.enable_file_templates);
         assert_eq!(
             loaded.config.templates.file_templates,
             vec![TemplaterFileTemplateConfig {
-                regex: "^Daily/.*\\.md$".to_string(),
-                template: "Daily Template".to_string(),
+                regex: "^Projects/.*\\\\.md$".to_string(),
+                template: "Project Template".to_string(),
             }]
         );
         assert!(!loaded.config.templates.syntax_highlighting);
         assert!(loaded.config.templates.syntax_highlighting_mobile);
         assert_eq!(
             loaded.config.templates.enabled_templates_hotkeys,
-            vec!["Device Daily".to_string()]
+            vec!["Daily".to_string()]
         );
         assert_eq!(
             loaded.config.templates.startup_templates,
-            vec!["Device Startup".to_string()]
+            vec!["Startup".to_string()]
         );
-        assert_eq!(loaded.config.templates.intellisense_render, 2);
+        assert_eq!(loaded.config.templates.intellisense_render, 3);
+    }
+
+    #[test]
+    fn vulcan_config_overrides_obsidian_values() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        setup_override_vault(vault_root);
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_override_core_sections(&loaded.config);
+        assert_override_tasks_and_kanban(&loaded.config);
+        assert_override_dataview_and_templates(&loaded.config);
+    }
+
+    #[test]
+    fn templater_settings_follow_vulcan_and_local_precedence() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        setup_templater_precedence_vault(vault_root);
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_templater_precedence(&loaded.config);
     }
 
     #[test]
@@ -4508,7 +4435,7 @@ intellisense_render = 2
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
         fs::write(
             vault_root.join(".vulcan/config.toml"),
-            r###"[scan]
+            r#"[scan]
 default_mode = "off"
 browse_mode = "off"
 
@@ -4533,12 +4460,12 @@ metadata_keys = ["status"]
 
 [templates]
 date_format = "YYYY-MM-DD"
-"###,
+"#,
         )
         .expect("shared config should be written");
         fs::write(
             vault_root.join(".vulcan/config.local.toml"),
-            r###"[scan]
+            r#"[scan]
 default_mode = "blocking"
 browse_mode = "background"
 
@@ -4565,7 +4492,7 @@ metadata_keys = [{ metadata_key = "owner", label = "Owner" }]
 [templates]
 date_format = "DD.MM.YYYY"
 time_format = "HH:mm:ss"
-"###,
+"#,
         )
         .expect("local config should be written");
 
@@ -4715,7 +4642,7 @@ time_format = "HH:mm:ss"
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
         fs::write(
             vault_root.join(".vulcan/config.toml"),
-            r###"[tasks.statuses]
+            r#"[tasks.statuses]
 todo = [" "]
 completed = ["x"]
 
@@ -4724,7 +4651,7 @@ symbol = "!"
 name = "Important"
 type = "TODO"
 next_symbol = "x"
-"###,
+"#,
         )
         .expect("config should be written");
 
@@ -4746,9 +4673,9 @@ next_symbol = "x"
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
         fs::write(
             vault_root.join(".vulcan/config.toml"),
-            r###"[scan]
+            r#"[scan]
 default_mode = "off"
-"###,
+"#,
         )
         .expect("shared config should be written");
         fs::write(vault_root.join(".vulcan/config.local.toml"), "[scan")
@@ -4864,7 +4791,7 @@ default_mode = "off"
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
         fs::write(
             vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
-            r##"{
+            r#"{
               "command_timeout": 12,
               "templates_folder": "Templater/Templates",
               "templates_pairs": [["slugify", "bun run slugify"], ["", ""]],
@@ -4888,7 +4815,7 @@ default_mode = "off"
               "enabled_templates_hotkeys": ["Daily", ""],
               "startup_templates": ["Startup", ""],
               "intellisense_render": 4
-            }"##,
+            }"#,
         )
         .expect("templater config should be written");
         fs::write(

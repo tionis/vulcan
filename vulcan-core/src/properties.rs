@@ -2803,86 +2803,36 @@ mod tests {
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
 
-        let draft = query_notes(
-            &paths,
-            &NoteQuery {
-                filters: vec!["status = draft".to_string()],
-                sort_by: None,
-                sort_descending: false,
-            },
-        )
-        .expect("frontmatter precedence query should succeed");
+        let query_paths = |filters: &[&str], sort_by: Option<&str>| {
+            query_notes(
+                &paths,
+                &NoteQuery {
+                    filters: filters.iter().map(|filter| (*filter).to_string()).collect(),
+                    sort_by: sort_by.map(str::to_string),
+                    sort_descending: false,
+                },
+            )
+            .expect("note query should succeed")
+            .notes
+            .into_iter()
+            .map(|note| note.document_path)
+            .collect::<Vec<_>>()
+        };
         assert_eq!(
-            draft
-                .notes
-                .iter()
-                .map(|note| note.document_path.clone())
-                .collect::<Vec<_>>(),
+            query_paths(&["status = draft"], None),
             vec!["Dashboard.md".to_string()]
         );
-
-        let done = query_notes(
-            &paths,
-            &NoteQuery {
-                filters: vec!["status = done".to_string()],
-                sort_by: None,
-                sort_descending: false,
-            },
-        )
-        .expect("inline status query should succeed");
-        assert!(done.notes.is_empty());
-
-        let priority = query_notes(
-            &paths,
-            &NoteQuery {
-                filters: vec!["priority = 2".to_string()],
-                sort_by: None,
-                sort_descending: false,
-            },
-        )
-        .expect("inline numeric query should succeed");
+        assert!(query_paths(&["status = done"], None).is_empty());
         assert_eq!(
-            priority
-                .notes
-                .iter()
-                .map(|note| note.document_path.clone())
-                .collect::<Vec<_>>(),
+            query_paths(&["priority = 2"], None),
             vec!["Dashboard.md".to_string()]
         );
-
-        let month = query_notes(
-            &paths,
-            &NoteQuery {
-                filters: vec!["month = 2026-04".to_string()],
-                sort_by: None,
-                sort_descending: false,
-            },
-        )
-        .expect("month-only date query should succeed");
         assert_eq!(
-            month
-                .notes
-                .iter()
-                .map(|note| note.document_path.clone())
-                .collect::<Vec<_>>(),
+            query_paths(&["month = 2026-04"], None),
             vec!["Dashboard.md".to_string()]
         );
-
-        let reviewed = query_notes(
-            &paths,
-            &NoteQuery {
-                filters: vec!["reviewed = true".to_string()],
-                sort_by: None,
-                sort_descending: false,
-            },
-        )
-        .expect("frontmatter-reviewed query should succeed");
         assert_eq!(
-            reviewed
-                .notes
-                .iter()
-                .map(|note| note.document_path.clone())
-                .collect::<Vec<_>>(),
+            query_paths(&["reviewed = true"], None),
             vec!["Dashboard.md".to_string(), "Projects/Alpha.md".to_string()]
         );
 

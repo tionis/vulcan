@@ -1404,7 +1404,7 @@ mod tests {
     #[test]
     fn eval_meta_link_fields() {
         assert_eq!(
-            eval(r#"meta([[2021-11-01|Displayed link text]]).display"#),
+            eval(r"meta([[2021-11-01|Displayed link text]]).display"),
             Value::String("Displayed link text".to_string())
         );
         assert_eq!(
@@ -1412,19 +1412,19 @@ mod tests {
             Value::String("Shown".to_string())
         );
         assert_eq!(
-            eval(r#"meta([[My Project#Next Actions]]).path"#),
+            eval(r"meta([[My Project#Next Actions]]).path"),
             Value::String("My Project".to_string())
         );
         assert_eq!(
-            eval(r#"meta([[My Project#^9bcbe8]]).subpath"#),
+            eval(r"meta([[My Project#^9bcbe8]]).subpath"),
             Value::String("9bcbe8".to_string())
         );
         assert_eq!(
-            eval(r#"meta(![[My Project#^9bcbe8]]).embed"#),
+            eval(r"meta(![[My Project#^9bcbe8]]).embed"),
             Value::Bool(true)
         );
         assert_eq!(
-            eval(r#"meta([[My Project#Next Actions]]).type"#),
+            eval(r"meta([[My Project#Next Actions]]).type"),
             Value::String("header".to_string())
         );
         assert_eq!(

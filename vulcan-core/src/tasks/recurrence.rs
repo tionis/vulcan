@@ -581,7 +581,7 @@ mod tests {
     fn task(fields: &[(&str, Value)]) -> Map<String, Value> {
         fields
             .iter()
-            .map(|(key, value)| (key.to_string(), value.clone()))
+            .map(|(key, value)| ((*key).to_string(), value.clone()))
             .collect()
     }
 

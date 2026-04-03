@@ -329,7 +329,7 @@ WHERE status = "open" AND file.path != "Archive.md" AND contains(file.tags, "#pr
 
     #[test]
     fn leaves_non_sql_where_expressions_as_expression_only() {
-        let query = parse_dql(r#"TABLE file.name WHERE priority > 1 OR choice(done, 1, 0) = 1"#)
+        let query = parse_dql(r"TABLE file.name WHERE priority > 1 OR choice(done, 1, 0) = 1")
             .expect("query should parse");
         let compiled = compile_dql(&query);
 
@@ -337,7 +337,7 @@ WHERE status = "open" AND file.path != "Archive.md" AND contains(file.tags, "#pr
             compiled.commands,
             vec![CompiledDqlCommand::Where(CompiledWhereClause {
                 expr: crate::expression::parse_expression(
-                    r#"priority > 1 || choice(done, 1, 0) = 1"#,
+                    r"priority > 1 || choice(done, 1, 0) = 1",
                 )
                 .expect("expression should parse"),
                 filters: None,

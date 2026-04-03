@@ -880,7 +880,7 @@ mod tests {
         assert_eq!(report.summary.parse_failures, 1);
         assert_eq!(
             report.summary.unsupported_syntax,
-            if cfg!(feature = "js_runtime") { 0 } else { 1 }
+            usize::from(!cfg!(feature = "js_runtime"))
         );
         assert!(report.parse_failures[0]
             .message
