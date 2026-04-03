@@ -7,6 +7,7 @@ use crate::properties::{
     refresh_property_catalog_for_documents, IndexedProperties,
 };
 use crate::resolver::{LinkResolutionProblem, ResolverDocument, ResolverIndex, ResolverLink};
+use crate::tasknotes::extract_tasknote;
 use crate::tasks::task_recurrence_properties;
 use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
@@ -739,6 +740,7 @@ fn apply_incremental_scan(
                         replace_derived_rows(
                             transaction,
                             &id,
+                            &item.file.relative_path,
                             &item.file.filename,
                             is_new,
                             config,
@@ -1141,7 +1143,15 @@ fn apply_prepared_full_scan_document(
     )?;
     match &prepared.derived {
         PreparedDerivedContent::Note(note) => {
-            replace_derived_rows(transaction, id, &prepared.file.filename, true, config, note)?;
+            replace_derived_rows(
+                transaction,
+                id,
+                &prepared.file.relative_path,
+                &prepared.file.filename,
+                true,
+                config,
+                note,
+            )?;
         }
         PreparedDerivedContent::Attachment(chunks) => {
             replace_attachment_rows(transaction, id, &prepared.file.filename, true, chunks)?;
@@ -1189,6 +1199,7 @@ fn delete_document(transaction: &Transaction<'_>, id: &str) -> Result<(), rusqli
 fn replace_derived_rows(
     transaction: &Transaction<'_>,
     document_id: &str,
+    document_path: &str,
     document_title: &str,
     is_new: bool,
     config: &crate::VaultConfig,
@@ -1218,13 +1229,25 @@ fn replace_derived_rows(
         reusable_chunk_ids,
     )?;
     insert_diagnostics(transaction, document_id, &parsed.diagnostics)?;
-    if let Some(properties) = extract_indexed_properties(parsed, config)
-        .map_err(|error| ScanError::Io(std::io::Error::other(error)))?
-    {
-        insert_properties(transaction, document_id, &properties)?;
-        insert_property_values(transaction, document_id, &properties)?;
-        insert_property_list_items(transaction, document_id, &properties)?;
-        insert_property_diagnostics(transaction, document_id, &properties)?;
+    let indexed_properties = extract_indexed_properties(parsed, config)
+        .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
+    if let Some(properties) = indexed_properties.as_ref() {
+        insert_properties(transaction, document_id, properties)?;
+        insert_property_values(transaction, document_id, properties)?;
+        insert_property_list_items(transaction, document_id, properties)?;
+        insert_property_diagnostics(transaction, document_id, properties)?;
+    }
+    if let Some(properties) = indexed_properties.as_ref() {
+        let canonical_json = serde_json::from_str::<Value>(&properties.canonical_json)
+            .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
+        if let Some(tasknote) = extract_tasknote(
+            document_path,
+            document_title,
+            &canonical_json,
+            &config.tasknotes,
+        ) {
+            insert_tasknote_task(transaction, document_id, &tasknote)?;
+        }
     }
     let list_item_ids = insert_list_items(transaction, document_id, &parsed.list_items)?;
     insert_tasks(
@@ -1972,6 +1995,80 @@ fn task_annotation_markers() -> &'static [&'static str] {
     ]
 }
 
+fn insert_tasknote_task(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    tasknote: &crate::IndexedTaskNote,
+) -> Result<(), ScanError> {
+    transaction.execute(
+        "
+        INSERT INTO tasknotes_tasks (
+            document_id,
+            title,
+            status,
+            priority,
+            due,
+            scheduled,
+            completed_date,
+            date_created,
+            date_modified,
+            archived,
+            tags_json,
+            contexts_json,
+            projects_json,
+            time_estimate,
+            recurrence,
+            recurrence_anchor,
+            complete_instances_json,
+            skipped_instances_json,
+            blocked_by_json,
+            reminders_json,
+            time_entries_json,
+            custom_fields_json
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+            ?19, ?20, ?21, ?22
+        )
+        ",
+        params![
+            document_id,
+            &tasknote.title,
+            &tasknote.status,
+            &tasknote.priority,
+            tasknote.due.as_deref(),
+            tasknote.scheduled.as_deref(),
+            tasknote.completed_date.as_deref(),
+            tasknote.date_created.as_deref(),
+            tasknote.date_modified.as_deref(),
+            i64::from(tasknote.archived),
+            serde_json::to_string(&tasknote.tags)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            serde_json::to_string(&tasknote.contexts)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            serde_json::to_string(&tasknote.projects)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            tasknote.time_estimate,
+            tasknote.recurrence.as_deref(),
+            tasknote.recurrence_anchor.as_deref(),
+            serde_json::to_string(&tasknote.complete_instances)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            serde_json::to_string(&tasknote.skipped_instances)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            serde_json::to_string(&tasknote.blocked_by)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            serde_json::to_string(&tasknote.reminders)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            serde_json::to_string(&tasknote.time_entries)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+            serde_json::to_string(&tasknote.custom_fields)
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+        ],
+    )?;
+
+    Ok(())
+}
+
 fn insert_list_items(
     transaction: &Transaction<'_>,
     document_id: &str,
@@ -2443,6 +2540,7 @@ fn clear_derived_rows(
     static CLEAR_STATEMENTS: &[&str] = &[
         "DELETE FROM kanban_boards WHERE document_id = ?1",
         "DELETE FROM events WHERE document_id = ?1",
+        "DELETE FROM tasknotes_tasks WHERE document_id = ?1",
         "DELETE FROM task_properties WHERE task_id IN (SELECT id FROM tasks WHERE document_id = ?1)",
         "DELETE FROM tasks WHERE document_id = ?1",
         "DELETE FROM list_items WHERE document_id = ?1",
@@ -3418,6 +3516,96 @@ mod tests {
         assert_eq!(count_rows(database.connection(), "chunks"), 4);
         assert_eq!(count_rows(database.connection(), "search_chunk_content"), 4);
         assert_eq!(count_rows(database.connection(), "diagnostics"), 0);
+    }
+
+    #[test]
+    fn full_scan_indexes_tasknotes_projection_rows() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("tasknotes", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        let summary = scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        assert_eq!(summary.discovered, 4);
+
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let connection = database.connection();
+        assert_eq!(count_rows(connection, "tasknotes_tasks"), 2);
+
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            i64,
+            String,
+            String,
+            String,
+            String,
+        )> = connection
+            .prepare(
+                "
+                SELECT documents.path,
+                       tasknotes_tasks.title,
+                       tasknotes_tasks.status,
+                       tasknotes_tasks.priority,
+                       tasknotes_tasks.archived,
+                       tasknotes_tasks.contexts_json,
+                       tasknotes_tasks.projects_json,
+                       tasknotes_tasks.blocked_by_json,
+                       tasknotes_tasks.custom_fields_json
+                FROM tasknotes_tasks
+                JOIN documents ON documents.id = tasknotes_tasks.document_id
+                ORDER BY documents.path
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            })
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect();
+
+        assert_eq!(
+            rows[0],
+            (
+                "TaskNotes/Tasks/Prep Outline.md".to_string(),
+                "Prep outline".to_string(),
+                "done".to_string(),
+                "low".to_string(),
+                0,
+                "[]".to_string(),
+                "[]".to_string(),
+                "[]".to_string(),
+                "{}".to_string(),
+            )
+        );
+        assert_eq!(rows[1].0, "TaskNotes/Tasks/Write Docs.md");
+        assert_eq!(rows[1].1, "Write docs");
+        assert_eq!(rows[1].2, "in-progress");
+        assert_eq!(rows[1].3, "high");
+        assert_eq!(rows[1].4, 0);
+        assert_eq!(rows[1].5, r#"["@desk","@work"]"#);
+        assert_eq!(rows[1].6, r#"["[[Projects/Website]]"]"#);
+        assert!(
+            rows[1]
+                .7
+                .contains(r#""uid":"[[TaskNotes/Tasks/Prep Outline]]""#),
+            "expected blocked_by_json to retain dependency object: {}",
+            rows[1].7
+        );
+        assert_eq!(rows[1].8, r#"{"effort":3.0}"#);
     }
 
     #[test]

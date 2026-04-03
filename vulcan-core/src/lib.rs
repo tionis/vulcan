@@ -26,6 +26,7 @@ pub mod saved_queries;
 pub mod scan;
 pub mod search;
 pub mod suggestions;
+pub mod tasknotes;
 pub mod tasks;
 pub mod vector;
 pub mod watch;
@@ -49,7 +50,9 @@ pub use config::{
     EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, ImportConflict, ImportTarget,
     InboxConfig, KanbanConfig, KanbanImporter, LinkResolutionMode, LinkStylePreference,
     PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter,
-    PeriodicStartOfWeek, PluginImporter, ScanConfig, TasksImporter, TemplaterCommandPairConfig,
+    PeriodicStartOfWeek, PluginImporter, ScanConfig, TaskNotesConfig, TaskNotesFieldMapping,
+    TaskNotesIdentificationMethod, TaskNotesPriorityConfig, TaskNotesStatusConfig,
+    TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig,
     TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplaterImporter, TemplatesConfig,
     VaultConfig,
 };
@@ -150,6 +153,10 @@ pub use suggestions::{
     DuplicateSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
     SuggestionError,
 };
+pub use tasknotes::{
+    extract_tasknote, is_tasknote_document, tasknotes_priority_weight, tasknotes_status_state,
+    IndexedTaskNote, TaskNotesStatusState,
+};
 pub use tasks::{
     evaluate_parsed_tasks_query, evaluate_tasks_query, load_tasks_blocks, parse_recurrence_text,
     parse_task_recurrence, parse_tasks_query, task_recurrence_anchor, task_upcoming_occurrences,
@@ -170,6 +177,6 @@ pub use vector::{
 };
 pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchReport};
 
-pub const PARSER_VERSION: u32 = 5;
+pub const PARSER_VERSION: u32 = 6;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 15;
+pub const SCHEMA_VERSION: u32 = 16;
