@@ -1932,7 +1932,7 @@ This makes skill scripts runnable by external agent harnesses (Claude Code, Code
 **Telegram adapter (first implementation):**
 
 - [ ] Uses `teloxide` or `frankenstein` crate for Telegram Bot API
-- [ ] Configuration in `.vulcan/config.toml`:
+- [x] Configuration in `.vulcan/config.toml`:
   ```toml
   [assistant.platforms.telegram]
   enabled = true
@@ -2907,30 +2907,30 @@ scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
 
 **`web search`**
 
-- [ ] `vulcan web search <query>` — perform a web search
-- [ ] `--backend kagi|...` — search backend (default from config, Kagi first implementation)
-- [ ] `--limit <n>` — max results (default: 10)
-- [ ] `--output json` returns structured results: `[{ title, url, snippet }]`
-- [ ] Pluggable backend via `SearchBackend` trait: `fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>`
+- [x] `vulcan web search <query>` — perform a web search
+- [x] `--backend kagi|...` — search backend (default from config, Kagi first implementation)
+- [x] `--limit <n>` — max results (default: 10)
+- [x] `--output json` returns structured results: `[{ title, url, snippet }]`
+- [x] Pluggable backend via `SearchBackend` trait: `fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>`
 - [ ] Configuration in `.vulcan/config.toml`:
   ```toml
   [web.search]
   backend = "kagi"
   api_key_env = "KAGI_API_KEY"
   ```
-- [ ] Kagi backend implementation using their Search API
+- [x] Kagi backend implementation using their Search API
 
 **`web fetch`**
 
-- [ ] `vulcan web fetch <url>` — fetch a URL and output content
-- [ ] `--mode markdown` — convert HTML to markdown (readability-style article extraction, default)
-- [ ] `--mode html` — raw HTML
-- [ ] `--mode raw` — raw response body
-- [ ] `--save <path>` — save output to file (for images, PDFs, binary content)
-- [ ] `--extract-article` — use readability algorithm to extract article content (strip nav, ads, etc.)
-- [ ] `--output json` returns `{ url, status, content_type, content }`
-- [ ] Respect `robots.txt` (best effort)
-- [ ] User-Agent header identifying Vulcan
+- [x] `vulcan web fetch <url>` — fetch a URL and output content
+- [x] `--mode markdown` — convert HTML to markdown (readability-style article extraction, default)
+- [x] `--mode html` — raw HTML
+- [x] `--mode raw` — raw response body
+- [x] `--save <path>` — save output to file (for images, PDFs, binary content)
+- [x] `--extract-article` — use readability algorithm to extract article content (strip nav, ads, etc.)
+- [x] `--output json` returns `{ url, status, content_type, content }`
+- [x] Respect `robots.txt` (best effort)
+- [x] User-Agent header identifying Vulcan
 
 #### 9.18.7 Integrated documentation, describe, and external harness support
 

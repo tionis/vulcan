@@ -207,6 +207,18 @@ Behavior:
 - `git diff` and `git blame` take vault-relative file paths, not note aliases.
 - `git commit` refuses to stage `.vulcan/` state even when it is dirty.
 
+### Web commands
+
+- `vulcan web search <query> [--backend <name>] [--limit <n>]`: query the configured web search backend and return title/url/snippet results.
+- `vulcan web fetch <url> [--mode markdown|html|raw] [--extract-article] [--save <path>]`: fetch one URL and render or save the response body.
+
+Behavior:
+
+- `web search` reads `[web.search]` from `.vulcan/config.toml`; the default backend is `kagi`, using `KAGI_API_KEY` unless overridden.
+- `web fetch` uses the configured Vulcan user-agent and performs a best-effort `robots.txt` check before requesting the target URL.
+- `web fetch --mode markdown` converts HTML into readable markdown-like text; `--extract-article` prefers `<article>` or `<main>` content when present.
+- `web fetch --save` writes the fetched output to disk and still reports metadata in JSON mode.
+
 ### Bases commands
 
 `vulcan bases` now covers both read and write workflows:

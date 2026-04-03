@@ -457,6 +457,38 @@ impl Default for TemplatesConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    pub backend: String,
+    pub api_key_env: String,
+    pub base_url: String,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            backend: "kagi".to_string(),
+            api_key_env: "KAGI_API_KEY".to_string(),
+            base_url: "https://kagi.com/api/v0/search".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebConfig {
+    pub user_agent: String,
+    pub search: WebSearchConfig,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            user_agent: "Vulcan/0.1 (+https://github.com/tionis/vulcan)".to_string(),
+            search: WebSearchConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskCompletionState {
     pub checked: bool,
@@ -1089,6 +1121,7 @@ pub struct VaultConfig {
     pub kanban: KanbanConfig,
     pub dataview: DataviewConfig,
     pub templates: TemplatesConfig,
+    pub web: WebConfig,
     pub periodic: PeriodicConfig,
 }
 
@@ -1110,6 +1143,7 @@ impl Default for VaultConfig {
             kanban: KanbanConfig::default(),
             dataview: DataviewConfig::default(),
             templates: TemplatesConfig::default(),
+            web: WebConfig::default(),
             periodic: PeriodicConfig::default(),
         }
     }
@@ -1286,6 +1320,7 @@ struct PartialVulcanConfig {
     kanban: Option<PartialKanbanConfig>,
     dataview: Option<PartialDataviewConfig>,
     templates: Option<PartialTemplatesConfig>,
+    web: Option<PartialWebConfig>,
     periodic: Option<PartialPeriodicConfig>,
 }
 
@@ -1349,6 +1384,19 @@ struct PartialTemplatesConfig {
     enabled_templates_hotkeys: Option<Vec<String>>,
     startup_templates: Option<Vec<String>>,
     intellisense_render: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialWebConfig {
+    user_agent: Option<String>,
+    search: Option<PartialWebSearchConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialWebSearchConfig {
+    backend: Option<String>,
+    api_key_env: Option<String>,
+    base_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -4135,6 +4183,23 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(intellisense_render) = templates.intellisense_render {
             config.templates.intellisense_render = intellisense_render;
+        }
+    }
+
+    if let Some(web) = overrides.web {
+        if let Some(user_agent) = web.user_agent {
+            config.web.user_agent = user_agent;
+        }
+        if let Some(search) = web.search {
+            if let Some(backend) = search.backend {
+                config.web.search.backend = backend;
+            }
+            if let Some(api_key_env) = search.api_key_env {
+                config.web.search.api_key_env = api_key_env;
+            }
+            if let Some(base_url) = search.base_url {
+                config.web.search.base_url = base_url;
+            }
         }
     }
 

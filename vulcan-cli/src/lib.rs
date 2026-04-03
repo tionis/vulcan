@@ -14,7 +14,7 @@ pub use cli::{
     GraphCommand, InitArgs, KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs,
     PeriodicSubcommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
     SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand,
-    VectorQueueCommand, VectorsCommand,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -26,6 +26,8 @@ use crate::template_engine::{
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use regex::Regex;
+use reqwest::blocking::Client;
+use reqwest::header::AUTHORIZATION;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -588,6 +590,30 @@ struct GitDiffReport {
 struct GitBlameReport {
     path: String,
     lines: Vec<GitBlameLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct WebSearchResult {
+    title: String,
+    url: String,
+    snippet: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct WebSearchReport {
+    backend: String,
+    query: String,
+    results: Vec<WebSearchResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct WebFetchReport {
+    url: String,
+    status: u16,
+    content_type: String,
+    mode: String,
+    content: String,
+    saved: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1516,6 +1542,309 @@ fn run_git_blame_command(paths: &VaultPaths, path: &str) -> Result<GitBlameRepor
         path: normalized,
         lines,
     })
+}
+
+trait SearchBackend {
+    fn name(&self) -> &'static str;
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError>;
+}
+
+struct KagiSearchBackend {
+    client: Client,
+    base_url: String,
+    api_key: String,
+}
+
+impl SearchBackend for KagiSearchBackend {
+    fn name(&self) -> &'static str {
+        "kagi"
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
+        let limit_value = limit.max(1).to_string();
+        let response = self
+            .client
+            .get(&self.base_url)
+            .header(AUTHORIZATION, format!("Bot {}", self.api_key))
+            .query(&[("q", query), ("limit", limit_value.as_str())])
+            .send()
+            .map_err(CliError::operation)?;
+        if !response.status().is_success() {
+            return Err(CliError::operation(format!(
+                "web search failed with status {}",
+                response.status()
+            )));
+        }
+        let payload = response.json::<Value>().map_err(CliError::operation)?;
+        parse_search_results(&payload).ok_or_else(|| {
+            CliError::operation("web search backend returned an unexpected payload shape")
+        })
+    }
+}
+
+fn run_web_search_command(
+    paths: &VaultPaths,
+    query: &str,
+    backend_override: Option<&str>,
+    limit: usize,
+) -> Result<WebSearchReport, CliError> {
+    let config = load_vault_config(paths).config.web;
+    let backend_name = backend_override.unwrap_or(config.search.backend.as_str());
+    let client = build_web_client(&config.user_agent)?;
+    let backend: Box<dyn SearchBackend> = match backend_name {
+        "kagi" => {
+            let api_key = std::env::var(&config.search.api_key_env).map_err(|_| {
+                CliError::operation(format!(
+                    "missing web search API key env var {}",
+                    config.search.api_key_env
+                ))
+            })?;
+            Box::new(KagiSearchBackend {
+                client,
+                base_url: config.search.base_url,
+                api_key,
+            })
+        }
+        other => {
+            return Err(CliError::operation(format!(
+                "unsupported web search backend: {other}"
+            )));
+        }
+    };
+
+    let results = backend.search(query, limit)?;
+    Ok(WebSearchReport {
+        backend: backend.name().to_string(),
+        query: query.to_string(),
+        results,
+    })
+}
+
+fn run_web_fetch_command(
+    paths: &VaultPaths,
+    url: &str,
+    mode: WebFetchMode,
+    save: Option<&PathBuf>,
+    extract_article: bool,
+) -> Result<WebFetchReport, CliError> {
+    let config = load_vault_config(paths).config.web;
+    let client = build_web_client(&config.user_agent)?;
+    if !robots_allow_fetch(&client, url, &config.user_agent) {
+        return Err(CliError::operation(
+            "fetch blocked by robots.txt (best-effort check)",
+        ));
+    }
+
+    let response = client.get(url).send().map_err(CliError::operation)?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let bytes = response.bytes().map_err(CliError::operation)?;
+    let content = render_fetched_content(&bytes, &content_type, mode, extract_article);
+    let saved = save.map(|path| path.to_string_lossy().to_string());
+
+    if let Some(path) = save {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
+        }
+        match mode {
+            WebFetchMode::Raw => fs::write(path, &bytes).map_err(CliError::operation)?,
+            WebFetchMode::Html | WebFetchMode::Markdown => {
+                fs::write(path, content.as_bytes()).map_err(CliError::operation)?;
+            }
+        }
+    }
+
+    Ok(WebFetchReport {
+        url: url.to_string(),
+        status,
+        content_type,
+        mode: format!("{mode:?}").to_ascii_lowercase(),
+        content,
+        saved,
+    })
+}
+
+fn build_web_client(user_agent: &str) -> Result<Client, CliError> {
+    Client::builder()
+        .user_agent(user_agent)
+        .build()
+        .map_err(CliError::operation)
+}
+
+fn parse_search_results(payload: &Value) -> Option<Vec<WebSearchResult>> {
+    let results = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| payload.get("results").and_then(Value::as_array))?;
+
+    Some(
+        results
+            .iter()
+            .filter_map(|item| {
+                let title = item
+                    .get("title")
+                    .or_else(|| item.get("t"))
+                    .and_then(Value::as_str)?;
+                let url = item
+                    .get("url")
+                    .or_else(|| item.get("u"))
+                    .and_then(Value::as_str)?;
+                let snippet = item
+                    .get("snippet")
+                    .or_else(|| item.get("desc"))
+                    .or_else(|| item.get("body"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                Some(WebSearchResult {
+                    title: title.to_string(),
+                    url: url.to_string(),
+                    snippet: snippet.to_string(),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn render_fetched_content(
+    bytes: &[u8],
+    content_type: &str,
+    mode: WebFetchMode,
+    extract_article: bool,
+) -> String {
+    let rendered = String::from_utf8_lossy(bytes).to_string();
+    match mode {
+        WebFetchMode::Raw | WebFetchMode::Html => rendered,
+        WebFetchMode::Markdown => {
+            if content_type.contains("html") {
+                html_to_markdown(&rendered, extract_article)
+            } else {
+                rendered
+            }
+        }
+    }
+}
+
+fn robots_allow_fetch(client: &Client, url: &str, user_agent: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return true;
+    };
+    let Some(host) = parsed.host_str() else {
+        return true;
+    };
+    let authority = parsed
+        .port()
+        .map_or_else(|| host.to_string(), |port| format!("{host}:{port}"));
+    let robots_url = format!("{}://{authority}/robots.txt", parsed.scheme());
+    let Ok(response) = client.get(robots_url).send() else {
+        return true;
+    };
+    if !response.status().is_success() {
+        return true;
+    }
+    let Ok(robots) = response.text() else {
+        return true;
+    };
+
+    robots_allows_path(&robots, parsed.path(), user_agent)
+}
+
+fn robots_allows_path(robots: &str, path: &str, user_agent: &str) -> bool {
+    let mut applies = false;
+    let normalized_agent = user_agent.to_ascii_lowercase();
+
+    for raw_line in robots.lines() {
+        let line = raw_line.split('#').next().unwrap_or_default().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim();
+
+        if key == "user-agent" {
+            let value = value.to_ascii_lowercase();
+            applies = value == "*" || normalized_agent.starts_with(&value);
+        } else if applies && key == "disallow" && !value.is_empty() && path.starts_with(value) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn html_to_markdown(html: &str, extract_article: bool) -> String {
+    let relevant = if extract_article {
+        extract_article_html(html).unwrap_or(html)
+    } else {
+        html
+    };
+    let mut rendered = Regex::new(r"(?is)<script[^>]*>.*?</script>")
+        .expect("regex should compile")
+        .replace_all(relevant, "")
+        .into_owned();
+    rendered = Regex::new(r"(?is)<style[^>]*>.*?</style>")
+        .expect("regex should compile")
+        .replace_all(&rendered, "")
+        .into_owned();
+    for (pattern, replacement) in [
+        (r"(?i)<br\s*/?>", "\n"),
+        (
+            r"(?i)</(p|div|section|article|main|body|h1|h2|h3|h4|h5|h6|tr)>",
+            "\n",
+        ),
+        (r"(?i)<li[^>]*>", "- "),
+        (r"(?i)</li>", "\n"),
+    ] {
+        rendered = Regex::new(pattern)
+            .expect("regex should compile")
+            .replace_all(&rendered, replacement)
+            .into_owned();
+    }
+    rendered = Regex::new(r"(?is)<[^>]+>")
+        .expect("regex should compile")
+        .replace_all(&rendered, "")
+        .into_owned();
+    rendered = decode_html_entities(&rendered);
+    Regex::new(r"\n{3,}")
+        .expect("regex should compile")
+        .replace_all(rendered.trim(), "\n\n")
+        .into_owned()
+}
+
+fn extract_article_html(html: &str) -> Option<&str> {
+    for pattern in [
+        r"(?is)<article[^>]*>(.*?)</article>",
+        r"(?is)<main[^>]*>(.*?)</main>",
+        r"(?is)<body[^>]*>(.*?)</body>",
+    ] {
+        let regex = Regex::new(pattern).expect("regex should compile");
+        if let Some(captures) = regex.captures(html) {
+            if let Some(content) = captures.get(1) {
+                return Some(content.as_str());
+            }
+        }
+    }
+    None
+}
+
+fn decode_html_entities(input: &str) -> String {
+    [
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&nbsp;", " "),
+    ]
+    .into_iter()
+    .fold(input.to_string(), |acc, (from, to)| acc.replace(from, to))
 }
 
 fn run_dataview_inline_command(
@@ -6891,6 +7220,26 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_git_blame_report(cli.output, &report)
             }
         },
+        Command::Web { ref command } => match command {
+            WebCommand::Search {
+                query,
+                backend,
+                limit,
+            } => {
+                let report = run_web_search_command(&paths, query, backend.as_deref(), *limit)?;
+                print_web_search_report(cli.output, &report)
+            }
+            WebCommand::Fetch {
+                url,
+                mode,
+                save,
+                extract_article,
+            } => {
+                let report =
+                    run_web_fetch_command(&paths, url, *mode, save.as_ref(), *extract_article)?;
+                print_web_fetch_report(cli.output, &report)
+            }
+        },
         Command::Weekly { ref args } => {
             let report = run_periodic_open_command(
                 &paths,
@@ -9802,6 +10151,45 @@ fn print_git_blame_report(output: OutputFormat, report: &GitBlameReport) -> Resu
                     line.author_name,
                     line.line
                 );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_web_search_report(output: OutputFormat, report: &WebSearchReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.results.is_empty() {
+                println!("No web results.");
+                return Ok(());
+            }
+            for result in &report.results {
+                println!("- {} [{}]", result.title, result.url);
+                if !result.snippet.is_empty() {
+                    println!("  {}", result.snippet);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_web_fetch_report(output: OutputFormat, report: &WebFetchReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if let Some(saved) = &report.saved {
+                println!(
+                    "Fetched {} [{} {}] -> {}",
+                    report.url, report.status, report.content_type, saved
+                );
+            } else {
+                print!("{}", report.content);
+                if !report.content.ends_with('\n') {
+                    println!();
+                }
             }
             Ok(())
         }
@@ -12870,6 +13258,51 @@ mod tests {
             Command::Git {
                 command: GitCommand::Blame {
                     path: "Home.md".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_web_search_command() {
+        let cli = Cli::try_parse_from(["vulcan", "web", "search", "release notes", "--limit", "5"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Web {
+                command: WebCommand::Search {
+                    query: "release notes".to_string(),
+                    backend: None,
+                    limit: 5,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_web_fetch_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "web",
+            "fetch",
+            "https://example.com",
+            "--mode",
+            "raw",
+            "--save",
+            "page.bin",
+            "--extract-article",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Web {
+                command: WebCommand::Fetch {
+                    url: "https://example.com".to_string(),
+                    mode: WebFetchMode::Raw,
+                    save: Some(PathBuf::from("page.bin")),
+                    extract_article: true,
                 },
             }
         );
