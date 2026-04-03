@@ -1414,7 +1414,7 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 
 - [x] **Search:** DQL code blocks and inline expressions are stored as metadata but excluded from FTS content indexing (they are queries, not prose). Inline field *values* are included in FTS.
 - [x] **Doctor:** Report notes with DQL blocks that fail to parse. Report inline fields with type inconsistencies against the property catalog. Report DataviewJS blocks (diagnosed when feature not compiled in).
-- [-] **Browse TUI:** Notes with DQL blocks could show evaluated query results in a detail pane (future enhancement, not required for initial implementation).
+- [x] **Browse TUI:** `Ctrl-V` toggles the detail pane between the raw file/snippet preview and a Dataview inspector showing evaluated inline expressions plus DQL/DataviewJS block results for the selected note.
 - [x] **HTTP API:** Single-vault serve mode exposes structured Dataview endpoints: `GET /dataview/query`, `GET /dataview/query-js`, `GET /dataview/eval`, and `GET /dataview/inline`.
 - [x] **Property queries:** Inline fields and `file.*` fields are queryable via the existing `--where` filter surface. `vulcan notes --where "due < date(today)"` finds notes where the `due` inline field is in the past. `vulcan notes --where "file.size > 10000"` finds large notes.
 - [x] **Bases interop:** Bases views and DQL queries share the same expression evaluation engine and filter primitives. A Bases view and a DQL TABLE query with equivalent logic should produce identical results.
