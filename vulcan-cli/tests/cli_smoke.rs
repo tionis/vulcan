@@ -90,6 +90,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("export"))
             .and(predicate::str::contains("config"))
             .and(predicate::str::contains("automation"))
+            .and(predicate::str::contains("help"))
             .and(predicate::str::contains("describe"))
             .and(predicate::str::contains("completions"))
             .and(predicate::str::contains("open"))
@@ -120,7 +121,7 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Mutations: note, edit, update, unset, refactor",
             ))
             .and(predicate::str::contains(
-                "Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions",
+                "Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, help, describe, completions",
             ))
             .and(predicate::str::contains("User guide: docs/cli.md"))
             .and(predicate::str::contains(
@@ -3423,6 +3424,18 @@ fn bases_and_describe_help_document_runtime_surfaces() {
                     "vulcan --output json describe > vulcan-schema.json",
                 )),
         );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Show integrated command and concept documentation")
+                .and(predicate::str::contains("help query"))
+                .and(predicate::str::contains("help note get --output json"))
+                .and(predicate::str::contains("help --search graph")),
+        );
 }
 
 #[test]
@@ -3456,6 +3469,7 @@ fn init_json_output_creates_default_config() {
             .expect("gitignore should be readable"),
         "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n"
     );
+    assert!(json.get("support_files").is_none());
 }
 
 #[test]
@@ -3510,6 +3524,42 @@ fn init_import_applies_detected_sources_and_reports_them() {
     assert!(rendered.contains("style = \"markdown\""));
     assert!(rendered.contains("[dataview]"));
     assert!(rendered.contains("inline_query_prefix = \"dv:\""));
+}
+
+#[test]
+fn init_agent_files_writes_agents_template_and_default_skills() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "init",
+            "--agent-files",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert!(vault_root.join("AGENTS.md").exists());
+    assert!(vault_root.join("AI/Skills/note-operations.md").exists());
+    assert!(vault_root.join("AI/Skills/js-api-guide.md").exists());
+    assert!(fs::read_to_string(vault_root.join("AGENTS.md"))
+        .expect("agents template should be readable")
+        .contains("Use Vulcan as the primary automation surface"));
+    assert!(json["support_files"].as_array().is_some_and(|items| items
+        .iter()
+        .any(|item| item["path"] == "AGENTS.md")
+        && items
+            .iter()
+            .any(|item| item["path"] == "AI/Skills/js-api-guide.md")));
 }
 
 #[test]
@@ -6284,6 +6334,11 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .as_array()
         .expect("commands should be an array")
         .iter()
+        .any(|command| command["name"] == "help"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
         .any(|command| command["name"] == "note"));
     assert!(json["commands"]
         .as_array()
@@ -6322,6 +6377,84 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .and_then(|command| command["after_help"].as_str())
         .expect("notes after_help should be present")
         .contains("Filter syntax:"));
+}
+
+#[test]
+fn help_json_output_returns_structured_topic_docs() {
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "json", "help", "query"])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["name"], "query");
+    assert_eq!(json["kind"], "command");
+    assert!(json["summary"]
+        .as_str()
+        .expect("summary should be present")
+        .contains("Run a query"));
+    assert!(json["body"]
+        .as_str()
+        .expect("body should be present")
+        .contains("Query DSL syntax:"));
+
+    let scripting_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "json", "help", "scripting"])
+        .assert()
+        .success();
+    let scripting_json = parse_stdout_json(&scripting_assert);
+    assert_eq!(scripting_json["kind"], "concept");
+    assert!(scripting_json["body"]
+        .as_str()
+        .expect("body should be present")
+        .contains("DataviewJS evaluation"));
+
+    let js_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "json", "help", "js.vault"])
+        .assert()
+        .success();
+    let js_json = parse_stdout_json(&js_assert);
+    assert_eq!(js_json["name"], "js.vault");
+    assert!(js_json["body"]
+        .as_str()
+        .expect("body should be present")
+        .contains("vault.daily.today()"));
+}
+
+#[test]
+fn describe_openai_and_mcp_formats_export_tool_definitions() {
+    let openai_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "json", "describe", "--format", "openai-tools"])
+        .assert()
+        .success();
+    let openai_json = parse_stdout_json(&openai_assert);
+    let openai_tools = openai_json["tools"]
+        .as_array()
+        .expect("tools should be an array");
+    assert!(openai_tools
+        .iter()
+        .any(|tool| tool["function"]["name"] == "query"));
+    assert!(openai_tools
+        .iter()
+        .any(|tool| tool["function"]["name"] == "note_get"));
+
+    let mcp_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "json", "describe", "--format", "mcp"])
+        .assert()
+        .success();
+    let mcp_json = parse_stdout_json(&mcp_assert);
+    let mcp_tools = mcp_json["tools"]
+        .as_array()
+        .expect("tools should be an array");
+    assert!(mcp_tools.iter().any(|tool| tool["name"] == "search"));
+    assert!(mcp_tools
+        .iter()
+        .any(|tool| tool["inputSchema"]["type"] == "object"));
 }
 
 #[test]

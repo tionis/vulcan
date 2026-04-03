@@ -2940,43 +2940,43 @@ This sub-phase covers three related concerns: human-facing documentation (`help`
 
 **`help` command**
 
-- [ ] `vulcan help` — overview and topic index
-- [ ] `vulcan help <topic>` — display documentation for a topic
-- [ ] Topics cover commands, concepts, and API reference:
+- [x] `vulcan help` — overview and topic index
+- [x] `vulcan help <topic>` — display documentation for a topic
+- [x] Topics cover commands, concepts, and API reference:
   - Commands: `help note get`, `help query`, `help refactor`, `help daily`, etc.
   - Concepts: `help filters`, `help query-dsl`, `help scripting`, `help sandbox`
   - JS API: `help js`, `help js.vault`, `help js.vault.graph`, `help js.vault.note`
   - Guides: `help getting-started`, `help examples`
-- [ ] `vulcan help --search <keyword>` — search across all documentation topics
-- [ ] `vulcan help --output json <topic>` — structured help output for machine consumption (parameter names, types, descriptions, defaults, examples as JSON)
+- [x] `vulcan help --search <keyword>` — search across all documentation topics
+- [x] `vulcan help --output json <topic>` — structured help output for machine consumption (parameter names, types, descriptions, defaults, examples as JSON)
 - [ ] Rendered markdown in terminal with colors/formatting (using `termimad` or similar)
-- [ ] Distinct from `--help` which remains terse and flag-focused
+- [x] Distinct from `--help` which remains terse and flag-focused
 
 **`describe` command enhancements**
 
-- [ ] `vulcan describe` — compact listing of all commands with one-line descriptions (existing, polish for LLM consumption)
-- [ ] `vulcan describe --format json-schema` — export tool definitions as JSON Schema (default, current behavior)
-- [ ] `vulcan describe --format openai-tools` — export as OpenAI function-calling tool definitions (name, description, parameters as JSON Schema)
-- [ ] `vulcan describe --format mcp` — export as MCP tool definitions for direct integration with Claude Code, Cursor, etc.
-- [ ] Each format includes: command name, description, parameters with types/defaults/required flags, and examples
+- [x] `vulcan describe` — compact listing of all commands with one-line descriptions (existing, polish for LLM consumption)
+- [x] `vulcan describe --format json-schema` — export tool definitions as JSON Schema (default, current behavior)
+- [x] `vulcan describe --format openai-tools` — export as OpenAI function-calling tool definitions (name, description, parameters as JSON Schema)
+- [x] `vulcan describe --format mcp` — export as MCP tool definitions for direct integration with Claude Code, Cursor, etc.
+- [x] Each format includes: command name, description, parameters with types/defaults/required flags, and examples
 - [ ] The embedded agent (9.12) uses `describe` output internally; external harnesses can call it to auto-generate tool configs
 
 **External LLM harness support**
 
 For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a tool provider without the embedded agent:
 
-- [ ] **Vault AGENTS.md template** — shipped with Vulcan, optionally written on `vulcan init`. Contents:
+- [x] **Vault AGENTS.md template** — shipped with Vulcan, optionally written on `vulcan init`. Contents:
   - Available Vulcan commands organized by category with brief descriptions
   - Key conventions: always use `--output json`, `--dry-run` before mutations, note names may be ambiguous
   - Pointers to the skills directory: "Read `AI/Skills/*.md` for detailed usage patterns and examples"
   - Common pitfalls: `note patch` fails on multiple matches (safety), property types are lenient, etc.
-- [ ] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault on `vulcan init` or `vulcan assistant init`. See 9.12.7 for the full skill list. These serve external harnesses identically: Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API.
+- [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault on `vulcan init` or `vulcan assistant init`. See 9.12.7 for the full skill list. These serve external harnesses identically: Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API.
 - [ ] **Consistent JSON error output** — all commands in `--output json` mode return structured errors: `{"error": "<message>", "code": "<error_code>"}` rather than unstructured stderr text. Error codes are stable and documented.
 - [ ] **Non-interactive guarantee** — all commands detect non-TTY mode and never prompt. Ambiguous note matches return an error with candidates rather than opening a picker.
 
 **Documentation source**
 
-- [ ] Docs stored as markdown files in `docs/` directory in the repo
+- [x] Docs stored as markdown files in `docs/` directory in the repo
 - [ ] Organization:
   ```
   docs/
@@ -3002,8 +3002,8 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a to
     examples/
       recipes.md
   ```
-- [ ] Compiled into binary via `include_str!` or build script generating a `HashMap<&str, &str>`
-- [ ] Docs are versioned with the code — never out of sync
+- [x] Compiled into binary via `include_str!` or build script generating a `HashMap<&str, &str>`
+- [x] Docs are versioned with the code — never out of sync
 
 **`help()` in JS REPL**
 

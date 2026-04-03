@@ -10,8 +10,8 @@ mod template_engine;
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
     ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
-    DailyCommand, DataviewCommand, ExportArgs, ExportCommand, ExportFormat, GitCommand,
-    GraphCommand, InitArgs, KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs,
+    DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs, ExportCommand, ExportFormat,
+    GitCommand, GraphCommand, InitArgs, KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs,
     PeriodicSubcommand, QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand,
     SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs,
     TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
@@ -137,6 +137,71 @@ impl std::error::Error for CliError {}
 
 const SCAN_PROGRESS_STEP: usize = 250;
 const BASES_MAX_COLUMN_WIDTH: usize = 28;
+
+struct BundledTextFile {
+    kind: &'static str,
+    relative_path: &'static str,
+    contents: &'static str,
+}
+
+const BUNDLED_AGENT_TEMPLATE: BundledTextFile = BundledTextFile {
+    kind: "agents_template",
+    relative_path: "AGENTS.md",
+    contents: include_str!("../../docs/assistant/AGENTS.template.md"),
+};
+
+const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/note-operations.md",
+        contents: include_str!("../../docs/assistant/skills/note-operations.md"),
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/vault-query.md",
+        contents: include_str!("../../docs/assistant/skills/vault-query.md"),
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/js-api-guide.md",
+        contents: include_str!("../../docs/assistant/skills/js-api-guide.md"),
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/graph-exploration.md",
+        contents: include_str!("../../docs/assistant/skills/graph-exploration.md"),
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/daily-notes.md",
+        contents: include_str!("../../docs/assistant/skills/daily-notes.md"),
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/properties-and-tags.md",
+        contents: include_str!("../../docs/assistant/skills/properties-and-tags.md"),
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/refactoring.md",
+        contents: include_str!("../../docs/assistant/skills/refactoring.md"),
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/web-research.md",
+        contents: include_str!("../../docs/assistant/skills/web-research.md"),
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/git-workflow.md",
+        contents: include_str!("../../docs/assistant/skills/git-workflow.md"),
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "AI/Skills/task-management.md",
+        contents: include_str!("../../docs/assistant/skills/task-management.md"),
+    },
+];
 
 #[derive(Clone, Copy)]
 enum RefreshTarget {
@@ -1033,12 +1098,21 @@ struct ConfigImportBatchReport {
     reports: Vec<ConfigImportReport>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct InitSupportFile {
+    path: String,
+    kind: String,
+    created: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct InitReport {
     #[serde(flatten)]
     summary: InitSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     importable_sources: Vec<ConfigImportDiscoveryItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    support_files: Vec<InitSupportFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     imported: Option<ConfigImportBatchReport>,
 }
@@ -6356,7 +6430,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             )?;
             Ok(())
         }
-        Command::Describe => print_describe_report(cli.output),
+        Command::Help {
+            ref search,
+            ref topic,
+        } => print_help_command(cli.output, topic, search.as_deref()),
+        Command::Describe { format } => print_describe_report(cli.output, format),
         Command::Doctor {
             fix,
             dry_run,
@@ -8001,14 +8079,104 @@ fn print_search_report(
     }
 }
 
-fn print_describe_report(output: OutputFormat) -> Result<(), CliError> {
-    let report = describe_cli();
+fn print_describe_report(output: OutputFormat, format: DescribeFormatArg) -> Result<(), CliError> {
+    match format {
+        DescribeFormatArg::JsonSchema => {
+            let report = describe_cli();
+            match output {
+                OutputFormat::Human => {
+                    print_describe_human(&report);
+                    Ok(())
+                }
+                OutputFormat::Json => print_json(&report),
+            }
+        }
+        DescribeFormatArg::OpenaiTools => {
+            let tools = build_openai_tool_definitions();
+            match output {
+                OutputFormat::Human => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&tools).map_err(CliError::operation)?
+                    );
+                    Ok(())
+                }
+                OutputFormat::Json => print_json(&tools),
+            }
+        }
+        DescribeFormatArg::Mcp => {
+            let tools = build_mcp_tool_definitions();
+            match output {
+                OutputFormat::Human => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&tools).map_err(CliError::operation)?
+                    );
+                    Ok(())
+                }
+                OutputFormat::Json => print_json(&tools),
+            }
+        }
+    }
+}
+
+fn print_help_command(
+    output: OutputFormat,
+    topic: &[String],
+    search: Option<&str>,
+) -> Result<(), CliError> {
+    if let Some(keyword) = search {
+        let report = search_help_topics(keyword);
+        return match output {
+            OutputFormat::Human => {
+                if report.matches.is_empty() {
+                    println!("No help topics matched `{keyword}`.");
+                } else {
+                    println!("Help topics matching `{keyword}`:");
+                    for item in &report.matches {
+                        println!("- {} [{}]: {}", item.name, item.kind, item.summary);
+                    }
+                }
+                Ok(())
+            }
+            OutputFormat::Json => print_json(&report),
+        };
+    }
+
+    let report = if topic.is_empty() {
+        help_overview()
+    } else {
+        resolve_help_topic(topic)?
+    };
+
     match output {
         OutputFormat::Human => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).map_err(CliError::operation)?
-            );
+            println!("# {}", report.name);
+            println!();
+            println!("{}", report.summary);
+            if !report.body.is_empty() {
+                println!();
+                println!("{}", report.body);
+            }
+            if !report.subcommands.is_empty() {
+                println!();
+                println!("Subcommands:");
+                for subcommand in &report.subcommands {
+                    println!("- {subcommand}");
+                }
+            }
+            if !report.options.is_empty() {
+                println!();
+                println!("Options:");
+                for option in &report.options {
+                    let flag = option
+                        .long
+                        .as_deref()
+                        .map_or_else(|| option.id.clone(), |long| format!("--{long}"));
+                    let summary = option.help.as_deref().unwrap_or("undocumented");
+                    println!("- {flag}: {summary}");
+                }
+            }
             Ok(())
         }
         OutputFormat::Json => print_json(&report),
@@ -9190,6 +9358,11 @@ fn print_backlinks_report(
 
 fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, CliError> {
     let summary = initialize_vault(paths).map_err(CliError::operation)?;
+    let support_files = if args.agent_files {
+        write_bundled_support_files(paths)?
+    } else {
+        Vec::new()
+    };
     let importable_sources = if args.no_import {
         Vec::new()
     } else {
@@ -9227,6 +9400,7 @@ fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, C
     Ok(InitReport {
         summary,
         importable_sources,
+        support_files,
         imported,
     })
 }
@@ -9259,6 +9433,7 @@ fn print_init_summary(
     let normalized = InitReport {
         summary: report.summary.clone(),
         importable_sources: normalized_importable,
+        support_files: report.support_files.clone(),
         imported: normalized_imported,
     };
 
@@ -9296,10 +9471,55 @@ fn print_init_summary(
                 }
                 println!("Run `vulcan config import --all` to import them.");
             }
+            if !normalized.support_files.is_empty() {
+                println!("Bundled agent support files:");
+                for file in &normalized.support_files {
+                    let status = if file.created { "created" } else { "kept" };
+                    println!("- {} [{}; {}]", file.path, file.kind, status);
+                }
+            }
             Ok(())
         }
         OutputFormat::Json => print_json(&normalized),
     }
+}
+
+fn write_bundled_support_files(paths: &VaultPaths) -> Result<Vec<InitSupportFile>, CliError> {
+    let mut reports = Vec::new();
+    reports.push(write_bundled_text_file(paths, &BUNDLED_AGENT_TEMPLATE)?);
+    for file in BUNDLED_SKILL_FILES {
+        reports.push(write_bundled_text_file(paths, file)?);
+    }
+    Ok(reports)
+}
+
+fn write_bundled_text_file(
+    paths: &VaultPaths,
+    file: &BundledTextFile,
+) -> Result<InitSupportFile, CliError> {
+    let destination = paths.vault_root().join(file.relative_path);
+    let created = write_text_file_if_missing(&destination, file.contents)?;
+    Ok(InitSupportFile {
+        path: file.relative_path.to_string(),
+        kind: file.kind.to_string(),
+        created,
+    })
+}
+
+fn write_text_file_if_missing(path: &Path, contents: &str) -> Result<bool, CliError> {
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    let rendered = if contents.ends_with('\n') {
+        contents.to_string()
+    } else {
+        format!("{contents}\n")
+    };
+    fs::write(path, rendered).map_err(CliError::operation)?;
+    Ok(true)
 }
 
 fn print_note_get_report(output: OutputFormat, report: &NoteGetReport) -> Result<(), CliError> {
@@ -11837,6 +12057,536 @@ fn describe_cli() -> CliDescribeReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HelpTopicKind {
+    Overview,
+    Command,
+    Concept,
+    Guide,
+}
+
+impl Display for HelpTopicKind {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Overview => formatter.write_str("overview"),
+            Self::Command => formatter.write_str("command"),
+            Self::Concept => formatter.write_str("concept"),
+            Self::Guide => formatter.write_str("guide"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct HelpTopicReport {
+    name: String,
+    kind: HelpTopicKind,
+    summary: String,
+    body: String,
+    options: Vec<CliArgDescribe>,
+    subcommands: Vec<String>,
+    related: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct HelpSearchReport {
+    keyword: String,
+    matches: Vec<HelpSearchMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct HelpSearchMatch {
+    name: String,
+    kind: HelpTopicKind,
+    summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct OpenAiToolsReport {
+    tools: Vec<OpenAiToolDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct OpenAiToolDefinition {
+    #[serde(rename = "type")]
+    kind: String,
+    function: OpenAiFunctionDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct OpenAiFunctionDefinition {
+    name: String,
+    description: String,
+    parameters: Value,
+    examples: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct McpToolsReport {
+    tools: Vec<McpToolDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct McpToolDefinition {
+    name: String,
+    description: String,
+    #[serde(rename = "inputSchema")]
+    input_schema: Value,
+    examples: Vec<String>,
+}
+
+fn cli_command_tree() -> clap::Command {
+    Cli::command().bin_name("vulcan")
+}
+
+fn print_describe_human(report: &CliDescribeReport) {
+    if let Some(about) = report.about.as_deref() {
+        println!("{about}");
+        println!();
+    }
+    println!("Commands:");
+    print_describe_command_list(&report.commands, "");
+}
+
+fn print_describe_command_list(commands: &[CliCommandDescribe], prefix: &str) {
+    for command in commands {
+        let name = if prefix.is_empty() {
+            command.name.clone()
+        } else {
+            format!("{prefix} {}", command.name)
+        };
+        let about = command.about.as_deref().unwrap_or("undocumented");
+        println!("- {name}: {about}");
+        if !command.subcommands.is_empty() {
+            print_describe_command_list(&command.subcommands, &name);
+        }
+    }
+}
+
+fn resolve_help_topic(topic: &[String]) -> Result<HelpTopicReport, CliError> {
+    let key = topic.join(" ");
+    if let Some(report) = builtin_help_topic(&key) {
+        return Ok(report);
+    }
+
+    let root = cli_command_tree();
+    let topic_refs = topic.iter().map(String::as_str).collect::<Vec<_>>();
+    let Some(command) = find_command(&root, &topic_refs) else {
+        return Err(CliError::operation(format!("unknown help topic `{key}`")));
+    };
+    Ok(help_topic_from_command(command, topic))
+}
+
+fn help_overview() -> HelpTopicReport {
+    let root = cli_command_tree();
+    let command_topics = collect_help_command_topics(&root);
+    let command_names = command_topics
+        .iter()
+        .map(|topic| topic.name.clone())
+        .collect::<Vec<_>>();
+    let concept_names = builtin_help_topics()
+        .into_iter()
+        .map(|topic| topic.name)
+        .collect::<Vec<_>>();
+    HelpTopicReport {
+        name: "help".to_string(),
+        kind: HelpTopicKind::Overview,
+        summary: "Integrated documentation for commands and core concepts.".to_string(),
+        body: format!(
+            "Use `vulcan help <topic>` for one topic or `vulcan help --search <keyword>` to search.\n\nCommand topics include paths like `query`, `note get`, `refactor`, and `daily append`.\nConcept topics include: {}.",
+            concept_names.join(", ")
+        ),
+        options: Vec::new(),
+        subcommands: command_names,
+        related: concept_names,
+    }
+}
+
+fn static_help_topic(
+    name: &str,
+    kind: HelpTopicKind,
+    summary: &str,
+    body: &str,
+    related: &[&str],
+) -> HelpTopicReport {
+    HelpTopicReport {
+        name: name.to_string(),
+        kind,
+        summary: summary.to_string(),
+        body: body.trim().to_string(),
+        options: Vec::new(),
+        subcommands: Vec::new(),
+        related: related.iter().map(|item| (*item).to_string()).collect(),
+    }
+}
+
+fn builtin_help_topics() -> Vec<HelpTopicReport> {
+    vec![
+        static_help_topic(
+            "getting-started",
+            HelpTopicKind::Guide,
+            "Quick orientation for the CLI and its main workflows.",
+            include_str!("../../docs/guide/getting-started.md"),
+            &["query", "search", "note get", "note create"],
+        ),
+        static_help_topic(
+            "examples",
+            HelpTopicKind::Guide,
+            "Representative command patterns for common vault workflows.",
+            include_str!("../../docs/examples/recipes.md"),
+            &["filters", "query-dsl", "note get", "refactor"],
+        ),
+        static_help_topic(
+            "filters",
+            HelpTopicKind::Concept,
+            "Typed `--where` filter grammar shared across notes, search, and mutations.",
+            include_str!("../../docs/guide/filters.md"),
+            &["notes", "search", "query"],
+        ),
+        static_help_topic(
+            "query-dsl",
+            HelpTopicKind::Concept,
+            "The shared query DSL used by `vulcan query` and related tooling.",
+            include_str!("../../docs/guide/query-dsl.md"),
+            &["query", "ls", "search"],
+        ),
+        static_help_topic(
+            "scripting",
+            HelpTopicKind::Concept,
+            "Current scripting-oriented surfaces and the path to the standalone JS runtime.",
+            include_str!("../../docs/guide/scripting.md"),
+            &["sandbox", "js", "describe"],
+        ),
+        static_help_topic(
+            "sandbox",
+            HelpTopicKind::Concept,
+            "Sandbox guarantees and execution limits for JavaScript-backed features.",
+            include_str!("../../docs/guide/sandbox.md"),
+            &["scripting", "js.vault", "web"],
+        ),
+        static_help_topic(
+            "js",
+            HelpTopicKind::Concept,
+            "Overview of the JS runtime surface, including current and planned namespaces.",
+            include_str!("../../docs/reference/js-api/index.md"),
+            &["js.vault", "js.vault.graph", "js.vault.note"],
+        ),
+        static_help_topic(
+            "js.vault",
+            HelpTopicKind::Concept,
+            "Primary JS namespace for vault-oriented reads, queries, and periodic helpers.",
+            include_str!("../../docs/reference/js-api/vault.md"),
+            &["js", "js.vault.graph", "js.vault.note"],
+        ),
+        static_help_topic(
+            "js.vault.graph",
+            HelpTopicKind::Concept,
+            "Planned graph traversal and relationship inspection surface for the JS runtime.",
+            include_str!("../../docs/reference/js-api/graph.md"),
+            &["js.vault", "graph", "graph path"],
+        ),
+        static_help_topic(
+            "js.vault.note",
+            HelpTopicKind::Concept,
+            "Shape and usage guidance for the planned JS Note object.",
+            include_str!("../../docs/reference/js-api/note-object.md"),
+            &["js.vault", "note get", "query"],
+        ),
+    ]
+}
+
+fn builtin_help_topic(name: &str) -> Option<HelpTopicReport> {
+    builtin_help_topics()
+        .into_iter()
+        .find(|topic| topic.name.eq_ignore_ascii_case(name))
+}
+
+fn search_help_topics(keyword: &str) -> HelpSearchReport {
+    let lowered = keyword.to_ascii_lowercase();
+    let mut matches = builtin_help_topics()
+        .into_iter()
+        .filter(|topic| {
+            topic.name.to_ascii_lowercase().contains(&lowered)
+                || topic.summary.to_ascii_lowercase().contains(&lowered)
+                || topic.body.to_ascii_lowercase().contains(&lowered)
+        })
+        .map(|topic| HelpSearchMatch {
+            name: topic.name,
+            kind: topic.kind,
+            summary: topic.summary,
+        })
+        .collect::<Vec<_>>();
+
+    matches.extend(
+        collect_help_command_topics(&cli_command_tree())
+            .into_iter()
+            .filter(|topic| {
+                topic.name.to_ascii_lowercase().contains(&lowered)
+                    || topic.summary.to_ascii_lowercase().contains(&lowered)
+                    || topic.body.to_ascii_lowercase().contains(&lowered)
+            })
+            .map(|topic| HelpSearchMatch {
+                name: topic.name,
+                kind: topic.kind,
+                summary: topic.summary,
+            }),
+    );
+
+    matches.sort_by(|left, right| left.name.cmp(&right.name));
+    HelpSearchReport {
+        keyword: keyword.to_string(),
+        matches,
+    }
+}
+
+fn collect_help_command_topics(command: &clap::Command) -> Vec<HelpTopicReport> {
+    let mut topics = Vec::new();
+    for subcommand in command.get_subcommands() {
+        collect_help_command_topics_inner(subcommand, Vec::new(), &mut topics);
+    }
+    topics
+}
+
+fn collect_help_command_topics_inner(
+    command: &clap::Command,
+    mut prefix: Vec<String>,
+    topics: &mut Vec<HelpTopicReport>,
+) {
+    prefix.push(command.get_name().to_string());
+    topics.push(help_topic_from_command(command, &prefix));
+    for subcommand in command.get_subcommands() {
+        collect_help_command_topics_inner(subcommand, prefix.clone(), topics);
+    }
+}
+
+fn help_topic_from_command(command: &clap::Command, path: &[String]) -> HelpTopicReport {
+    let summary = command.get_about().map_or_else(
+        || format!("Help for `{}`", path.join(" ")),
+        ToString::to_string,
+    );
+    let mut sections = Vec::new();
+    if let Some(after_help) = command.get_after_help() {
+        let trimmed = after_help.to_string();
+        if !trimmed.is_empty() {
+            sections.push(trimmed);
+        }
+    }
+    let subcommands = command
+        .get_subcommands()
+        .map(|subcommand| {
+            format!(
+                "{} {}",
+                path.join(" "),
+                subcommand.get_name().replace('-', "_").replace('_', "-")
+            )
+        })
+        .collect::<Vec<_>>();
+
+    HelpTopicReport {
+        name: path.join(" "),
+        kind: HelpTopicKind::Command,
+        summary,
+        body: sections.join("\n\n"),
+        options: command
+            .get_arguments()
+            .filter(|argument| !argument.is_global_set())
+            .map(describe_argument)
+            .collect(),
+        subcommands,
+        related: Vec::new(),
+    }
+}
+
+fn find_command<'a>(command: &'a clap::Command, path: &[&str]) -> Option<&'a clap::Command> {
+    let mut current = command;
+    for segment in path {
+        current = current
+            .get_subcommands()
+            .find(|candidate| candidate.get_name().eq_ignore_ascii_case(segment))?;
+    }
+    Some(current)
+}
+
+fn build_openai_tool_definitions() -> OpenAiToolsReport {
+    OpenAiToolsReport {
+        tools: collect_leaf_commands(&cli_command_tree())
+            .into_iter()
+            .map(|tool| OpenAiToolDefinition {
+                kind: "function".to_string(),
+                function: OpenAiFunctionDefinition {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.input_schema,
+                    examples: tool.examples,
+                },
+            })
+            .collect(),
+    }
+}
+
+fn build_mcp_tool_definitions() -> McpToolsReport {
+    McpToolsReport {
+        tools: collect_leaf_commands(&cli_command_tree())
+            .into_iter()
+            .map(|tool| McpToolDefinition {
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.input_schema,
+                examples: tool.examples,
+            })
+            .collect(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ToolCommandDescribe {
+    name: String,
+    description: String,
+    input_schema: Value,
+    examples: Vec<String>,
+}
+
+fn collect_leaf_commands(command: &clap::Command) -> Vec<ToolCommandDescribe> {
+    let mut tools = Vec::new();
+    for subcommand in command.get_subcommands() {
+        collect_leaf_commands_inner(subcommand, Vec::new(), &mut tools);
+    }
+    tools
+}
+
+fn collect_leaf_commands_inner(
+    command: &clap::Command,
+    mut prefix: Vec<String>,
+    tools: &mut Vec<ToolCommandDescribe>,
+) {
+    prefix.push(command.get_name().to_string());
+    let subcommands = command.get_subcommands().collect::<Vec<_>>();
+    if subcommands.is_empty() {
+        tools.push(ToolCommandDescribe {
+            name: tool_name_from_path(&prefix),
+            description: command
+                .get_about()
+                .map_or_else(|| prefix.join(" "), ToString::to_string),
+            input_schema: command_input_schema(command),
+            examples: extract_examples(command),
+        });
+        return;
+    }
+    for subcommand in subcommands {
+        collect_leaf_commands_inner(subcommand, prefix.clone(), tools);
+    }
+}
+
+fn tool_name_from_path(path: &[String]) -> String {
+    path.iter()
+        .map(|segment| segment.replace('-', "_"))
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn command_input_schema(command: &clap::Command) -> Value {
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for argument in command
+        .get_arguments()
+        .filter(|argument| !argument.is_global_set())
+    {
+        properties.insert(
+            argument.get_id().to_string(),
+            argument_json_schema(argument),
+        );
+        if argument.is_required_set() {
+            required.push(Value::String(argument.get_id().to_string()));
+        }
+    }
+    let mut schema = Map::new();
+    schema.insert("type".to_string(), Value::String("object".to_string()));
+    schema.insert("properties".to_string(), Value::Object(properties));
+    schema.insert("additionalProperties".to_string(), Value::Bool(false));
+    if !required.is_empty() {
+        schema.insert("required".to_string(), Value::Array(required));
+    }
+    Value::Object(schema)
+}
+
+fn argument_json_schema(argument: &clap::Arg) -> Value {
+    let schema = match argument.get_action() {
+        clap::ArgAction::SetTrue | clap::ArgAction::SetFalse => serde_json::json!({
+            "type": "boolean",
+        }),
+        clap::ArgAction::Append => serde_json::json!({
+            "type": "array",
+            "items": scalar_argument_schema(argument),
+        }),
+        clap::ArgAction::Count => serde_json::json!({
+            "type": "integer",
+        }),
+        _ => scalar_argument_schema(argument),
+    };
+
+    let mut schema = schema;
+    if let Some(description) = argument.get_help().map(ToString::to_string) {
+        if let Some(object) = schema.as_object_mut() {
+            object.insert("description".to_string(), Value::String(description));
+        }
+    }
+    if let Some(default) = argument.get_default_values().first() {
+        if let Some(object) = schema.as_object_mut() {
+            object.insert(
+                "default".to_string(),
+                Value::String(default.to_string_lossy().to_string()),
+            );
+        }
+    }
+    schema
+}
+
+fn scalar_argument_schema(argument: &clap::Arg) -> Value {
+    let values = argument
+        .get_possible_values()
+        .into_iter()
+        .map(|value| Value::String(value.get_name().to_string()))
+        .collect::<Vec<_>>();
+    if values
+        == [
+            Value::String("true".to_string()),
+            Value::String("false".to_string()),
+        ]
+    {
+        serde_json::json!({ "type": "boolean" })
+    } else if values.is_empty() {
+        serde_json::json!({ "type": "string" })
+    } else {
+        serde_json::json!({
+            "type": "string",
+            "enum": values,
+        })
+    }
+}
+
+fn extract_examples(command: &clap::Command) -> Vec<String> {
+    let Some(after_help) = command.get_after_help() else {
+        return Vec::new();
+    };
+    let mut capture = false;
+    let mut examples = Vec::new();
+    for line in after_help.to_string().lines() {
+        let trimmed = line.trim();
+        if trimmed == "Examples:" {
+            capture = true;
+            continue;
+        }
+        if !capture {
+            continue;
+        }
+        if trimmed.is_empty() {
+            break;
+        }
+        examples.push(trimmed.to_string());
+    }
+    examples
+}
+
 fn describe_command(command: &clap::Command) -> CliCommandDescribe {
     CliCommandDescribe {
         name: command.get_name().to_string(),
@@ -13960,6 +14710,22 @@ mod tests {
             Command::Init(InitArgs {
                 import: true,
                 no_import: false,
+                agent_files: false,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_init_agent_files_flag() {
+        let cli =
+            Cli::try_parse_from(["vulcan", "init", "--agent-files"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Init(InitArgs {
+                import: false,
+                no_import: false,
+                agent_files: true,
             })
         );
     }
@@ -15514,6 +16280,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_help_and_describe_format_commands() {
+        let help = Cli::try_parse_from(["vulcan", "help", "note", "get", "--output", "json"])
+            .expect("help should parse");
+        let describe = Cli::try_parse_from(["vulcan", "describe", "--format", "openai-tools"])
+            .expect("describe should parse");
+
+        assert_eq!(
+            help.command,
+            Command::Help {
+                search: None,
+                topic: vec!["note".to_string(), "get".to_string()],
+            }
+        );
+        assert_eq!(
+            describe.command,
+            Command::Describe {
+                format: DescribeFormatArg::OpenaiTools,
+            }
+        );
+    }
+
+    #[test]
     fn resolves_relative_vault_path_against_current_directory() {
         let current_dir = std::env::current_dir().expect("cwd should be available");
         let resolved = resolve_vault_root(&PathBuf::from("tests/fixtures/vaults/basic"))
@@ -15545,6 +16333,7 @@ mod tests {
             completions.about.as_deref(),
             Some("Generate shell completion scripts")
         );
+        assert!(report.commands.iter().any(|command| command.name == "help"));
         assert!(report
             .commands
             .iter()

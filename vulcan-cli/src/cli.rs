@@ -10,7 +10,7 @@ Command Groups:
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
   Mutations: note, edit, update, unset, refactor
-  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions
+  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, help, describe, completions
 
 Docs:
   User guide: docs/cli.md
@@ -403,12 +403,26 @@ Examples:
 
 const DESCRIBE_COMMAND_AFTER_HELP: &str = "\
 Output:
-  describe prints the runtime CLI schema, including subcommands, options, defaults,
-  possible values, and embedded after-help text.
+  json-schema    runtime CLI schema with commands, options, defaults, and after-help text
+  openai-tools   OpenAI function-calling tool definitions
+  mcp            MCP-style tool definitions
 
 Examples:
   vulcan describe
+  vulcan describe --format openai-tools
+  vulcan describe --format mcp
   vulcan --output json describe > vulcan-schema.json";
+
+const HELP_COMMAND_AFTER_HELP: &str = "\
+Topics:
+  Commands: help query, help note get, help refactor
+  Concepts: help filters, help query-dsl, help getting-started, help examples
+
+Examples:
+  vulcan help
+  vulcan help query
+  vulcan help note get --output json
+  vulcan help --search graph";
 
 const COMPLETIONS_COMMAND_AFTER_HELP: &str = "\
 Examples:
@@ -1085,6 +1099,11 @@ pub struct InitArgs {
         help = "Suppress import detection suggestions after initialization"
     )]
     pub no_import: bool,
+    #[arg(
+        long,
+        help = "Write AGENTS.md plus bundled AI skill markdown files into the vault"
+    )]
+    pub agent_files: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
@@ -1213,6 +1232,13 @@ pub enum WebFetchMode {
     Markdown,
     Html,
     Raw,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DescribeFormatArg {
+    JsonSchema,
+    OpenaiTools,
+    Mcp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -2290,10 +2316,23 @@ Examples:
         command: RefactorCommand,
     },
     #[command(
+        about = "Show integrated command and concept documentation",
+        after_help = HELP_COMMAND_AFTER_HELP
+    )]
+    Help {
+        #[arg(long, help = "Search help topics and command docs by keyword")]
+        search: Option<String>,
+        #[arg(help = "Optional topic such as `query` or `note get`")]
+        topic: Vec<String>,
+    },
+    #[command(
         about = "Describe the CLI schema and command surface",
         after_help = DESCRIBE_COMMAND_AFTER_HELP
     )]
-    Describe,
+    Describe {
+        #[arg(long, value_enum, default_value_t = DescribeFormatArg::JsonSchema)]
+        format: DescribeFormatArg,
+    },
     #[command(
         about = "Generate shell completion scripts",
         after_help = COMPLETIONS_COMMAND_AFTER_HELP
@@ -2310,7 +2349,8 @@ Examples:
     version,
     about = "Headless CLI for Obsidian-style vaults and Markdown directories",
     long_about = None,
-    after_help = ROOT_AFTER_HELP
+    after_help = ROOT_AFTER_HELP,
+    disable_help_subcommand = true
 )]
 pub struct Cli {
     #[arg(

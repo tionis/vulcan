@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, refactor\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, refactor\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, help, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -140,6 +140,20 @@
             "short": null,
             "value_names": [
               "NO_IMPORT"
+            ]
+          },
+          {
+            "help": "Write AGENTS.md plus bundled AI skill markdown files into the vault",
+            "id": "agent_files",
+            "long": "agent-files",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "AGENT_FILES"
             ]
           }
         ],
@@ -6158,10 +6172,56 @@
         ]
       },
       {
+        "about": "Show integrated command and concept documentation",
+        "after_help": "Topics:\n  Commands: help query, help note get, help refactor\n  Concepts: help filters, help query-dsl, help getting-started, help examples\n\nExamples:\n  vulcan help\n  vulcan help query\n  vulcan help note get --output json\n  vulcan help --search graph",
+        "name": "help",
+        "options": [
+          {
+            "help": "Search help topics and command docs by keyword",
+            "id": "search",
+            "long": "search",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SEARCH"
+            ]
+          },
+          {
+            "help": "Optional topic such as `query` or `note get`",
+            "id": "topic",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "TOPIC"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Describe the CLI schema and command surface",
-        "after_help": "Output:\n  describe prints the runtime CLI schema, including subcommands, options, defaults,\n  possible values, and embedded after-help text.\n\nExamples:\n  vulcan describe\n  vulcan --output json describe > vulcan-schema.json",
+        "after_help": "Output:\n  json-schema    runtime CLI schema with commands, options, defaults, and after-help text\n  openai-tools   OpenAI function-calling tool definitions\n  mcp            MCP-style tool definitions\n\nExamples:\n  vulcan describe\n  vulcan describe --format openai-tools\n  vulcan describe --format mcp\n  vulcan --output json describe > vulcan-schema.json",
         "name": "describe",
-        "options": [],
+        "options": [
+          {
+            "help": null,
+            "id": "format",
+            "long": "format",
+            "possible_values": [
+              "json-schema",
+              "openai-tools",
+              "mcp"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FORMAT"
+            ]
+          }
+        ],
         "subcommands": []
       },
       {
