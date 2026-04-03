@@ -95,6 +95,11 @@ impl MigrationRegistry {
                 "add periodic note metadata and daily events",
                 schema::apply_schema_v15,
             ),
+            Migration::new(
+                16,
+                "add tasknotes task index projection",
+                schema::apply_schema_v16,
+            ),
         ])
     }
 

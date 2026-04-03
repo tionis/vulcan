@@ -1,0 +1,93 @@
+{
+  "tasksFolder": "TaskNotes/Tasks",
+  "archiveFolder": "TaskNotes/Archive",
+  "taskTag": "task",
+  "taskIdentificationMethod": "tag",
+  "excludedFolders": "TaskNotes/Archive",
+  "defaultTaskStatus": "open",
+  "defaultTaskPriority": "normal",
+  "fieldMapping": {
+    "title": "title",
+    "status": "status",
+    "priority": "priority",
+    "due": "due",
+    "scheduled": "scheduled",
+    "contexts": "contexts",
+    "projects": "projects",
+    "timeEstimate": "timeEstimate",
+    "completedDate": "completedDate",
+    "dateCreated": "dateCreated",
+    "dateModified": "dateModified",
+    "recurrence": "recurrence",
+    "recurrenceAnchor": "recurrence_anchor",
+    "archiveTag": "archived",
+    "timeEntries": "timeEntries",
+    "completeInstances": "complete_instances",
+    "skippedInstances": "skipped_instances",
+    "blockedBy": "blockedBy",
+    "reminders": "reminders"
+  },
+  "customStatuses": [
+    {
+      "id": "open",
+      "value": "open",
+      "label": "Open",
+      "color": "#808080",
+      "isCompleted": false,
+      "order": 1,
+      "autoArchive": false,
+      "autoArchiveDelay": 5
+    },
+    {
+      "id": "in-progress",
+      "value": "in-progress",
+      "label": "In progress",
+      "color": "#0066cc",
+      "isCompleted": false,
+      "order": 2,
+      "autoArchive": false,
+      "autoArchiveDelay": 5
+    },
+    {
+      "id": "done",
+      "value": "done",
+      "label": "Done",
+      "color": "#00aa00",
+      "isCompleted": true,
+      "order": 3,
+      "autoArchive": false,
+      "autoArchiveDelay": 5
+    }
+  ],
+  "customPriorities": [
+    {
+      "id": "low",
+      "value": "low",
+      "label": "Low",
+      "color": "#00aa00",
+      "weight": 1
+    },
+    {
+      "id": "normal",
+      "value": "normal",
+      "label": "Normal",
+      "color": "#ffaa00",
+      "weight": 2
+    },
+    {
+      "id": "high",
+      "value": "high",
+      "label": "High",
+      "color": "#ff0000",
+      "weight": 3
+    }
+  ],
+  "userFields": [
+    {
+      "id": "effort",
+      "displayName": "Effort",
+      "key": "effort",
+      "type": "number"
+    }
+  ]
+}

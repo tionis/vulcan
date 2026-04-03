@@ -3,6 +3,7 @@ use rusqlite::Transaction;
 pub const TABLES_TO_CLEAR: &[&str] = &[
     "kanban_boards",
     "events",
+    "tasknotes_tasks",
     "task_properties",
     "tasks",
     "list_items",
@@ -673,6 +674,50 @@ pub fn apply_schema_v15(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
             ON events(start_time);
         ",
     )?;
+    Ok(())
+}
+
+pub fn apply_schema_v16(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS tasknotes_tasks (
+            document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            due TEXT,
+            scheduled TEXT,
+            completed_date TEXT,
+            date_created TEXT,
+            date_modified TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            tags_json TEXT NOT NULL,
+            contexts_json TEXT NOT NULL,
+            projects_json TEXT NOT NULL,
+            time_estimate REAL,
+            recurrence TEXT,
+            recurrence_anchor TEXT,
+            complete_instances_json TEXT NOT NULL,
+            skipped_instances_json TEXT NOT NULL,
+            blocked_by_json TEXT NOT NULL,
+            reminders_json TEXT NOT NULL,
+            time_entries_json TEXT NOT NULL,
+            custom_fields_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tasknotes_tasks_status
+            ON tasknotes_tasks(status);
+        CREATE INDEX IF NOT EXISTS idx_tasknotes_tasks_priority
+            ON tasknotes_tasks(priority);
+        CREATE INDEX IF NOT EXISTS idx_tasknotes_tasks_due
+            ON tasknotes_tasks(due);
+        CREATE INDEX IF NOT EXISTS idx_tasknotes_tasks_scheduled
+            ON tasknotes_tasks(scheduled);
+        CREATE INDEX IF NOT EXISTS idx_tasknotes_tasks_archived
+            ON tasknotes_tasks(archived);
+        ",
+    )?;
+
     Ok(())
 }
 

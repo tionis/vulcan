@@ -627,6 +627,182 @@ pub struct TasksConfig {
     pub recurrence_on_completion: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskNotesIdentificationMethod {
+    #[default]
+    Tag,
+    Property,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesFieldMapping {
+    pub title: String,
+    pub status: String,
+    pub priority: String,
+    pub due: String,
+    pub scheduled: String,
+    pub contexts: String,
+    pub projects: String,
+    pub time_estimate: String,
+    pub completed_date: String,
+    pub date_created: String,
+    pub date_modified: String,
+    pub recurrence: String,
+    pub recurrence_anchor: String,
+    pub archive_tag: String,
+    pub time_entries: String,
+    pub complete_instances: String,
+    pub skipped_instances: String,
+    pub blocked_by: String,
+    pub reminders: String,
+}
+
+impl Default for TaskNotesFieldMapping {
+    fn default() -> Self {
+        Self {
+            title: "title".to_string(),
+            status: "status".to_string(),
+            priority: "priority".to_string(),
+            due: "due".to_string(),
+            scheduled: "scheduled".to_string(),
+            contexts: "contexts".to_string(),
+            projects: "projects".to_string(),
+            time_estimate: "timeEstimate".to_string(),
+            completed_date: "completedDate".to_string(),
+            date_created: "dateCreated".to_string(),
+            date_modified: "dateModified".to_string(),
+            recurrence: "recurrence".to_string(),
+            recurrence_anchor: "recurrence_anchor".to_string(),
+            archive_tag: "archived".to_string(),
+            time_entries: "timeEntries".to_string(),
+            complete_instances: "complete_instances".to_string(),
+            skipped_instances: "skipped_instances".to_string(),
+            blocked_by: "blockedBy".to_string(),
+            reminders: "reminders".to_string(),
+        }
+    }
+}
+
+impl TaskNotesFieldMapping {
+    #[must_use]
+    pub fn reserved_property_names(&self) -> std::collections::HashSet<&str> {
+        [
+            self.title.as_str(),
+            self.status.as_str(),
+            self.priority.as_str(),
+            self.due.as_str(),
+            self.scheduled.as_str(),
+            self.contexts.as_str(),
+            self.projects.as_str(),
+            self.time_estimate.as_str(),
+            self.completed_date.as_str(),
+            self.date_created.as_str(),
+            self.date_modified.as_str(),
+            self.recurrence.as_str(),
+            self.recurrence_anchor.as_str(),
+            self.time_entries.as_str(),
+            self.complete_instances.as_str(),
+            self.skipped_instances.as_str(),
+            self.blocked_by.as_str(),
+            self.reminders.as_str(),
+            "tags",
+        ]
+        .into_iter()
+        .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesStatusConfig {
+    pub id: String,
+    pub value: String,
+    pub label: String,
+    pub color: String,
+    #[serde(rename = "isCompleted")]
+    pub is_completed: bool,
+    #[serde(default)]
+    pub order: usize,
+    #[serde(default, rename = "autoArchive")]
+    pub auto_archive: bool,
+    #[serde(
+        default = "default_tasknotes_auto_archive_delay",
+        rename = "autoArchiveDelay"
+    )]
+    pub auto_archive_delay: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesPriorityConfig {
+    pub id: String,
+    pub value: String,
+    pub label: String,
+    pub color: String,
+    pub weight: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskNotesUserFieldType {
+    Text,
+    Number,
+    Date,
+    Boolean,
+    List,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesUserFieldConfig {
+    pub id: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    pub key: String,
+    #[serde(rename = "type")]
+    pub field_type: TaskNotesUserFieldType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesConfig {
+    pub tasks_folder: String,
+    pub archive_folder: String,
+    pub task_tag: String,
+    pub identification_method: TaskNotesIdentificationMethod,
+    pub task_property_name: Option<String>,
+    pub task_property_value: Option<String>,
+    #[serde(default)]
+    pub excluded_folders: Vec<String>,
+    pub default_status: String,
+    pub default_priority: String,
+    #[serde(default)]
+    pub field_mapping: TaskNotesFieldMapping,
+    #[serde(default = "default_tasknotes_statuses")]
+    pub statuses: Vec<TaskNotesStatusConfig>,
+    #[serde(default = "default_tasknotes_priorities")]
+    pub priorities: Vec<TaskNotesPriorityConfig>,
+    #[serde(default)]
+    pub user_fields: Vec<TaskNotesUserFieldConfig>,
+}
+
+impl Default for TaskNotesConfig {
+    fn default() -> Self {
+        Self {
+            tasks_folder: "TaskNotes/Tasks".to_string(),
+            archive_folder: "TaskNotes/Archive".to_string(),
+            task_tag: "task".to_string(),
+            identification_method: TaskNotesIdentificationMethod::Tag,
+            task_property_name: None,
+            task_property_value: None,
+            excluded_folders: Vec::new(),
+            default_status: "open".to_string(),
+            default_priority: "normal".to_string(),
+            field_mapping: TaskNotesFieldMapping::default(),
+            statuses: default_tasknotes_statuses(),
+            priorities: default_tasknotes_priorities(),
+            user_fields: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum KanbanMetadataKeyConfig {
@@ -1118,6 +1294,7 @@ pub struct VaultConfig {
     pub git: GitConfig,
     pub inbox: InboxConfig,
     pub tasks: TasksConfig,
+    pub tasknotes: TaskNotesConfig,
     pub kanban: KanbanConfig,
     pub dataview: DataviewConfig,
     pub templates: TemplatesConfig,
@@ -1140,6 +1317,7 @@ impl Default for VaultConfig {
             git: GitConfig::default(),
             inbox: InboxConfig::default(),
             tasks: TasksConfig::default(),
+            tasknotes: TaskNotesConfig::default(),
             kanban: KanbanConfig::default(),
             dataview: DataviewConfig::default(),
             templates: TemplatesConfig::default(),
@@ -1317,6 +1495,7 @@ struct PartialVulcanConfig {
     git: Option<PartialGitConfig>,
     inbox: Option<PartialInboxConfig>,
     tasks: Option<PartialTasksConfig>,
+    tasknotes: Option<PartialTaskNotesConfig>,
     kanban: Option<PartialKanbanConfig>,
     dataview: Option<PartialDataviewConfig>,
     templates: Option<PartialTemplatesConfig>,
@@ -1426,6 +1605,46 @@ struct PartialTasksConfig {
     remove_global_filter: Option<bool>,
     set_created_date: Option<bool>,
     recurrence_on_completion: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialTaskNotesConfig {
+    tasks_folder: Option<String>,
+    archive_folder: Option<String>,
+    task_tag: Option<String>,
+    identification_method: Option<TaskNotesIdentificationMethod>,
+    task_property_name: Option<String>,
+    task_property_value: Option<String>,
+    excluded_folders: Option<Vec<String>>,
+    default_status: Option<String>,
+    default_priority: Option<String>,
+    field_mapping: Option<PartialTaskNotesFieldMapping>,
+    statuses: Option<Vec<TaskNotesStatusConfig>>,
+    priorities: Option<Vec<TaskNotesPriorityConfig>>,
+    user_fields: Option<Vec<TaskNotesUserFieldConfig>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialTaskNotesFieldMapping {
+    title: Option<String>,
+    status: Option<String>,
+    priority: Option<String>,
+    due: Option<String>,
+    scheduled: Option<String>,
+    contexts: Option<String>,
+    projects: Option<String>,
+    time_estimate: Option<String>,
+    completed_date: Option<String>,
+    date_created: Option<String>,
+    date_modified: Option<String>,
+    recurrence: Option<String>,
+    recurrence_anchor: Option<String>,
+    archive_tag: Option<String>,
+    time_entries: Option<String>,
+    complete_instances: Option<String>,
+    skipped_instances: Option<String>,
+    blocked_by: Option<String>,
+    reminders: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1652,6 +1871,69 @@ struct ObsidianTasksStatusSettings {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct ObsidianTaskNotesConfig {
+    #[serde(rename = "tasksFolder")]
+    tasks_folder: Option<String>,
+    #[serde(rename = "archiveFolder")]
+    archive_folder: Option<String>,
+    #[serde(rename = "taskTag")]
+    task_tag: Option<String>,
+    #[serde(rename = "taskIdentificationMethod")]
+    task_identification_method: Option<TaskNotesIdentificationMethod>,
+    #[serde(rename = "taskPropertyName")]
+    task_property_name: Option<String>,
+    #[serde(rename = "taskPropertyValue")]
+    task_property_value: Option<String>,
+    #[serde(rename = "excludedFolders")]
+    excluded_folders: Option<String>,
+    #[serde(rename = "defaultTaskStatus")]
+    default_task_status: Option<String>,
+    #[serde(rename = "defaultTaskPriority")]
+    default_task_priority: Option<String>,
+    #[serde(rename = "fieldMapping")]
+    field_mapping: Option<ObsidianTaskNotesFieldMapping>,
+    #[serde(rename = "customStatuses", default)]
+    custom_statuses: Vec<TaskNotesStatusConfig>,
+    #[serde(rename = "customPriorities", default)]
+    custom_priorities: Vec<TaskNotesPriorityConfig>,
+    #[serde(rename = "userFields", default)]
+    user_fields: Vec<TaskNotesUserFieldConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianTaskNotesFieldMapping {
+    title: Option<String>,
+    status: Option<String>,
+    priority: Option<String>,
+    due: Option<String>,
+    scheduled: Option<String>,
+    contexts: Option<String>,
+    projects: Option<String>,
+    #[serde(rename = "timeEstimate")]
+    time_estimate: Option<String>,
+    #[serde(rename = "completedDate")]
+    completed_date: Option<String>,
+    #[serde(rename = "dateCreated")]
+    date_created: Option<String>,
+    #[serde(rename = "dateModified")]
+    date_modified: Option<String>,
+    recurrence: Option<String>,
+    #[serde(rename = "recurrenceAnchor")]
+    recurrence_anchor: Option<String>,
+    #[serde(rename = "archiveTag")]
+    archive_tag: Option<String>,
+    #[serde(rename = "timeEntries")]
+    time_entries: Option<String>,
+    #[serde(rename = "completeInstances")]
+    complete_instances: Option<String>,
+    #[serde(rename = "skippedInstances")]
+    skipped_instances: Option<String>,
+    #[serde(rename = "blockedBy")]
+    blocked_by: Option<String>,
+    reminders: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct ObsidianKanbanConfig {
     #[serde(rename = "date-trigger")]
     date_trigger: Option<String>,
@@ -1769,6 +2051,88 @@ fn default_cancelled_task_statuses() -> Vec<String> {
 
 fn default_non_task_statuses() -> Vec<String> {
     Vec::new()
+}
+
+fn default_tasknotes_auto_archive_delay() -> usize {
+    5
+}
+
+fn default_tasknotes_statuses() -> Vec<TaskNotesStatusConfig> {
+    vec![
+        TaskNotesStatusConfig {
+            id: "none".to_string(),
+            value: "none".to_string(),
+            label: "None".to_string(),
+            color: "#cccccc".to_string(),
+            is_completed: false,
+            order: 0,
+            auto_archive: false,
+            auto_archive_delay: default_tasknotes_auto_archive_delay(),
+        },
+        TaskNotesStatusConfig {
+            id: "open".to_string(),
+            value: "open".to_string(),
+            label: "Open".to_string(),
+            color: "#808080".to_string(),
+            is_completed: false,
+            order: 1,
+            auto_archive: false,
+            auto_archive_delay: default_tasknotes_auto_archive_delay(),
+        },
+        TaskNotesStatusConfig {
+            id: "in-progress".to_string(),
+            value: "in-progress".to_string(),
+            label: "In progress".to_string(),
+            color: "#0066cc".to_string(),
+            is_completed: false,
+            order: 2,
+            auto_archive: false,
+            auto_archive_delay: default_tasknotes_auto_archive_delay(),
+        },
+        TaskNotesStatusConfig {
+            id: "done".to_string(),
+            value: "done".to_string(),
+            label: "Done".to_string(),
+            color: "#00aa00".to_string(),
+            is_completed: true,
+            order: 3,
+            auto_archive: false,
+            auto_archive_delay: default_tasknotes_auto_archive_delay(),
+        },
+    ]
+}
+
+fn default_tasknotes_priorities() -> Vec<TaskNotesPriorityConfig> {
+    vec![
+        TaskNotesPriorityConfig {
+            id: "none".to_string(),
+            value: "none".to_string(),
+            label: "None".to_string(),
+            color: "#cccccc".to_string(),
+            weight: 0,
+        },
+        TaskNotesPriorityConfig {
+            id: "low".to_string(),
+            value: "low".to_string(),
+            label: "Low".to_string(),
+            color: "#00aa00".to_string(),
+            weight: 1,
+        },
+        TaskNotesPriorityConfig {
+            id: "normal".to_string(),
+            value: "normal".to_string(),
+            label: "Normal".to_string(),
+            color: "#ffaa00".to_string(),
+            weight: 2,
+        },
+        TaskNotesPriorityConfig {
+            id: "high".to_string(),
+            value: "high".to_string(),
+            label: "High".to_string(),
+            color: "#ff0000".to_string(),
+            weight: 3,
+        },
+    ]
 }
 
 fn default_dataview_inline_query_prefix() -> String {
@@ -2574,6 +2938,10 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
         apply_obsidian_tasks_defaults(&mut config, obsidian_tasks);
     }
 
+    if let Some(obsidian_tasknotes) = load_obsidian_tasknotes_config(paths, &mut diagnostics) {
+        apply_obsidian_tasknotes_defaults(&mut config, obsidian_tasknotes);
+    }
+
     if let Some(obsidian_kanban) = load_obsidian_kanban_config(paths, &mut diagnostics) {
         apply_obsidian_kanban_defaults(&mut config, obsidian_kanban);
     }
@@ -2713,6 +3081,17 @@ fn load_obsidian_tasks_config(
     let path = paths
         .vault_root()
         .join(".obsidian/plugins/obsidian-tasks-plugin/data.json");
+
+    load_json_file(&path, diagnostics)
+}
+
+fn load_obsidian_tasknotes_config(
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<ObsidianTaskNotesConfig> {
+    let path = paths
+        .vault_root()
+        .join(".obsidian/plugins/tasknotes/data.json");
 
     load_json_file(&path, diagnostics)
 }
@@ -3661,6 +4040,107 @@ fn apply_obsidian_tasks_defaults(config: &mut VaultConfig, obsidian: ObsidianTas
     apply_task_status_definitions(&mut config.tasks.statuses, definitions);
 }
 
+fn apply_obsidian_tasknotes_defaults(config: &mut VaultConfig, obsidian: ObsidianTaskNotesConfig) {
+    if let Some(tasks_folder) = obsidian.tasks_folder {
+        config.tasknotes.tasks_folder = tasks_folder;
+    }
+    if let Some(archive_folder) = obsidian.archive_folder {
+        config.tasknotes.archive_folder = archive_folder;
+    }
+    if let Some(task_tag) = obsidian.task_tag {
+        config.tasknotes.task_tag = task_tag;
+    }
+    if let Some(method) = obsidian.task_identification_method {
+        config.tasknotes.identification_method = method;
+    }
+    config.tasknotes.task_property_name = normalize_optional_text(obsidian.task_property_name);
+    config.tasknotes.task_property_value = normalize_optional_text(obsidian.task_property_value);
+    if let Some(excluded_folders) = obsidian.excluded_folders {
+        config.tasknotes.excluded_folders = normalize_comma_separated_paths(&excluded_folders);
+    }
+    if let Some(default_task_status) = obsidian.default_task_status {
+        config.tasknotes.default_status = default_task_status;
+    }
+    if let Some(default_task_priority) = obsidian.default_task_priority {
+        config.tasknotes.default_priority = default_task_priority;
+    }
+    if let Some(field_mapping) = obsidian.field_mapping {
+        apply_obsidian_tasknotes_field_mapping(&mut config.tasknotes.field_mapping, field_mapping);
+    }
+    if !obsidian.custom_statuses.is_empty() {
+        config.tasknotes.statuses = obsidian.custom_statuses;
+    }
+    if !obsidian.custom_priorities.is_empty() {
+        config.tasknotes.priorities = obsidian.custom_priorities;
+    }
+    if !obsidian.user_fields.is_empty() {
+        config.tasknotes.user_fields = obsidian.user_fields;
+    }
+}
+
+fn apply_obsidian_tasknotes_field_mapping(
+    mapping: &mut TaskNotesFieldMapping,
+    obsidian: ObsidianTaskNotesFieldMapping,
+) {
+    if let Some(title) = obsidian.title {
+        mapping.title = title;
+    }
+    if let Some(status) = obsidian.status {
+        mapping.status = status;
+    }
+    if let Some(priority) = obsidian.priority {
+        mapping.priority = priority;
+    }
+    if let Some(due) = obsidian.due {
+        mapping.due = due;
+    }
+    if let Some(scheduled) = obsidian.scheduled {
+        mapping.scheduled = scheduled;
+    }
+    if let Some(contexts) = obsidian.contexts {
+        mapping.contexts = contexts;
+    }
+    if let Some(projects) = obsidian.projects {
+        mapping.projects = projects;
+    }
+    if let Some(time_estimate) = obsidian.time_estimate {
+        mapping.time_estimate = time_estimate;
+    }
+    if let Some(completed_date) = obsidian.completed_date {
+        mapping.completed_date = completed_date;
+    }
+    if let Some(date_created) = obsidian.date_created {
+        mapping.date_created = date_created;
+    }
+    if let Some(date_modified) = obsidian.date_modified {
+        mapping.date_modified = date_modified;
+    }
+    if let Some(recurrence) = obsidian.recurrence {
+        mapping.recurrence = recurrence;
+    }
+    if let Some(recurrence_anchor) = obsidian.recurrence_anchor {
+        mapping.recurrence_anchor = recurrence_anchor;
+    }
+    if let Some(archive_tag) = obsidian.archive_tag {
+        mapping.archive_tag = archive_tag;
+    }
+    if let Some(time_entries) = obsidian.time_entries {
+        mapping.time_entries = time_entries;
+    }
+    if let Some(complete_instances) = obsidian.complete_instances {
+        mapping.complete_instances = complete_instances;
+    }
+    if let Some(skipped_instances) = obsidian.skipped_instances {
+        mapping.skipped_instances = skipped_instances;
+    }
+    if let Some(blocked_by) = obsidian.blocked_by {
+        mapping.blocked_by = blocked_by;
+    }
+    if let Some(reminders) = obsidian.reminders {
+        mapping.reminders = reminders;
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn apply_obsidian_kanban_defaults(config: &mut VaultConfig, obsidian: ObsidianKanbanConfig) {
     let previous_default =
@@ -3914,6 +4394,52 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             if let Some(non_task) = statuses.non_task {
                 config.tasks.statuses.non_task = non_task;
             }
+        }
+    }
+
+    if let Some(tasknotes) = overrides.tasknotes {
+        if let Some(tasks_folder) = tasknotes.tasks_folder {
+            config.tasknotes.tasks_folder = tasks_folder;
+        }
+        if let Some(archive_folder) = tasknotes.archive_folder {
+            config.tasknotes.archive_folder = archive_folder;
+        }
+        if let Some(task_tag) = tasknotes.task_tag {
+            config.tasknotes.task_tag = task_tag;
+        }
+        if let Some(identification_method) = tasknotes.identification_method {
+            config.tasknotes.identification_method = identification_method;
+        }
+        if let Some(task_property_name) = tasknotes.task_property_name {
+            config.tasknotes.task_property_name = normalize_optional_text(Some(task_property_name));
+        }
+        if let Some(task_property_value) = tasknotes.task_property_value {
+            config.tasknotes.task_property_value =
+                normalize_optional_text(Some(task_property_value));
+        }
+        if let Some(excluded_folders) = tasknotes.excluded_folders {
+            config.tasknotes.excluded_folders = normalize_string_list(excluded_folders);
+        }
+        if let Some(default_status) = tasknotes.default_status {
+            config.tasknotes.default_status = default_status;
+        }
+        if let Some(default_priority) = tasknotes.default_priority {
+            config.tasknotes.default_priority = default_priority;
+        }
+        if let Some(field_mapping) = tasknotes.field_mapping {
+            apply_partial_tasknotes_field_mapping(
+                &mut config.tasknotes.field_mapping,
+                field_mapping,
+            );
+        }
+        if let Some(statuses) = tasknotes.statuses {
+            config.tasknotes.statuses = statuses;
+        }
+        if let Some(priorities) = tasknotes.priorities {
+            config.tasknotes.priorities = priorities;
+        }
+        if let Some(user_fields) = tasknotes.user_fields {
+            config.tasknotes.user_fields = user_fields;
         }
     }
 
@@ -4296,6 +4822,73 @@ fn normalize_string_list(values: Vec<String>) -> Vec<String> {
         }
     }
     normalized
+}
+
+fn normalize_comma_separated_paths(value: &str) -> Vec<String> {
+    normalize_string_list(value.split(',').map(ToOwned::to_owned).collect())
+}
+
+fn apply_partial_tasknotes_field_mapping(
+    mapping: &mut TaskNotesFieldMapping,
+    overrides: PartialTaskNotesFieldMapping,
+) {
+    if let Some(title) = overrides.title {
+        mapping.title = title;
+    }
+    if let Some(status) = overrides.status {
+        mapping.status = status;
+    }
+    if let Some(priority) = overrides.priority {
+        mapping.priority = priority;
+    }
+    if let Some(due) = overrides.due {
+        mapping.due = due;
+    }
+    if let Some(scheduled) = overrides.scheduled {
+        mapping.scheduled = scheduled;
+    }
+    if let Some(contexts) = overrides.contexts {
+        mapping.contexts = contexts;
+    }
+    if let Some(projects) = overrides.projects {
+        mapping.projects = projects;
+    }
+    if let Some(time_estimate) = overrides.time_estimate {
+        mapping.time_estimate = time_estimate;
+    }
+    if let Some(completed_date) = overrides.completed_date {
+        mapping.completed_date = completed_date;
+    }
+    if let Some(date_created) = overrides.date_created {
+        mapping.date_created = date_created;
+    }
+    if let Some(date_modified) = overrides.date_modified {
+        mapping.date_modified = date_modified;
+    }
+    if let Some(recurrence) = overrides.recurrence {
+        mapping.recurrence = recurrence;
+    }
+    if let Some(recurrence_anchor) = overrides.recurrence_anchor {
+        mapping.recurrence_anchor = recurrence_anchor;
+    }
+    if let Some(archive_tag) = overrides.archive_tag {
+        mapping.archive_tag = archive_tag;
+    }
+    if let Some(time_entries) = overrides.time_entries {
+        mapping.time_entries = time_entries;
+    }
+    if let Some(complete_instances) = overrides.complete_instances {
+        mapping.complete_instances = complete_instances;
+    }
+    if let Some(skipped_instances) = overrides.skipped_instances {
+        mapping.skipped_instances = skipped_instances;
+    }
+    if let Some(blocked_by) = overrides.blocked_by {
+        mapping.blocked_by = blocked_by;
+    }
+    if let Some(reminders) = overrides.reminders {
+        mapping.reminders = reminders;
+    }
 }
 
 fn normalize_templater_command_pairs(
@@ -5606,6 +6199,185 @@ time_format = "HH:mm:ss"
             loaded.config.tasks.statuses.status_state(">").next_symbol,
             Some("x".to_string())
         );
+    }
+
+    #[test]
+    fn tasknotes_plugin_settings_seed_tasknotes_config() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/tasknotes"))
+            .expect("tasknotes plugin dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/tasknotes/data.json"),
+            r##"{
+              "tasksFolder": "Tasks",
+              "archiveFolder": "Archive",
+              "taskTag": "todo",
+              "taskIdentificationMethod": "property",
+              "taskPropertyName": "isTask",
+              "taskPropertyValue": "yes",
+              "excludedFolders": "Archive, Someday",
+              "defaultTaskStatus": "in-progress",
+              "defaultTaskPriority": "high",
+              "fieldMapping": {
+                "due": "deadline",
+                "timeEstimate": "estimateMinutes",
+                "archiveTag": "archived-task"
+              },
+              "customStatuses": [
+                {
+                  "id": "blocked",
+                  "value": "blocked",
+                  "label": "Blocked",
+                  "color": "#ff8800",
+                  "isCompleted": false,
+                  "order": 4,
+                  "autoArchive": false,
+                  "autoArchiveDelay": 15
+                }
+              ],
+              "customPriorities": [
+                {
+                  "id": "urgent",
+                  "value": "urgent",
+                  "label": "Urgent",
+                  "color": "#ff0000",
+                  "weight": 9
+                }
+              ],
+              "userFields": [
+                {
+                  "id": "effort",
+                  "displayName": "Effort",
+                  "key": "effort",
+                  "type": "number"
+                }
+              ]
+            }"##,
+        )
+        .expect("tasknotes config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(loaded.config.tasknotes.tasks_folder, "Tasks");
+        assert_eq!(loaded.config.tasknotes.archive_folder, "Archive");
+        assert_eq!(loaded.config.tasknotes.task_tag, "todo");
+        assert_eq!(
+            loaded.config.tasknotes.identification_method,
+            TaskNotesIdentificationMethod::Property
+        );
+        assert_eq!(
+            loaded.config.tasknotes.task_property_name.as_deref(),
+            Some("isTask")
+        );
+        assert_eq!(
+            loaded.config.tasknotes.task_property_value.as_deref(),
+            Some("yes")
+        );
+        assert_eq!(
+            loaded.config.tasknotes.excluded_folders,
+            vec!["Archive".to_string(), "Someday".to_string()]
+        );
+        assert_eq!(loaded.config.tasknotes.default_status, "in-progress");
+        assert_eq!(loaded.config.tasknotes.default_priority, "high");
+        assert_eq!(loaded.config.tasknotes.field_mapping.due, "deadline");
+        assert_eq!(
+            loaded.config.tasknotes.field_mapping.time_estimate,
+            "estimateMinutes"
+        );
+        assert_eq!(
+            loaded.config.tasknotes.field_mapping.archive_tag,
+            "archived-task"
+        );
+        assert_eq!(loaded.config.tasknotes.statuses.len(), 1);
+        assert_eq!(loaded.config.tasknotes.statuses[0].value, "blocked");
+        assert_eq!(loaded.config.tasknotes.priorities.len(), 1);
+        assert_eq!(loaded.config.tasknotes.priorities[0].value, "urgent");
+        assert_eq!(loaded.config.tasknotes.user_fields.len(), 1);
+        assert_eq!(loaded.config.tasknotes.user_fields[0].key, "effort");
+    }
+
+    #[test]
+    fn vulcan_overrides_replace_tasknotes_settings() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r##"[tasknotes]
+tasks_folder = "Work/Tasks"
+archive_folder = "Work/Archive"
+task_tag = "work-task"
+identification_method = "property"
+task_property_name = "kind"
+task_property_value = "task"
+excluded_folders = ["Work/Archive"]
+default_status = "blocked"
+default_priority = "urgent"
+
+[tasknotes.field_mapping]
+due = "deadline"
+time_entries = "tracked"
+
+[[tasknotes.statuses]]
+id = "blocked"
+value = "blocked"
+label = "Blocked"
+color = "#ff8800"
+isCompleted = false
+order = 1
+autoArchive = false
+autoArchiveDelay = 30
+
+[[tasknotes.priorities]]
+id = "urgent"
+value = "urgent"
+label = "Urgent"
+color = "#ff0000"
+weight = 9
+
+[[tasknotes.user_fields]]
+id = "effort"
+displayName = "Effort"
+key = "effort"
+type = "number"
+"##,
+        )
+        .expect("config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(loaded.config.tasknotes.tasks_folder, "Work/Tasks");
+        assert_eq!(loaded.config.tasknotes.archive_folder, "Work/Archive");
+        assert_eq!(loaded.config.tasknotes.task_tag, "work-task");
+        assert_eq!(
+            loaded.config.tasknotes.identification_method,
+            TaskNotesIdentificationMethod::Property
+        );
+        assert_eq!(
+            loaded.config.tasknotes.task_property_name.as_deref(),
+            Some("kind")
+        );
+        assert_eq!(
+            loaded.config.tasknotes.task_property_value.as_deref(),
+            Some("task")
+        );
+        assert_eq!(
+            loaded.config.tasknotes.excluded_folders,
+            vec!["Work/Archive".to_string()]
+        );
+        assert_eq!(loaded.config.tasknotes.default_status, "blocked");
+        assert_eq!(loaded.config.tasknotes.default_priority, "urgent");
+        assert_eq!(loaded.config.tasknotes.field_mapping.due, "deadline");
+        assert_eq!(
+            loaded.config.tasknotes.field_mapping.time_entries,
+            "tracked"
+        );
+        assert_eq!(loaded.config.tasknotes.statuses[0].auto_archive_delay, 30);
+        assert_eq!(loaded.config.tasknotes.priorities[0].weight, 9);
+        assert_eq!(loaded.config.tasknotes.user_fields[0].key, "effort");
     }
 
     #[test]
