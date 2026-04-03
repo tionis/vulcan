@@ -1224,7 +1224,10 @@ pub enum TemplateSubcommand {
     Preview {
         #[arg(help = "Template name or filename stem")]
         template: String,
-        #[arg(long, help = "Target note path used for title/path/frontmatter context")]
+        #[arg(
+            long,
+            help = "Target note path used for title/path/frontmatter context"
+        )]
         path: Option<String>,
         #[command(flatten)]
         render: TemplateRenderArgs,

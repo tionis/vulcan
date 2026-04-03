@@ -10,7 +10,9 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use vulcan_core::config::TemplatesConfig;
-use vulcan_core::expression::functions::{format_date, parse_date_with_format, parse_date_like_string};
+use vulcan_core::expression::functions::{
+    format_date, parse_date_like_string, parse_date_with_format,
+};
 use vulcan_core::move_note;
 use vulcan_core::parser::parse_document;
 use vulcan_core::{resolve_note_reference, VaultConfig, VaultPaths};
@@ -239,16 +241,16 @@ impl<'a> TemplateSession<'a> {
         }
 
         if tag.execution {
-            return self.evaluate_code(&tag.body);
+            return self.evaluate_code(tag.body);
         }
 
-        match self.evaluate_native_expression(&tag.body, include_depth) {
+        match self.evaluate_native_expression(tag.body, include_depth) {
             Ok(value) => Ok(template_value_to_string(&value)),
             Err(NativeExpressionError::RequiresJsRuntime(message)) => {
                 #[cfg(feature = "js_runtime")]
                 {
                     let _ = &message;
-                    self.evaluate_js_expression(&tag.body)
+                    self.evaluate_js_expression(tag.body)
                 }
                 #[cfg(not(feature = "js_runtime"))]
                 {
@@ -260,19 +262,17 @@ impl<'a> TemplateSession<'a> {
         }
     }
 
+    #[cfg(feature = "js_runtime")]
+    fn evaluate_code(&mut self, source: &str) -> Result<String, CliError> {
+        self.evaluate_js_code(source)
+    }
+
+    #[cfg(not(feature = "js_runtime"))]
     fn evaluate_code(&mut self, _source: &str) -> Result<String, CliError> {
-        #[cfg(feature = "js_runtime")]
-        {
-            return self.evaluate_js_code(_source);
-        }
-        #[cfg(not(feature = "js_runtime"))]
-        {
-            self.push_diagnostic(
-                "Templater execution tags (`<%* %>`) require the `js_runtime` feature"
-                    .to_string(),
-            );
-            Ok(String::new())
-        }
+        self.push_diagnostic(
+            "Templater execution tags (`<%* %>`) require the `js_runtime` feature".to_string(),
+        );
+        Ok(String::new())
     }
 
     fn evaluate_native_expression(
@@ -338,8 +338,8 @@ impl<'a> TemplateSession<'a> {
 
         match path_name(path, 1) {
             Some("file") => self.resolve_tp_file_path(path),
-            Some("frontmatter") => self.resolve_tp_frontmatter_path(path),
-            Some("config") => self.resolve_tp_config_path(path),
+            Some("frontmatter") => Ok(self.resolve_tp_frontmatter_path(path)),
+            Some("config") => Ok(self.resolve_tp_config_path(path)),
             Some("obsidian") => Err(NativeExpressionError::RequiresJsRuntime(
                 "tp.obsidian helpers require the `js_runtime` feature".to_string(),
             )),
@@ -347,18 +347,10 @@ impl<'a> TemplateSession<'a> {
                 self.push_diagnostic("tp.app.* is not available in CLI templates".to_string());
                 Ok(TemplateValue::Null)
             }
-            Some("user") | Some("web") => Err(NativeExpressionError::RequiresJsRuntime(
-                format!(
-                    "templater path `{}` requires the `js_runtime` feature",
-                    join_native_path(path)
-                ),
-            )),
-            Some("date") | Some("system") => Err(NativeExpressionError::RequiresJsRuntime(
-                format!(
-                    "templater function `{}` must be called, not accessed as a value",
-                    join_native_path(path)
-                ),
-            )),
+            Some("date" | "system") => Err(NativeExpressionError::RequiresJsRuntime(format!(
+                "templater function `{}` must be called, not accessed as a value",
+                join_native_path(path)
+            ))),
             _ => Err(NativeExpressionError::RequiresJsRuntime(format!(
                 "templater path `{}` requires the `js_runtime` feature",
                 join_native_path(path)
@@ -391,10 +383,7 @@ impl<'a> TemplateSession<'a> {
         }
     }
 
-    fn resolve_tp_frontmatter_path(
-        &self,
-        path: &[NativePathPart],
-    ) -> Result<TemplateValue, NativeExpressionError> {
+    fn resolve_tp_frontmatter_path(&self, path: &[NativePathPart]) -> TemplateValue {
         let frontmatter = current_frontmatter_mapping(&self.target_contents).unwrap_or_default();
         let mut value = JsonValue::Object(yaml_mapping_to_json_object(&frontmatter));
 
@@ -409,13 +398,10 @@ impl<'a> TemplateSession<'a> {
                 .unwrap_or(JsonValue::Null);
         }
 
-        Ok(TemplateValue::from_json(value))
+        TemplateValue::from_json(value)
     }
 
-    fn resolve_tp_config_path(
-        &self,
-        path: &[NativePathPart],
-    ) -> Result<TemplateValue, NativeExpressionError> {
+    fn resolve_tp_config_path(&self, path: &[NativePathPart]) -> TemplateValue {
         let config = self.config_json_value();
         let mut value = config;
         for part in path.iter().skip(2) {
@@ -428,7 +414,7 @@ impl<'a> TemplateSession<'a> {
                 .cloned()
                 .unwrap_or(JsonValue::Null);
         }
-        Ok(TemplateValue::from_json(value))
+        TemplateValue::from_json(value)
     }
 
     fn eval_native_call(
@@ -443,23 +429,24 @@ impl<'a> TemplateSession<'a> {
             "tp.date.tomorrow" => self.tp_date_fixed_offset(args, 1),
             "tp.date.yesterday" => self.tp_date_fixed_offset(args, -1),
             "tp.date.weekday" => self.tp_date_weekday(args),
-            "tp.file.path" => self.tp_file_path_call(args),
-            "tp.file.folder" => self.tp_file_folder_call(args),
-            "tp.file.creation_date" => self.tp_file_timestamp_call(args, true),
-            "tp.file.last_modified_date" => self.tp_file_timestamp_call(args, false),
-            "tp.file.exists" => self.tp_file_exists_call(args),
+            "tp.file.path" => Ok(self.tp_file_path_call(args)),
+            "tp.file.folder" => Ok(self.tp_file_folder_call(args)),
+            "tp.file.creation_date" => Ok(self.tp_file_timestamp_call(args, true)),
+            "tp.file.last_modified_date" => Ok(self.tp_file_timestamp_call(args, false)),
+            "tp.file.exists" => Ok(self.tp_file_exists_call(args)),
             "tp.file.include" => self.tp_file_include_call(args, include_depth),
             "tp.file.create_new" => self.tp_file_create_new_call(args),
             "tp.file.move" => self.tp_file_move_call(args),
             "tp.file.rename" => self.tp_file_rename_call(args),
             "tp.file.cursor" => Ok(TemplateValue::String(String::new())),
-            "tp.file.find_tfile" => self.tp_file_find_tfile_call(args),
+            "tp.file.find_tfile" => Ok(self.tp_file_find_tfile_call(args)),
             "tp.system.prompt" => self.tp_system_prompt_call(args),
             "tp.system.suggester" => self.tp_system_suggester_call(args),
             "tp.system.clipboard" => Ok(TemplateValue::String(read_clipboard_best_effort())),
-            signature if signature.starts_with("tp.web.")
-                || signature.starts_with("tp.user.")
-                || signature.starts_with("tp.obsidian.") =>
+            signature
+                if signature.starts_with("tp.web.")
+                    || signature.starts_with("tp.user.")
+                    || signature.starts_with("tp.obsidian.") =>
             {
                 Err(NativeExpressionError::RequiresJsRuntime(format!(
                     "templater function `{signature}` requires the `js_runtime` feature"
@@ -480,7 +467,8 @@ impl<'a> TemplateSession<'a> {
         let offset = args.get(1);
         let reference = string_arg(args, 2);
         let reference_format = string_arg(args, 3);
-        let mut millis = self.reference_timestamp(reference.as_deref(), reference_format.as_deref())?;
+        let mut millis =
+            self.reference_timestamp(reference.as_deref(), reference_format.as_deref())?;
         if !weekday_mode {
             millis = apply_date_offset(millis, offset)?;
         }
@@ -512,12 +500,9 @@ impl<'a> TemplateSession<'a> {
         Ok(TemplateValue::String(format_date(target, &format)))
     }
 
-    fn tp_file_path_call(
-        &self,
-        args: &[NativeExpression],
-    ) -> Result<TemplateValue, NativeExpressionError> {
+    fn tp_file_path_call(&self, args: &[NativeExpression]) -> TemplateValue {
         let absolute = bool_arg(args, 0).unwrap_or(false);
-        Ok(TemplateValue::String(if absolute {
+        TemplateValue::String(if absolute {
             self.request
                 .paths
                 .vault_root()
@@ -526,28 +511,20 @@ impl<'a> TemplateSession<'a> {
                 .to_string()
         } else {
             self.target_path.clone()
-        }))
+        })
     }
 
-    fn tp_file_folder_call(
-        &self,
-        args: &[NativeExpression],
-    ) -> Result<TemplateValue, NativeExpressionError> {
+    fn tp_file_folder_call(&self, args: &[NativeExpression]) -> TemplateValue {
         let absolute = bool_arg(args, 0).unwrap_or(false);
-        Ok(TemplateValue::String(if absolute {
+        TemplateValue::String(if absolute {
             self.absolute_folder()
         } else {
             self.relative_folder()
-        }))
+        })
     }
 
-    fn tp_file_timestamp_call(
-        &self,
-        args: &[NativeExpression],
-        creation: bool,
-    ) -> Result<TemplateValue, NativeExpressionError> {
-        let format =
-            string_arg(args, 0).unwrap_or_else(|| DEFAULT_FILE_DATE_FORMAT.to_string());
+    fn tp_file_timestamp_call(&self, args: &[NativeExpression], creation: bool) -> TemplateValue {
+        let format = string_arg(args, 0).unwrap_or_else(|| DEFAULT_FILE_DATE_FORMAT.to_string());
         let absolute = self.request.paths.vault_root().join(&self.target_path);
         let timestamp = if absolute.is_file() {
             file_timestamp_millis(&absolute, creation)
@@ -555,18 +532,15 @@ impl<'a> TemplateSession<'a> {
             Some(self.current_timestamp_millis())
         }
         .unwrap_or_else(|| self.current_timestamp_millis());
-        Ok(TemplateValue::String(format_date(timestamp, &format)))
+        TemplateValue::String(format_date(timestamp, &format))
     }
 
-    fn tp_file_exists_call(
-        &self,
-        args: &[NativeExpression],
-    ) -> Result<TemplateValue, NativeExpressionError> {
+    fn tp_file_exists_call(&self, args: &[NativeExpression]) -> TemplateValue {
         let Some(path) = string_arg(args, 0) else {
-            return Ok(TemplateValue::Bool(false));
+            return TemplateValue::Bool(false);
         };
         let exists = self.resolve_vault_path(&path).is_some();
-        Ok(TemplateValue::Bool(exists))
+        TemplateValue::Bool(exists)
     }
 
     fn tp_file_include_call(
@@ -610,22 +584,20 @@ impl<'a> TemplateSession<'a> {
         } else {
             format!("{}/{}.md", folder.trim_matches('/'), filename)
         };
-        let normalized = normalize_note_output_path(&relative_path)
-            .map_err(NativeExpressionError::Message)?;
+        let normalized =
+            normalize_note_output_path(&relative_path).map_err(NativeExpressionError::Message)?;
         let content = match self.eval_native_expression(template_arg, 0)? {
-            TemplateValue::String(value) => match resolve_template_file(
-                self.request.paths,
-                self.request.templates,
-                &value,
-            ) {
-                Ok(template) => {
-                    let source = fs::read_to_string(&template.absolute_path)
-                        .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
-                    self.render_source(&source, TemplateEngineKind::Templater, 0)
-                        .map_err(|error| NativeExpressionError::Message(error.to_string()))?
+            TemplateValue::String(value) => {
+                match resolve_template_file(self.request.paths, self.request.templates, &value) {
+                    Ok(template) => {
+                        let source = fs::read_to_string(&template.absolute_path)
+                            .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
+                        self.render_source(&source, TemplateEngineKind::Templater, 0)
+                            .map_err(|error| NativeExpressionError::Message(error.to_string()))?
+                    }
+                    Err(_) => value,
                 }
-                Err(_) => value,
-            },
+            }
             other => template_value_to_string(&other),
         };
         let absolute = self.request.paths.vault_root().join(&normalized);
@@ -653,7 +625,13 @@ impl<'a> TemplateSession<'a> {
             return Ok(TemplateValue::Null);
         }
 
-        if self.request.paths.vault_root().join(&self.target_path).is_file() {
+        if self
+            .request
+            .paths
+            .vault_root()
+            .join(&self.target_path)
+            .is_file()
+        {
             let summary = move_note(self.request.paths, &self.target_path, &normalized, false)
                 .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
             self.record_move_summary(&summary);
@@ -683,17 +661,14 @@ impl<'a> TemplateSession<'a> {
         self.tp_file_move_call(&[NativeExpression::String(path)])
     }
 
-    fn tp_file_find_tfile_call(
-        &self,
-        args: &[NativeExpression],
-    ) -> Result<TemplateValue, NativeExpressionError> {
+    fn tp_file_find_tfile_call(&self, args: &[NativeExpression]) -> TemplateValue {
         let Some(identifier) = string_arg(args, 0) else {
-            return Ok(TemplateValue::Null);
+            return TemplateValue::Null;
         };
         let Some(path) = self.resolve_vault_path(&identifier) else {
-            return Ok(TemplateValue::Null);
+            return TemplateValue::Null;
         };
-        Ok(TemplateValue::Object(file_object_json(&path)))
+        TemplateValue::Object(file_object_json(&path))
     }
 
     fn tp_system_prompt_call(
@@ -721,7 +696,7 @@ impl<'a> TemplateSession<'a> {
                 None => TemplateValue::Null,
             });
         }
-        Ok(default.map_or_else(
+        default.map_or_else(
             || {
                 if throw_on_cancel {
                     Err(NativeExpressionError::Message(format!(
@@ -733,7 +708,7 @@ impl<'a> TemplateSession<'a> {
                 }
             },
             |value| Ok(TemplateValue::String(value)),
-        )?)
+        )
     }
 
     fn tp_system_suggester_call(
@@ -753,18 +728,20 @@ impl<'a> TemplateSession<'a> {
             return Ok(TemplateValue::String(value));
         }
         if io::stdin().is_terminal() && !items.is_empty() {
-            let value =
-                read_suggester_value(&placeholder, &items).map_err(NativeExpressionError::Message)?;
+            let value = read_suggester_value(&placeholder, &items)
+                .map_err(NativeExpressionError::Message)?;
             return Ok(value.map_or(TemplateValue::Null, TemplateValue::String));
         }
-        items.first().cloned().map_or(Ok(TemplateValue::Null), |value| {
-            Ok(TemplateValue::String(value))
-        })
+        items
+            .first()
+            .cloned()
+            .map_or(Ok(TemplateValue::Null), |value| {
+                Ok(TemplateValue::String(value))
+            })
     }
 
     fn record_move_summary(&mut self, summary: &vulcan_core::MoveSummary) {
-        self.changed_paths
-            .insert(summary.destination_path.clone());
+        self.changed_paths.insert(summary.destination_path.clone());
         for rewritten in &summary.rewritten_files {
             self.changed_paths.insert(rewritten.path.clone());
         }
@@ -780,9 +757,8 @@ impl<'a> TemplateSession<'a> {
             .next()
             .unwrap_or(trimmed)
             .trim();
-        self.resolve_vault_path(target).ok_or_else(|| {
-            NativeExpressionError::Message(format!("File {include} doesn't exist"))
-        })
+        self.resolve_vault_path(target)
+            .ok_or_else(|| NativeExpressionError::Message(format!("File {include} doesn't exist")))
     }
 
     fn resolve_vault_path(&self, identifier: &str) -> Option<String> {
@@ -832,8 +808,8 @@ impl<'a> TemplateSession<'a> {
             }
             None => pending,
         };
-        let yaml = serde_yaml::to_string(&YamlValue::Mapping(merged))
-            .map_err(CliError::operation)?;
+        let yaml =
+            serde_yaml::to_string(&YamlValue::Mapping(merged)).map_err(CliError::operation)?;
         let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
         Ok(format!("---\n{}---\n{}", yaml.trim_end_matches('\n'), body))
     }
@@ -886,7 +862,9 @@ impl<'a> TemplateSession<'a> {
                 });
             }
             return parse_date_like_string(reference).ok_or_else(|| {
-                NativeExpressionError::Message(format!("failed to parse reference date `{reference}`"))
+                NativeExpressionError::Message(format!(
+                    "failed to parse reference date `{reference}`"
+                ))
             });
         }
         Ok(self.current_timestamp_millis())
@@ -899,8 +877,7 @@ impl<'a> TemplateSession<'a> {
                 self.request
                     .template_path
                     .map(path_to_relative_file_json)
-                    .map(JsonValue::Object)
-                    .unwrap_or(JsonValue::Null),
+                    .map_or(JsonValue::Null, JsonValue::Object),
             ),
             (
                 "target_file".to_string(),
@@ -927,8 +904,10 @@ impl<'a> TemplateSession<'a> {
 #[cfg(feature = "js_runtime")]
 impl TemplateSession<'_> {
     fn sync_from_js_runtime(&mut self) {
-        if let Some((target_path, target_contents, changed_paths, diagnostics)) =
-            self.js_runtime.as_ref().and_then(JsTemplateRuntime::snapshot)
+        if let Some((target_path, target_contents, changed_paths, diagnostics)) = self
+            .js_runtime
+            .as_ref()
+            .and_then(JsTemplateRuntime::snapshot)
         {
             self.target_path = target_path;
             self.target_contents = target_contents;
@@ -999,15 +978,18 @@ impl JsTemplateRuntime {
                     "__tp_call_json",
                     Func::from({
                         let state = Arc::clone(&state);
-                        move |ctx: Ctx<'_>, name: String, args_json: String| -> rquickjs::Result<String> {
-                            dispatch_js_call(&ctx, Arc::clone(&state), &name, &args_json)
+                        move |ctx: Ctx<'_>,
+                              name: String,
+                              args_json: String|
+                              -> rquickjs::Result<String> {
+                            dispatch_js_call(&ctx, &Arc::clone(&state), &name, &args_json)
                         }
                     }),
                 )
                 .map_err(CliError::operation)?;
             ctx.eval::<(), _>(TEMPLATER_JS_PRELUDE)
                 .map_err(CliError::operation)?;
-            load_user_scripts(ctx.clone(), Arc::clone(&state))?;
+            load_user_scripts(&ctx, &state)?;
             Ok(())
         })?;
 
@@ -1194,8 +1176,8 @@ globalThis.tp = tp;
 
 #[cfg(feature = "js_runtime")]
 fn load_user_scripts(
-    ctx: rquickjs::Ctx<'_>,
-    state: std::sync::Arc<std::sync::Mutex<JsTemplateState>>,
+    ctx: &rquickjs::Ctx<'_>,
+    state: &std::sync::Arc<std::sync::Mutex<JsTemplateState>>,
 ) -> Result<(), CliError> {
     let (user_scripts_folder, templates_pairs, enable_system_commands) = {
         let state = state
@@ -1232,7 +1214,8 @@ fn load_user_scripts(
                 let wrapper = format!(
                     "(function(){{ const module = {{ exports: {{}} }}; const exports = module.exports; {script}; return module.exports; }})()"
                 );
-                let exported: rquickjs::Value<'_> = ctx.eval(wrapper).map_err(CliError::operation)?;
+                let exported: rquickjs::Value<'_> =
+                    ctx.eval(wrapper).map_err(CliError::operation)?;
                 user.set(stem, exported).map_err(CliError::operation)?;
             }
         }
@@ -1265,12 +1248,12 @@ fn drain_jobs(runtime: &rquickjs::Runtime) -> Result<(), CliError> {
 #[cfg(feature = "js_runtime")]
 fn dispatch_js_call(
     ctx: &rquickjs::Ctx<'_>,
-    state: std::sync::Arc<std::sync::Mutex<JsTemplateState>>,
+    state: &std::sync::Arc<std::sync::Mutex<JsTemplateState>>,
     name: &str,
     args_json: &str,
 ) -> rquickjs::Result<String> {
-    let args: Vec<JsonValue> =
-        serde_json::from_str(args_json).map_err(|error| rquickjs::Exception::throw_message(ctx, &error.to_string()))?;
+    let args: Vec<JsonValue> = serde_json::from_str(args_json)
+        .map_err(|error| rquickjs::Exception::throw_message(ctx, &error.to_string()))?;
     let response = js_call_response(state, name, &args)
         .map_err(|error| rquickjs::Exception::throw_message(ctx, &error))?;
     serde_json::to_string(&response)
@@ -1278,12 +1261,15 @@ fn dispatch_js_call(
 }
 
 #[cfg(feature = "js_runtime")]
+#[allow(clippy::too_many_lines)]
 fn js_call_response(
-    state: std::sync::Arc<std::sync::Mutex<JsTemplateState>>,
+    state: &std::sync::Arc<std::sync::Mutex<JsTemplateState>>,
     name: &str,
     args: &[JsonValue],
 ) -> Result<JsonValue, String> {
-    let mut state = state.lock().map_err(|_| "templater lock poisoned".to_string())?;
+    let mut state = state
+        .lock()
+        .map_err(|_| "templater lock poisoned".to_string())?;
     let value = match name {
         "diagnostic" => {
             if let Some(message) = args.first().and_then(JsonValue::as_str) {
@@ -1337,8 +1323,7 @@ fn js_call_response(
             .and_then(|path| resolve_vault_path_from_state(&state, path))
             .as_deref()
             .map(file_object_json)
-            .map(JsonValue::Object)
-            .unwrap_or(JsonValue::Null),
+            .map_or(JsonValue::Null, JsonValue::Object),
         "frontmatter" => JsonValue::Object(yaml_mapping_to_json_object(
             &current_frontmatter_mapping(&state.target_contents).unwrap_or_default(),
         )),
@@ -1349,8 +1334,7 @@ fn js_call_response(
                     .template_path
                     .as_deref()
                     .map(path_to_relative_file_json)
-                    .map(JsonValue::Object)
-                    .unwrap_or(JsonValue::Null),
+                    .map_or(JsonValue::Null, JsonValue::Object),
             ),
             (
                 "target_file".to_string(),
@@ -1411,13 +1395,9 @@ fn js_reference_timestamp(
 }
 
 #[cfg(feature = "js_runtime")]
-fn js_apply_offset(
-    millis: i64,
-    offset: Option<&JsonValue>,
-) -> Result<i64, String> {
+fn js_apply_offset(millis: i64, offset: Option<&JsonValue>) -> Result<i64, String> {
     match offset {
-        None => Ok(millis),
-        Some(JsonValue::Null) => Ok(millis),
+        None | Some(JsonValue::Null) => Ok(millis),
         Some(JsonValue::Number(value)) => {
             let days = value.as_f64().unwrap_or_default();
             #[allow(clippy::cast_possible_truncation)]
@@ -1504,7 +1484,12 @@ fn js_file_folder(state: &JsTemplateState, args: &[JsonValue]) -> String {
         .map(|parent| parent.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
     if args.first().and_then(JsonValue::as_bool).unwrap_or(false) {
-        state.paths.vault_root().join(relative).display().to_string()
+        state
+            .paths
+            .vault_root()
+            .join(relative)
+            .display()
+            .to_string()
     } else {
         relative
     }
@@ -1516,8 +1501,9 @@ fn js_file_timestamp(state: &JsTemplateState, args: &[JsonValue], creation: bool
         .first()
         .and_then(JsonValue::as_str)
         .unwrap_or(DEFAULT_FILE_DATE_FORMAT);
-    let millis = file_timestamp_millis(&state.paths.vault_root().join(&state.target_path), creation)
-        .unwrap_or_else(current_timestamp_millis);
+    let millis =
+        file_timestamp_millis(&state.paths.vault_root().join(&state.target_path), creation)
+            .unwrap_or_else(current_timestamp_millis);
     format_date(millis, format)
 }
 
@@ -1535,14 +1521,19 @@ fn js_file_create_new(
     args: &[JsonValue],
 ) -> Result<JsonValue, String> {
     if !state.allow_mutations {
-        state.push_diagnostic("tp.file.create_new() is disabled during template preview".to_string());
+        state.push_diagnostic(
+            "tp.file.create_new() is disabled during template preview".to_string(),
+        );
         return Ok(JsonValue::Null);
     }
     let content = args
         .first()
         .map(json_value_to_js_string)
         .unwrap_or_default();
-    let filename = args.get(1).and_then(JsonValue::as_str).unwrap_or("Untitled");
+    let filename = args
+        .get(1)
+        .and_then(JsonValue::as_str)
+        .unwrap_or("Untitled");
     let folder = args.get(3).and_then(JsonValue::as_str).unwrap_or_default();
     let path = if folder.trim().is_empty() {
         format!("{filename}.md")
@@ -1672,7 +1663,9 @@ fn js_system_user_command(
         return Err(format!("templater system command `{name}` failed"));
     }
     Ok(JsonValue::String(
-        String::from_utf8_lossy(&output.stdout).trim_end().to_string(),
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string(),
     ))
 }
 
@@ -1831,7 +1824,7 @@ fn parse_templater_tag(source: &str, start: usize) -> Option<(TemplaterTag<'_>, 
 
     let mut execution = false;
     let mut dynamic = false;
-    if let Some(marker) = rest[body_start..].as_bytes().first().copied() {
+    if let Some(marker) = rest.as_bytes()[body_start..].first().copied() {
         match marker {
             b'*' => {
                 execution = true;
@@ -2047,16 +2040,14 @@ impl<'a> NativeExpressionParser<'a> {
                 }
             }
             Ok(NativeExpression::Call { callee: path, args })
+        } else if matches!(path_name(&path, 0), Some("true")) && path.len() == 1 {
+            Ok(NativeExpression::Bool(true))
+        } else if matches!(path_name(&path, 0), Some("false")) && path.len() == 1 {
+            Ok(NativeExpression::Bool(false))
+        } else if matches!(path_name(&path, 0), Some("null")) && path.len() == 1 {
+            Ok(NativeExpression::Null)
         } else {
-            if matches!(path_name(&path, 0), Some("true")) && path.len() == 1 {
-                Ok(NativeExpression::Bool(true))
-            } else if matches!(path_name(&path, 0), Some("false")) && path.len() == 1 {
-                Ok(NativeExpression::Bool(false))
-            } else if matches!(path_name(&path, 0), Some("null")) && path.len() == 1 {
-                Ok(NativeExpression::Null)
-            } else {
-                Ok(NativeExpression::Path(path))
-            }
+            Ok(NativeExpression::Path(path))
         }
     }
 
@@ -2140,6 +2131,7 @@ fn string_arg(args: &[NativeExpression], index: usize) -> Option<String> {
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn number_arg(args: &[NativeExpression], index: usize) -> Option<i64> {
     match args.get(index) {
         Some(NativeExpression::Number(value)) => Some(*value as i64),
@@ -2175,28 +2167,33 @@ fn normalize_note_output_path(path: &str) -> Result<String, String> {
 }
 
 fn yaml_mapping_to_json_object(mapping: &YamlMapping) -> JsonMap<String, JsonValue> {
-    JsonMap::from_iter(mapping.iter().filter_map(|(key, value)| {
-        key.as_str()
-            .map(|key| (key.to_string(), yaml_to_json(value)))
-    }))
+    mapping
+        .iter()
+        .filter_map(|(key, value)| {
+            key.as_str()
+                .map(|key| (key.to_string(), yaml_to_json(value)))
+        })
+        .collect::<JsonMap<_, _>>()
 }
 
 fn yaml_to_json(value: &YamlValue) -> JsonValue {
     match value {
-        YamlValue::Null => JsonValue::Null,
         YamlValue::Bool(value) => JsonValue::Bool(*value),
         YamlValue::Number(value) => value
             .as_i64()
             .map(Into::into)
             .map(JsonValue::Number)
-            .or_else(|| value.as_f64().and_then(serde_json::Number::from_f64).map(JsonValue::Number))
+            .or_else(|| {
+                value
+                    .as_f64()
+                    .and_then(serde_json::Number::from_f64)
+                    .map(JsonValue::Number)
+            })
             .unwrap_or(JsonValue::Null),
         YamlValue::String(value) => JsonValue::String(value.clone()),
-        YamlValue::Sequence(items) => {
-            JsonValue::Array(items.iter().map(yaml_to_json).collect())
-        }
+        YamlValue::Sequence(items) => JsonValue::Array(items.iter().map(yaml_to_json).collect()),
         YamlValue::Mapping(mapping) => JsonValue::Object(yaml_mapping_to_json_object(mapping)),
-        _ => JsonValue::Null,
+        YamlValue::Null | YamlValue::Tagged(_) => JsonValue::Null,
     }
 }
 
@@ -2297,7 +2294,9 @@ fn read_suggester_value(prompt: &str, items: &[String]) -> Result<Option<String>
     if selected.is_empty() {
         return Ok(items.first().cloned());
     }
-    let index = selected.parse::<usize>().map_err(|error| error.to_string())?;
+    let index = selected
+        .parse::<usize>()
+        .map_err(|error| error.to_string())?;
     Ok(items.get(index.saturating_sub(1)).cloned())
 }
 
@@ -2315,7 +2314,12 @@ fn clipboard_commands() -> Vec<Vec<&'static str>> {
     }
     #[cfg(target_os = "windows")]
     {
-        vec![vec!["powershell", "-NoProfile", "-Command", "Get-Clipboard"]]
+        vec![vec![
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Get-Clipboard",
+        ]]
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
@@ -2338,7 +2342,9 @@ fn run_clipboard_command(command: &[&str]) -> Result<String, String> {
     if !output.status.success() {
         return Err(format!("clipboard command failed: {command:?}"));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
 }
 
 #[cfg(feature = "js_runtime")]
@@ -2426,7 +2432,8 @@ fn parse_iso_day_offset(input: &str) -> Option<i64> {
 }
 
 fn weekday_timestamp(reference: i64, weekday: i64) -> i64 {
-    let (year, month, day, _, _, _, _) = vulcan_core::expression::functions::date_components(reference);
+    let (year, month, day, _, _, _, _) =
+        vulcan_core::expression::functions::date_components(reference);
     let current = iso_weekday(year, month, day);
     let monday_based = current - 1;
     let delta = weekday - monday_based;
@@ -2564,11 +2571,7 @@ fn ensure_allowlisted_url(config: &TemplatesConfig, url: &str) -> Result<(), Str
     }
 }
 
-fn random_picture_markdown(
-    size: Option<&str>,
-    query: Option<&str>,
-    include_size: bool,
-) -> String {
+fn random_picture_markdown(size: Option<&str>, query: Option<&str>, include_size: bool) -> String {
     let mut url = "https://source.unsplash.com/random".to_string();
     if let Some(size) = size.filter(|value| !value.trim().is_empty()) {
         url.push('/');
@@ -2579,7 +2582,10 @@ fn random_picture_markdown(
         url.push_str(query);
     }
     if include_size {
-        size.map_or_else(|| format!("![]({url})"), |size| format!("![]({url}|{size})"))
+        size.map_or_else(
+            || format!("![]({url})"),
+            |size| format!("![]({url}|{size})"),
+        )
     } else {
         format!("![]({url})")
     }
@@ -2619,11 +2625,9 @@ mod tests {
         template_value_to_string, TemplateEngineKind, TemplateRenderRequest, TemplateRunMode,
         TemplateValue, TrimMode,
     };
-    use std::collections::HashMap;
-    use tempfile::tempdir;
-    use vulcan_core::{VaultConfig, VaultPaths};
     #[cfg(feature = "js_runtime")]
     use crate::TemplateCandidate;
+    use std::collections::HashMap;
     #[cfg(feature = "js_runtime")]
     use std::fs;
     #[cfg(feature = "js_runtime")]
@@ -2632,6 +2636,8 @@ mod tests {
     use std::net::TcpListener;
     #[cfg(feature = "js_runtime")]
     use std::path::Path;
+    use tempfile::tempdir;
+    use vulcan_core::{VaultConfig, VaultPaths};
 
     #[test]
     fn parses_template_var_bindings() {
@@ -2849,7 +2855,10 @@ mod tests {
         .expect("template should render");
 
         assert_eq!(rendered.content, "Main body");
-        assert!(rendered.changed_paths.iter().any(|path| path == "Created.md"));
+        assert!(rendered
+            .changed_paths
+            .iter()
+            .any(|path| path == "Created.md"));
         assert_eq!(
             fs::read_to_string(temp_dir.path().join("Created.md")).expect("created note"),
             "Hooked"

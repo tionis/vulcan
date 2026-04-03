@@ -2498,8 +2498,8 @@ fn template_insert_renders_templater_syntax_against_target_note() {
 
     assert_eq!(json["engine"], "templater");
     assert_eq!(json["note"], "Projects/Alpha.md");
-    let updated =
-        fs::read_to_string(vault_root.join("Projects/Alpha.md")).expect("updated note should exist");
+    let updated = fs::read_to_string(vault_root.join("Projects/Alpha.md"))
+        .expect("updated note should exist");
     assert!(updated.contains("Status active"));
     assert!(updated.contains("Title Alpha"));
     assert!(updated
