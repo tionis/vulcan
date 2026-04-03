@@ -5,18 +5,23 @@ mod commit;
 mod editor;
 mod note_picker;
 mod serve;
+mod template_engine;
 
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
     ConfigImportArgs, ConfigImportCommand, ConfigImportTargetArg, DailyCommand, DataviewCommand,
     ExportArgs, ExportCommand, ExportFormat, GraphCommand, KanbanCommand, OutputFormat,
     PeriodicOpenArgs, PeriodicSubcommand, RefreshMode, RepairCommand, SavedCommand, SearchMode,
-    SearchSortArg, SuggestCommand, TasksCommand, TemplateSubcommand, VectorQueueCommand,
-    VectorsCommand,
+    SearchSortArg, SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, VectorQueueCommand, VectorsCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
 use crate::editor::open_in_editor;
+use crate::template_engine::{
+    parse_template_var_bindings, render_template_request, TemplateEngineKind,
+    TemplateRenderRequest, TemplateRunMode,
+};
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use serde::Serialize;
@@ -706,8 +711,10 @@ struct TemplateCreateReport {
     template: String,
     template_source: String,
     path: String,
+    engine: String,
     opened_editor: bool,
     warnings: Vec<String>,
+    diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -716,7 +723,20 @@ struct TemplateInsertReport {
     template_source: String,
     note: String,
     mode: String,
+    engine: String,
     warnings: Vec<String>,
+    diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TemplatePreviewReport {
+    template: String,
+    template_source: String,
+    path: String,
+    engine: String,
+    content: String,
+    warnings: Vec<String>,
+    diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2012,10 +2032,13 @@ fn run_template_command(
     name: Option<&str>,
     list: bool,
     output_path: Option<&str>,
+    engine: TemplateEngineArg,
+    vars: &[String],
     no_commit: bool,
     stdout_is_tty: bool,
 ) -> Result<TemplateCommandResult, CliError> {
     let config = load_vault_config(paths).config;
+    let bound_vars = parse_template_var_bindings(vars)?;
     let templates = discover_templates(
         paths,
         config.templates.obsidian_folder.as_deref(),
@@ -2042,22 +2065,31 @@ fn run_template_command(
     let now = TemplateTimestamp::current();
     let template = resolve_template_file(paths, &templates.templates, template_name)?;
     let output_path = template_output_path(&template.name, output_path, &now)?;
-    let absolute_output = paths.vault_root().join(&output_path);
+    let template_source = fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
+    let rendered = render_template_request(TemplateRenderRequest {
+        paths,
+        vault_config: &config,
+        templates: &templates.templates,
+        template_path: Some(&template.absolute_path),
+        template_text: &template_source,
+        target_path: &output_path,
+        target_contents: None,
+        engine: template_engine_kind(engine),
+        vars: &bound_vars,
+        allow_mutations: true,
+        run_mode: TemplateRunMode::Create,
+    })?;
+    let absolute_output = paths.vault_root().join(&rendered.target_path);
     if absolute_output.exists() {
         return Err(CliError::operation(format!(
-            "destination note already exists: {output_path}"
+            "destination note already exists: {}",
+            rendered.target_path
         )));
     }
-
-    let rendered = render_template_contents(
-        &fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?,
-        &template_variables_for_path(&output_path, now),
-        &config.templates,
-    );
     if let Some(parent) = absolute_output.parent() {
         fs::create_dir_all(parent).map_err(CliError::operation)?;
     }
-    fs::write(&absolute_output, rendered).map_err(CliError::operation)?;
+    fs::write(&absolute_output, &rendered.content).map_err(CliError::operation)?;
 
     let mut opened_editor = false;
     if stdout_is_tty && io::stdin().is_terminal() {
@@ -2068,16 +2100,26 @@ fn run_template_command(
     run_incremental_scan(paths, OutputFormat::Human, false)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit);
+    let mut changed_paths = vec![rendered.target_path.clone()];
+    changed_paths.extend(rendered.changed_paths.clone());
+    changed_paths.sort();
+    changed_paths.dedup();
     auto_commit
-        .commit(paths, "template", std::slice::from_ref(&output_path))
+        .commit(paths, "template", &changed_paths)
         .map_err(CliError::operation)?;
 
     Ok(TemplateCommandResult::Create(TemplateCreateReport {
         template: template.name,
         template_source: template.source.to_string(),
-        path: output_path,
+        path: rendered.target_path,
+        engine: rendered.engine.as_str().to_string(),
         opened_editor,
-        warnings: template.warning.into_iter().collect(),
+        warnings: template
+            .warning
+            .into_iter()
+            .chain(rendered.warnings)
+            .collect(),
+        diagnostics: rendered.diagnostics,
     }))
 }
 
@@ -2086,10 +2128,13 @@ fn run_template_insert_command(
     template_name: &str,
     note: Option<&str>,
     mode: TemplateInsertMode,
+    engine: TemplateEngineArg,
+    vars: &[String],
     no_commit: bool,
     interactive_note_selection: bool,
 ) -> Result<TemplateInsertReport, CliError> {
     let config = load_vault_config(paths).config;
+    let bound_vars = parse_template_var_bindings(vars)?;
     let templates = discover_templates(
         paths,
         config.templates.obsidian_folder.as_deref(),
@@ -2107,30 +2152,104 @@ fn run_template_insert_command(
     let target_path = resolved.path;
     let target_absolute = paths.vault_root().join(&target_path);
     let target_source = fs::read_to_string(&target_absolute).map_err(CliError::operation)?;
-    let rendered_template = render_template_contents(
-        &fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?,
-        &template_variables_for_path(&target_path, TemplateTimestamp::current()),
-        &config.templates,
-    );
-    let prepared = prepare_template_insertion(&target_source, &rendered_template)
+    let template_source = fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
+    let rendered_template = render_template_request(TemplateRenderRequest {
+        paths,
+        vault_config: &config,
+        templates: &templates.templates,
+        template_path: Some(&template.absolute_path),
+        template_text: &template_source,
+        target_path: &target_path,
+        target_contents: Some(&target_source),
+        engine: template_engine_kind(engine),
+        vars: &bound_vars,
+        allow_mutations: true,
+        run_mode: TemplateRunMode::Append,
+    })?;
+    let final_target_absolute = paths.vault_root().join(&rendered_template.target_path);
+    let prepared = prepare_template_insertion(&target_source, &rendered_template.content)
         .map_err(CliError::operation)?;
     let updated = apply_template_insertion_mode(&prepared, mode).map_err(CliError::operation)?;
-    fs::write(&target_absolute, updated).map_err(CliError::operation)?;
+    fs::write(&final_target_absolute, updated).map_err(CliError::operation)?;
 
     run_incremental_scan(paths, OutputFormat::Human, false)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit);
+    let mut changed_paths = vec![rendered_template.target_path.clone()];
+    changed_paths.extend(rendered_template.changed_paths.clone());
+    changed_paths.sort();
+    changed_paths.dedup();
     auto_commit
-        .commit(paths, "template insert", std::slice::from_ref(&target_path))
+        .commit(paths, "template insert", &changed_paths)
         .map_err(CliError::operation)?;
 
     Ok(TemplateInsertReport {
         template: template.name,
         template_source: template.source.to_string(),
-        note: target_path,
+        note: rendered_template.target_path,
         mode: mode.as_str().to_string(),
-        warnings: template.warning.into_iter().collect(),
+        engine: rendered_template.engine.as_str().to_string(),
+        warnings: template
+            .warning
+            .into_iter()
+            .chain(rendered_template.warnings)
+            .collect(),
+        diagnostics: rendered_template.diagnostics,
     })
+}
+
+fn run_template_preview_command(
+    paths: &VaultPaths,
+    template_name: &str,
+    output_path: Option<&str>,
+    engine: TemplateEngineArg,
+    vars: &[String],
+) -> Result<TemplatePreviewReport, CliError> {
+    let config = load_vault_config(paths).config;
+    let bound_vars = parse_template_var_bindings(vars)?;
+    let templates = discover_templates(
+        paths,
+        config.templates.obsidian_folder.as_deref(),
+        config.templates.templater_folder.as_deref(),
+    )?;
+    let template = resolve_template_file(paths, &templates.templates, template_name)?;
+    let now = TemplateTimestamp::current();
+    let output_path = template_output_path(&template.name, output_path, &now)?;
+    let template_source = fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
+    let rendered = render_template_request(TemplateRenderRequest {
+        paths,
+        vault_config: &config,
+        templates: &templates.templates,
+        template_path: Some(&template.absolute_path),
+        template_text: &template_source,
+        target_path: &output_path,
+        target_contents: None,
+        engine: template_engine_kind(engine),
+        vars: &bound_vars,
+        allow_mutations: false,
+        run_mode: TemplateRunMode::Dynamic,
+    })?;
+    Ok(TemplatePreviewReport {
+        template: template.name,
+        template_source: template.source.to_string(),
+        path: rendered.target_path,
+        engine: rendered.engine.as_str().to_string(),
+        content: rendered.content,
+        warnings: template
+            .warning
+            .into_iter()
+            .chain(rendered.warnings)
+            .collect(),
+        diagnostics: rendered.diagnostics,
+    })
+}
+
+fn template_engine_kind(engine: TemplateEngineArg) -> TemplateEngineKind {
+    match engine {
+        TemplateEngineArg::Native => TemplateEngineKind::Native,
+        TemplateEngineArg::Templater => TemplateEngineKind::Templater,
+        TemplateEngineArg::Auto => TemplateEngineKind::Auto,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2236,12 +2355,22 @@ fn render_periodic_note_contents(
             template.display_path
         ))
     })?;
-
-    Ok(render_template_contents(
-        &contents,
-        &template_variables_for_path(relative_path, TemplateTimestamp::current()),
-        &config.templates,
-    ))
+    let rendered = render_template_request(TemplateRenderRequest {
+        paths,
+        vault_config: &config,
+        templates: &templates.templates,
+        template_path: Some(&template.absolute_path),
+        template_text: &contents,
+        target_path: relative_path,
+        target_contents: None,
+        engine: TemplateEngineKind::Auto,
+        vars: &HashMap::new(),
+        allow_mutations: true,
+        run_mode: TemplateRunMode::Create,
+    })?;
+    warnings.extend(rendered.warnings);
+    warnings.extend(rendered.diagnostics);
+    Ok(rendered.content)
 }
 
 fn write_periodic_note_if_missing(
@@ -2771,11 +2900,21 @@ fn render_bases_note_contents(
             config.templates.templater_folder.as_deref(),
         )?;
         let template = resolve_template_file(paths, &templates.templates, template_name)?;
-        render_template_contents(
-            &fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?,
-            &template_variables_for_path(relative_path, TemplateTimestamp::current()),
-            &config.templates,
-        )
+        let source = fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
+        render_template_request(TemplateRenderRequest {
+            paths,
+            vault_config: &config,
+            templates: &templates.templates,
+            template_path: Some(&template.absolute_path),
+            template_text: &source,
+            target_path: relative_path,
+            target_contents: None,
+            engine: TemplateEngineKind::Auto,
+            vars: &HashMap::new(),
+            allow_mutations: true,
+            run_mode: TemplateRunMode::Create,
+        })?
+        .content
     } else {
         String::new()
     };
@@ -2808,6 +2947,7 @@ enum TemplateCommandResult {
     List(TemplateListReport),
     Create(TemplateCreateReport),
     Insert(TemplateInsertReport),
+    Preview(TemplatePreviewReport),
 }
 
 fn discover_templates(
@@ -5372,6 +5512,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref name,
             list,
             ref path,
+            ref render,
             no_commit,
         } => {
             let result = match command {
@@ -5380,6 +5521,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     note,
                     prepend,
                     append: _,
+                    render,
                     no_commit,
                 }) => TemplateCommandResult::Insert(run_template_insert_command(
                     &paths,
@@ -5390,14 +5532,29 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     } else {
                         TemplateInsertMode::Append
                     },
+                    render.engine,
+                    &render.vars,
                     *no_commit,
                     interactive_note_selection,
+                )?),
+                Some(TemplateSubcommand::Preview {
+                    template,
+                    path,
+                    render,
+                }) => TemplateCommandResult::Preview(run_template_preview_command(
+                    &paths,
+                    template,
+                    path.as_deref(),
+                    render.engine,
+                    &render.vars,
                 )?),
                 None => run_template_command(
                     &paths,
                     name.as_deref(),
                     list,
                     path.as_deref(),
+                    render.engine,
+                    &render.vars,
                     no_commit,
                     stdout_is_tty,
                 )?,
@@ -5412,6 +5569,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
                 TemplateCommandResult::Insert(report) => {
                     print_template_insert_report(cli.output, &report)
+                }
+                TemplateCommandResult::Preview(report) => {
+                    print_template_preview_report(cli.output, &report)
                 }
             }
         }
@@ -8345,11 +8505,14 @@ fn print_template_create_report(
     match output {
         OutputFormat::Human => {
             println!(
-                "Created {} from {} ({})",
-                report.path, report.template, report.template_source
+                "Created {} from {} ({}, {})",
+                report.path, report.template, report.template_source, report.engine
             );
             for warning in &report.warnings {
                 eprintln!("Warning: {warning}");
+            }
+            for diagnostic in &report.diagnostics {
+                eprintln!("Diagnostic: {diagnostic}");
             }
             Ok(())
         }
@@ -8364,11 +8527,33 @@ fn print_template_insert_report(
     match output {
         OutputFormat::Human => {
             println!(
-                "Inserted {} into {} ({}, {})",
-                report.template, report.note, report.mode, report.template_source
+                "Inserted {} into {} ({}, {}, {})",
+                report.template, report.note, report.mode, report.template_source, report.engine
             );
             for warning in &report.warnings {
                 eprintln!("Warning: {warning}");
+            }
+            for diagnostic in &report.diagnostics {
+                eprintln!("Diagnostic: {diagnostic}");
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_template_preview_report(
+    output: OutputFormat,
+    report: &TemplatePreviewReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("{}", report.content);
+            for warning in &report.warnings {
+                eprintln!("Warning: {warning}");
+            }
+            for diagnostic in &report.diagnostics {
+                eprintln!("Diagnostic: {diagnostic}");
             }
             Ok(())
         }
@@ -10629,6 +10814,45 @@ mod tests {
     }
 
     #[test]
+    fn parses_templater_template_preview_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "template",
+            "preview",
+            "daily",
+            "--path",
+            "Journal/Today",
+            "--engine",
+            "templater",
+            "--var",
+            "project=Vulcan",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Template {
+                command: Some(TemplateSubcommand::Preview {
+                    template: "daily".to_string(),
+                    path: Some("Journal/Today".to_string()),
+                    render: TemplateRenderArgs {
+                        engine: TemplateEngineArg::Templater,
+                        vars: vec!["project=Vulcan".to_string()],
+                    },
+                }),
+                name: None,
+                list: false,
+                path: None,
+                render: TemplateRenderArgs {
+                    engine: TemplateEngineArg::Auto,
+                    vars: Vec::new(),
+                },
+                no_commit: false,
+            }
+        );
+    }
+
+    #[test]
     fn parses_config_import_kanban_command() {
         let cli = Cli::try_parse_from(["vulcan", "config", "import", "kanban"])
             .expect("cli should parse");
@@ -11040,7 +11264,16 @@ mod tests {
         )
         .expect("obsidian meeting template should be written");
 
-        let result = run_template_command(&paths, None, true, None, false, false)
+        let result = run_template_command(
+            &paths,
+            None,
+            true,
+            None,
+            TemplateEngineArg::Auto,
+            &[],
+            false,
+            false,
+        )
             .expect("template list should succeed");
         let TemplateCommandResult::List(report) = result else {
             panic!("template command should list templates");
@@ -11087,7 +11320,16 @@ mod tests {
         )
         .expect("templater template should be written");
 
-        let result = run_template_command(&paths, None, true, None, false, false)
+        let result = run_template_command(
+            &paths,
+            None,
+            true,
+            None,
+            TemplateEngineArg::Auto,
+            &[],
+            false,
+            false,
+        )
             .expect("template list should succeed");
         let TemplateCommandResult::List(report) = result else {
             panic!("template command should list templates");
@@ -11132,6 +11374,8 @@ mod tests {
             Some("daily"),
             false,
             Some("Journal/Today"),
+            TemplateEngineArg::Auto,
+            &[],
             false,
             false,
         )
@@ -11216,6 +11460,8 @@ mod tests {
             Some("daily"),
             false,
             Some("Journal/Today"),
+            TemplateEngineArg::Auto,
+            &[],
             false,
             false,
         )
@@ -11254,6 +11500,8 @@ mod tests {
             "daily",
             Some("Home"),
             TemplateInsertMode::Prepend,
+            TemplateEngineArg::Auto,
+            &[],
             false,
             false,
         )
@@ -11304,6 +11552,8 @@ mod tests {
             "daily",
             Some("Home"),
             TemplateInsertMode::Append,
+            TemplateEngineArg::Auto,
+            &[],
             false,
             false,
         )
@@ -11770,6 +12020,10 @@ mod tests {
                 name: Some("daily".to_string()),
                 list: false,
                 path: Some("Notes/Day".to_string()),
+                render: TemplateRenderArgs {
+                    engine: TemplateEngineArg::Auto,
+                    vars: Vec::new(),
+                },
                 no_commit: false,
             }
         );
@@ -11781,11 +12035,19 @@ mod tests {
                     note: Some("Home".to_string()),
                     prepend: true,
                     append: false,
+                    render: TemplateRenderArgs {
+                        engine: TemplateEngineArg::Auto,
+                        vars: Vec::new(),
+                    },
                     no_commit: false,
                 }),
                 name: None,
                 list: false,
                 path: None,
+                render: TemplateRenderArgs {
+                    engine: TemplateEngineArg::Auto,
+                    vars: Vec::new(),
+                },
                 no_commit: false,
             }
         );

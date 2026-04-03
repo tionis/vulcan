@@ -558,17 +558,18 @@ Behavior:
 
 ### `template`
 
-`vulcan template` creates notes from templates, and `vulcan template insert` inserts rendered templates into existing notes.
-If `.obsidian/templates.json` configures a template folder, Vulcan also discovers templates there and reports the source in `--list`.
+`vulcan template` creates notes from templates, `vulcan template insert` inserts rendered templates into existing notes, and `vulcan template preview` renders without writing a note.
+If `.obsidian/templates.json` or the Templater plugin configures a template folder, Vulcan also discovers templates there and reports the source in `--list`.
 
 Examples:
 
 ```bash
 vulcan template --list
-vulcan template daily --path Daily/2026-03-26
+vulcan template daily --path Daily/2026-03-26 --engine auto
 vulcan template meeting
-vulcan template insert daily Projects/Alpha
+vulcan template insert daily Projects/Alpha --engine templater --var project=Vulcan
 vulcan template insert daily --prepend
+vulcan template preview daily --path Journal/Today
 ```
 
 Behavior:
@@ -578,11 +579,21 @@ Behavior:
 - If `--path` is omitted, Vulcan creates `<date>-<template-name>.md` in the vault root.
 - In an interactive terminal, the rendered note is opened in the editor before the rescan.
 - Default `{{date}}` and `{{time}}` formats come from `[templates]` in `.vulcan/config.toml`.
+- `--engine auto|native|templater` selects the renderer. `auto` is the default and switches to the Templater-compatible engine when the template contains `<% ... %>` tags.
+- Repeat `--var key=value` to satisfy `tp.system.prompt()` and `tp.system.suggester()` in non-interactive runs.
 - `template insert` renders `{{title}}` and the other template variables against the target note.
 - `template insert` appends by default; `--prepend` inserts after the target note's frontmatter.
 - If the insert target note is omitted in an interactive terminal, Vulcan opens the note picker.
+- `template preview` disables mutating `tp.file.*` helpers and reports them as diagnostics instead of writing files.
 - Template frontmatter is merged on insert: existing scalar values are preserved, missing keys are added, and list properties are union-merged.
 - After either template creation or template insertion, Vulcan runs an incremental scan and then auto-commits if enabled.
+
+Templater compatibility:
+
+- Templater tags `<% ... %>`, `<%* ... %>`, `<%+ ... %>`, `<%_`, `_%>`, `<%-`, and `-%>` are supported alongside the original `{{date}}` and `{{title}}` variables.
+- Native `tp.date`, `tp.file`, `tp.frontmatter`, `tp.system`, and `tp.config` helpers work without any extra setup.
+- JS-backed helpers such as `tp.web.*`, `tp.user.*`, `tp.hooks.on_all_templates_executed()`, and `tp.obsidian.requestUrl()` require the default `js_runtime` feature.
+- `[templates].user_scripts_folder` controls `tp.user.<name>()` script discovery, and `[templates].web_allowlist` gates outbound hosts for `tp.web.request()`, `tp.web.daily_quote()`, and `tp.obsidian.requestUrl()`.
 
 Supported template variables:
 

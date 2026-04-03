@@ -3342,7 +3342,7 @@
       },
       {
         "about": "Create notes from templates or insert templates into existing notes",
-        "after_help": "Template source:\n  Templates live under .vulcan/templates as regular .md files.\n  If .obsidian/templates.json or the Templater plugin configures a template folder, Vulcan lists those folders too.\n  When the same template exists in both places, .vulcan/templates takes precedence.\n  NAME can be the full filename or the filename stem.\n\nVariables:\n  {{title}} {{date}} {{time}} {{datetime}} {{uuid}}\n  {{date:YYYY-MM-DD}} {{time:HH:mm}} {{date:dddd, MMMM Do YYYY}}\n\nConfiguration:\n  Default template date/time formats live under [templates] in .vulcan/config.toml.\n  date_format applies to {{date}} and time_format applies to {{time}}.\n\nNotes:\n  If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.\n  In an interactive terminal, the new note is opened in $VISUAL/$EDITOR after rendering.\n  `template insert` appends by default; use --prepend to insert after frontmatter instead.\n  If the insert target note is omitted in an interactive terminal, Vulcan opens the note picker.\n\nExamples:\n  vulcan template --list\n  vulcan template daily --path Daily/2026-03-26\n  vulcan template meeting\n  vulcan template insert daily Projects/Alpha\n  vulcan template insert daily --prepend",
+        "after_help": "Template source:\n  Templates live under .vulcan/templates as regular .md files.\n  If .obsidian/templates.json or the Templater plugin configures a template folder, Vulcan lists those folders too.\n  When the same template exists in both places, .vulcan/templates takes precedence.\n  NAME can be the full filename or the filename stem.\n\nVariables:\n  {{title}} {{date}} {{time}} {{datetime}} {{uuid}}\n  {{date:YYYY-MM-DD}} {{time:HH:mm}} {{date:dddd, MMMM Do YYYY}}\n  <% tp.file.title %> <%* tR += tp.date.now() %> <%+ tp.frontmatter.status %>\n\nConfiguration:\n  Default template date/time formats live under [templates] in .vulcan/config.toml.\n  date_format applies to {{date}} and time_format applies to {{time}}.\n  web_allowlist gates tp.web.request()/tp.obsidian.requestUrl() hosts.\n\nNotes:\n  If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.\n  In an interactive terminal, the new note is opened in $VISUAL/$EDITOR after rendering.\n  --engine auto detects <% ... %> tags and switches to the Templater-compatible renderer.\n  Repeat --var key=value to satisfy tp.system.prompt()/suggester() in automation and CI.\n  `template insert` appends by default; use --prepend to insert after frontmatter instead.\n  If the insert target note is omitted in an interactive terminal, Vulcan opens the note picker.\n  `template preview` renders without writing files and disables mutating tp.file.* helpers.\n\nExamples:\n  vulcan template --list\n  vulcan template daily --path Daily/2026-03-26 --engine auto\n  vulcan template meeting\n  vulcan template insert daily Projects/Alpha --var project=Vulcan\n  vulcan template insert daily --prepend\n  vulcan template preview daily --path Journal/Today",
         "name": "template",
         "options": [
           {
@@ -3379,6 +3379,32 @@
             "short": null,
             "value_names": [
               "PATH"
+            ]
+          },
+          {
+            "help": "Template engine to use: native, templater, or auto-detect",
+            "id": "engine",
+            "long": "engine",
+            "possible_values": [
+              "native",
+              "templater",
+              "auto"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "ENGINE"
+            ]
+          },
+          {
+            "help": "Bind a template variable using key=value syntax",
+            "id": "vars",
+            "long": "var",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "VARS"
             ]
           },
           {
@@ -3452,6 +3478,32 @@
                 ]
               },
               {
+                "help": "Template engine to use: native, templater, or auto-detect",
+                "id": "engine",
+                "long": "engine",
+                "possible_values": [
+                  "native",
+                  "templater",
+                  "auto"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ENGINE"
+                ]
+              },
+              {
+                "help": "Bind a template variable using key=value syntax",
+                "id": "vars",
+                "long": "var",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "VARS"
+                ]
+              },
+              {
                 "help": "Suppress auto-commit for this invocation",
                 "id": "no_commit",
                 "long": "no-commit",
@@ -3463,6 +3515,61 @@
                 "short": null,
                 "value_names": [
                   "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Render a template without creating or editing files",
+            "name": "preview",
+            "options": [
+              {
+                "help": "Template name or filename stem",
+                "id": "template",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TEMPLATE"
+                ]
+              },
+              {
+                "help": "Target note path used for title/path/frontmatter context",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Template engine to use: native, templater, or auto-detect",
+                "id": "engine",
+                "long": "engine",
+                "possible_values": [
+                  "native",
+                  "templater",
+                  "auto"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ENGINE"
+                ]
+              },
+              {
+                "help": "Bind a template variable using key=value syntax",
+                "id": "vars",
+                "long": "var",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "VARS"
                 ]
               }
             ],

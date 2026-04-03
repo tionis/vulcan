@@ -2218,6 +2218,8 @@ dependencies = [
  "csv",
  "predicates",
  "ratatui",
+ "reqwest",
+ "rquickjs",
  "serde",
  "serde_json",
  "serde_yaml",

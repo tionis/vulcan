@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [features]
 default = ["js_runtime"]
-js_runtime = ["vulcan-core/js_runtime"]
+js_runtime = ["dep:reqwest", "dep:rquickjs", "vulcan-core/js_runtime"]
 
 [dependencies]
 clap.workspace = true
@@ -24,6 +24,8 @@ clap_complete.workspace = true
 crossterm.workspace = true
 csv.workspace = true
 ratatui.workspace = true
+reqwest = { workspace = true, optional = true }
+rquickjs = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
