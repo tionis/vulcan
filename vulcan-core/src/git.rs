@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -68,6 +69,26 @@ pub struct GitStatusReport {
     pub staged: Vec<String>,
     pub unstaged: Vec<String>,
     pub untracked: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitCommitReport {
+    pub committed: bool,
+    pub message: String,
+    pub files: Vec<String>,
+    pub sha: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitBlameLine {
+    pub line_number: usize,
+    pub commit: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub author_time: i64,
+    pub author_tz: String,
+    pub summary: String,
+    pub line: String,
 }
 
 impl GitStatusReport {
@@ -188,26 +209,17 @@ pub fn git_log(
     file_path: &str,
     limit: usize,
 ) -> Result<Vec<GitLogEntry>, GitError> {
-    let stdout = run_git_capture(vault_root, |command| {
-        command.args([
-            "log",
-            "--follow",
-            "--date=iso-strict",
-            &format!("-n{limit}"),
-            "--pretty=format:%H%x1f%an%x1f%ae%x1f%ad%x1f%s",
-            "--",
-            file_path,
-        ]);
-    })?;
+    ensure_git_repo(vault_root)?;
+    collect_git_log(vault_root, limit, Some(file_path))
+}
 
-    Ok(stdout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(parse_git_log_line)
-        .collect())
+pub fn git_recent_log(vault_root: &Path, limit: usize) -> Result<Vec<GitLogEntry>, GitError> {
+    ensure_git_repo(vault_root)?;
+    collect_git_log(vault_root, limit, None)
 }
 
 pub fn git_status(vault_root: &Path) -> Result<GitStatusReport, GitError> {
+    ensure_git_repo(vault_root)?;
     let stdout = run_git_capture(vault_root, |command| {
         command.args(["status", "--short", "--untracked-files=all"]);
     })?;
@@ -247,6 +259,113 @@ pub fn git_status(vault_root: &Path) -> Result<GitStatusReport, GitError> {
         unstaged: unstaged.into_iter().collect(),
         untracked: untracked.into_iter().collect(),
     })
+}
+
+pub fn git_diff(vault_root: &Path, path: Option<&str>) -> Result<String, GitError> {
+    ensure_git_repo(vault_root)?;
+    let status = git_status(vault_root)?;
+    let untracked_paths = status.untracked.iter().cloned().collect::<BTreeSet<_>>();
+    let paths = match path {
+        Some(path) => {
+            let normalized = normalize_git_path(path);
+            if path_is_excluded(&normalized, &[]) {
+                return Err(GitError::CommandFailed(format!(
+                    "refusing to diff an internal path: {normalized}"
+                )));
+            }
+            vec![normalized]
+        }
+        None => status
+            .changed_paths()
+            .into_iter()
+            .filter(|path| !path_is_excluded(path, &[]))
+            .collect::<Vec<_>>(),
+    };
+
+    render_git_diff_for_paths(vault_root, &paths, &untracked_paths)
+}
+
+pub fn git_commit(vault_root: &Path, message: &str) -> Result<GitCommitReport, GitError> {
+    ensure_git_repo(vault_root)?;
+    let commit_paths = git_status(vault_root)?
+        .changed_paths()
+        .into_iter()
+        .filter(|path| !path_is_excluded(path, &[]))
+        .collect::<Vec<_>>();
+    if commit_paths.is_empty() {
+        return Ok(GitCommitReport {
+            committed: false,
+            message: "no eligible files to commit".to_string(),
+            files: Vec::new(),
+            sha: None,
+        });
+    }
+
+    run_git(vault_root, "stage changes", |command| {
+        command.arg("add").arg("--all").arg("--");
+        for path in &commit_paths {
+            command.arg(path);
+        }
+    })?;
+
+    let staged = staged_paths(vault_root)?
+        .into_iter()
+        .filter(|path| !path_is_excluded(path, &[]))
+        .collect::<Vec<_>>();
+    if staged.is_empty() {
+        return Ok(GitCommitReport {
+            committed: false,
+            message: "no eligible files remained after filtering".to_string(),
+            files: Vec::new(),
+            sha: None,
+        });
+    }
+
+    run_git(vault_root, "create commit", |command| {
+        command.arg("commit").arg("-m").arg(message);
+    })?;
+    let sha = run_git_capture(vault_root, |command| {
+        command.args(["rev-parse", "HEAD"]);
+    })?
+    .trim()
+    .to_string();
+
+    Ok(GitCommitReport {
+        committed: true,
+        message: message.to_string(),
+        files: staged,
+        sha: Some(sha),
+    })
+}
+
+pub fn git_blame(vault_root: &Path, path: &str) -> Result<Vec<GitBlameLine>, GitError> {
+    ensure_git_repo(vault_root)?;
+    let normalized = normalize_git_path(path);
+    if path_is_excluded(&normalized, &[]) {
+        return Err(GitError::CommandFailed(format!(
+            "refusing to blame an internal path: {normalized}"
+        )));
+    }
+
+    let stdout = run_git_capture(vault_root, |command| {
+        command
+            .arg("blame")
+            .arg("--line-porcelain")
+            .arg("--")
+            .arg(&normalized);
+    })?;
+
+    parse_git_blame(&stdout)
+}
+
+fn ensure_git_repo(vault_root: &Path) -> Result<(), GitError> {
+    if is_git_repo(vault_root) {
+        Ok(())
+    } else {
+        Err(GitError::CommandFailed(
+            "vault is not a git repository".to_string(),
+        ))
+    }
 }
 
 fn run_git(
@@ -336,6 +455,85 @@ fn staged_paths(vault_root: &Path) -> Result<Vec<String>, GitError> {
         .collect())
 }
 
+fn collect_git_log(
+    vault_root: &Path,
+    limit: usize,
+    file_path: Option<&str>,
+) -> Result<Vec<GitLogEntry>, GitError> {
+    let limit = limit.max(1);
+    let stdout = run_git_capture(vault_root, |command| {
+        command.args([
+            "log",
+            "--date=iso-strict",
+            &format!("-n{limit}"),
+            "--pretty=format:%H%x1f%an%x1f%ae%x1f%ad%x1f%s",
+        ]);
+        if let Some(file_path) = file_path {
+            command.arg("--follow").arg("--").arg(file_path);
+        }
+    })?;
+
+    Ok(stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(parse_git_log_line)
+        .collect())
+}
+
+fn render_git_diff_for_paths(
+    vault_root: &Path,
+    paths: &[String],
+    untracked_paths: &BTreeSet<String>,
+) -> Result<String, GitError> {
+    let mut diffs = Vec::new();
+    for path in paths {
+        let diff = render_git_path_diff(vault_root, path, untracked_paths.contains(path))?;
+        if !diff.trim().is_empty() {
+            diffs.push(diff);
+        }
+    }
+    Ok(diffs.join(""))
+}
+
+fn render_git_path_diff(
+    vault_root: &Path,
+    path: &str,
+    untracked: bool,
+) -> Result<String, GitError> {
+    let output = if untracked {
+        let empty_path = std::env::temp_dir().join(format!(
+            "vulcan-empty-diff-{}-{}",
+            std::process::id(),
+            path.replace('/', "_")
+        ));
+        fs::write(&empty_path, "").map_err(GitError::Io)?;
+        let output = run_git_output(vault_root, |command| {
+            command
+                .args(["diff", "--no-index", "--no-color"])
+                .arg(&empty_path)
+                .arg(vault_root.join(path));
+        });
+        let _ = fs::remove_file(&empty_path);
+        output?
+    } else {
+        run_git_output(vault_root, |command| {
+            command.args(["diff", "--no-color", "HEAD", "--"]).arg(path);
+        })?
+    };
+
+    if untracked {
+        if !matches!(output.status.code(), Some(0 | 1)) {
+            let stderr = String::from_utf8(output.stderr)?;
+            return Err(GitError::CommandFailed(stderr.trim().to_string()));
+        }
+    } else if !output.status.success() {
+        let stderr = String::from_utf8(output.stderr)?;
+        return Err(GitError::CommandFailed(stderr.trim().to_string()));
+    }
+
+    Ok(String::from_utf8(output.stdout)?)
+}
+
 fn parse_git_log_line(line: &str) -> Option<GitLogEntry> {
     let mut parts = line.split('\u{1f}');
     Some(GitLogEntry {
@@ -387,6 +585,74 @@ fn render_commit_message(template: &str, action: &str, files: &[String]) -> Stri
         .replace("{action}", action)
         .replace("{files}", &display)
         .replace("{count}", &count)
+}
+
+#[derive(Debug, Default)]
+struct BlameLineBuilder {
+    line_number: usize,
+    commit: String,
+    author_name: String,
+    author_email: String,
+    author_time: i64,
+    author_tz: String,
+    summary: String,
+}
+
+fn parse_git_blame(stdout: &str) -> Result<Vec<GitBlameLine>, GitError> {
+    let mut lines = Vec::new();
+    let mut current = BlameLineBuilder::default();
+
+    for line in stdout.lines() {
+        if let Some(text) = line.strip_prefix('\t') {
+            lines.push(GitBlameLine {
+                line_number: current.line_number,
+                commit: current.commit.clone(),
+                author_name: current.author_name.clone(),
+                author_email: current.author_email.clone(),
+                author_time: current.author_time,
+                author_tz: current.author_tz.clone(),
+                summary: current.summary.clone(),
+                line: text.to_string(),
+            });
+            current = BlameLineBuilder::default();
+            continue;
+        }
+
+        if current.commit.is_empty() {
+            let mut parts = line.split_whitespace();
+            current.commit = parts.next().unwrap_or_default().to_string();
+            let _ = parts.next();
+            current.line_number = parts
+                .next()
+                .and_then(|part| part.parse::<usize>().ok())
+                .unwrap_or_default();
+            continue;
+        }
+
+        if let Some(value) = line.strip_prefix("author ") {
+            current.author_name = value.to_string();
+        } else if let Some(value) = line.strip_prefix("author-mail ") {
+            current.author_email = value
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string();
+        } else if let Some(value) = line.strip_prefix("author-time ") {
+            current.author_time = value.parse::<i64>().unwrap_or_default();
+        } else if let Some(value) = line.strip_prefix("author-tz ") {
+            current.author_tz = value.to_string();
+        } else if let Some(value) = line.strip_prefix("summary ") {
+            current.summary = value.to_string();
+        }
+    }
+
+    if lines.is_empty() {
+        return Err(GitError::CommandFailed(
+            "git blame returned no lines".to_string(),
+        ));
+    }
+
+    Ok(lines)
 }
 
 #[cfg(test)]
@@ -584,5 +850,90 @@ mod tests {
                 .expect("status should succeed")
                 .clean
         );
+    }
+
+    #[test]
+    fn git_recent_log_returns_repo_history_without_a_path_filter() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        fs::write(temp_dir.path().join("Home.md"), "home\n").expect("home note");
+        commit_all(temp_dir.path(), "Add home");
+        fs::write(temp_dir.path().join("Other.md"), "other\n").expect("other note");
+        commit_all(temp_dir.path(), "Add other");
+
+        let entries = git_recent_log(temp_dir.path(), 10).expect("git log should succeed");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].summary, "Add other");
+        assert_eq!(entries[1].summary, "Add home");
+    }
+
+    #[test]
+    fn git_diff_includes_untracked_files_and_filters_internal_paths() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        fs::create_dir_all(temp_dir.path().join(".vulcan")).expect("vulcan dir");
+        fs::write(temp_dir.path().join("Home.md"), "home\n").expect("home note");
+        fs::write(temp_dir.path().join(".vulcan/cache.db"), "cache\n").expect("cache file");
+        commit_all(temp_dir.path(), "Initial");
+
+        fs::write(temp_dir.path().join("Home.md"), "updated\n").expect("home update");
+        fs::write(temp_dir.path().join("Draft.md"), "draft\n").expect("draft note");
+        fs::write(temp_dir.path().join(".vulcan/cache.db"), "cache2\n").expect("cache update");
+
+        let diff = git_diff(temp_dir.path(), None).expect("git diff should succeed");
+
+        assert!(diff.contains("Home.md"));
+        assert!(diff.contains("Draft.md"));
+        assert!(!diff.contains(".vulcan/cache.db"));
+    }
+
+    #[test]
+    fn git_commit_stages_vault_files_but_skips_internal_state() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        fs::create_dir_all(temp_dir.path().join(".vulcan")).expect("vulcan dir");
+        fs::write(temp_dir.path().join("Home.md"), "home\n").expect("home note");
+        fs::write(temp_dir.path().join(".vulcan/cache.db"), "cache\n").expect("cache file");
+        commit_all(temp_dir.path(), "Initial");
+
+        fs::write(temp_dir.path().join("Home.md"), "updated\n").expect("home update");
+        fs::write(temp_dir.path().join(".vulcan/cache.db"), "cache2\n").expect("cache update");
+
+        let report = git_commit(temp_dir.path(), "Commit home").expect("git commit should work");
+
+        assert!(report.committed);
+        assert_eq!(report.files, vec!["Home.md".to_string()]);
+        assert_eq!(report.message, "Commit home");
+        assert!(report.sha.is_some());
+        assert_eq!(
+            git_status(temp_dir.path())
+                .expect("status should succeed")
+                .changed_paths(),
+            vec![".vulcan/cache.db".to_string()]
+        );
+    }
+
+    #[test]
+    fn git_blame_reports_line_metadata() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        let note_path = temp_dir.path().join("Home.md");
+        fs::write(&note_path, "alpha\nbeta\n").expect("note should be written");
+        commit_all(temp_dir.path(), "Initial");
+        fs::write(&note_path, "alpha\nbeta updated\n").expect("note should be updated");
+        run_git_ok(temp_dir.path(), &["add", "Home.md"]);
+        run_git_ok(temp_dir.path(), &["commit", "-m", "Update beta"]);
+
+        let lines = git_blame(temp_dir.path(), "Home.md").expect("git blame should succeed");
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].line_number, 1);
+        assert_eq!(lines[0].line, "alpha");
+        assert_eq!(lines[1].line_number, 2);
+        assert_eq!(lines[1].line, "beta updated");
+        assert_eq!(lines[1].summary, "Update beta");
+        assert_eq!(lines[1].author_name, "Vulcan Test");
+        assert_eq!(lines[1].author_email, "vulcan@example.com");
     }
 }

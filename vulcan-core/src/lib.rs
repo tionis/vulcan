@@ -66,8 +66,8 @@ pub use dql::{
     DataviewBlockRecord, DqlDiagnostic, DqlEvalError, DqlParseOutput, DqlQueryResult,
 };
 pub use git::{
-    auto_commit, git_log, git_status, is_git_repo, AutoCommitReport, GitError, GitLogEntry,
-    GitStatusReport,
+    auto_commit, git_blame, git_commit, git_diff, git_log, git_recent_log, git_status, is_git_repo,
+    AutoCommitReport, GitBlameLine, GitCommitReport, GitError, GitLogEntry, GitStatusReport,
 };
 pub use graph::{
     list_note_identities, list_tagged_note_identities, list_tags, query_backlinks,

@@ -108,7 +108,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, rename-property, merge-tags, rename-alias, rename-heading, rename-block-ref\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, open, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize .vulcan/ state for a vault",
@@ -2854,6 +2854,92 @@
                 "short": null,
                 "value_names": [
                   "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Inspect and mutate the vault git repository",
+        "after_help": "Subcommands:\n  status       show staged, unstaged, and untracked vault files\n  log          show recent commits in the vault repository\n  diff         show the current diff for one path or the whole vault\n  commit       stage changed vault files and create a commit\n  blame        show per-line authorship for one tracked file\n\nNotes:\n  `commit` stages vault files only and skips `.vulcan/`.\n  `diff` accepts an optional vault-relative path; without one it prints the full working-tree diff for eligible files.\n  `blame` and path-scoped `diff` operate on vault-relative file paths, not note aliases.\n\nExamples:\n  vulcan git status\n  vulcan git log --limit 5\n  vulcan git diff Home.md\n  vulcan git commit -m \"Update daily notes\"\n  vulcan git blame Projects/Alpha.md",
+        "name": "git",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Show staged, unstaged, and untracked files",
+            "name": "status",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Show recent commit history",
+            "name": "log",
+            "options": [
+              {
+                "help": "Maximum number of commits to return",
+                "id": "limit",
+                "long": "limit",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Show the current diff for one path or the whole vault",
+            "name": "diff",
+            "options": [
+              {
+                "help": "Optional vault-relative path to diff",
+                "id": "path",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Stage changed vault files and create a commit",
+            "name": "commit",
+            "options": [
+              {
+                "help": "Commit message to use",
+                "id": "message",
+                "long": "message",
+                "possible_values": [],
+                "required": true,
+                "short": "m",
+                "value_names": [
+                  "MESSAGE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Show per-line blame for one tracked file",
+            "name": "blame",
+            "options": [
+              {
+                "help": "Vault-relative path to blame",
+                "id": "path",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PATH"
                 ]
               }
             ],
