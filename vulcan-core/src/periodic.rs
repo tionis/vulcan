@@ -1,4 +1,4 @@
-use crate::config::{PeriodicConfig, PeriodicNoteConfig, PeriodicStartOfWeek};
+use crate::config::{PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicStartOfWeek};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -19,6 +19,22 @@ impl DateParts {
     fn iso_string(self) -> String {
         format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
+
+    fn month_index(self) -> i64 {
+        self.year * 12 + (self.month - 1)
+    }
+
+    fn quarter_index(self) -> i64 {
+        self.year * 4 + (quarter_for_month(self.month) - 1)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PeriodDefinition {
+    unit: PeriodicCadenceUnit,
+    interval: i64,
+    anchor: DateParts,
+    start_of_week: PeriodicStartOfWeek,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +131,7 @@ pub fn period_range_for_date(
 ) -> Option<(String, String)> {
     let entry = config.note(period_type)?;
     let start = period_start(period_type, parse_iso_date(date)?, entry)?;
-    let end = period_end(period_type, start)?;
+    let end = period_end(period_type, start, entry)?;
     Some((start.iso_string(), end.iso_string()))
 }
 
@@ -158,75 +174,63 @@ fn period_start(
     date: DateParts,
     config: &PeriodicNoteConfig,
 ) -> Option<DateParts> {
-    match period_type {
-        "daily" => Some(date),
-        "weekly" => Some(week_start(date, config.start_of_week)),
-        "monthly" => Some(DateParts {
-            year: date.year,
-            month: date.month,
-            day: 1,
-        }),
-        "quarterly" => Some(DateParts {
-            year: date.year,
-            month: (quarter_for_month(date.month) - 1) * 3 + 1,
-            day: 1,
-        }),
-        "yearly" => Some(DateParts {
-            year: date.year,
+    let definition = period_definition(period_type, config)?;
+    match definition.unit {
+        PeriodicCadenceUnit::Days => {
+            let anchor_days = days_from_civil(
+                definition.anchor.year,
+                definition.anchor.month,
+                definition.anchor.day,
+            );
+            let target_days = days_from_civil(date.year, date.month, date.day);
+            Some(civil_from_days(
+                anchor_days
+                    + (target_days - anchor_days).div_euclid(definition.interval)
+                        * definition.interval,
+            ))
+        }
+        PeriodicCadenceUnit::Weeks => {
+            let anchor_start = week_start(definition.anchor, definition.start_of_week);
+            let target_start = week_start(date, definition.start_of_week);
+            let diff_weeks =
+                (days_from_civil(target_start.year, target_start.month, target_start.day)
+                    - days_from_civil(anchor_start.year, anchor_start.month, anchor_start.day))
+                .div_euclid(7);
+            Some(add_days(
+                anchor_start,
+                diff_weeks.div_euclid(definition.interval) * definition.interval * 7,
+            ))
+        }
+        PeriodicCadenceUnit::Months => {
+            let start_month_index = definition.anchor.month_index()
+                + (date.month_index() - definition.anchor.month_index())
+                    .div_euclid(definition.interval)
+                    * definition.interval;
+            Some(date_from_month_index(start_month_index))
+        }
+        PeriodicCadenceUnit::Quarters => {
+            let start_quarter_index = definition.anchor.quarter_index()
+                + (date.quarter_index() - definition.anchor.quarter_index())
+                    .div_euclid(definition.interval)
+                    * definition.interval;
+            Some(date_from_quarter_index(start_quarter_index))
+        }
+        PeriodicCadenceUnit::Years => Some(DateParts {
+            year: definition.anchor.year
+                + (date.year - definition.anchor.year).div_euclid(definition.interval)
+                    * definition.interval,
             month: 1,
             day: 1,
         }),
-        _ => None,
     }
 }
 
-fn period_end(period_type: &str, start: DateParts) -> Option<DateParts> {
-    match period_type {
-        "daily" => Some(start),
-        "weekly" => Some(add_days(start, 6)),
-        "monthly" => Some(add_days(
-            DateParts {
-                year: if start.month == 12 {
-                    start.year + 1
-                } else {
-                    start.year
-                },
-                month: if start.month == 12 {
-                    1
-                } else {
-                    start.month + 1
-                },
-                day: 1,
-            },
-            -1,
-        )),
-        "quarterly" => {
-            let end_month = start.month + 3;
-            let next = if end_month > 12 {
-                DateParts {
-                    year: start.year + 1,
-                    month: end_month - 12,
-                    day: 1,
-                }
-            } else {
-                DateParts {
-                    year: start.year,
-                    month: end_month,
-                    day: 1,
-                }
-            };
-            Some(add_days(next, -1))
-        }
-        "yearly" => Some(add_days(
-            DateParts {
-                year: start.year + 1,
-                month: 1,
-                day: 1,
-            },
-            -1,
-        )),
-        _ => None,
-    }
+fn period_end(
+    period_type: &str,
+    start: DateParts,
+    config: &PeriodicNoteConfig,
+) -> Option<DateParts> {
+    Some(add_days(next_period_start(period_type, start, config)?, -1))
 }
 
 fn next_period_start(
@@ -234,33 +238,75 @@ fn next_period_start(
     start: DateParts,
     config: &PeriodicNoteConfig,
 ) -> Option<DateParts> {
-    match period_type {
-        "daily" => Some(add_days(start, 1)),
-        "weekly" => Some(add_days(week_start(start, config.start_of_week), 7)),
-        "monthly" => Some(DateParts {
-            year: if start.month == 12 {
-                start.year + 1
-            } else {
-                start.year
-            },
-            month: if start.month == 12 {
-                1
-            } else {
-                start.month + 1
-            },
-            day: 1,
-        }),
-        "quarterly" => Some(DateParts {
-            year: start.year + ((start.month + 2) / 12),
-            month: ((start.month - 1 + 3) % 12) + 1,
-            day: 1,
-        }),
-        "yearly" => Some(DateParts {
-            year: start.year + 1,
+    let definition = period_definition(period_type, config)?;
+    match definition.unit {
+        PeriodicCadenceUnit::Days => Some(add_days(start, definition.interval)),
+        PeriodicCadenceUnit::Weeks => Some(add_days(start, definition.interval * 7)),
+        PeriodicCadenceUnit::Months => Some(date_from_month_index(
+            start.month_index() + definition.interval,
+        )),
+        PeriodicCadenceUnit::Quarters => Some(date_from_quarter_index(
+            start.quarter_index() + definition.interval,
+        )),
+        PeriodicCadenceUnit::Years => Some(DateParts {
+            year: start.year + definition.interval,
             month: 1,
             day: 1,
         }),
+    }
+}
+
+fn period_definition(period_type: &str, config: &PeriodicNoteConfig) -> Option<PeriodDefinition> {
+    let unit = config.unit.or_else(|| built_in_unit(period_type))?;
+    let interval = i64::try_from(config.interval.max(1)).ok()?;
+    let anchor = period_anchor(config, unit);
+    Some(PeriodDefinition {
+        unit,
+        interval,
+        anchor,
+        start_of_week: config.start_of_week,
+    })
+}
+
+fn built_in_unit(period_type: &str) -> Option<PeriodicCadenceUnit> {
+    match period_type {
+        "daily" => Some(PeriodicCadenceUnit::Days),
+        "weekly" => Some(PeriodicCadenceUnit::Weeks),
+        "monthly" => Some(PeriodicCadenceUnit::Months),
+        "quarterly" => Some(PeriodicCadenceUnit::Quarters),
+        "yearly" => Some(PeriodicCadenceUnit::Years),
         _ => None,
+    }
+}
+
+fn period_anchor(config: &PeriodicNoteConfig, unit: PeriodicCadenceUnit) -> DateParts {
+    let raw_anchor = config
+        .anchor_date
+        .as_deref()
+        .and_then(parse_iso_date)
+        .unwrap_or(DateParts {
+            year: 1970,
+            month: 1,
+            day: 1,
+        });
+    match unit {
+        PeriodicCadenceUnit::Days => raw_anchor,
+        PeriodicCadenceUnit::Weeks => week_start(raw_anchor, config.start_of_week),
+        PeriodicCadenceUnit::Months => DateParts {
+            year: raw_anchor.year,
+            month: raw_anchor.month,
+            day: 1,
+        },
+        PeriodicCadenceUnit::Quarters => DateParts {
+            year: raw_anchor.year,
+            month: (quarter_for_month(raw_anchor.month) - 1) * 3 + 1,
+            day: 1,
+        },
+        PeriodicCadenceUnit::Years => DateParts {
+            year: raw_anchor.year,
+            month: 1,
+            day: 1,
+        },
     }
 }
 
@@ -360,7 +406,8 @@ fn parse_period_name(
         return None;
     }
 
-    date_from_format_values(period_type, values, config).map(DateParts::iso_string)
+    let candidate = date_from_format_values(period_type, values, config)?;
+    period_start(period_type, candidate, config).map(DateParts::iso_string)
 }
 
 fn date_from_format_values(
@@ -368,33 +415,16 @@ fn date_from_format_values(
     values: ParsedFormatValues,
     config: &PeriodicNoteConfig,
 ) -> Option<DateParts> {
-    match period_type {
-        "daily" => Some(DateParts {
+    let unit = period_definition(period_type, config)?.unit;
+    match unit {
+        PeriodicCadenceUnit::Days => Some(DateParts {
             year: values.year?,
             month: values.month?,
             day: values.day?,
         }),
-        "monthly" => Some(DateParts {
-            year: values.year?,
-            month: values.month?,
-            day: values.day.unwrap_or(1),
-        }),
-        "quarterly" => Some(DateParts {
-            year: values.year?,
-            month: (values.quarter? - 1) * 3 + 1,
-            day: 1,
-        }),
-        "yearly" => Some(DateParts {
-            year: values.year?,
-            month: 1,
-            day: 1,
-        }),
-        "weekly" => {
+        PeriodicCadenceUnit::Weeks => {
             if let (Some(year), Some(month), Some(day)) = (values.year, values.month, values.day) {
-                return Some(week_start(
-                    DateParts { year, month, day },
-                    config.start_of_week,
-                ));
+                return Some(DateParts { year, month, day });
             }
             if let (Some(week_year), Some(week)) = (values.iso_week_year, values.iso_week) {
                 return iso_week_start(week_year, week);
@@ -403,7 +433,30 @@ fn date_from_format_values(
             let week = values.week?;
             custom_week_start(year, week, config.start_of_week)
         }
-        _ => None,
+        PeriodicCadenceUnit::Months => Some(DateParts {
+            year: values.year?,
+            month: values.month?,
+            day: values.day.unwrap_or(1),
+        }),
+        PeriodicCadenceUnit::Quarters => {
+            if let (Some(year), Some(month)) = (values.year, values.month) {
+                return Some(DateParts {
+                    year,
+                    month,
+                    day: values.day.unwrap_or(1),
+                });
+            }
+            Some(DateParts {
+                year: values.year?,
+                month: (values.quarter? - 1) * 3 + 1,
+                day: 1,
+            })
+        }
+        PeriodicCadenceUnit::Years => Some(DateParts {
+            year: values.year?,
+            month: values.month.unwrap_or(1),
+            day: values.day.unwrap_or(1),
+        }),
     }
 }
 
@@ -498,6 +551,26 @@ fn quarter_for_month(month: i64) -> i64 {
 
 fn add_days(date: DateParts, delta: i64) -> DateParts {
     civil_from_days(days_from_civil(date.year, date.month, date.day) + delta)
+}
+
+fn date_from_month_index(index: i64) -> DateParts {
+    let year = index.div_euclid(12);
+    let month = index.rem_euclid(12) + 1;
+    DateParts {
+        year,
+        month,
+        day: 1,
+    }
+}
+
+fn date_from_quarter_index(index: i64) -> DateParts {
+    let year = index.div_euclid(4);
+    let quarter = index.rem_euclid(4) + 1;
+    DateParts {
+        year,
+        month: (quarter - 1) * 3 + 1,
+        day: 1,
+    }
 }
 
 fn week_start(date: DateParts, start_of_week: PeriodicStartOfWeek) -> DateParts {
@@ -654,7 +727,7 @@ fn civil_from_days(days: i64) -> DateParts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PeriodicConfig;
+    use crate::config::{PeriodicCadenceUnit, PeriodicConfig};
     use std::path::PathBuf;
 
     #[test]
@@ -737,6 +810,66 @@ mod tests {
         assert_eq!(
             step_period_start(&config, "yearly", "2026-01-01"),
             Some("2027-01-01".to_string())
+        );
+    }
+
+    #[test]
+    fn custom_biweekly_periods_align_to_anchor_dates() {
+        let mut config = PeriodicConfig::default();
+        let sprint = config.note_mut("sprint");
+        sprint.enabled = true;
+        sprint.folder = PathBuf::from("Journal/Sprints");
+        sprint.format = "YYYY-[Sprint]-MM-DD".to_string();
+        sprint.unit = Some(PeriodicCadenceUnit::Weeks);
+        sprint.interval = 2;
+        sprint.anchor_date = Some("2026-01-05".to_string());
+
+        assert_eq!(
+            period_range_for_date(&config, "sprint", "2026-01-15"),
+            Some(("2026-01-05".to_string(), "2026-01-18".to_string()))
+        );
+        assert_eq!(
+            expected_periodic_note_path(&config, "sprint", "2026-01-15"),
+            Some("Journal/Sprints/2026-Sprint-01-05.md".to_string())
+        );
+        assert_eq!(
+            step_period_start(&config, "sprint", "2026-01-05"),
+            Some("2026-01-19".to_string())
+        );
+        assert_eq!(
+            match_periodic_note_path(&config, "Journal/Sprints/2026-Sprint-01-19.md"),
+            Some(PeriodicNoteMatch {
+                period_type: "sprint".to_string(),
+                start_date: "2026-01-19".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn custom_multi_month_periods_round_trip_from_month_format() {
+        let mut config = PeriodicConfig::default();
+        let release = config.note_mut("release");
+        release.enabled = true;
+        release.folder = PathBuf::from("Journal/Releases");
+        release.format = "YYYY-MM".to_string();
+        release.unit = Some(PeriodicCadenceUnit::Months);
+        release.interval = 2;
+        release.anchor_date = Some("2026-02-01".to_string());
+
+        assert_eq!(
+            period_range_for_date(&config, "release", "2026-05-15"),
+            Some(("2026-04-01".to_string(), "2026-05-31".to_string()))
+        );
+        assert_eq!(
+            expected_periodic_note_path(&config, "release", "2026-05-15"),
+            Some("Journal/Releases/2026-04.md".to_string())
+        );
+        assert_eq!(
+            match_periodic_note_path(&config, "Journal/Releases/2026-04.md"),
+            Some(PeriodicNoteMatch {
+                period_type: "release".to_string(),
+                start_date: "2026-04-01".to_string(),
+            })
         );
     }
 }

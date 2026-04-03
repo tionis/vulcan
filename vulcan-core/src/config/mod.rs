@@ -194,6 +194,15 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # folder = "Journal/Yearly"
 # format = "YYYY"
 # template = "yearly"
+#
+# [periodic.sprint]
+# enabled = true
+# folder = "Journal/Sprints"
+# format = "YYYY-[Sprint]-MM-DD"
+# unit = "weeks"
+# interval = 2
+# anchor_date = "2026-01-05"
+# template = "sprint"
 "###;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -886,6 +895,21 @@ pub enum PeriodicStartOfWeek {
     Saturday,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PeriodicCadenceUnit {
+    #[serde(alias = "day")]
+    Days,
+    #[serde(alias = "week")]
+    Weeks,
+    #[serde(alias = "month")]
+    Months,
+    #[serde(alias = "quarter")]
+    Quarters,
+    #[serde(alias = "year")]
+    Years,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeriodicNoteConfig {
     #[serde(default = "default_periodic_enabled")]
@@ -894,6 +918,12 @@ pub struct PeriodicNoteConfig {
     pub folder: PathBuf,
     #[serde(default = "default_periodic_format")]
     pub format: String,
+    #[serde(default)]
+    pub unit: Option<PeriodicCadenceUnit>,
+    #[serde(default = "default_periodic_interval")]
+    pub interval: usize,
+    #[serde(default)]
+    pub anchor_date: Option<String>,
     #[serde(default)]
     pub template: Option<String>,
     #[serde(default)]
@@ -910,6 +940,9 @@ impl PeriodicNoteConfig {
                 enabled: true,
                 folder: PathBuf::from("Journal/Daily"),
                 format: "YYYY-MM-DD".to_string(),
+                unit: Some(PeriodicCadenceUnit::Days),
+                interval: 1,
+                anchor_date: None,
                 template: Some("daily".to_string()),
                 start_of_week: PeriodicStartOfWeek::Monday,
                 schedule_heading: None,
@@ -918,6 +951,9 @@ impl PeriodicNoteConfig {
                 enabled: true,
                 folder: PathBuf::from("Journal/Weekly"),
                 format: "YYYY-[W]ww".to_string(),
+                unit: Some(PeriodicCadenceUnit::Weeks),
+                interval: 1,
+                anchor_date: None,
                 template: Some("weekly".to_string()),
                 start_of_week: PeriodicStartOfWeek::Monday,
                 schedule_heading: None,
@@ -926,6 +962,9 @@ impl PeriodicNoteConfig {
                 enabled: true,
                 folder: PathBuf::from("Journal/Monthly"),
                 format: "YYYY-MM".to_string(),
+                unit: Some(PeriodicCadenceUnit::Months),
+                interval: 1,
+                anchor_date: None,
                 template: Some("monthly".to_string()),
                 start_of_week: PeriodicStartOfWeek::Monday,
                 schedule_heading: None,
@@ -934,6 +973,9 @@ impl PeriodicNoteConfig {
                 enabled: false,
                 folder: PathBuf::from("Journal/Quarterly"),
                 format: "YYYY-[Q]Q".to_string(),
+                unit: Some(PeriodicCadenceUnit::Quarters),
+                interval: 1,
+                anchor_date: None,
                 template: Some("quarterly".to_string()),
                 start_of_week: PeriodicStartOfWeek::Monday,
                 schedule_heading: None,
@@ -942,6 +984,9 @@ impl PeriodicNoteConfig {
                 enabled: false,
                 folder: PathBuf::from("Journal/Yearly"),
                 format: "YYYY".to_string(),
+                unit: Some(PeriodicCadenceUnit::Years),
+                interval: 1,
+                anchor_date: None,
                 template: Some("yearly".to_string()),
                 start_of_week: PeriodicStartOfWeek::Monday,
                 schedule_heading: None,
@@ -950,6 +995,9 @@ impl PeriodicNoteConfig {
                 enabled: false,
                 folder: PathBuf::new(),
                 format: default_periodic_format(),
+                unit: None,
+                interval: default_periodic_interval(),
+                anchor_date: None,
                 template: None,
                 start_of_week: PeriodicStartOfWeek::Monday,
                 schedule_heading: None,
@@ -999,6 +1047,10 @@ fn default_periodic_enabled() -> bool {
 
 fn default_periodic_format() -> String {
     "YYYY-MM-DD".to_string()
+}
+
+fn default_periodic_interval() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1305,6 +1357,9 @@ struct PartialPeriodicNoteConfig {
     enabled: Option<bool>,
     folder: Option<PathBuf>,
     format: Option<String>,
+    unit: Option<PeriodicCadenceUnit>,
+    interval: Option<usize>,
+    anchor_date: Option<String>,
     template: Option<String>,
     start_of_week: Option<PeriodicStartOfWeek>,
     schedule_heading: Option<String>,
@@ -3927,6 +3982,15 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             if let Some(format) = normalize_optional_text(overrides.format) {
                 note.format = format;
             }
+            if let Some(unit) = overrides.unit {
+                note.unit = Some(unit);
+            }
+            if let Some(interval) = overrides.interval {
+                note.interval = interval.max(1);
+            }
+            if let Some(anchor_date) = overrides.anchor_date {
+                note.anchor_date = normalize_optional_text(Some(anchor_date));
+            }
             if let Some(template) = overrides.template {
                 note.template = normalize_optional_text(Some(template));
             }
@@ -4944,6 +5008,41 @@ intellisense_render = 2
 
         assert_eq!(loaded.config, VaultConfig::default());
         assert!(loaded.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn vulcan_config_parses_custom_period_types() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        write_test_file(
+            &vault_root.join(".vulcan/config.toml"),
+            r#"
+[periodic.sprint]
+enabled = true
+folder = "Journal/Sprints"
+format = "YYYY-[Sprint]-MM-DD"
+unit = "weeks"
+interval = 2
+anchor_date = "2026-01-05"
+template = "Sprint"
+"#,
+        );
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        let sprint = loaded
+            .config
+            .periodic
+            .note("sprint")
+            .expect("custom period should be loaded");
+        assert!(sprint.enabled);
+        assert_eq!(sprint.folder, PathBuf::from("Journal/Sprints"));
+        assert_eq!(sprint.format, "YYYY-[Sprint]-MM-DD");
+        assert_eq!(sprint.unit, Some(PeriodicCadenceUnit::Weeks));
+        assert_eq!(sprint.interval, 2);
+        assert_eq!(sprint.anchor_date.as_deref(), Some("2026-01-05"));
+        assert_eq!(sprint.template.as_deref(), Some("Sprint"));
     }
 
     #[test]
