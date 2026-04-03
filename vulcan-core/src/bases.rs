@@ -199,6 +199,7 @@ impl BasesEvaluator {
     ) -> Result<BasesEvalReport, BasesError> {
         let ParsedBaseFile {
             source,
+            create_template: _,
             filters: base_filters,
             property_display_names,
             views: parsed_views,
@@ -271,6 +272,18 @@ pub struct BasesViewEditReport {
     pub eval: BasesEvalReport,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BasesCreateContext {
+    pub file: String,
+    pub view_name: Option<String>,
+    pub view_type: String,
+    pub view_index: usize,
+    pub filters: Vec<String>,
+    pub folder: Option<String>,
+    pub properties: BTreeMap<String, Value>,
+    pub template: Option<String>,
+}
+
 // ── Serializer ───────────────────────────────────────────────────────────────
 
 fn serialize_base_file(parsed: &ParsedBaseFile) -> Result<String, BasesError> {
@@ -278,6 +291,13 @@ fn serialize_base_file(parsed: &ParsedBaseFile) -> Result<String, BasesError> {
 
     if let Some(source) = serialize_base_source(&parsed.source) {
         root.insert(serde_yaml::Value::String("source".to_string()), source);
+    }
+
+    if let Some(create_template) = &parsed.create_template {
+        root.insert(
+            serde_yaml::Value::String("create_template".to_string()),
+            serde_yaml::Value::String(create_template.clone()),
+        );
     }
 
     // filters
@@ -653,6 +673,40 @@ pub fn bases_view_edit(
     })
 }
 
+pub fn plan_base_note_create(
+    paths: &VaultPaths,
+    relative_path: &str,
+    view_index: usize,
+) -> Result<BasesCreateContext, BasesError> {
+    let normalized = normalize_base_path(relative_path)?;
+    let source = fs::read_to_string(paths.vault_root().join(&normalized))?;
+    let parsed = parse_base_file(&source)?;
+    if parsed.source.source_type != "file" {
+        return Err(BasesError::Source(format!(
+            "base note creation only supports the `file` source, found `{}`",
+            parsed.source.source_type
+        )));
+    }
+
+    let view = parsed.views.get(view_index).cloned().ok_or_else(|| {
+        BasesError::Source(format!(
+            "base view index {view_index} is out of range for {normalized}"
+        ))
+    })?;
+    let filters = combined_filters(&parsed.filters, &view.filters);
+
+    Ok(BasesCreateContext {
+        file: normalized,
+        view_name: view.name.clone(),
+        view_type: view.view_type.clone(),
+        view_index,
+        folder: derive_create_folder(&filters),
+        properties: derive_create_properties(&filters),
+        filters,
+        template: parsed.create_template,
+    })
+}
+
 pub fn evaluate_base_file(
     paths: &VaultPaths,
     relative_path: &str,
@@ -803,6 +857,7 @@ impl Default for ParsedBaseSource {
 #[derive(Debug, Clone, PartialEq)]
 struct ParsedBaseFile {
     source: ParsedBaseSource,
+    create_template: Option<String>,
     filters: Vec<String>,
     property_display_names: BTreeMap<String, String>,
     views: Vec<ParsedBaseView>,
@@ -833,6 +888,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
     let Some(root) = value.as_mapping() else {
         return Ok(ParsedBaseFile {
             source: ParsedBaseSource::default(),
+            create_template: None,
             filters: Vec::new(),
             property_display_names: BTreeMap::new(),
             views: Vec::new(),
@@ -844,6 +900,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
     };
 
     let source = parse_base_source(root, &mut diagnostics);
+    let create_template = parse_create_template(root, &mut diagnostics);
     let filters = root
         .get(serde_yaml::Value::String("filters".to_string()))
         .map_or_else(Vec::new, |value| {
@@ -883,7 +940,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
     for key in root.keys().filter_map(serde_yaml::Value::as_str) {
         if !matches!(
             key,
-            "source" | "views" | "filters" | "properties" | "formulas"
+            "source" | "create_template" | "views" | "filters" | "properties" | "formulas"
         ) {
             diagnostics.push(BasesDiagnostic {
                 path: Some(key.to_string()),
@@ -894,6 +951,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
 
     Ok(ParsedBaseFile {
         source,
+        create_template,
         filters,
         property_display_names,
         views,
@@ -1009,6 +1067,30 @@ fn parse_base_source(
     }
 }
 
+fn parse_create_template(
+    root: &serde_yaml::Mapping,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> Option<String> {
+    let template = root.get(serde_yaml::Value::String("create_template".to_string()))?;
+
+    let Some(template) = template.as_str().map(str::trim) else {
+        diagnostics.push(BasesDiagnostic {
+            path: Some("create_template".to_string()),
+            message: "create_template must be a string".to_string(),
+        });
+        return None;
+    };
+    if template.is_empty() {
+        diagnostics.push(BasesDiagnostic {
+            path: Some("create_template".to_string()),
+            message: "create_template must not be empty".to_string(),
+        });
+        return None;
+    }
+
+    Some(template.to_string())
+}
+
 fn parse_base_filters(
     path: &str,
     value: &serde_yaml::Value,
@@ -1063,6 +1145,14 @@ fn translate_base_filter_expression(expression: &str) -> Option<String> {
 
     if let Some(tag) = parse_has_tag_expression(expression) {
         return Some(format!("tags has_tag \"{tag}\""));
+    }
+
+    if let Some((field, value)) = expression.split_once(" is not ") {
+        return Some(format!("{} != {}", field.trim(), value.trim()));
+    }
+
+    if let Some((field, value)) = expression.split_once(" is ") {
+        return Some(format!("{} = {}", field.trim(), value.trim()));
     }
 
     if let Some((field, value)) = expression.split_once("!=") {
@@ -1515,6 +1605,118 @@ fn combined_filters(base_filters: &[String], view_filters: &[String]) -> Vec<Str
         .collect()
 }
 
+fn derive_create_folder(filters: &[String]) -> Option<String> {
+    filters
+        .iter()
+        .filter_map(|filter| filter_folder_constraint(filter))
+        .max_by_key(|folder| {
+            let trimmed = folder.trim_matches('/');
+            (
+                trimmed
+                    .split('/')
+                    .filter(|segment| !segment.is_empty())
+                    .count(),
+                trimmed.len(),
+            )
+        })
+}
+
+fn filter_folder_constraint(filter: &str) -> Option<String> {
+    if let Some((field, value)) = split_filter(filter, " = ") {
+        if field == "file.folder" {
+            let folder = parse_filter_literal(value)?
+                .as_str()?
+                .trim_matches('/')
+                .to_string();
+            return (!folder.is_empty()).then_some(folder);
+        }
+    }
+
+    let (field, value) = split_filter(filter, " starts_with ")?;
+    if field != "file.path" {
+        return None;
+    }
+
+    let value = parse_filter_literal(value)?;
+    let prefix = value.as_str()?.trim_end_matches('/');
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix.to_string())
+    }
+}
+
+fn derive_create_properties(filters: &[String]) -> BTreeMap<String, Value> {
+    let mut properties = BTreeMap::new();
+
+    for filter in filters {
+        let Some((field, value)) = split_filter(filter, " = ") else {
+            continue;
+        };
+        if field.starts_with("file.") {
+            continue;
+        }
+        let Some(value) = parse_filter_literal(value) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        properties.insert(field.to_string(), value);
+    }
+
+    properties
+}
+
+fn split_filter<'a>(filter: &'a str, separator: &str) -> Option<(&'a str, &'a str)> {
+    let (field, value) = filter.split_once(separator)?;
+    let field = field.trim();
+    let value = value.trim();
+    if field.is_empty() || value.is_empty() {
+        None
+    } else {
+        Some((field, value))
+    }
+}
+
+fn parse_filter_literal(raw: &str) -> Option<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(value) = strip_matching_quotes(trimmed) {
+        return Some(Value::String(value.to_string()));
+    }
+
+    if trimmed.eq_ignore_ascii_case("true") {
+        return Some(Value::Bool(true));
+    }
+    if trimmed.eq_ignore_ascii_case("false") {
+        return Some(Value::Bool(false));
+    }
+    if trimmed.eq_ignore_ascii_case("null") {
+        return Some(Value::Null);
+    }
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return Some(Value::Number(value.into()));
+    }
+    if let Ok(value) = trimmed.parse::<u64>() {
+        return Some(Value::Number(value.into()));
+    }
+    if let Ok(value) = trimmed.parse::<f64>() {
+        if let Some(number) = serde_json::Number::from_f64(value) {
+            return Some(Value::Number(number));
+        }
+    }
+
+    if trimmed.contains('(') || trimmed.contains(')') {
+        return None;
+    }
+
+    Some(Value::String(trimmed.to_string()))
+}
+
 fn build_view_columns(
     property_display_names: &BTreeMap<String, String>,
     view: &ParsedBaseView,
@@ -1695,6 +1897,7 @@ fn normalize_base_path(path: &str) -> Result<String, BasesError> {
 mod tests {
     use super::*;
     use crate::{scan_vault, ScanMode};
+    use serde_json::json;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
@@ -1906,6 +2109,7 @@ SORT file.path ASC"#,
         let re_parsed = parse_base_file(&yaml).expect("re-parse should succeed");
 
         assert_eq!(parsed.source, re_parsed.source);
+        assert_eq!(parsed.create_template, re_parsed.create_template);
         assert_eq!(parsed.filters, re_parsed.filters);
         assert_eq!(parsed.views.len(), re_parsed.views.len());
         assert_eq!(parsed.views[0].name, re_parsed.views[0].name);
@@ -1928,6 +2132,7 @@ SORT file.path ASC"#,
             assert_eq!(original.columns, roundtripped.columns);
             assert_eq!(original.group_by, roundtripped.group_by);
         }
+        assert_eq!(parsed.create_template, re_parsed.create_template);
         assert_eq!(parsed.filters, re_parsed.filters);
     }
 
@@ -1961,6 +2166,24 @@ SORT file.path ASC"#,
     }
 
     #[test]
+    fn parser_accepts_create_template_field() {
+        let parsed = parse_base_file(
+            "
+            create_template: Project
+            views:
+              - type: table
+            ",
+        )
+        .expect("parse should succeed");
+
+        assert_eq!(parsed.create_template.as_deref(), Some("Project"));
+
+        let yaml = serialize_base_file(&parsed).expect("serialize should succeed");
+        let roundtripped = parse_base_file(&yaml).expect("re-parse should succeed");
+        assert_eq!(roundtripped.create_template.as_deref(), Some("Project"));
+    }
+
+    #[test]
     fn parser_normalizes_legacy_notes_source_alias() {
         let parsed = parse_base_file(
             "
@@ -1977,6 +2200,90 @@ SORT file.path ASC"#,
                 source_type: "file".to_string(),
                 config: None,
             }
+        );
+    }
+
+    #[test]
+    fn base_create_context_derives_folder_properties_and_template() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault should be created");
+        fs::write(
+            vault_root.join("release.base"),
+            concat!(
+                "create_template: Project\n",
+                "filters:\n",
+                "  - 'file.folder = \"Projects\"'\n",
+                "  - 'team = core'\n",
+                "views:\n",
+                "  - name: Inbox\n",
+                "    type: table\n",
+                "    filters:\n",
+                "      - 'file.inFolder(\"Projects/Alpha\")'\n",
+                "      - 'status is \"todo\"'\n",
+                "      - 'estimate > 2'\n",
+            ),
+        )
+        .expect("base file should be written");
+
+        let paths = VaultPaths::new(&vault_root);
+        let plan =
+            plan_base_note_create(&paths, "release.base", 0).expect("create plan should succeed");
+
+        assert_eq!(plan.file, "release.base");
+        assert_eq!(plan.view_name.as_deref(), Some("Inbox"));
+        assert_eq!(plan.folder.as_deref(), Some("Projects/Alpha"));
+        assert_eq!(plan.template.as_deref(), Some("Project"));
+        assert_eq!(
+            plan.properties,
+            BTreeMap::from([
+                ("status".to_string(), json!("todo")),
+                ("team".to_string(), json!("core")),
+            ])
+        );
+        assert_eq!(
+            plan.filters,
+            vec![
+                "file.folder = \"Projects\"".to_string(),
+                "team = core".to_string(),
+                "file.path starts_with \"Projects/Alpha/\"".to_string(),
+                "status = \"todo\"".to_string(),
+                "estimate > 2".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn base_create_context_ignores_non_equality_filters_and_null_values() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault should be created");
+        fs::write(
+            vault_root.join("release.base"),
+            concat!(
+                "views:\n",
+                "  - type: table\n",
+                "    filters:\n",
+                "      - 'status = null'\n",
+                "      - 'reviewed = true'\n",
+                "      - 'priority = 2'\n",
+                "      - 'tags contains sprint'\n",
+                "      - 'estimate >= 3'\n",
+            ),
+        )
+        .expect("base file should be written");
+
+        let paths = VaultPaths::new(&vault_root);
+        let plan =
+            plan_base_note_create(&paths, "release.base", 0).expect("create plan should succeed");
+
+        assert_eq!(plan.folder, None);
+        assert_eq!(
+            plan.properties,
+            BTreeMap::from([
+                ("priority".to_string(), json!(2)),
+                ("reviewed".to_string(), json!(true)),
+            ])
         );
     }
 
