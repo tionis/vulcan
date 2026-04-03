@@ -2971,7 +2971,7 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a to
   - Pointers to the skills directory: "Read `AI/Skills/*.md` for detailed usage patterns and examples"
   - Common pitfalls: `note patch` fails on multiple matches (safety), property types are lenient, etc.
 - [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault on `vulcan init` or `vulcan assistant init`. See 9.12.7 for the full skill list. These serve external harnesses identically: Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API.
-- [ ] **Consistent JSON error output** — all commands in `--output json` mode return structured errors: `{"error": "<message>", "code": "<error_code>"}` rather than unstructured stderr text. Error codes are stable and documented.
+- [x] **Consistent JSON error output** — all commands in `--output json` mode return structured errors: `{"error": "<message>", "code": "<error_code>"}` rather than unstructured stderr text. Error codes are stable and documented.
 - [ ] **Non-interactive guarantee** — all commands detect non-TTY mode and never prompt. Ambiguous note matches return an error with candidates rather than opening a picker.
 
 **Documentation source**

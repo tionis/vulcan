@@ -67,6 +67,7 @@ Output rules:
 - `--output json` is the stable scripting and agent surface.
 - Row-oriented commands emit line-delimited JSON.
 - Single-report commands emit one JSON object.
+- Command failures in JSON mode emit `{"error":"...","code":"..."}` on stdout with a non-zero exit code.
 - Many query commands also support `--export <csv|jsonl> --export-path <FILE>`.
 - In non-interactive mode, Vulcan does not open fuzzy pickers or TTY prompts.
 

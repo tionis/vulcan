@@ -4122,23 +4122,44 @@ fn note_commands_without_arguments_fail_cleanly_in_non_interactive_mode() {
         .expect("vault path should be valid utf-8")
         .to_string();
 
-    Command::cargo_bin("vulcan")
+    let links_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args(["--vault", &vault_root_str, "--output", "json", "links"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "missing note; provide a note identifier or run interactively",
-        ));
+        .failure();
+    let links_json = parse_stdout_json(&links_assert);
+    assert_eq!(links_json["code"], "operation_failed");
+    assert!(links_json["error"]
+        .as_str()
+        .is_some_and(|message| message
+            .contains("missing note; provide a note identifier or run interactively")));
 
-    Command::cargo_bin("vulcan")
+    let related_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args(["--vault", &vault_root_str, "--output", "json", "related"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "missing note; provide a note identifier or run interactively",
-        ));
+        .failure();
+    let related_json = parse_stdout_json(&related_assert);
+    assert_eq!(related_json["code"], "operation_failed");
+    assert!(related_json["error"]
+        .as_str()
+        .is_some_and(|message| message
+            .contains("missing note; provide a note identifier or run interactively")));
+}
+
+#[test]
+fn json_error_output_is_structured_for_invalid_arguments() {
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "json", "init", "--import", "--no-import"])
+        .assert()
+        .failure();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["code"], "invalid_arguments");
+    assert!(json["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("cannot be used with")));
 }
 
 #[test]

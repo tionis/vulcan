@@ -23,6 +23,7 @@ use crate::template_engine::{
     parse_template_var_bindings, render_template_request, TemplateEngineKind,
     TemplateRenderRequest, TemplateRunMode,
 };
+use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use regex::Regex;
@@ -96,6 +97,7 @@ use vulcan_core::{
 #[derive(Debug)]
 pub struct CliError {
     exit_code: u8,
+    code: &'static str,
     message: String,
 }
 
@@ -103,6 +105,7 @@ impl CliError {
     pub(crate) fn io(error: &io::Error) -> Self {
         Self {
             exit_code: 1,
+            code: "io_error",
             message: format!("failed to read current working directory: {error}"),
         }
     }
@@ -110,6 +113,7 @@ impl CliError {
     pub(crate) fn operation(error: impl Display) -> Self {
         Self {
             exit_code: 1,
+            code: "operation_failed",
             message: error.to_string(),
         }
     }
@@ -117,13 +121,27 @@ impl CliError {
     pub(crate) fn issues(message: impl Into<String>) -> Self {
         Self {
             exit_code: 2,
+            code: "issues_detected",
             message: message.into(),
+        }
+    }
+
+    pub(crate) fn clap(error: &clap::Error) -> Self {
+        Self {
+            exit_code: 2,
+            code: "invalid_arguments",
+            message: error.to_string(),
         }
     }
 
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         self.exit_code
+    }
+
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.code
     }
 }
 
@@ -5929,7 +5947,17 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = Cli::parse_from(args);
+    let args = args.into_iter().map(Into::into).collect::<Vec<OsString>>();
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error) => match error.kind() {
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                error.print().map_err(CliError::operation)?;
+                return Ok(());
+            }
+            _ => return Err(CliError::clap(&error)),
+        },
+    };
     dispatch(&cli)
 }
 
@@ -7762,6 +7790,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             if has_failures {
                 Err(CliError {
                     exit_code: 1,
+                    code: "batch_failed",
                     message: "one or more saved reports failed".to_string(),
                 })
             } else {
