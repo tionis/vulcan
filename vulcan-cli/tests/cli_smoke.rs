@@ -2396,14 +2396,156 @@ fn inbox_and_template_help_document_config_and_variables() {
                 .and(predicate::str::contains(
                     "Default template date/time formats live under [templates]",
                 ))
+                .and(predicate::str::contains("web_allowlist"))
+                .and(predicate::str::contains("--engine auto"))
+                .and(predicate::str::contains("--var key=value"))
                 .and(predicate::str::contains("vulcan template --list"))
                 .and(predicate::str::contains(
                     "vulcan template insert daily --prepend",
                 ))
                 .and(predicate::str::contains(
+                    "vulcan template preview daily --path Journal/Today",
+                ))
+                .and(predicate::str::contains(
                     "Vulcan creates <date>-<template-name>.md",
                 )),
         );
+}
+
+#[test]
+fn template_preview_renders_templater_templates_with_var_bindings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates"))
+        .expect("template dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/templates/preview.md"),
+        "<%* tR += tp.file.title.toUpperCase(); %>\nProject <% tp.system.prompt(\"Project\") %>\nPath <% tp.obsidian.normalizePath(\"Notes/Plan\") %>\n",
+    )
+    .expect("template should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "template",
+            "preview",
+            "preview",
+            "--path",
+            "Notes/Plan",
+            "--engine",
+            "templater",
+            "--var",
+            "project=Vulcan",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["engine"], "templater");
+    assert_eq!(json["path"], "Notes/Plan.md");
+    let content = json["content"]
+        .as_str()
+        .expect("preview content should be a string");
+    assert!(content.contains("PLAN"));
+    assert!(content.contains("Project Vulcan"));
+    assert!(content.contains("Path Notes/Plan.md"));
+}
+
+#[test]
+fn template_insert_renders_templater_syntax_against_target_note() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates"))
+        .expect("template dir should be created");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/templates/status.md"),
+        "Status <% tp.frontmatter.status %>\nTitle <% tp.file.title %>\nToday <% tp.date.now(\"YYYY-MM-DD\") %>\n",
+    )
+    .expect("template should be written");
+    fs::write(
+        vault_root.join("Projects/Alpha.md"),
+        "---\nstatus: active\n---\n# Existing\n",
+    )
+    .expect("target note should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "template",
+            "insert",
+            "status",
+            "Projects/Alpha",
+            "--engine",
+            "templater",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["engine"], "templater");
+    assert_eq!(json["note"], "Projects/Alpha.md");
+    let updated =
+        fs::read_to_string(vault_root.join("Projects/Alpha.md")).expect("updated note should exist");
+    assert!(updated.contains("Status active"));
+    assert!(updated.contains("Title Alpha"));
+    assert!(updated
+        .lines()
+        .any(|line| line.starts_with("Today ") && line.len() == "Today ".len() + 10));
+}
+
+#[test]
+fn template_preview_reports_diagnostics_for_mutating_helpers() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates"))
+        .expect("template dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/templates/mutate.md"),
+        "<%* await tp.file.create_new(\"Child body\", \"Child\") %>",
+    )
+    .expect("template should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "template",
+            "preview",
+            "mutate",
+            "--engine",
+            "templater",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["engine"], "templater");
+    let diagnostics = json["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be an array");
+    assert!(diagnostics.iter().any(|item| item
+        .as_str()
+        .is_some_and(|message| message.contains("disabled during template preview"))));
+    assert!(!vault_root.join("Child.md").exists());
 }
 
 #[test]

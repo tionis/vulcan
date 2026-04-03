@@ -263,23 +263,29 @@ Template source:
 Variables:
   {{title}} {{date}} {{time}} {{datetime}} {{uuid}}
   {{date:YYYY-MM-DD}} {{time:HH:mm}} {{date:dddd, MMMM Do YYYY}}
+  <% tp.file.title %> <%* tR += tp.date.now() %> <%+ tp.frontmatter.status %>
 
 Configuration:
   Default template date/time formats live under [templates] in .vulcan/config.toml.
   date_format applies to {{date}} and time_format applies to {{time}}.
+  web_allowlist gates tp.web.request()/tp.obsidian.requestUrl() hosts.
 
 Notes:
   If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.
   In an interactive terminal, the new note is opened in $VISUAL/$EDITOR after rendering.
+  --engine auto detects <% ... %> tags and switches to the Templater-compatible renderer.
+  Repeat --var key=value to satisfy tp.system.prompt()/suggester() in automation and CI.
   `template insert` appends by default; use --prepend to insert after frontmatter instead.
   If the insert target note is omitted in an interactive terminal, Vulcan opens the note picker.
+  `template preview` renders without writing files and disables mutating tp.file.* helpers.
 
 Examples:
   vulcan template --list
-  vulcan template daily --path Daily/2026-03-26
+  vulcan template daily --path Daily/2026-03-26 --engine auto
   vulcan template meeting
-  vulcan template insert daily Projects/Alpha
-  vulcan template insert daily --prepend";
+  vulcan template insert daily Projects/Alpha --var project=Vulcan
+  vulcan template insert daily --prepend
+  vulcan template preview daily --path Journal/Today";
 
 const OPEN_COMMAND_AFTER_HELP: &str = "\
 Behavior:
@@ -1209,9 +1215,44 @@ pub enum TemplateSubcommand {
             help = "Append to the end of the note"
         )]
         append: bool,
+        #[command(flatten)]
+        render: TemplateRenderArgs,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
+    #[command(about = "Render a template without creating or editing files")]
+    Preview {
+        #[arg(help = "Template name or filename stem")]
+        template: String,
+        #[arg(long, help = "Target note path used for title/path/frontmatter context")]
+        path: Option<String>,
+        #[command(flatten)]
+        render: TemplateRenderArgs,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TemplateEngineArg {
+    Native,
+    Templater,
+    Auto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct TemplateRenderArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = TemplateEngineArg::Auto,
+        help = "Template engine to use: native, templater, or auto-detect"
+    )]
+    pub engine: TemplateEngineArg,
+    #[arg(
+        long = "var",
+        action = ArgAction::Append,
+        help = "Bind a template variable using key=value syntax"
+    )]
+    pub vars: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
@@ -1507,6 +1548,8 @@ pub enum Command {
         list: bool,
         #[arg(long, help = "Output path for the new note")]
         path: Option<String>,
+        #[command(flatten)]
+        render: TemplateRenderArgs,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },

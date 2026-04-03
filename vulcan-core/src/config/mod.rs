@@ -152,6 +152,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # enable_system_commands = false
 # shell_path = "/bin/bash"
 # user_scripts_folder = "Scripts"
+# web_allowlist = ["raw.githubusercontent.com", "templater-unsplash-2.fly.dev"]
 # enable_folder_templates = true
 # enable_file_templates = false
 # syntax_highlighting = true
@@ -406,6 +407,8 @@ pub struct TemplatesConfig {
     pub shell_path: Option<PathBuf>,
     #[serde(default)]
     pub user_scripts_folder: Option<PathBuf>,
+    #[serde(default)]
+    pub web_allowlist: Vec<String>,
     #[serde(default = "default_templater_enable_folder_templates")]
     pub enable_folder_templates: bool,
     #[serde(default)]
@@ -440,6 +443,7 @@ impl Default for TemplatesConfig {
             enable_system_commands: false,
             shell_path: None,
             user_scripts_folder: None,
+            web_allowlist: Vec::new(),
             enable_folder_templates: default_templater_enable_folder_templates(),
             folder_templates: Vec::new(),
             enable_file_templates: false,
@@ -1335,6 +1339,7 @@ struct PartialTemplatesConfig {
     enable_system_commands: Option<bool>,
     shell_path: Option<PathBuf>,
     user_scripts_folder: Option<PathBuf>,
+    web_allowlist: Option<Vec<String>>,
     enable_folder_templates: Option<bool>,
     folder_templates: Option<Vec<TemplaterFolderTemplateConfig>>,
     enable_file_templates: Option<bool>,
@@ -3937,6 +3942,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(user_scripts_folder) = templates.user_scripts_folder {
             config.templates.user_scripts_folder = normalize_template_pathbuf(&user_scripts_folder);
+        }
+        if let Some(web_allowlist) = templates.web_allowlist {
+            config.templates.web_allowlist = normalize_string_list(web_allowlist);
         }
         if let Some(enable_folder_templates) = templates.enable_folder_templates {
             config.templates.enable_folder_templates = enable_folder_templates;

@@ -1443,65 +1443,65 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 
 #### 9.9.1 Template syntax parsing
 
-- [ ] Parse Templater command tags: `<% expr %>` (interpolation), `<%* code %>` (JS execution), `<%+ expr %>` (dynamic/deferred)
-- [ ] Whitespace control: `<%_`/`_%>` (trim all whitespace), `<%-`/`-%>` (trim one newline)
-- [ ] Detect Templater syntax in `.vulcan/templates/` and Obsidian template folder
-- [ ] Backward compatibility: existing `{{date}}`, `{{title}}` variables continue to work; Templater syntax is an extension
-- [ ] Templater folder discovery: read Templater settings from `.obsidian/plugins/templater-obsidian/data.json` for template folder location and user script folder
+- [x] Parse Templater command tags: `<% expr %>` (interpolation), `<%* code %>` (JS execution), `<%+ expr %>` (dynamic/deferred)
+- [x] Whitespace control: `<%_`/`_%>` (trim all whitespace), `<%-`/`-%>` (trim one newline)
+- [x] Detect Templater syntax in `.vulcan/templates/` and Obsidian template folder
+- [x] Backward compatibility: existing `{{date}}`, `{{title}}` variables continue to work; Templater syntax is an extension
+- [x] Templater folder discovery: read Templater settings from `.obsidian/plugins/templater-obsidian/data.json` for template folder location and user script folder
 
 #### 9.9.2 `tp` API object — native modules
 
 Implement the `tp` namespace natively (no JS required) for the most common template functions:
 
 **tp.date:**
-- [ ] `tp.date.now(format?, offset?, reference?, reference_format?)` — current/relative date with Moment.js-compatible formatting (reuse 9.7.1 format engine)
-- [ ] `tp.date.tomorrow(format?)`, `tp.date.yesterday(format?)` — convenience shortcuts
-- [ ] `tp.date.weekday(format?, weekday_number?, reference?, reference_format?)` — specific weekday
+- [x] `tp.date.now(format?, offset?, reference?, reference_format?)` — current/relative date with Moment.js-compatible formatting (reuse 9.7.1 format engine)
+- [x] `tp.date.tomorrow(format?)`, `tp.date.yesterday(format?)` — convenience shortcuts
+- [x] `tp.date.weekday(format?, weekday_number?, reference?, reference_format?)` — specific weekday
 
 **tp.file:**
-- [ ] `tp.file.title` — filename without extension
-- [ ] `tp.file.path(absolute?)` — file path (vault-relative or absolute)
-- [ ] `tp.file.folder(absolute?)` — parent folder name or path
-- [ ] `tp.file.creation_date(format?)`, `tp.file.last_modified_date(format?)` — file timestamps
-- [ ] `tp.file.content` — full file content
-- [ ] `tp.file.tags` — all tags in file
-- [ ] `tp.file.exists(filepath)` — check if file exists in vault
-- [ ] `tp.file.include(filepath)` — include another template (recursive, depth limit 10)
-- [ ] `tp.file.create_new(template, filename, open_new?, folder?)` — create new note from template
-- [ ] `tp.file.move(new_path)`, `tp.file.rename(new_name)` — file operations (reuse move-rewrite engine)
-- [ ] `tp.file.cursor(order?)` — insert cursor position placeholder (meaningful in editor contexts; no-op in non-interactive CLI)
+- [x] `tp.file.title` — filename without extension
+- [x] `tp.file.path(absolute?)` — file path (vault-relative or absolute)
+- [x] `tp.file.folder(absolute?)` — parent folder name or path
+- [x] `tp.file.creation_date(format?)`, `tp.file.last_modified_date(format?)` — file timestamps
+- [x] `tp.file.content` — full file content
+- [x] `tp.file.tags` — all tags in file
+- [x] `tp.file.exists(filepath)` — check if file exists in vault
+- [x] `tp.file.include(filepath)` — include another template (recursive, depth limit 10)
+- [x] `tp.file.create_new(template, filename, open_new?, folder?)` — create new note from template
+- [x] `tp.file.move(new_path)`, `tp.file.rename(new_name)` — file operations (reuse move-rewrite engine)
+- [x] `tp.file.cursor(order?)` — insert cursor position placeholder (meaningful in editor contexts; no-op in non-interactive CLI)
 
 **tp.frontmatter:**
-- [ ] `tp.frontmatter.<key>` — direct access to frontmatter properties (reuse property resolver)
-- [ ] Bracket notation for keys with spaces: `tp.frontmatter["key name"]`
+- [x] `tp.frontmatter.<key>` — direct access to frontmatter properties (reuse property resolver)
+- [x] Bracket notation for keys with spaces: `tp.frontmatter["key name"]`
 
 **tp.system (CLI-adapted):**
-- [ ] `tp.system.prompt(text, default?, throw_on_cancel?, multi_line?)` — CLI: read from stdin or use `--var key=value` flag; TUI: show input dialog
-- [ ] `tp.system.suggester(items, values, ...)` — CLI: use existing note picker or `--var` flag; TUI: show selection picker
-- [ ] `tp.system.clipboard()` — read system clipboard (platform-dependent, best-effort)
+- [x] `tp.system.prompt(text, default?, throw_on_cancel?, multi_line?)` — CLI: read from stdin or use `--var key=value` flag; TUI: show input dialog
+- [x] `tp.system.suggester(items, values, ...)` — CLI: use existing note picker or `--var` flag; TUI: show selection picker
+- [x] `tp.system.clipboard()` — read system clipboard (platform-dependent, best-effort)
 
 #### 9.9.3 `tp` API object — JS-dependent modules (behind `js_runtime` feature)
 
 These require the sandboxed JS runtime and are only available when `--features js_runtime` is compiled:
 
-- [ ] `<%* %>` execution commands — arbitrary JS with `tR` output accumulator
-- [ ] `tp.web.request(url, json_path?)` — sandboxed HTTP GET (allowlist-based, configurable)
-- [ ] `tp.web.daily_quote()`, `tp.web.random_picture(size?, query?)` — convenience web functions
-- [ ] User script functions: load `.js` files from configured scripts folder as `tp.user.<name>(args)`
-- [ ] System command user functions: execute shell commands with template variable substitution (requires explicit opt-in via config, disabled by default for security)
-- [ ] `tp.hooks.on_all_templates_executed(callback)` — post-processing hook
+- [x] `<%* %>` execution commands — arbitrary JS with `tR` output accumulator
+- [x] `tp.web.request(url, json_path?)` — sandboxed HTTP GET (allowlist-based, configurable)
+- [x] `tp.web.daily_quote()`, `tp.web.random_picture(size?, query?)` — convenience web functions
+- [x] User script functions: load `.js` files from configured scripts folder as `tp.user.<name>(args)`
+- [x] System command user functions: execute shell commands with template variable substitution (requires explicit opt-in via config, disabled by default for security)
+- [x] `tp.hooks.on_all_templates_executed(callback)` — post-processing hook
 
 **tp.config:**
-- [ ] `tp.config.template_file` — TFile object (or Vulcan equivalent) for the template being processed
-- [ ] `tp.config.target_file` — TFile object for the note the template is being inserted into
-- [ ] `tp.config.run_mode` — numeric run mode indicator (0=create, 1=append, 5=dynamic; map to Vulcan equivalents)
-- [ ] `tp.config.active_file` — currently active file (alias for target in CLI context)
+- [x] `tp.config.template_file` — TFile object (or Vulcan equivalent) for the template being processed
+- [x] `tp.config.target_file` — TFile object for the note the template is being inserted into
+- [x] `tp.config.run_mode` — numeric run mode indicator (0=create, 1=append, 5=dynamic; map to Vulcan equivalents)
+- [x] `tp.config.active_file` — currently active file (alias for target in CLI context)
 
 **tp.obsidian (Vulcan equivalents):**
-- [ ] `tp.obsidian.normalizePath(path)` — normalize vault-relative path (reuse Vulcan's path normalization)
-- [ ] `tp.obsidian.htmlToMarkdown(html)` — convert HTML string to Markdown (use existing or add lightweight converter)
-- [ ] `tp.obsidian.requestUrl(url)` — sandboxed HTTP request (reuse `tp.web` infrastructure, same allowlist restrictions)
-- [ ] Emit diagnostic for Obsidian-specific APIs under `tp.app` that have no CLI equivalent (e.g., `tp.app.workspace`, `tp.app.vault.adapter`)
+- [x] `tp.obsidian.normalizePath(path)` — normalize vault-relative path (reuse Vulcan's path normalization)
+- [x] `tp.obsidian.htmlToMarkdown(html)` — convert HTML string to Markdown (use existing or add lightweight converter)
+- [x] `tp.obsidian.requestUrl(url)` — sandboxed HTTP request (reuse `tp.web` infrastructure, same allowlist restrictions)
+- [x] Emit diagnostic for Obsidian-specific APIs under `tp.app` that have no CLI equivalent (e.g., `tp.app.workspace`, `tp.app.vault.adapter`)
 
 #### 9.9.4 Settings import
 
@@ -1523,12 +1523,12 @@ These require the sandboxed JS runtime and are only available when `--features j
 
 #### 9.9.5 CLI integration
 
-- [ ] `vulcan template` command detects Templater syntax and processes it (existing command, extended)
-- [ ] `vulcan template --engine native|templater|auto` — force template engine selection (default: auto-detect based on `<% %>` presence)
-- [ ] `--var key=value` flag for non-interactive template variable binding (replaces `tp.system.prompt()` in CI/automation contexts)
-- [ ] Template preview: `vulcan template preview <name>` — show expanded template without creating a file
-- [ ] Error diagnostics for Templater syntax that requires unavailable features (e.g., `tp.web` without `js_runtime` feature)
-- [ ] Integration test: Templater-syntax templates produce expected output, including `tp.file`, `tp.date`, `tp.frontmatter` access
+- [x] `vulcan template` command detects Templater syntax and processes it (existing command, extended)
+- [x] `vulcan template --engine native|templater|auto` — force template engine selection (default: auto-detect based on `<% %>` presence)
+- [x] `--var key=value` flag for non-interactive template variable binding (replaces `tp.system.prompt()` in CI/automation contexts)
+- [x] Template preview: `vulcan template preview <name>` — show expanded template without creating a file
+- [x] Error diagnostics for Templater syntax that requires unavailable features (e.g., `tp.web` without `js_runtime` feature)
+- [x] Integration test: Templater-syntax templates produce expected output, including `tp.file`, `tp.date`, `tp.frontmatter` access
 
 ### 9.10 Tasks plugin compatibility (parsing and query layer)
 
