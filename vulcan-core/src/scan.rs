@@ -2529,6 +2529,526 @@ mod tests {
     use std::collections::BTreeMap;
     use tempfile::TempDir;
 
+    type DashboardListItemRow = (
+        String,
+        i64,
+        Option<String>,
+        i64,
+        i64,
+        String,
+        String,
+        String,
+    );
+    type DashboardPropertyRow = (
+        String,
+        String,
+        Option<String>,
+        Option<f64>,
+        Option<i64>,
+        Option<String>,
+        String,
+    );
+
+    fn assert_dataview_fixture_row_counts(connection: &rusqlite::Connection) {
+        assert_eq!(count_rows(connection, "list_items"), 6);
+        assert_eq!(count_rows(connection, "tasks"), 4);
+        assert_eq!(count_rows(connection, "task_properties"), 17);
+        assert_eq!(count_rows(connection, "dataview_blocks"), 2);
+        assert_eq!(count_rows(connection, "tasks_blocks"), 0);
+        assert_eq!(count_rows(connection, "inline_expressions"), 1);
+    }
+
+    fn assert_beta_task_properties(connection: &rusqlite::Connection) {
+        let beta_task_properties: Vec<(String, String)> = connection
+            .prepare(
+                "
+                SELECT task_properties.key, COALESCE(task_properties.value_text, task_properties.value_date, CAST(task_properties.value_number AS TEXT))
+                FROM task_properties
+                JOIN tasks ON tasks.id = task_properties.task_id
+                JOIN documents ON documents.id = tasks.document_id
+                WHERE documents.path = 'Projects/Beta.md' AND tasks.line_number = 9
+                ORDER BY task_properties.key, task_properties.value_text, task_properties.value_date, task_properties.value_number
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows should collect");
+        assert!(
+            beta_task_properties
+                .iter()
+                .any(|(key, value)| key == "recurrenceRule" && value == "FREQ=WEEKLY;INTERVAL=1"),
+            "expected recurrenceRule in task_properties: {beta_task_properties:?}"
+        );
+        assert!(
+            beta_task_properties
+                .iter()
+                .any(|(key, value)| key == "recurrenceAnchor" && value == "2026-04-05"),
+            "expected recurrenceAnchor in task_properties: {beta_task_properties:?}"
+        );
+    }
+
+    fn assert_dashboard_dataview_blocks(connection: &rusqlite::Connection) {
+        let dataview_blocks: Vec<(String, i64, String)> = connection
+            .prepare(
+                "
+                SELECT dataview_blocks.language, dataview_blocks.block_index, dataview_blocks.raw_text
+                FROM dataview_blocks
+                JOIN documents ON documents.id = dataview_blocks.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ORDER BY dataview_blocks.block_index
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows should collect");
+        assert_eq!(
+            dataview_blocks,
+            vec![
+                (
+                    "dataview".to_string(),
+                    0,
+                    "TABLE status, priority\nFROM #project\nWHERE reviewed = true\nSORT file.name ASC"
+                        .to_string(),
+                ),
+                (
+                    "dataviewjs".to_string(),
+                    1,
+                    "dv.table([\"Status\"], [[dv.current().status]])".to_string(),
+                ),
+            ]
+        );
+
+        let inline_expressions: Vec<String> = connection
+            .prepare(
+                "
+                SELECT inline_expressions.expression
+                FROM inline_expressions
+                JOIN documents ON documents.id = inline_expressions.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows should collect");
+        assert_eq!(inline_expressions, vec!["this.status".to_string()]);
+    }
+
+    fn load_dashboard_list_items(connection: &rusqlite::Connection) -> Vec<DashboardListItemRow> {
+        connection
+            .prepare(
+                "
+                SELECT list_items.text, list_items.is_task, list_items.block_id, list_items.annotated, list_items.line_number, list_items.symbol, list_items.tags_json, list_items.outlinks_json
+                FROM list_items
+                JOIN documents ON documents.id = list_items.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ORDER BY list_items.line_number
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn assert_dashboard_list_items(connection: &rusqlite::Connection) {
+        let dashboard_list_items = load_dashboard_list_items(connection);
+        assert_eq!(dashboard_list_items.len(), 4);
+        assert_eq!(
+            dashboard_list_items[0],
+            (
+                "Plain list item [[Projects/Alpha]] #project/list [kind:: note]".to_string(),
+                0,
+                None,
+                1,
+                19,
+                "-".to_string(),
+                "[\"#project/list\"]".to_string(),
+                "[\"[[Projects/Alpha]]\"]".to_string(),
+            )
+        );
+        assert_eq!(
+            dashboard_list_items[1],
+            (
+                "Nested numbered item ^list-child".to_string(),
+                0,
+                Some("list-child".to_string()),
+                0,
+                20,
+                "1.".to_string(),
+                "[]".to_string(),
+                "[]".to_string(),
+            )
+        );
+    }
+
+    fn load_dashboard_properties(connection: &rusqlite::Connection) -> Vec<DashboardPropertyRow> {
+        connection
+            .prepare(
+                "
+                SELECT key, origin, value_text, value_number, value_bool, value_date, value_type
+                FROM property_values
+                JOIN documents ON documents.id = property_values.document_id
+                WHERE documents.path = 'Dashboard.md'
+                ORDER BY key, origin
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect()
+    }
+
+    fn assert_dashboard_text_properties(dashboard_properties: &[DashboardPropertyRow]) {
+        assert!(dashboard_properties.contains(&(
+            "🎅".to_string(),
+            "inline_bracket".to_string(),
+            Some("gifts".to_string()),
+            None,
+            None,
+            None,
+            "text".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "choices".to_string(),
+            "inline".to_string(),
+            None,
+            None,
+            None,
+            None,
+            "list".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "due date".to_string(),
+            "inline".to_string(),
+            None,
+            None,
+            None,
+            Some("2026-04".to_string()),
+            "date".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "duration".to_string(),
+            "inline".to_string(),
+            Some("1d 3h".to_string()),
+            None,
+            None,
+            None,
+            "duration".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "month".to_string(),
+            "inline".to_string(),
+            None,
+            None,
+            None,
+            Some("2026-04".to_string()),
+            "date".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "noël".to_string(),
+            "inline".to_string(),
+            Some("un jeu de console".to_string()),
+            None,
+            None,
+            None,
+            "text".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "owner".to_string(),
+            "inline_bracket".to_string(),
+            Some("[[People/Bob]]".to_string()),
+            None,
+            None,
+            None,
+            "link".to_string(),
+        )));
+    }
+
+    fn assert_dashboard_numeric_and_status_properties(
+        dashboard_properties: &[DashboardPropertyRow],
+    ) {
+        assert!(dashboard_properties.contains(&(
+            "priority".to_string(),
+            "inline".to_string(),
+            None,
+            Some(2.0),
+            None,
+            None,
+            "number".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "priority".to_string(),
+            "inline_paren".to_string(),
+            None,
+            Some(3.0),
+            None,
+            None,
+            "number".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "reviewed".to_string(),
+            "frontmatter".to_string(),
+            None,
+            None,
+            Some(1),
+            None,
+            "boolean".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "reviewed".to_string(),
+            "inline".to_string(),
+            None,
+            None,
+            Some(0),
+            None,
+            "boolean".to_string(),
+        )));
+        assert!(dashboard_properties.contains(&(
+            "status".to_string(),
+            "frontmatter".to_string(),
+            Some("draft".to_string()),
+            None,
+            None,
+            None,
+            "text".to_string(),
+        )));
+    }
+
+    fn assert_dashboard_properties(connection: &rusqlite::Connection) {
+        let dashboard_properties = load_dashboard_properties(connection);
+        assert_dashboard_text_properties(&dashboard_properties);
+        assert_dashboard_numeric_and_status_properties(&dashboard_properties);
+        assert_eq!(
+            property_list_items(connection, "Dashboard.md", "choices"),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+    }
+
+    fn assert_unsupported_js_messages(connection: &rusqlite::Connection) {
+        let unsupported_messages: Vec<String> = connection
+            .prepare(
+                "
+                SELECT message
+                FROM diagnostics
+                JOIN documents ON documents.id = diagnostics.document_id
+                WHERE documents.path = 'Dashboard.md' AND kind = 'unsupported_syntax'
+                ORDER BY message
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect();
+        if cfg!(feature = "js_runtime") {
+            assert!(unsupported_messages.is_empty());
+        } else {
+            assert!(unsupported_messages
+                .iter()
+                .any(|message| message.contains("require the `js_runtime` feature flag")));
+        }
+    }
+
+    fn assert_task_to_list_links(connection: &rusqlite::Connection) {
+        let task_to_list_links: Vec<(String, String)> = connection
+            .prepare(
+                "
+                SELECT tasks.text, list_items.text
+                FROM tasks
+                JOIN documents ON documents.id = tasks.document_id
+                JOIN list_items ON list_items.id = tasks.list_item_id
+                ORDER BY documents.path, tasks.line_number
+                ",
+            )
+            .expect("statement should prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query should succeed")
+            .map(|row| row.expect("row should deserialize"))
+            .collect();
+        assert_eq!(
+            task_to_list_links,
+            vec![
+                (
+                    "Write docs [due:: 2026-04-01]".to_string(),
+                    "Write docs [due:: 2026-04-01]".to_string(),
+                ),
+                (
+                    "Ship release [owner:: [[People/Bob]]]".to_string(),
+                    "Ship release [owner:: [[People/Bob]]]".to_string(),
+                ),
+                (
+                    "Follow up [due:: 2026-04-02]".to_string(),
+                    "Follow up [due:: 2026-04-02]".to_string(),
+                ),
+                (
+                    "Prepare backlog 🗓\u{fe0f} 2026-04-03 ✅ 2026-04-04 ➕ 2026-04-01 🛫 2026-04-02 ⏳ 2026-04-05 🔺 🔁 every week ⛔ ALPHA-1 🆔 BETA-1".to_string(),
+                    "Prepare backlog 🗓\u{fe0f} 2026-04-03 ✅ 2026-04-04 ➕ 2026-04-01 🛫 2026-04-02 ⏳ 2026-04-05 🔺 🔁 every week ⛔ ALPHA-1 🆔 BETA-1".to_string(),
+                ),
+            ]
+        );
+    }
+
+    fn assert_dashboard_list_metadata(paths: &VaultPaths) {
+        let note_index = load_note_index(paths).expect("note index should load");
+        let dashboard = note_index
+            .get("Dashboard")
+            .expect("dashboard note should be indexed");
+        let dashboard_lists = FileMetadataResolver::field(dashboard, "lists");
+        let dashboard_lists = dashboard_lists
+            .as_array()
+            .expect("file.lists should return an array");
+        assert_eq!(dashboard_lists.len(), 4);
+        assert_eq!(dashboard_lists[0]["line"], Value::Number(19.into()));
+        assert_eq!(dashboard_lists[0]["annotated"], Value::Bool(true));
+        assert_eq!(dashboard_lists[0]["task"], Value::Bool(false));
+        assert_eq!(
+            dashboard_lists[0]["tags"],
+            serde_json::json!(["#project/list"])
+        );
+        assert_eq!(
+            dashboard_lists[0]["outlinks"],
+            serde_json::json!(["[[Projects/Alpha]]"])
+        );
+        assert_eq!(
+            dashboard_lists[0]["children"][0]["line"],
+            Value::Number(20.into())
+        );
+        assert_eq!(
+            dashboard_lists[1]["link"],
+            Value::String("[[Dashboard#^list-child]]".to_string())
+        );
+    }
+
+    fn assert_dashboard_task_metadata(paths: &VaultPaths) {
+        let note_index = load_note_index(paths).expect("note index should load");
+        let dashboard = note_index
+            .get("Dashboard")
+            .expect("dashboard note should be indexed");
+        let dashboard_tasks = FileMetadataResolver::field(dashboard, "tasks");
+        let dashboard_tasks = dashboard_tasks
+            .as_array()
+            .expect("file.tasks should return an array");
+        assert_eq!(dashboard_tasks.len(), 2);
+        assert_eq!(dashboard_tasks[0]["status"], Value::String(" ".to_string()));
+        assert_eq!(
+            dashboard_tasks[0]["statusType"],
+            Value::String("TODO".to_string())
+        );
+        assert_eq!(dashboard_tasks[0]["checked"], Value::Bool(false));
+        assert_eq!(dashboard_tasks[0]["completed"], Value::Bool(false));
+        assert_eq!(dashboard_tasks[0]["fullyCompleted"], Value::Bool(false));
+        assert_eq!(
+            dashboard_tasks[0]["due"],
+            Value::String("2026-04-01".to_string())
+        );
+        assert_eq!(
+            dashboard_tasks[0]["children"][0]["status"],
+            Value::String("x".to_string())
+        );
+        assert_eq!(
+            dashboard_tasks[1]["owner"],
+            Value::String("[[People/Bob]]".to_string())
+        );
+    }
+
+    fn assert_project_task_metadata(paths: &VaultPaths) {
+        let note_index = load_note_index(paths).expect("note index should load");
+        let alpha = note_index
+            .get("Alpha")
+            .expect("alpha note should be indexed");
+        let alpha_tasks = FileMetadataResolver::field(alpha, "tasks");
+        let alpha_tasks = alpha_tasks
+            .as_array()
+            .expect("alpha file.tasks should return an array");
+        assert_eq!(alpha_tasks.len(), 1);
+        assert_eq!(alpha_tasks[0]["status"], Value::String(" ".to_string()));
+        assert_eq!(alpha_tasks[0]["priority"], serde_json::json!(1.0));
+        assert_eq!(alpha_tasks[0]["reviewed"], Value::Bool(true));
+
+        let beta = note_index.get("Beta").expect("beta note should be indexed");
+        let beta_tasks = FileMetadataResolver::field(beta, "tasks");
+        let beta_tasks = beta_tasks
+            .as_array()
+            .expect("beta file.tasks should return an array");
+        assert_eq!(beta_tasks.len(), 1);
+        assert_eq!(beta_tasks[0]["status"], Value::String("/".to_string()));
+        assert_eq!(
+            beta_tasks[0]["statusType"],
+            Value::String("IN_PROGRESS".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["due"],
+            Value::String("2026-04-03".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["completion"],
+            Value::String("2026-04-04".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["created"],
+            Value::String("2026-04-01".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["start"],
+            Value::String("2026-04-02".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["scheduled"],
+            Value::String("2026-04-05".to_string())
+        );
+        assert_eq!(beta_tasks[0]["priority"], Value::String("high".to_string()));
+        assert_eq!(
+            beta_tasks[0]["recurrence"],
+            Value::String("every week".to_string())
+        );
+        assert_eq!(
+            beta_tasks[0]["blocked-by"],
+            Value::String("ALPHA-1".to_string())
+        );
+        assert_eq!(beta_tasks[0]["id"], Value::String("BETA-1".to_string()));
+    }
+
+    fn assert_dataview_search_excludes_js_block_contents(paths: &VaultPaths) {
+        let search = search_vault(
+            paths,
+            &SearchQuery {
+                text: "dv.table".to_string(),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+        assert!(search.hits.is_empty());
+    }
+
     #[test]
     fn normalize_relative_path_uses_forward_slashes() {
         let path = PathBuf::from_iter(["people", "bob.md"]);
@@ -2727,474 +3247,17 @@ mod tests {
         let database = CacheDatabase::open(&paths).expect("database should open");
         let connection = database.connection();
 
-        assert_eq!(count_rows(connection, "list_items"), 6);
-        assert_eq!(count_rows(connection, "tasks"), 4);
-        assert_eq!(count_rows(connection, "task_properties"), 17);
-        assert_eq!(count_rows(connection, "dataview_blocks"), 2);
-        assert_eq!(count_rows(connection, "tasks_blocks"), 0);
-        assert_eq!(count_rows(connection, "inline_expressions"), 1);
-        let beta_task_properties: Vec<(String, String)> = connection
-            .prepare(
-                "
-                SELECT task_properties.key, COALESCE(task_properties.value_text, task_properties.value_date, CAST(task_properties.value_number AS TEXT))
-                FROM task_properties
-                JOIN tasks ON tasks.id = task_properties.task_id
-                JOIN documents ON documents.id = tasks.document_id
-                WHERE documents.path = 'Projects/Beta.md' AND tasks.line_number = 9
-                ORDER BY task_properties.key, task_properties.value_text, task_properties.value_date, task_properties.value_number
-                ",
-            )
-            .expect("statement should prepare")
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .expect("query should succeed")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("rows should collect");
-        assert!(
-            beta_task_properties.iter().any(|(key, value)| {
-                key == "recurrenceRule" && value == "FREQ=WEEKLY;INTERVAL=1"
-            }),
-            "expected recurrenceRule in task_properties: {beta_task_properties:?}"
-        );
-        assert!(
-            beta_task_properties
-                .iter()
-                .any(|(key, value)| { key == "recurrenceAnchor" && value == "2026-04-05" }),
-            "expected recurrenceAnchor in task_properties: {beta_task_properties:?}"
-        );
-        let dataview_blocks: Vec<(String, i64, String)> = connection
-            .prepare(
-                "
-                SELECT dataview_blocks.language, dataview_blocks.block_index, dataview_blocks.raw_text
-                FROM dataview_blocks
-                JOIN documents ON documents.id = dataview_blocks.document_id
-                WHERE documents.path = 'Dashboard.md'
-                ORDER BY dataview_blocks.block_index
-                ",
-            )
-            .expect("statement should prepare")
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .expect("query should succeed")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("rows should collect");
-        assert_eq!(
-            dataview_blocks,
-            vec![
-                (
-                    "dataview".to_string(),
-                    0,
-                    "TABLE status, priority\nFROM #project\nWHERE reviewed = true\nSORT file.name ASC"
-                        .to_string(),
-                ),
-                (
-                    "dataviewjs".to_string(),
-                    1,
-                    "dv.table([\"Status\"], [[dv.current().status]])".to_string(),
-                ),
-            ]
-        );
-        let inline_expressions: Vec<String> = connection
-            .prepare(
-                "
-                SELECT inline_expressions.expression
-                FROM inline_expressions
-                JOIN documents ON documents.id = inline_expressions.document_id
-                WHERE documents.path = 'Dashboard.md'
-                ",
-            )
-            .expect("statement should prepare")
-            .query_map([], |row| row.get(0))
-            .expect("query should succeed")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("rows should collect");
-        assert_eq!(inline_expressions, vec!["this.status".to_string()]);
-
-        let dashboard_list_items: Vec<(
-            String,
-            i64,
-            Option<String>,
-            i64,
-            i64,
-            String,
-            String,
-            String,
-        )> = connection
-            .prepare(
-                "
-                SELECT list_items.text, list_items.is_task, list_items.block_id, list_items.annotated, list_items.line_number, list_items.symbol, list_items.tags_json, list_items.outlinks_json
-                FROM list_items
-                JOIN documents ON documents.id = list_items.document_id
-                WHERE documents.path = 'Dashboard.md'
-                ORDER BY list_items.line_number
-                ",
-            )
-            .expect("statement should prepare")
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                ))
-            })
-            .expect("query should succeed")
-            .map(|row| row.expect("row should deserialize"))
-            .collect();
-        assert_eq!(dashboard_list_items.len(), 4);
-        assert_eq!(
-            dashboard_list_items[0],
-            (
-                "Plain list item [[Projects/Alpha]] #project/list [kind:: note]".to_string(),
-                0,
-                None,
-                1,
-                19,
-                "-".to_string(),
-                "[\"#project/list\"]".to_string(),
-                "[\"[[Projects/Alpha]]\"]".to_string(),
-            )
-        );
-        assert_eq!(
-            dashboard_list_items[1],
-            (
-                "Nested numbered item ^list-child".to_string(),
-                0,
-                Some("list-child".to_string()),
-                0,
-                20,
-                "1.".to_string(),
-                "[]".to_string(),
-                "[]".to_string(),
-            )
-        );
-
-        let dashboard_properties: Vec<(
-            String,
-            String,
-            Option<String>,
-            Option<f64>,
-            Option<i64>,
-            Option<String>,
-            String,
-        )> = connection
-            .prepare(
-                "
-                SELECT key, origin, value_text, value_number, value_bool, value_date, value_type
-                FROM property_values
-                JOIN documents ON documents.id = property_values.document_id
-                WHERE documents.path = 'Dashboard.md'
-                ORDER BY key, origin
-                ",
-            )
-            .expect("statement should prepare")
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            })
-            .expect("query should succeed")
-            .map(|row| row.expect("row should deserialize"))
-            .collect();
-        assert!(dashboard_properties.contains(&(
-            "🎅".to_string(),
-            "inline_bracket".to_string(),
-            Some("gifts".to_string()),
-            None,
-            None,
-            None,
-            "text".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "choices".to_string(),
-            "inline".to_string(),
-            None,
-            None,
-            None,
-            None,
-            "list".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "due date".to_string(),
-            "inline".to_string(),
-            None,
-            None,
-            None,
-            Some("2026-04".to_string()),
-            "date".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "duration".to_string(),
-            "inline".to_string(),
-            Some("1d 3h".to_string()),
-            None,
-            None,
-            None,
-            "duration".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "month".to_string(),
-            "inline".to_string(),
-            None,
-            None,
-            None,
-            Some("2026-04".to_string()),
-            "date".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "noël".to_string(),
-            "inline".to_string(),
-            Some("un jeu de console".to_string()),
-            None,
-            None,
-            None,
-            "text".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "owner".to_string(),
-            "inline_bracket".to_string(),
-            Some("[[People/Bob]]".to_string()),
-            None,
-            None,
-            None,
-            "link".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "priority".to_string(),
-            "inline".to_string(),
-            None,
-            Some(2.0),
-            None,
-            None,
-            "number".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "priority".to_string(),
-            "inline_paren".to_string(),
-            None,
-            Some(3.0),
-            None,
-            None,
-            "number".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "reviewed".to_string(),
-            "frontmatter".to_string(),
-            None,
-            None,
-            Some(1),
-            None,
-            "boolean".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "reviewed".to_string(),
-            "inline".to_string(),
-            None,
-            None,
-            Some(0),
-            None,
-            "boolean".to_string(),
-        )));
-        assert!(dashboard_properties.contains(&(
-            "status".to_string(),
-            "frontmatter".to_string(),
-            Some("draft".to_string()),
-            None,
-            None,
-            None,
-            "text".to_string(),
-        )));
-        assert_eq!(
-            property_list_items(connection, "Dashboard.md", "choices"),
-            vec!["alpha".to_string(), "beta".to_string()]
-        );
-
-        let unsupported_messages: Vec<String> = connection
-            .prepare(
-                "
-                SELECT message
-                FROM diagnostics
-                JOIN documents ON documents.id = diagnostics.document_id
-                WHERE documents.path = 'Dashboard.md' AND kind = 'unsupported_syntax'
-                ORDER BY message
-                ",
-            )
-            .expect("statement should prepare")
-            .query_map([], |row| row.get(0))
-            .expect("query should succeed")
-            .map(|row| row.expect("row should deserialize"))
-            .collect();
-        if cfg!(feature = "js_runtime") {
-            assert!(unsupported_messages.is_empty());
-        } else {
-            assert!(unsupported_messages
-                .iter()
-                .any(|message| message.contains("require the `js_runtime` feature flag")));
-        }
-
-        let task_to_list_links: Vec<(String, String)> = connection
-            .prepare(
-                "
-                SELECT tasks.text, list_items.text
-                FROM tasks
-                JOIN documents ON documents.id = tasks.document_id
-                JOIN list_items ON list_items.id = tasks.list_item_id
-                ORDER BY documents.path, tasks.line_number
-                ",
-            )
-            .expect("statement should prepare")
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .expect("query should succeed")
-            .map(|row| row.expect("row should deserialize"))
-            .collect();
-        assert_eq!(
-            task_to_list_links,
-            vec![
-                (
-                    "Write docs [due:: 2026-04-01]".to_string(),
-                    "Write docs [due:: 2026-04-01]".to_string(),
-                ),
-                (
-                    "Ship release [owner:: [[People/Bob]]]".to_string(),
-                    "Ship release [owner:: [[People/Bob]]]".to_string(),
-                ),
-                (
-                    "Follow up [due:: 2026-04-02]".to_string(),
-                    "Follow up [due:: 2026-04-02]".to_string(),
-                ),
-                (
-                    "Prepare backlog 🗓\u{fe0f} 2026-04-03 ✅ 2026-04-04 ➕ 2026-04-01 🛫 2026-04-02 ⏳ 2026-04-05 🔺 🔁 every week ⛔ ALPHA-1 🆔 BETA-1".to_string(),
-                    "Prepare backlog 🗓\u{fe0f} 2026-04-03 ✅ 2026-04-04 ➕ 2026-04-01 🛫 2026-04-02 ⏳ 2026-04-05 🔺 🔁 every week ⛔ ALPHA-1 🆔 BETA-1".to_string(),
-                ),
-            ]
-        );
-
-        let note_index = load_note_index(&paths).expect("note index should load");
-        let dashboard = note_index
-            .get("Dashboard")
-            .expect("dashboard note should be indexed");
-        let dashboard_lists = FileMetadataResolver::field(dashboard, "lists");
-        let dashboard_lists = dashboard_lists
-            .as_array()
-            .expect("file.lists should return an array");
-        assert_eq!(dashboard_lists.len(), 4);
-        assert_eq!(dashboard_lists[0]["line"], Value::Number(19.into()));
-        assert_eq!(dashboard_lists[0]["annotated"], Value::Bool(true));
-        assert_eq!(dashboard_lists[0]["task"], Value::Bool(false));
-        assert_eq!(
-            dashboard_lists[0]["tags"],
-            serde_json::json!(["#project/list"])
-        );
-        assert_eq!(
-            dashboard_lists[0]["outlinks"],
-            serde_json::json!(["[[Projects/Alpha]]"])
-        );
-        assert_eq!(
-            dashboard_lists[0]["children"][0]["line"],
-            Value::Number(20.into())
-        );
-        assert_eq!(
-            dashboard_lists[1]["link"],
-            Value::String("[[Dashboard#^list-child]]".to_string())
-        );
-
-        let dashboard_tasks = FileMetadataResolver::field(dashboard, "tasks");
-        let dashboard_tasks = dashboard_tasks
-            .as_array()
-            .expect("file.tasks should return an array");
-        assert_eq!(dashboard_tasks.len(), 2);
-        assert_eq!(dashboard_tasks[0]["status"], Value::String(" ".to_string()));
-        assert_eq!(
-            dashboard_tasks[0]["statusType"],
-            Value::String("TODO".to_string())
-        );
-        assert_eq!(dashboard_tasks[0]["checked"], Value::Bool(false));
-        assert_eq!(dashboard_tasks[0]["completed"], Value::Bool(false));
-        assert_eq!(dashboard_tasks[0]["fullyCompleted"], Value::Bool(false));
-        assert_eq!(
-            dashboard_tasks[0]["due"],
-            Value::String("2026-04-01".to_string())
-        );
-        assert_eq!(
-            dashboard_tasks[0]["children"][0]["status"],
-            Value::String("x".to_string())
-        );
-        assert_eq!(
-            dashboard_tasks[1]["owner"],
-            Value::String("[[People/Bob]]".to_string())
-        );
-
-        let alpha = note_index
-            .get("Alpha")
-            .expect("alpha note should be indexed");
-        let alpha_tasks = FileMetadataResolver::field(alpha, "tasks");
-        let alpha_tasks = alpha_tasks
-            .as_array()
-            .expect("alpha file.tasks should return an array");
-        assert_eq!(alpha_tasks.len(), 1);
-        assert_eq!(alpha_tasks[0]["status"], Value::String(" ".to_string()));
-        assert_eq!(alpha_tasks[0]["priority"], serde_json::json!(1.0));
-        assert_eq!(alpha_tasks[0]["reviewed"], Value::Bool(true));
-
-        let beta = note_index.get("Beta").expect("beta note should be indexed");
-        let beta_tasks = FileMetadataResolver::field(beta, "tasks");
-        let beta_tasks = beta_tasks
-            .as_array()
-            .expect("beta file.tasks should return an array");
-        assert_eq!(beta_tasks.len(), 1);
-        assert_eq!(beta_tasks[0]["status"], Value::String("/".to_string()));
-        assert_eq!(
-            beta_tasks[0]["statusType"],
-            Value::String("IN_PROGRESS".to_string())
-        );
-        assert_eq!(
-            beta_tasks[0]["due"],
-            Value::String("2026-04-03".to_string())
-        );
-        assert_eq!(
-            beta_tasks[0]["completion"],
-            Value::String("2026-04-04".to_string())
-        );
-        assert_eq!(
-            beta_tasks[0]["created"],
-            Value::String("2026-04-01".to_string())
-        );
-        assert_eq!(
-            beta_tasks[0]["start"],
-            Value::String("2026-04-02".to_string())
-        );
-        assert_eq!(
-            beta_tasks[0]["scheduled"],
-            Value::String("2026-04-05".to_string())
-        );
-        assert_eq!(beta_tasks[0]["priority"], Value::String("high".to_string()));
-        assert_eq!(
-            beta_tasks[0]["recurrence"],
-            Value::String("every week".to_string())
-        );
-        assert_eq!(
-            beta_tasks[0]["blocked-by"],
-            Value::String("ALPHA-1".to_string())
-        );
-        assert_eq!(beta_tasks[0]["id"], Value::String("BETA-1".to_string()));
-
-        let search = search_vault(
-            &paths,
-            &SearchQuery {
-                text: "dv.table".to_string(),
-                ..SearchQuery::default()
-            },
-        )
-        .expect("search should succeed");
-        assert!(search.hits.is_empty());
+        assert_dataview_fixture_row_counts(connection);
+        assert_beta_task_properties(connection);
+        assert_dashboard_dataview_blocks(connection);
+        assert_dashboard_list_items(connection);
+        assert_dashboard_properties(connection);
+        assert_unsupported_js_messages(connection);
+        assert_task_to_list_links(connection);
+        assert_dashboard_list_metadata(&paths);
+        assert_dashboard_task_metadata(&paths);
+        assert_project_task_metadata(&paths);
+        assert_dataview_search_excludes_js_block_contents(&paths);
     }
 
     #[test]
@@ -3307,15 +3370,15 @@ mod tests {
             Value::String("none".to_string())
         );
         assert_eq!(
-            eval(r#"[[Alpha]].file.tasks[0].due"#),
+            eval(r"[[Alpha]].file.tasks[0].due"),
             Value::String("2026-04-02".to_string())
         );
         assert_eq!(
-            eval(r#"[[Alpha]].FILE.NAME"#),
+            eval(r"[[Alpha]].FILE.NAME"),
             Value::String("Alpha".to_string())
         );
-        assert_eq!(eval(r#"[[Bob]].role"#), Value::String("editor".to_string()));
-        assert_eq!(eval(r#"[[Dashboard]].inline_expressions"#), Value::Null);
+        assert_eq!(eval(r"[[Bob]].role"), Value::String("editor".to_string()));
+        assert_eq!(eval(r"[[Dashboard]].inline_expressions"), Value::Null);
     }
 
     #[test]

@@ -1244,9 +1244,9 @@ WHERE [[People/Bob]].role = "editor""#,
 
         let result = evaluate_dql(
             &paths,
-            r#"TABLE WITHOUT ID file.path AS path
+            r"TABLE WITHOUT ID file.path AS path
 FROM #project
-SORT path ASC"#,
+SORT path ASC",
             None,
         )
         .expect("DQL should evaluate");
@@ -1479,8 +1479,8 @@ FLATTEN plain"#,
 
         let tags = evaluate_dql(
             &paths,
-            r#"TABLE WITHOUT ID file.name AS page
-FROM #project/list"#,
+            r"TABLE WITHOUT ID file.name AS page
+FROM #project/list",
             None,
         )
         .expect("tag expansion query should evaluate");
@@ -1524,9 +1524,9 @@ FROM "Dashboard""#,
 
         let incoming = evaluate_dql(
             &paths,
-            r#"TABLE WITHOUT ID file.name AS page
+            r"TABLE WITHOUT ID file.name AS page
 FROM [[Notes/B]]
-SORT page ASC"#,
+SORT page ASC",
             None,
         )
         .expect("incoming source query should evaluate");
@@ -1534,9 +1534,9 @@ SORT page ASC"#,
 
         let outgoing = evaluate_dql(
             &paths,
-            r#"TABLE WITHOUT ID file.name AS page
+            r"TABLE WITHOUT ID file.name AS page
 FROM outgoing([[Notes/B]])
-SORT page ASC"#,
+SORT page ASC",
             None,
         )
         .expect("outgoing source query should evaluate");

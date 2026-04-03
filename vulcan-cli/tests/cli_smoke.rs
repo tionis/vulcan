@@ -2158,7 +2158,7 @@ fn doctor_json_output_reports_dataview_specific_issues() {
     assert_eq!(json["summary"]["type_mismatches"], 1);
     assert_eq!(
         json["summary"]["unsupported_syntax"],
-        Value::Number((if cfg!(feature = "js_runtime") { 0 } else { 1 }).into())
+        Value::Number(usize::from(!cfg!(feature = "js_runtime")).into())
     );
     assert!(json["parse_failures"][0]["message"]
         .as_str()
@@ -3017,60 +3017,62 @@ fn search_sort_orders_results_and_reports_sort_plan() {
 
     let paths = VaultPaths::new(&vault_root);
     let database = CacheDatabase::open(&paths).expect("db should open");
-    database
-        .connection()
-        .execute(
-            "UPDATE documents SET file_mtime = ? WHERE path = ?",
-            (100_i64, "Alpha.md"),
-        )
-        .expect("alpha mtime should update");
-    database
-        .connection()
-        .execute(
-            "UPDATE documents SET file_mtime = ? WHERE path = ?",
-            (300_i64, "Beta.md"),
-        )
-        .expect("beta mtime should update");
-    database
-        .connection()
-        .execute(
-            "UPDATE documents SET file_mtime = ? WHERE path = ?",
-            (200_i64, "Gamma.md"),
-        )
-        .expect("gamma mtime should update");
+    let set_mtime = |path: &str, mtime: i64| {
+        database
+            .connection()
+            .execute(
+                "UPDATE documents SET file_mtime = ? WHERE path = ?",
+                (mtime, path),
+            )
+            .expect("document mtime should update");
+    };
+    set_mtime("Alpha.md", 100);
+    set_mtime("Beta.md", 300);
+    set_mtime("Gamma.md", 200);
 
     let vault_root_str = vault_root
         .to_str()
         .expect("vault path should be valid utf-8")
         .to_string();
-
-    let path_desc_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
-        .args([
+    let search_rows = |fields: &str, sort: &str, explain: bool| {
+        let mut args = vec![
             "--vault",
-            &vault_root_str,
+            vault_root_str.as_str(),
             "--refresh",
             "off",
             "--output",
             "json",
             "--fields",
-            "document_path",
+            fields,
             "search",
             "dashboard",
             "--sort",
-            "path-desc",
-        ])
-        .assert()
-        .success();
-    let path_desc_rows = parse_stdout_json_lines(&path_desc_assert);
+            sort,
+        ];
+        if explain {
+            args.push("--explain");
+        }
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(args)
+            .assert()
+            .success();
+        parse_stdout_json_lines(&assert)
+    };
+    let document_paths = |rows: &[Value]| {
+        rows.iter()
+            .map(|row| {
+                row["document_path"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let path_desc_rows = search_rows("document_path", "path-desc", false);
     assert_eq!(
-        path_desc_rows
-            .iter()
-            .map(|row| row["document_path"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string())
-            .collect::<Vec<_>>(),
+        document_paths(&path_desc_rows),
         vec![
             "Gamma.md".to_string(),
             "Beta.md".to_string(),
@@ -3078,34 +3080,13 @@ fn search_sort_orders_results_and_reports_sort_plan() {
         ]
     );
 
-    let modified_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
-        .args([
-            "--vault",
-            &vault_root_str,
-            "--refresh",
-            "off",
-            "--output",
-            "json",
-            "--fields",
-            "document_path,parsed_query_explanation",
-            "search",
-            "dashboard",
-            "--sort",
-            "modified-newest",
-            "--explain",
-        ])
-        .assert()
-        .success();
-    let modified_rows = parse_stdout_json_lines(&modified_assert);
+    let modified_rows = search_rows(
+        "document_path,parsed_query_explanation",
+        "modified-newest",
+        true,
+    );
     assert_eq!(
-        modified_rows
-            .iter()
-            .map(|row| row["document_path"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string())
-            .collect::<Vec<_>>(),
+        document_paths(&modified_rows),
         vec![
             "Beta.md".to_string(),
             "Gamma.md".to_string(),
@@ -5467,7 +5448,7 @@ fn write_test_editor(base: &Path, body: &str) -> String {
         let script = base.join("editor.sh");
         fs::write(
             &script,
-            format!("#!/bin/sh\nprintf '%s\\n' '{}' > \"$1\"\n", body),
+            format!("#!/bin/sh\nprintf '%s\\n' '{body}' > \"$1\"\n"),
         )
         .expect("editor script should be written");
         let mut permissions = fs::metadata(&script)

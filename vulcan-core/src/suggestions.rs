@@ -1114,7 +1114,7 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].left_path, "Docs/Guide.md");
         assert_eq!(candidates[0].right_path, "Docs/Guides.md");
-        assert_eq!(candidates[0].score, 0.8);
+        assert!((candidates[0].score - 0.8).abs() < f64::EPSILON);
         assert_eq!(candidates[0].reasons, vec!["similar title"]);
     }
 
@@ -1208,10 +1208,7 @@ mod tests {
             }));
         }
 
-        eprintln!(
-            "suggest_mentions benchmark: {} candidates in {:?}",
-            candidate_count, elapsed
-        );
+        eprintln!("suggest_mentions benchmark: {candidate_count} candidates in {elapsed:?}");
     }
 
     #[test]

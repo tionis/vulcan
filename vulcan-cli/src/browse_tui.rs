@@ -2790,7 +2790,7 @@ mod tests {
             .args(args)
             .status()
             .expect("git should launch");
-        assert!(status.success(), "git command failed: {:?}", args);
+        assert!(status.success(), "git command failed: {args:?}");
     }
 
     fn init_git_repo(vault_root: &Path) {

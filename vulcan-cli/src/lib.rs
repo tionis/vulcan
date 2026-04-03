@@ -9069,7 +9069,7 @@ mod tests {
             .args(args)
             .status()
             .expect("git should launch");
-        assert!(status.success(), "git command failed: {:?}", args);
+        assert!(status.success(), "git command failed: {args:?}");
     }
 
     fn init_git_repo(vault_root: &Path) {
@@ -10030,7 +10030,7 @@ mod tests {
     }
 
     fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-        let adjusted_year = year - if month <= 2 { 1 } else { 0 };
+        let adjusted_year = year - i64::from(month <= 2);
         let era = if adjusted_year >= 0 {
             adjusted_year
         } else {
