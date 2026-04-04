@@ -2590,13 +2590,13 @@ Parity with the other plugin importers. Dataview settings are currently auto-loa
 
 ### 9.18 CLI redesign — command reorganization, note CRUD, JS runtime, and agent tools
 
-**Goal:** Restructure the CLI command surface into a clean two-level hierarchy, add single-note CRUD operations, extend the query system, implement a general-purpose JS runtime with REPL, add web/git tools for agent use, and embed integrated documentation. This is a pre-alpha clean break — no backwards compatibility with the current flat command layout.
+**Goal:** Restructure the CLI command surface into a clean two-level hierarchy, add single-note CRUD operations, extend the query system, implement a general-purpose JS runtime with REPL, add web/git tools for agent use, and embed integrated documentation. The public help/describe surface now follows the grouped hierarchy; hidden migration aliases may remain temporarily while the cutover finishes.
 
 **Design principle:** The CLI is simultaneously a human-facing tool and the tool interface for the AI assistant (9.12). Every command should have clean `--output json` support, deterministic behavior, and stable output contracts. The reorganization groups related commands under two-level subcommand namespaces for discoverability without sacrificing ergonomics.
 
 #### 9.18.1 Command tree reorganization
 
-Restructure all existing commands into logical groups. This is a clean break — old command names are removed, not aliased.
+Restructure all existing commands into logical groups. The public command surface is the grouped hierarchy; temporary hidden aliases may remain during migration.
 
 **Depends on:** Phase 7 (all commands that are being moved must exist first)
 
@@ -2631,18 +2631,18 @@ Restructure all existing commands into logical groups. This is a clean break —
   - `output.rs` — shared output utilities (color, pagination, JSON helpers, `ListOutputControls`)
   - `resolve.rs` — note resolution and interactive selection helpers
   - `lib.rs` retains only top-level dispatch routing and shared setup
-- [ ] Restructure `Command` enum in `cli.rs` to use nested subcommand enums for each group
-- [ ] Move existing commands into their new groups:
+- [x] Restructure `Command` enum in `cli.rs` to use nested subcommand enums for each group
+- [x] Move existing commands into their new groups:
   - `links`, `backlinks` → `note links`, `note backlinks`
   - `rename-alias`, `rename-heading`, `rename-block-ref`, `rename-property`, `merge-tags`, `rewrite`, `move`, `link-mentions` → `refactor *`
   - `suggest` → `refactor suggest`
   - `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
-- [ ] Alias commands that appear in both group and top-level: `note doctor` → `doctor <note>`, `note diff` → `diff <note>`
+- [x] Alias commands that appear in both group and top-level: `note doctor` → `doctor <note>`, `note diff` → `diff <note>`
 - [ ] Add a calendar navigation/rendering mode for periodic notes in the browse TUI; Phase 13 WebUI can reuse the same periodic/event data foundation for a graphical calendar view
-- [ ] Update `describe` command output to reflect new hierarchy
-- [ ] Update shell completion generation
+- [x] Update `describe` command output to reflect new hierarchy
+- [x] Update shell completion generation
 - [ ] Update all integration tests
-- [ ] Update `docs/cli.md` with new command reference
+- [x] Update `docs/cli.md` with new command reference
 
 #### 9.18.2 Note CRUD commands (`note` group)
 
@@ -2759,22 +2759,22 @@ Move existing mutation commands under `refactor` namespace. No behavioral change
 
 **Script execution**
 
-- [ ] `vulcan run <script.js>` — execute a JS file (strips `#!` shebang line if present)
-- [ ] `vulcan run <script-name>` — look up by name in `.vulcan/scripts/` directory (strips `#!` shebang line if present)
-- [ ] `vulcan run --script` — shebang entry point: identical to `vulcan run <script.js>` but designed for use in shebang lines (`#!/usr/bin/env -S vulcan run --script`). Makes JS scripts directly executable by the OS, external agent harnesses (Claude Code, Codex, Gemini CLI), and shell pipelines without knowing they are Vulcan JS.
+- [x] `vulcan run <script.js>` — execute a JS file (strips `#!` shebang line if present)
+- [x] `vulcan run <script-name>` — look up by name in `.vulcan/scripts/` directory (strips `#!` shebang line if present)
+- [x] `vulcan run --script` — shebang entry point: identical to `vulcan run <script.js>` but designed for use in shebang lines (`#!/usr/bin/env -S vulcan run --script`). Makes JS scripts directly executable by the OS, external agent harnesses (Claude Code, Codex, Gemini CLI), and shell pipelines without knowing they are Vulcan JS.
 - [ ] `--sandbox strict|fs|net|none` — sandbox isolation level (default: `strict`)
   - `strict`: CPU/memory limits, no I/O beyond read-only vault API
   - `fs`: adds write access to vault (note CRUD, frontmatter mutations, refactors)
   - `net`: adds network access (`web.search()`, `web.fetch()`)
   - `none`: drops resource limits (CPU/memory), retains all API access
 - [ ] `--timeout <duration>` — execution timeout (default: 30s), enforced via `Runtime::set_interrupt_handler()`
-- [ ] `console.log()` output to stdout at all sandbox levels
-- [ ] Script exit code: 0 on success, non-zero on error
-- [ ] `--output json` wraps script output in structured JSON
+- [x] `console.log()` output to stdout at all sandbox levels
+- [x] Script exit code: 0 on success, non-zero on error
+- [x] `--output json` wraps script output in structured JSON
 
 **REPL**
 
-- [ ] `vulcan run` (no arguments) — drops into interactive JS REPL
+- [x] `vulcan run` (no arguments) — drops into interactive JS REPL
 - [ ] Persistent `Context` across evaluations (variables survive between prompts)
 - [ ] Multi-line input: detect incomplete expressions (unmatched `{`, `(`, template literals)
 - [ ] Tab completion for `vault.`, `vault.graph.`, `note.` and other API namespaces
@@ -2888,16 +2888,16 @@ default_sandbox = "strict"   # default --sandbox level
 scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
 ```
 
-- [ ] Implement `vault` global object with note(), notes(), query(), search() methods
+- [x] Implement `vault` global object with note(), notes(), query(), search() methods
 - [ ] Implement `Note` JS class wrapping `NoteIndex`/`NoteRecord` core structs
-- [ ] Implement `vault.graph` object wrapping petgraph structure
-- [ ] Implement collection API with `.where()`, `.sortBy()`, `.limit()`, `.forEach()`
+- [x] Implement `vault.graph` object wrapping petgraph structure
+- [x] Implement collection API with `.where()`, `.sortBy()`, `.limit()`, `.forEach()`
 - [x] Implement `vault.daily` namespace (delegates to 9.16 infrastructure)
 - [x] Implement `vault.events()` aggregation across daily notes
 - [ ] Implement write methods (Tier 2) with sandbox level checks
 - [ ] Implement `vault.transaction()` for atomic batch mutations
 - [ ] Implement `web.search()` and `web.fetch()` (Tier 3), gated on `net` sandbox
-- [ ] Implement `help(obj)` introspection function (see 9.18.7)
+- [x] Implement `help(obj)` introspection function (see 9.18.7)
 - [ ] Unit tests: each API method, sandbox enforcement, timeout/memory limits
 - [ ] Integration tests: scripts against test vault, REPL session simulation
 
@@ -3007,7 +3007,7 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a to
 
 **`help()` in JS REPL**
 
-- [ ] `help(obj)` function available in the JS runtime
+- [x] `help(obj)` function available in the JS runtime
 - [ ] Displays function signature, parameter descriptions, return type, examples, and cross-references
 - [ ] Each Rust function exposed to JS carries its docstring as metadata
 - [ ] Example:
@@ -3044,10 +3044,10 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a to
 
 Task mutation commands (`tasks create`, `tasks complete`, `tasks reschedule`) are defined in the unified CLI surface (9.15.9). This sub-phase covers the implementation:
 
-- [ ] Inline task creation: modify note content using `note patch` infrastructure (9.18.2)
-- [ ] Task completion: update inline task checkbox or TaskNotes frontmatter status
-- [ ] Task rescheduling: update due date in inline task emoji/annotation or TaskNotes frontmatter
-- [ ] Auto-commit if enabled
+- [x] Inline task creation: modify note content using `note patch` infrastructure (9.18.2)
+- [x] Task completion: update inline task checkbox or TaskNotes frontmatter status
+- [x] Task rescheduling: update due date in inline task emoji/annotation or TaskNotes frontmatter
+- [x] Auto-commit if enabled
 
 ### Phase 9 implementation order
 
