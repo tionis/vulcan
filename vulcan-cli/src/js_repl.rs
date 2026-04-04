@@ -1,14 +1,18 @@
 use crate::{render_dataview_inline_value, CliError, OutputFormat};
-use crossterm::cursor::{MoveToColumn, MoveUp};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::queue;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
+use rustyline::completion::{Completer, Pair};
+use rustyline::config::{CompletionType, Config};
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Context, Editor, Helper};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::io::{self, IsTerminal};
+use std::path::Path;
 use std::time::Duration;
 use vulcan_core::{
     DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DataviewJsSession, JsRuntimeSandbox,
@@ -72,34 +76,35 @@ pub(crate) fn run_js_repl(
     fs::create_dir_all(paths.vulcan_dir()).map_err(CliError::operation)?;
 
     let history_path = paths.vulcan_dir().join("repl_history");
-    let mut state = ReplInputState::load(history_path, REPL_COMPLETIONS)?;
-    let mut stdout = io::stdout();
-    let _raw_mode = RawModeGuard::enable()?;
-    state.render(&mut stdout)?;
+    let mut history = load_history(&history_path)?;
+    let mut editor = build_repl_editor(&history, REPL_COMPLETIONS)?;
+    let mut pending = String::new();
 
     loop {
-        let Event::Key(key) = event::read().map_err(CliError::operation)? else {
-            continue;
+        let prompt = if pending.is_empty() {
+            PRIMARY_PROMPT
+        } else {
+            CONTINUATION_PROMPT
         };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-
-        match state.handle_key(key) {
-            ReplAction::Continue => state.render(&mut stdout)?,
-            ReplAction::ShowCompletions(items) => {
-                state.begin_message_block(&mut stdout)?;
-                if !items.is_empty() {
-                    println!("{}", items.join("  "));
+        match editor.readline(prompt) {
+            Ok(line) => {
+                if !pending.is_empty() {
+                    pending.push('\n');
                 }
-                state.render(&mut stdout)?;
-            }
-            ReplAction::Submit(source) => {
-                state.begin_message_block(&mut stdout)?;
+                pending.push_str(&line);
+                if repl_input_needs_continuation(&pending) {
+                    continue;
+                }
+
+                let source = std::mem::take(&mut pending);
                 let trimmed = source.trim();
                 if trimmed.is_empty() {
-                    state.render(&mut stdout)?;
                     continue;
+                }
+                if record_submission(&mut history, &source) {
+                    let _ = editor
+                        .add_history_entry(source.as_str())
+                        .map_err(|error| CliError::operation(&error))?;
                 }
                 if matches!(trimmed, ".exit" | ".quit") {
                     break;
@@ -109,16 +114,18 @@ pub(crate) fn run_js_repl(
                     Ok(result) => print_repl_result(output, &result)?,
                     Err(error) => print_repl_error(output, &error.to_string())?,
                 }
-                state.render(&mut stdout)?;
             }
-            ReplAction::Exit => {
-                state.begin_message_block(&mut stdout)?;
+            Err(ReadlineError::Interrupted) => {
+                pending.clear();
+            }
+            Err(ReadlineError::Eof) => {
                 break;
             }
+            Err(error) => return Err(CliError::operation(&error)),
         }
     }
 
-    state.save_history()?;
+    save_history(&history_path, &history)?;
     Ok(())
 }
 
@@ -313,204 +320,85 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), CliError> {
     Ok(())
 }
 
-struct RawModeGuard;
-
-impl RawModeGuard {
-    fn enable() -> Result<Self, CliError> {
-        enable_raw_mode().map_err(CliError::operation)?;
-        Ok(Self)
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ReplAction {
-    Continue,
-    ShowCompletions(Vec<String>),
-    Submit(String),
-    Exit,
-}
+type ReplEditor = Editor<ReplHelper, DefaultHistory>;
 
 #[derive(Debug, Clone)]
-struct ReplInputState {
-    buffer: String,
-    history: Vec<String>,
-    history_path: PathBuf,
-    history_cursor: Option<usize>,
-    saved_buffer: String,
+struct ReplHelper {
     completions: Vec<String>,
-    rendered_lines: usize,
 }
 
-impl ReplInputState {
-    fn load(history_path: PathBuf, completions: &[&str]) -> Result<Self, CliError> {
-        Ok(Self {
-            buffer: String::new(),
-            history: load_history(&history_path)?,
-            history_path,
-            history_cursor: None,
-            saved_buffer: String::new(),
+impl ReplHelper {
+    fn new(completions: &[&str]) -> Self {
+        Self {
             completions: completions.iter().map(|item| (*item).to_string()).collect(),
-            rendered_lines: 0,
-        })
+        }
     }
 
-    fn save_history(&self) -> Result<(), CliError> {
-        if let Some(parent) = self
-            .history_path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            fs::create_dir_all(parent).map_err(CliError::operation)?;
+    fn completion_candidates(&self, line: &str, pos: usize) -> Option<(usize, Vec<String>)> {
+        if pos > line.len() {
+            return None;
         }
-        let contents = self
-            .history
+        let (start, prefix) = completion_prefix(&line[..pos])?;
+        let matches = self
+            .completions
             .iter()
-            .map(serde_json::to_string)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(CliError::operation)?
-            .join("\n");
-        if contents.is_empty() {
-            fs::write(&self.history_path, "").map_err(CliError::operation)?;
-        } else {
-            fs::write(&self.history_path, format!("{contents}\n")).map_err(CliError::operation)?;
-        }
-        Ok(())
+            .filter(|candidate| candidate.starts_with(prefix))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        (!matches.is_empty()).then_some((start, matches))
     }
+}
 
-    fn handle_key(&mut self, key: KeyEvent) -> ReplAction {
-        if key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('d' | 'D') if self.buffer.is_empty() => return ReplAction::Exit,
-                KeyCode::Char('c' | 'C') => {
-                    self.clear_buffer();
-                    return ReplAction::Continue;
-                }
-                _ => {}
-            }
-        }
+impl Helper for ReplHelper {}
 
-        match key.code {
-            KeyCode::Enter => {
-                if repl_input_needs_continuation(&self.buffer) {
-                    self.buffer.push('\n');
-                    return ReplAction::Continue;
-                }
-                ReplAction::Submit(self.take_submission())
-            }
-            KeyCode::Backspace => {
-                self.buffer.pop();
-                self.history_cursor = None;
-                ReplAction::Continue
-            }
-            KeyCode::Up => {
-                self.navigate_history(-1);
-                ReplAction::Continue
-            }
-            KeyCode::Down => {
-                self.navigate_history(1);
-                ReplAction::Continue
-            }
-            KeyCode::Tab => match complete_buffer(&mut self.buffer, &self.completions) {
-                CompletionOutcome::None | CompletionOutcome::Applied => ReplAction::Continue,
-                CompletionOutcome::Choices(items) => ReplAction::ShowCompletions(items),
-            },
-            KeyCode::Char(character)
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                self.buffer.push(character);
-                self.history_cursor = None;
-                ReplAction::Continue
-            }
-            _ => ReplAction::Continue,
-        }
+impl Hinter for ReplHelper {
+    type Hint = String;
+}
+
+impl Highlighter for ReplHelper {}
+
+impl Validator for ReplHelper {}
+
+impl Completer for ReplHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let Some((start, matches)) = self.completion_candidates(line, pos) else {
+            return Ok((pos, Vec::new()));
+        };
+        Ok((
+            start,
+            matches
+                .into_iter()
+                .map(|candidate| Pair {
+                    display: candidate.clone(),
+                    replacement: candidate,
+                })
+                .collect(),
+        ))
     }
+}
 
-    fn render(&mut self, stdout: &mut io::Stdout) -> Result<(), CliError> {
-        if self.rendered_lines > 0 {
-            queue!(
-                stdout,
-                MoveUp(u16::try_from(self.rendered_lines.saturating_sub(1)).unwrap_or(u16::MAX)),
-                MoveToColumn(0),
-                Clear(ClearType::FromCursorDown)
-            )
-            .map_err(CliError::operation)?;
-        }
-
-        let lines = render_prompt_lines(&self.buffer);
-        for (index, line) in lines.iter().enumerate() {
-            if index > 0 {
-                writeln!(stdout).map_err(CliError::operation)?;
-            }
-            write!(stdout, "{line}").map_err(CliError::operation)?;
-        }
-        stdout.flush().map_err(CliError::operation)?;
-        self.rendered_lines = lines.len();
-        Ok(())
+fn build_repl_editor(history: &[String], completions: &[&str]) -> Result<ReplEditor, CliError> {
+    let config = Config::builder()
+        .completion_type(CompletionType::List)
+        .build();
+    let mut editor = Editor::<ReplHelper, DefaultHistory>::with_config(config)
+        .map_err(|error| CliError::operation(&error))?;
+    editor.set_helper(Some(ReplHelper::new(completions)));
+    for entry in history {
+        let _ = editor
+            .add_history_entry(entry.as_str())
+            .map_err(|error| CliError::operation(&error))?;
     }
-
-    fn begin_message_block(&mut self, stdout: &mut io::Stdout) -> Result<(), CliError> {
-        if self.rendered_lines > 0 {
-            writeln!(stdout).map_err(CliError::operation)?;
-            stdout.flush().map_err(CliError::operation)?;
-        }
-        self.rendered_lines = 0;
-        Ok(())
-    }
-
-    fn clear_buffer(&mut self) {
-        self.buffer.clear();
-        self.history_cursor = None;
-        self.saved_buffer.clear();
-    }
-
-    fn take_submission(&mut self) -> String {
-        let submission = std::mem::take(&mut self.buffer);
-        self.history_cursor = None;
-        self.saved_buffer.clear();
-        let trimmed = submission.trim();
-        if !trimmed.is_empty() && self.history.last() != Some(&submission) {
-            self.history.push(submission.clone());
-            if self.history.len() > MAX_HISTORY_ENTRIES {
-                self.history.remove(0);
-            }
-        }
-        submission
-    }
-
-    fn navigate_history(&mut self, delta: isize) {
-        if self.history.is_empty() {
-            return;
-        }
-
-        match (self.history_cursor, delta) {
-            (None, -1) => {
-                self.saved_buffer = self.buffer.clone();
-                self.history_cursor = Some(self.history.len() - 1);
-            }
-            (Some(index), -1) if index > 0 => {
-                self.history_cursor = Some(index - 1);
-            }
-            (Some(index), 1) if index + 1 < self.history.len() => {
-                self.history_cursor = Some(index + 1);
-            }
-            (Some(_), 1) => {
-                self.history_cursor = None;
-                self.buffer.clone_from(&self.saved_buffer);
-                return;
-            }
-            _ => return,
-        }
-
-        if let Some(index) = self.history_cursor {
-            self.buffer.clone_from(&self.history[index]);
-        }
-    }
+    Ok(editor)
 }
 
 fn load_history(path: &Path) -> Result<Vec<String>, CliError> {
@@ -525,44 +413,35 @@ fn load_history(path: &Path) -> Result<Vec<String>, CliError> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum CompletionOutcome {
-    None,
-    Applied,
-    Choices(Vec<String>),
+fn save_history(path: &Path, history: &[String]) -> Result<(), CliError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    let contents = history
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CliError::operation)?
+        .join("\n");
+    if contents.is_empty() {
+        fs::write(path, "").map_err(CliError::operation)
+    } else {
+        fs::write(path, format!("{contents}\n")).map_err(CliError::operation)
+    }
 }
 
-fn complete_buffer(buffer: &mut String, completions: &[String]) -> CompletionOutcome {
-    let Some((start, prefix)) = completion_prefix(buffer) else {
-        return CompletionOutcome::None;
-    };
-
-    let matches = completions
-        .iter()
-        .filter(|candidate| candidate.starts_with(prefix))
-        .cloned()
-        .collect::<Vec<_>>();
-    if matches.is_empty() {
-        return CompletionOutcome::None;
+fn record_submission(history: &mut Vec<String>, submission: &str) -> bool {
+    if submission.trim().is_empty() || history.last().is_some_and(|last| last == submission) {
+        return false;
     }
-
-    let replacement = longest_common_prefix(&matches);
-    if replacement.len() > prefix.len() {
-        buffer.replace_range(start.., &replacement);
-        return CompletionOutcome::Applied;
+    history.push(submission.to_string());
+    if history.len() > MAX_HISTORY_ENTRIES {
+        history.remove(0);
     }
-
-    if matches.len() == 1 {
-        buffer.replace_range(start.., &matches[0]);
-        return CompletionOutcome::Applied;
-    }
-
-    let choices = matches
-        .into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    CompletionOutcome::Choices(choices)
+    true
 }
 
 fn completion_prefix(buffer: &str) -> Option<(usize, &str)> {
@@ -576,44 +455,6 @@ fn completion_prefix(buffer: &str) -> Option<(usize, &str)> {
         .map_or(0, |(index, ch)| index + ch.len_utf8());
     let prefix = &buffer[start..];
     (!prefix.is_empty()).then_some((start, prefix))
-}
-
-fn longest_common_prefix(values: &[String]) -> String {
-    let Some(first) = values.first() else {
-        return String::new();
-    };
-    let mut prefix = first.clone();
-    for candidate in &values[1..] {
-        while !candidate.starts_with(&prefix) {
-            prefix.pop();
-            if prefix.is_empty() {
-                break;
-            }
-        }
-    }
-    prefix
-}
-
-fn render_prompt_lines(buffer: &str) -> Vec<String> {
-    if buffer.is_empty() {
-        return vec![PRIMARY_PROMPT.to_string()];
-    }
-
-    let mut lines = buffer
-        .split('\n')
-        .enumerate()
-        .map(|(index, line)| {
-            if index == 0 {
-                format!("{PRIMARY_PROMPT}{line}")
-            } else {
-                format!("{CONTINUATION_PROMPT}{line}")
-            }
-        })
-        .collect::<Vec<_>>();
-    if buffer.ends_with('\n') {
-        lines.push(CONTINUATION_PROMPT.to_string());
-    }
-    lines
 }
 
 fn repl_input_needs_continuation(source: &str) -> bool {
@@ -722,10 +563,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
     #[test]
     fn continuation_detection_covers_braces_templates_and_trailing_operators() {
         assert!(repl_input_needs_continuation("if (true) {"));
@@ -737,19 +574,19 @@ mod tests {
 
     #[test]
     fn completion_expands_namespaces_and_lists_ambiguous_matches() -> Result<(), CliError> {
-        let temp_dir = tempdir().expect("temp dir should be created");
-        let mut state =
-            ReplInputState::load(temp_dir.path().join("history.jsonl"), REPL_COMPLETIONS)?;
+        let helper = ReplHelper::new(REPL_COMPLETIONS);
 
-        state.buffer = "vault.gr".to_string();
-        assert_eq!(state.handle_key(key(KeyCode::Tab)), ReplAction::Continue);
-        assert_eq!(state.buffer, "vault.graph.");
+        let (graph_start, graph_matches) = helper
+            .completion_candidates("vault.gr", "vault.gr".len())
+            .expect("completion candidates should exist");
+        assert_eq!(graph_start, 0);
+        assert!(graph_matches.iter().any(|item| item == "vault.graph."));
 
-        state.buffer = "vault.".to_string();
-        let action = state.handle_key(key(KeyCode::Tab));
-        assert!(
-            matches!(action, ReplAction::ShowCompletions(items) if items.iter().any(|item| item == "vault.note(") && items.iter().any(|item| item == "vault.graph."))
-        );
+        let (_, matches) = helper
+            .completion_candidates("vault.", "vault.".len())
+            .expect("completion candidates should exist");
+        assert!(matches.iter().any(|item| item == "vault.note("));
+        assert!(matches.iter().any(|item| item == "vault.graph."));
         Ok(())
     }
 
@@ -757,35 +594,33 @@ mod tests {
     fn history_round_trips_multiline_entries() -> Result<(), CliError> {
         let temp_dir = tempdir().expect("temp dir should be created");
         let history_path = temp_dir.path().join("history.jsonl");
-        let mut state = ReplInputState::load(history_path.clone(), REPL_COMPLETIONS)?;
-        state.history = vec![
+        let history = vec![
             "1 + 1".to_string(),
             "const note = vault.note(\"Home\");\nnote.path".to_string(),
         ];
-        state.save_history()?;
+        save_history(&history_path, &history)?;
 
         let loaded = load_history(&history_path)?;
-        assert_eq!(loaded, state.history);
+        assert_eq!(loaded, history);
         Ok(())
     }
 
     #[test]
-    fn input_state_submits_complete_forms_and_navigates_history() -> Result<(), CliError> {
-        let temp_dir = tempdir().expect("temp dir should be created");
-        let mut state =
-            ReplInputState::load(temp_dir.path().join("history.jsonl"), REPL_COMPLETIONS)?;
-        state.buffer = "1 + 1".to_string();
-        assert_eq!(
-            state.handle_key(key(KeyCode::Enter)),
-            ReplAction::Submit("1 + 1".to_string())
-        );
-        assert_eq!(state.history, vec!["1 + 1".to_string()]);
+    fn record_submission_deduplicates_and_caps_history() {
+        let mut history = vec!["0".to_string()];
+        assert!(record_submission(&mut history, "1 + 1"));
+        assert!(!record_submission(&mut history, "1 + 1"));
 
-        state.buffer = "pending".to_string();
-        assert_eq!(state.handle_key(key(KeyCode::Up)), ReplAction::Continue);
-        assert_eq!(state.buffer, "1 + 1");
-        assert_eq!(state.handle_key(key(KeyCode::Down)), ReplAction::Continue);
-        assert_eq!(state.buffer, "pending");
-        Ok(())
+        history.clear();
+        for index in 0..=MAX_HISTORY_ENTRIES {
+            let _ = record_submission(&mut history, &index.to_string());
+        }
+        let expected_last = MAX_HISTORY_ENTRIES.to_string();
+        assert_eq!(history.len(), MAX_HISTORY_ENTRIES);
+        assert_eq!(history.first().map(String::as_str), Some("1"));
+        assert_eq!(
+            history.last().map(String::as_str),
+            Some(expected_last.as_str())
+        );
     }
 }
