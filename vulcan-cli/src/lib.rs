@@ -11,11 +11,11 @@ pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
     ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
     DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs, ExportCommand, ExportFormat,
-    GitCommand, GraphCommand, InitArgs, KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs,
-    PeriodicSubcommand, QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand,
-    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TasksListSourceArg, TasksViewCommand,
-    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchMode,
+    GitCommand, GraphCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand,
+    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryFormatArg, RefactorCommand,
+    RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg, SuggestCommand,
+    TasksCommand, TasksListSourceArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -1242,9 +1242,31 @@ struct NoteCreateReport {
 struct NoteAppendReport {
     path: String,
     appended: bool,
+    mode: String,
     checked: bool,
+    created: bool,
     heading: Option<String>,
+    period_type: Option<String>,
+    reference_date: Option<String>,
+    warnings: Vec<String>,
     diagnostics: Vec<DoctorDiagnosticIssue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoteAppendMode {
+    Append,
+    Prepend,
+    AfterHeading,
+}
+
+impl NoteAppendMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Prepend => "prepend",
+            Self::AfterHeading => "after_heading",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -6748,6 +6770,7 @@ fn render_inbox_entry(format: &str, text: &str, variables: &TemplateVariables) -
         .replace("{datetime}", &variables.datetime)
 }
 
+#[cfg(test)]
 fn render_template_contents(
     template: &str,
     variables: &TemplateVariables,
@@ -6844,6 +6867,26 @@ impl TemplateTimestamp {
             .as_secs()
             .try_into()
             .unwrap_or(i64::MAX);
+        let days_since_epoch = seconds.div_euclid(86_400);
+        let seconds_of_day = seconds.rem_euclid(86_400);
+        let hour = seconds_of_day / 3_600;
+        let minute = (seconds_of_day % 3_600) / 60;
+        let second = seconds_of_day % 60;
+        let (year, month, day) = civil_from_days(days_since_epoch);
+
+        Self {
+            days_since_epoch,
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        }
+    }
+
+    fn from_millis(ms: i64) -> Self {
+        let seconds = ms.div_euclid(1_000);
         let days_since_epoch = seconds.div_euclid(86_400);
         let seconds_of_day = seconds.rem_euclid(86_400);
         let hour = seconds_of_day / 3_600;
@@ -7404,31 +7447,131 @@ fn run_note_create_command(
     })
 }
 
+fn note_append_periodic_type(periodic: NoteAppendPeriodicArg) -> &'static str {
+    match periodic {
+        NoteAppendPeriodicArg::Daily => "daily",
+        NoteAppendPeriodicArg::Weekly => "weekly",
+        NoteAppendPeriodicArg::Monthly => "monthly",
+    }
+}
+
+fn prepend_entry_after_frontmatter(contents: &str, entry: &str) -> NoteEntryInsertion {
+    let body_start = find_frontmatter_block(contents).map_or(0, |(_, _, body_start)| body_start);
+    let prefix = &contents[..body_start];
+    let body = contents[body_start..].trim_start_matches('\n');
+    let mut updated = prefix.to_string();
+    let line_number = i64::try_from(updated.lines().count().saturating_add(1))
+        .expect("line count should fit in i64");
+    updated.push_str(entry.trim_end());
+    updated.push('\n');
+    if !body.is_empty() {
+        updated.push('\n');
+        updated.push_str(body.trim_end_matches('\n'));
+        updated.push('\n');
+    }
+
+    NoteEntryInsertion {
+        updated,
+        line_number,
+        change: RefactorChange {
+            before: String::new(),
+            after: entry.trim_end().to_string(),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NoteAppendOptions<'a> {
+    note: Option<&'a str>,
+    text: &'a str,
+    mode: NoteAppendMode,
+    heading: Option<&'a str>,
+    periodic: Option<NoteAppendPeriodicArg>,
+    date: Option<&'a str>,
+    vars: &'a [String],
+    check: bool,
+}
+
 fn run_note_append_command(
     paths: &VaultPaths,
-    note: &str,
-    text: &str,
-    heading: Option<&str>,
-    check: bool,
+    options: NoteAppendOptions<'_>,
     output: OutputFormat,
     use_stderr_color: bool,
 ) -> Result<NoteAppendReport, CliError> {
-    let (relative_path, existing) = read_existing_note_source(paths, note)?;
+    let NoteAppendOptions {
+        note,
+        text,
+        mode,
+        heading,
+        periodic,
+        date,
+        vars,
+        check,
+    } = options;
+    let config = load_vault_config(paths).config;
+    let bound_vars = parse_template_var_bindings(vars)?;
+    let (relative_path, existing, created, period_type, reference_date, mut warnings) =
+        if let Some(periodic) = periodic {
+            let period_type = note_append_periodic_type(periodic);
+            let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
+            let mut warnings = Vec::new();
+            let created =
+                write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings)?;
+            let absolute_path = paths.vault_root().join(&target.path);
+            let existing = fs::read_to_string(&absolute_path).unwrap_or_default();
+            (
+                target.path,
+                existing,
+                created,
+                Some(period_type.to_string()),
+                Some(target.reference_date),
+                warnings,
+            )
+        } else {
+            let note = note.ok_or_else(|| {
+                CliError::operation("`note append` requires a note or --periodic <type>")
+            })?;
+            let (relative_path, existing) = read_existing_note_source(paths, note)?;
+            (relative_path, existing, false, None, None, Vec::new())
+        };
     let appended_text = note_append_input_text(text)?;
-    let updated = if let Some(heading) = heading {
-        append_under_heading(&existing, heading, &appended_text)
-    } else {
-        append_at_end(&existing, &appended_text)
+    let rendered = render_template_request(TemplateRenderRequest {
+        paths,
+        vault_config: &config,
+        templates: &[],
+        template_path: None,
+        template_text: &appended_text,
+        target_path: &relative_path,
+        target_contents: Some(&existing),
+        engine: TemplateEngineKind::Native,
+        vars: &bound_vars,
+        allow_mutations: false,
+        run_mode: TemplateRunMode::Append,
+    })?;
+    warnings.extend(rendered.warnings);
+    warnings.extend(rendered.diagnostics);
+    let insertion = match mode {
+        NoteAppendMode::Append => append_entry_at_end(&existing, &rendered.content),
+        NoteAppendMode::Prepend => prepend_entry_after_frontmatter(&existing, &rendered.content),
+        NoteAppendMode::AfterHeading => {
+            append_entry_under_heading(&existing, heading.unwrap_or_default(), &rendered.content)
+        }
     };
-    fs::write(paths.vault_root().join(&relative_path), &updated).map_err(CliError::operation)?;
-    let diagnostics = maybe_check_note(paths, &relative_path, &updated, check)?;
+    fs::write(paths.vault_root().join(&relative_path), &insertion.updated)
+        .map_err(CliError::operation)?;
+    let diagnostics = maybe_check_note(paths, &relative_path, &insertion.updated, check)?;
     run_incremental_scan(paths, output, use_stderr_color)?;
 
     Ok(NoteAppendReport {
         path: relative_path,
         appended: true,
+        mode: mode.as_str().to_string(),
         checked: check,
+        created,
         heading: heading.map(ToOwned::to_owned),
+        period_type,
+        reference_date,
+        warnings,
         diagnostics,
     })
 }
@@ -9048,20 +9191,51 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_note_create_report(cli.output, &report)
             }
             NoteCommand::Append {
-                note,
+                note_or_text,
                 text,
                 heading,
+                prepend,
+                append: _,
+                periodic,
+                date,
+                vars,
                 check,
                 no_commit,
             } => {
                 let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
                 warn_auto_commit_if_needed(&auto_commit);
+                let (note, text) = match (*periodic, text.as_deref()) {
+                    (Some(_), None) => (None, note_or_text.as_str()),
+                    (None, Some(text)) => (Some(note_or_text.as_str()), text),
+                    (Some(_), Some(_)) => {
+                        return Err(CliError::operation(format!(
+                            "`note append --periodic` accepts only the appended text; got unexpected note argument `{note_or_text}`"
+                        )));
+                    }
+                    (None, None) => {
+                        return Err(CliError::operation(format!(
+                            "`note append` requires both NOTE and TEXT; got only `{note_or_text}`"
+                        )));
+                    }
+                };
                 let report = run_note_append_command(
                     &paths,
-                    note,
-                    text,
-                    heading.as_deref(),
-                    *check,
+                    NoteAppendOptions {
+                        note,
+                        text,
+                        mode: if *prepend {
+                            NoteAppendMode::Prepend
+                        } else if heading.is_some() {
+                            NoteAppendMode::AfterHeading
+                        } else {
+                            NoteAppendMode::Append
+                        },
+                        heading: heading.as_deref(),
+                        periodic: *periodic,
+                        date: date.as_deref(),
+                        vars,
+                        check: *check,
+                    },
                     cli.output,
                     use_stderr_color,
                 )?;
@@ -12737,10 +12911,30 @@ fn print_note_append_report(
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
-            if let Some(heading) = report.heading.as_deref() {
-                println!("Appended to {} under {}.", report.path, heading);
-            } else {
-                println!("Appended to {}.", report.path);
+            let target = report.period_type.as_deref().map_or_else(
+                || report.path.clone(),
+                |period_type| {
+                    if let Some(reference_date) = report.reference_date.as_deref() {
+                        format!("{} ({period_type} {reference_date})", report.path)
+                    } else {
+                        format!("{} ({period_type})", report.path)
+                    }
+                },
+            );
+            match report.mode.as_str() {
+                "after_heading" => println!(
+                    "Appended to {} under {}.",
+                    target,
+                    report.heading.as_deref().unwrap_or_default()
+                ),
+                "prepend" => println!("Prepended to {target}."),
+                _ => println!("Appended to {target}."),
+            }
+            if report.created {
+                println!("Created missing note first.");
+            }
+            for warning in &report.warnings {
+                eprintln!("warning: {warning}");
             }
             print_note_check_warnings(&report.path, &report.diagnostics);
             Ok(())
@@ -17963,6 +18157,42 @@ mod tests {
                     context: 1,
                     no_frontmatter: false,
                     raw: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_append_periodic_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "note",
+            "append",
+            "- {{VALUE:title|case:slug}}",
+            "--periodic",
+            "daily",
+            "--date",
+            "2026-04-03",
+            "--prepend",
+            "--var",
+            "title=Release Planning",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::Append {
+                    note_or_text: "- {{VALUE:title|case:slug}}".to_string(),
+                    text: None,
+                    heading: None,
+                    prepend: true,
+                    append: false,
+                    periodic: Some(NoteAppendPeriodicArg::Daily),
+                    date: Some("2026-04-03".to_string()),
+                    vars: vec!["title=Release Planning".to_string()],
+                    check: false,
+                    no_commit: false,
                 },
             }
         );

@@ -923,6 +923,85 @@ fn note_append_under_heading_reports_check_diagnostics() {
 }
 
 #[test]
+fn note_append_prepend_renders_quickadd_value_tokens() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "append",
+            "Dashboard",
+            "- {{VALUE:title|case:slug}}",
+            "--prepend",
+            "--var",
+            "title=Release Planning",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let rendered = fs::read_to_string(vault_root.join("Dashboard.md"))
+        .expect("Dashboard.md should be readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(json["path"], "Dashboard.md");
+    assert_eq!(json["mode"], "prepend");
+    assert!(rendered.starts_with(
+        "---\nstatus: active\ntags:\n  - project\n---\n- release-planning\n\n# Dashboard\n"
+    ));
+}
+
+#[test]
+fn note_append_periodic_creates_note_and_renders_quickadd_tokens() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "append",
+            "- {{VALUE:title|case:slug}} due {{VDATE:due,YYYY-MM-DD}}",
+            "--periodic",
+            "daily",
+            "--date",
+            "2026-04-03",
+            "--var",
+            "title=Release Planning",
+            "--var",
+            "due=tomorrow",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let rendered = fs::read_to_string(vault_root.join("Journal/Daily/2026-04-03.md"))
+        .expect("daily note should be readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(json["path"], "Journal/Daily/2026-04-03.md");
+    assert_eq!(json["mode"], "append");
+    assert_eq!(json["period_type"], "daily");
+    assert_eq!(json["reference_date"], "2026-04-03");
+    assert!(json["created"].as_bool().is_some_and(|created| created));
+    assert!(rendered.contains("- release-planning due 2026-04-05\n"));
+}
+
+#[test]
 fn note_patch_enforces_match_safety_and_supports_regex_dry_runs() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
