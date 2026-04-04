@@ -41,6 +41,25 @@ impl IndexedTaskNote {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesTimeEntry {
+    pub start_time: String,
+    pub end_time: Option<String>,
+    pub description: Option<String>,
+    pub duration_minutes: i64,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesReminder {
+    pub id: String,
+    pub reminder_type: String,
+    pub related_to: Option<String>,
+    pub offset: Option<String>,
+    pub absolute_time: Option<String>,
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskNotesStatusState {
     pub name: String,
@@ -238,6 +257,88 @@ pub fn tasknotes_priority_weight(config: &TaskNotesConfig, priority: &str) -> Op
         .iter()
         .find(|candidate| candidate.value.eq_ignore_ascii_case(priority))
         .map(|candidate| f64::from(candidate.weight))
+}
+
+#[must_use]
+pub fn parse_tasknote_time_entries(values: &[Value], now_ms: i64) -> Vec<TaskNotesTimeEntry> {
+    values
+        .iter()
+        .filter_map(|value| parse_tasknote_time_entry(value, now_ms))
+        .collect()
+}
+
+#[must_use]
+pub fn active_tasknote_time_entry(values: &[Value], now_ms: i64) -> Option<TaskNotesTimeEntry> {
+    parse_tasknote_time_entries(values, now_ms)
+        .into_iter()
+        .rev()
+        .find(|entry| entry.is_active)
+}
+
+#[must_use]
+pub fn tasknotes_total_time_minutes(values: &[Value], now_ms: i64) -> i64 {
+    parse_tasknote_time_entries(values, now_ms)
+        .into_iter()
+        .map(|entry| entry.duration_minutes)
+        .sum()
+}
+
+#[must_use]
+pub fn parse_tasknote_reminders(values: &[Value]) -> Vec<TaskNotesReminder> {
+    values.iter().filter_map(parse_tasknote_reminder).collect()
+}
+
+#[must_use]
+pub fn parse_iso8601_duration_ms(duration: &str) -> Option<i64> {
+    let captures = Regex::new(
+        r"^(-?)P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$",
+    )
+    .expect("valid ISO 8601 duration regex")
+    .captures(duration.trim())?;
+
+    let sign = captures.get(1).map_or("", |value| value.as_str());
+    let years = capture_i64(&captures, 2);
+    let months = capture_i64(&captures, 3);
+    let weeks = capture_i64(&captures, 4);
+    let days = capture_i64(&captures, 5);
+    let hours = capture_i64(&captures, 6);
+    let minutes = capture_i64(&captures, 7);
+    let seconds = capture_i64(&captures, 8);
+
+    let mut total_ms = 0_i64;
+    total_ms += years * 365 * 24 * 60 * 60 * 1_000;
+    total_ms += months * 30 * 24 * 60 * 60 * 1_000;
+    total_ms += weeks * 7 * 24 * 60 * 60 * 1_000;
+    total_ms += days * 24 * 60 * 60 * 1_000;
+    total_ms += hours * 60 * 60 * 1_000;
+    total_ms += minutes * 60 * 1_000;
+    total_ms += seconds * 1_000;
+
+    Some(if sign == "-" { -total_ms } else { total_ms })
+}
+
+#[must_use]
+pub fn tasknotes_reminder_notify_at(
+    task: &IndexedTaskNote,
+    reminder: &TaskNotesReminder,
+) -> Option<i64> {
+    if reminder.reminder_type.eq_ignore_ascii_case("absolute") {
+        return reminder
+            .absolute_time
+            .as_deref()
+            .and_then(parse_date_like_string);
+    }
+
+    let anchor = match reminder.related_to.as_deref() {
+        Some("scheduled") => task.scheduled.as_deref(),
+        Some("due") => task.due.as_deref(),
+        _ => None,
+    }?;
+    let offset_ms = reminder
+        .offset
+        .as_deref()
+        .and_then(parse_iso8601_duration_ms)?;
+    parse_date_like_string(anchor).map(|anchor_ms| anchor_ms + offset_ms)
 }
 
 #[must_use]
@@ -653,6 +754,94 @@ fn format_day_ms(ms: i64) -> String {
 }
 
 const DAY_MS: i64 = 86_400_000;
+
+fn parse_tasknote_time_entry(value: &Value, now_ms: i64) -> Option<TaskNotesTimeEntry> {
+    let object = value.as_object()?;
+    let start_time = object.get("startTime")?.as_str()?.trim().to_string();
+    if start_time.is_empty() {
+        return None;
+    }
+
+    let end_time = object
+        .get("endTime")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let description = object
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let is_active = end_time.is_none();
+    let duration_minutes = object
+        .get("duration")
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            let start_ms = parse_date_like_string(&start_time)?;
+            let end_ms = end_time
+                .as_deref()
+                .and_then(parse_date_like_string)
+                .unwrap_or(now_ms);
+            Some((end_ms - start_ms).div_euclid(60_000))
+        })
+        .unwrap_or_default()
+        .max(0);
+
+    Some(TaskNotesTimeEntry {
+        start_time,
+        end_time,
+        description,
+        duration_minutes,
+        is_active,
+    })
+}
+
+fn parse_tasknote_reminder(value: &Value) -> Option<TaskNotesReminder> {
+    let object = value.as_object()?;
+    let id = object.get("id")?.as_str()?.trim().to_string();
+    let reminder_type = object.get("type")?.as_str()?.trim().to_string();
+    if id.is_empty() || reminder_type.is_empty() {
+        return None;
+    }
+
+    Some(TaskNotesReminder {
+        id,
+        reminder_type,
+        related_to: object
+            .get("relatedTo")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        offset: object
+            .get("offset")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        absolute_time: object
+            .get("absoluteTime")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        description: object
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn capture_i64(captures: &regex::Captures<'_>, index: usize) -> i64 {
+    captures
+        .get(index)
+        .and_then(|value| value.as_str().parse::<i64>().ok())
+        .unwrap_or_default()
+}
 
 fn custom_fields(properties: &Map<String, Value>, config: &TaskNotesConfig) -> Map<String, Value> {
     let reserved = config.field_mapping.reserved_property_names();
@@ -1077,6 +1266,90 @@ mod tests {
         assert_eq!(
             tasknotes_default_recurrence_rule(TaskNotesRecurrenceDefault::Monthly).as_deref(),
             Some("FREQ=MONTHLY;INTERVAL=1")
+        );
+    }
+
+    #[test]
+    fn parses_time_entries_and_reports_active_sessions() {
+        let now_ms = parse_date_like_string("2026-04-04T12:00:00Z").expect("now should parse");
+        let entries = vec![
+            json!({
+                "startTime": "2026-04-04T09:00:00Z",
+                "endTime": "2026-04-04T10:15:00Z",
+                "description": "Deep work"
+            }),
+            json!({
+                "startTime": "2026-04-04T11:30:00Z",
+                "description": "Follow-up"
+            }),
+        ];
+
+        let parsed = parse_tasknote_time_entries(&entries, now_ms);
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].duration_minutes, 75);
+        assert_eq!(parsed[1].duration_minutes, 30);
+        assert!(parsed[1].is_active);
+        assert_eq!(tasknotes_total_time_minutes(&entries, now_ms), 105);
+        assert_eq!(
+            active_tasknote_time_entry(&entries, now_ms)
+                .as_ref()
+                .and_then(|entry| entry.description.as_deref()),
+            Some("Follow-up")
+        );
+    }
+
+    #[test]
+    fn resolves_relative_and_absolute_reminders() {
+        let task = IndexedTaskNote {
+            title: "Write docs".to_string(),
+            status: "in-progress".to_string(),
+            priority: "high".to_string(),
+            due: Some("2026-04-10T09:00:00Z".to_string()),
+            scheduled: Some("2026-04-08".to_string()),
+            completed_date: None,
+            date_created: None,
+            date_modified: None,
+            archived: false,
+            tags: vec!["task".to_string()],
+            contexts: Vec::new(),
+            projects: Vec::new(),
+            time_estimate: Some(90.0),
+            recurrence: None,
+            recurrence_anchor: None,
+            complete_instances: Vec::new(),
+            skipped_instances: Vec::new(),
+            blocked_by: Vec::new(),
+            reminders: Vec::new(),
+            time_entries: Vec::new(),
+            custom_fields: Map::new(),
+        };
+        let reminders = parse_tasknote_reminders(&[
+            json!({
+                "id": "rel-1",
+                "type": "relative",
+                "relatedTo": "due",
+                "offset": "-PT15M",
+                "description": "Before due"
+            }),
+            json!({
+                "id": "abs-1",
+                "type": "absolute",
+                "absoluteTime": "2026-04-09T18:30:00Z"
+            }),
+        ]);
+
+        assert_eq!(reminders.len(), 2);
+        assert_eq!(parse_iso8601_duration_ms("-PT15M"), Some(-900_000));
+        assert_eq!(
+            tasknotes_reminder_notify_at(&task, &reminders[0])
+                .map(format_day_ms)
+                .as_deref(),
+            Some("2026-04-10")
+        );
+        assert_eq!(
+            tasknotes_reminder_notify_at(&task, &reminders[1]),
+            parse_date_like_string("2026-04-09T18:30:00Z")
         );
     }
 }

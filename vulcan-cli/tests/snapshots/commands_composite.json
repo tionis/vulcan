@@ -1725,6 +1725,199 @@
             "subcommands": []
           },
           {
+            "about": "Manage TaskNotes time tracking sessions",
+            "name": "track",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Start time tracking for one TaskNotes task",
+                "name": "start",
+                "options": [
+                  {
+                    "help": "Task path, filename, alias, or title",
+                    "id": "task",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "TASK"
+                    ]
+                  },
+                  {
+                    "help": "Optional description for the started session",
+                    "id": "description",
+                    "long": "description",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DESCRIPTION"
+                    ]
+                  },
+                  {
+                    "help": "Report the planned change without writing the task file",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Skip auto-commit even when enabled in config",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Stop the active time tracking session",
+                "name": "stop",
+                "options": [
+                  {
+                    "help": "Optional task path, filename, alias, or title",
+                    "id": "task",
+                    "long": null,
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TASK"
+                    ]
+                  },
+                  {
+                    "help": "Report the planned change without writing the task file",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Skip auto-commit even when enabled in config",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Show the currently active time tracking session",
+                "name": "status",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Show time entries for one TaskNotes task",
+                "name": "log",
+                "options": [
+                  {
+                    "help": "Task path, filename, alias, or title",
+                    "id": "task",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "TASK"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Summarize tracked time across TaskNotes tasks",
+                "name": "summary",
+                "options": [
+                  {
+                    "help": "Summary window",
+                    "id": "period",
+                    "long": "period",
+                    "possible_values": [
+                      "day",
+                      "week",
+                      "month",
+                      "all"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PERIOD"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
+            "about": "List TaskNotes reminders due within a time window",
+            "name": "reminders",
+            "options": [
+              {
+                "help": "Show reminders up to this duration ahead; overdue reminders are included",
+                "id": "upcoming",
+                "long": "upcoming",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "UPCOMING"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List TaskNotes tasks due within a time window",
+            "name": "due",
+            "options": [
+              {
+                "help": "Show due tasks up to this duration ahead; overdue tasks are included",
+                "id": "within",
+                "long": "within",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WITHIN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Inspect TaskNotes Bases views",
             "name": "view",
             "options": [],

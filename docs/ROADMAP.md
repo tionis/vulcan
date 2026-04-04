@@ -2208,26 +2208,26 @@ Reuses the dependency graph infrastructure from 9.10.3 (which handles inline emo
 
 Core time tracking and a simple CLI pomodoro timer. GUI (progress bars, visual timers, notifications) deferred to post-WebUI. See [Deferred enhancements — Time tracking GUI](#deferred-time-tracking-gui).
 
-- [ ] Parse `timeEntries` array: each entry has `startTime`, `endTime`, `description`
-- [ ] `vulcan tasks track start <task>` — start a time tracking session (append to `timeEntries` with open `endTime`)
-- [ ] `vulcan tasks track stop [task]` — stop the active session (set `endTime`)
-- [ ] `vulcan tasks track status` — show currently active tracking session
-- [ ] `vulcan tasks track log <task>` — show time entries for a task
-- [ ] `vulcan tasks track summary [--period day|week|month]` — aggregate time spent across tasks
+- [x] Parse `timeEntries` array: each entry has `startTime`, `endTime`, `description`
+- [x] `vulcan tasks track start <task>` — start a time tracking session (append to `timeEntries` with open `endTime`)
+- [x] `vulcan tasks track stop [task]` — stop the active session (set `endTime`)
+- [x] `vulcan tasks track status` — show currently active tracking session
+- [x] `vulcan tasks track log <task>` — show time entries for a task
+- [x] `vulcan tasks track summary [--period day|week|month]` — aggregate time spent across tasks
 - [ ] Pomodoro timer (CLI):
   - [ ] `vulcan tasks pomodoro start <task>` — start a pomodoro work session
   - [ ] Configurable durations: `pomodoro.work_duration` (default 25min), `pomodoro.short_break` (5min), `pomodoro.long_break` (15min), `pomodoro.long_break_interval` (every 4 pomodoros)
   - [ ] Pomodoro session history stored in task frontmatter (`pomodoros` array) or daily note (configurable)
-- [ ] `timeEstimate` field: compare estimated vs actual time in reports
+- [x] `timeEstimate` field: compare estimated vs actual time in reports
 
 #### 9.15.7 Reminders
 
 Core reminder data model and query support. Reminder *delivery* (desktop notifications, Telegram messages, etc.) is deferred — see [Deferred enhancements — Reminder delivery channels](#deferred-reminder-delivery).
 
-- [ ] Parse `reminders` array: each reminder has `id`, `type` (relative/absolute), `relatedTo` (due/scheduled), `offset` (ISO 8601 duration, e.g., `-PT15M`), `description`
-- [ ] `vulcan tasks reminders [--upcoming <duration>]` — list upcoming reminders within a time window
-- [ ] `vulcan tasks due [--within <duration>]` — show tasks due within a time window
-- [ ] Reminder evaluation engine: given current time, resolve which reminders are active/overdue (reusable by future delivery integrations)
+- [x] Parse `reminders` array: each reminder has `id`, `type` (relative/absolute), `relatedTo` (due/scheduled), `offset` (ISO 8601 duration, e.g., `-PT15M`), `description`
+- [x] `vulcan tasks reminders [--upcoming <duration>]` — list upcoming reminders within a time window
+- [x] `vulcan tasks due [--within <duration>]` — show tasks due within a time window
+- [x] Reminder evaluation engine: given current time, resolve which reminders are active/overdue (reusable by future delivery integrations)
 
 #### 9.15.8 Bases view integration
 

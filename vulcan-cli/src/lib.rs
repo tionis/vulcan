@@ -19,9 +19,9 @@ pub use cli::{
     GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg,
     NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryFormatArg,
     RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
-    SuggestCommand, TasksCommand, TasksListSourceArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand,
-    WebFetchMode,
+    SuggestCommand, TasksCommand, TasksListSourceArg, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -63,45 +63,46 @@ use vulcan_core::expression::parse_expression;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
-    add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bulk_replace,
-    cache_vacuum, create_checkpoint, doctor_fix, doctor_vault, evaluate_base_file,
-    evaluate_dataview_js_query, evaluate_dataview_js_with_options, evaluate_dql,
-    evaluate_note_inline_expressions, evaluate_tasks_query, expected_periodic_note_path,
-    export_daily_events_to_ics, export_static_search_index, extract_tasknote, git_blame, git_diff,
-    git_recent_log, git_status, initialize_vault, inspect_base_file, inspect_cache, link_mentions,
-    list_checkpoints, list_daily_note_events, list_saved_reports, load_dataview_blocks,
-    load_events_for_periodic_note, load_kanban_board, load_saved_report, load_tasks_blocks,
-    load_vault_config, merge_tags, move_kanban_card, move_note, parse_dql_with_diagnostics,
-    parse_tasknote_natural_language, parse_tasks_query, period_range_for_date,
-    plan_base_note_create, query_change_report, query_notes, rebuild_vault_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts, resolve_link,
-    resolve_note_reference, resolve_periodic_note, save_saved_report, scan_vault_with_progress,
-    search_vault, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
-    tasknotes_default_date_value, tasknotes_default_recurrence_rule, tasknotes_status_state,
-    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
-    BasesEvalReport, BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport,
-    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
-    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
-    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
-    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
-    KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
-    PeriodicNotesImporter, PluginImporter, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
-    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
-    WatchReport,
+    active_tasknote_time_entry, add_kanban_card, all_importers, annotate_import_conflicts,
+    archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint, doctor_fix, doctor_vault,
+    evaluate_base_file, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
+    evaluate_dql, evaluate_note_inline_expressions, evaluate_tasks_query,
+    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index,
+    extract_tasknote, git_blame, git_diff, git_recent_log, git_status, initialize_vault,
+    inspect_base_file, inspect_cache, link_mentions, list_checkpoints, list_daily_note_events,
+    list_saved_reports, load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
+    load_saved_report, load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card,
+    move_note, parse_dql_with_diagnostics, parse_tasknote_natural_language,
+    parse_tasknote_reminders, parse_tasknote_time_entries, parse_tasks_query,
+    period_range_for_date, plan_base_note_create, query_change_report, query_notes,
+    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note, save_saved_report,
+    scan_vault_with_progress, search_vault, shape_tasks_query_result, step_period_start,
+    task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
+    tasknotes_reminder_notify_at, tasknotes_status_state, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator,
+    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter,
+    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
+    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
+    PluginImporter, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
+    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
+    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -810,9 +811,129 @@ struct TaskShowReport {
     blocked_by: Vec<Value>,
     reminders: Vec<Value>,
     time_entries: Vec<Value>,
+    total_time_minutes: i64,
+    active_time_minutes: i64,
+    estimate_remaining_minutes: Option<i64>,
+    efficiency_ratio: Option<i64>,
     custom_fields: Value,
     frontmatter: Value,
     body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskTimeEntryReport {
+    start_time: String,
+    end_time: Option<String>,
+    description: Option<String>,
+    duration_minutes: i64,
+    active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskTrackReport {
+    action: String,
+    dry_run: bool,
+    path: String,
+    title: String,
+    session: TaskTimeEntryReport,
+    total_time_minutes: i64,
+    active_time_minutes: i64,
+    estimate_remaining_minutes: Option<i64>,
+    efficiency_ratio: Option<i64>,
+    #[serde(skip)]
+    changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskTrackStatusItem {
+    path: String,
+    title: String,
+    status: String,
+    priority: String,
+    session: TaskTimeEntryReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskTrackStatusReport {
+    active_sessions: Vec<TaskTrackStatusItem>,
+    total_active_sessions: usize,
+    total_elapsed_minutes: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskTrackLogReport {
+    path: String,
+    title: String,
+    total_time_minutes: i64,
+    active_time_minutes: i64,
+    estimate_remaining_minutes: Option<i64>,
+    efficiency_ratio: Option<i64>,
+    entries: Vec<TaskTimeEntryReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TaskTrackSummaryReport {
+    period: String,
+    from: String,
+    to: String,
+    total_minutes: i64,
+    total_hours: f64,
+    tasks_with_time: usize,
+    active_tasks: usize,
+    completed_tasks: usize,
+    top_tasks: Vec<TaskTrackSummaryTaskItem>,
+    top_projects: Vec<TaskTrackSummaryProjectItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskTrackSummaryTaskItem {
+    path: String,
+    title: String,
+    minutes: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskTrackSummaryProjectItem {
+    project: String,
+    minutes: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskDueReport {
+    reference_time: String,
+    within: String,
+    tasks: Vec<TaskDueItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskDueItem {
+    path: String,
+    title: String,
+    status: String,
+    priority: String,
+    due: String,
+    overdue: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskRemindersReport {
+    reference_time: String,
+    upcoming: String,
+    reminders: Vec<TaskReminderItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskReminderItem {
+    path: String,
+    title: String,
+    status: String,
+    priority: String,
+    reminder_id: String,
+    reminder_type: String,
+    related_to: Option<String>,
+    description: Option<String>,
+    notify_at: String,
+    overdue: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -902,6 +1023,13 @@ struct LoadedTaskNote {
     frontmatter_json: Value,
     indexed: vulcan_core::IndexedTaskNote,
     config: vulcan_core::VaultConfig,
+}
+
+#[derive(Debug, Clone)]
+struct TaskNoteRecord {
+    path: String,
+    indexed: vulcan_core::IndexedTaskNote,
+    completed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3315,6 +3443,172 @@ fn normalize_tasknote_body(body: &str) -> String {
     }
 }
 
+fn current_utc_timestamp_ms() -> i64 {
+    parse_date_like_string(&current_utc_timestamp_string()).unwrap_or_default()
+}
+
+fn format_utc_timestamp_ms(ms: i64) -> String {
+    TemplateTimestamp::from_millis(ms)
+        .default_strings()
+        .datetime
+}
+
+fn parse_rounded_i64(value: f64) -> Option<i64> {
+    format!("{value:.0}").parse::<i64>().ok()
+}
+
+fn parse_f64_value(value: i64) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(0.0)
+}
+
+fn tasknote_estimate_minutes(task: &vulcan_core::IndexedTaskNote) -> Option<i64> {
+    task.time_estimate.and_then(|minutes| {
+        minutes
+            .is_finite()
+            .then(|| parse_rounded_i64(minutes))
+            .flatten()
+            .filter(|minutes| *minutes > 0)
+    })
+}
+
+fn tasknote_time_metrics(
+    task: &vulcan_core::IndexedTaskNote,
+    now_ms: i64,
+) -> (i64, i64, Option<i64>, Option<i64>) {
+    let entries = parse_tasknote_time_entries(&task.time_entries, now_ms);
+    let total_time_minutes = entries
+        .iter()
+        .map(|entry| entry.duration_minutes)
+        .sum::<i64>();
+    let active_time_minutes = entries
+        .iter()
+        .filter(|entry| entry.is_active)
+        .map(|entry| entry.duration_minutes)
+        .sum::<i64>();
+    let estimate_remaining_minutes =
+        tasknote_estimate_minutes(task).map(|estimate| estimate.saturating_sub(total_time_minutes));
+    let efficiency_ratio = tasknote_estimate_minutes(task).map(|estimate| {
+        if estimate <= 0 {
+            0
+        } else {
+            parse_rounded_i64(
+                (parse_f64_value(total_time_minutes) / parse_f64_value(estimate)) * 100.0,
+            )
+            .unwrap_or_default()
+        }
+    });
+
+    (
+        total_time_minutes,
+        active_time_minutes,
+        estimate_remaining_minutes,
+        efficiency_ratio,
+    )
+}
+
+fn task_time_entry_report(entry: vulcan_core::TaskNotesTimeEntry) -> TaskTimeEntryReport {
+    TaskTimeEntryReport {
+        start_time: entry.start_time,
+        end_time: entry.end_time,
+        description: entry.description,
+        duration_minutes: entry.duration_minutes,
+        active: entry.is_active,
+    }
+}
+
+fn load_tasknote_records(paths: &VaultPaths) -> Result<Vec<TaskNoteRecord>, CliError> {
+    let config = load_vault_config(paths).config;
+    let note_index = load_note_index(paths).map_err(CliError::operation)?;
+    let mut records = note_index
+        .into_values()
+        .filter_map(|note| {
+            let title = Path::new(&note.document_path)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
+            let indexed = extract_tasknote(
+                &note.document_path,
+                title,
+                &note.properties,
+                &config.tasknotes,
+            )?;
+            let completed = tasknotes_status_state(&config.tasknotes, &indexed.status).completed;
+            Some(TaskNoteRecord {
+                path: note.document_path,
+                indexed,
+                completed,
+            })
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(records)
+}
+
+fn yaml_sequence_value(value: Option<&YamlValue>) -> Result<Vec<YamlValue>, CliError> {
+    match value {
+        None | Some(YamlValue::Null) => Ok(Vec::new()),
+        Some(YamlValue::Sequence(items)) => Ok(items.clone()),
+        Some(_) => Err(CliError::operation(
+            "TaskNotes frontmatter value must be a YAML sequence",
+        )),
+    }
+}
+
+fn tasknote_time_entry_yaml_value(
+    start_time: &str,
+    end_time: Option<&str>,
+    description: Option<&str>,
+) -> YamlValue {
+    let mut mapping = YamlMapping::new();
+    mapping.insert(
+        YamlValue::String("startTime".to_string()),
+        YamlValue::String(start_time.to_string()),
+    );
+    if let Some(end_time) = end_time {
+        mapping.insert(
+            YamlValue::String("endTime".to_string()),
+            YamlValue::String(end_time.to_string()),
+        );
+    }
+    if let Some(description) = description.filter(|description| !description.trim().is_empty()) {
+        mapping.insert(
+            YamlValue::String("description".to_string()),
+            YamlValue::String(description.to_string()),
+        );
+    }
+    YamlValue::Mapping(mapping)
+}
+
+fn resolve_task_track_summary_window(
+    config: &vulcan_core::VaultConfig,
+    period: TasksTrackSummaryPeriodArg,
+) -> Result<(String, String, i64, i64), CliError> {
+    let now_ms = current_utc_timestamp_ms();
+    let today = current_utc_date_string();
+
+    let (from, to) = match period {
+        TasksTrackSummaryPeriodArg::Day => (today.clone(), today),
+        TasksTrackSummaryPeriodArg::Week => {
+            period_range_for_date(&config.periodic, "weekly", &today)
+                .map(|(from, _)| (from, today))
+                .ok_or_else(|| CliError::operation("failed to resolve the current weekly period"))?
+        }
+        TasksTrackSummaryPeriodArg::Month => {
+            period_range_for_date(&config.periodic, "monthly", &today)
+                .map(|(from, _)| (from, today))
+                .ok_or_else(|| {
+                    CliError::operation("failed to resolve the current monthly period")
+                })?
+        }
+        TasksTrackSummaryPeriodArg::All => ("1970-01-01".to_string(), today),
+    };
+
+    let from_ms = parse_date_like_string(&from).ok_or_else(|| {
+        CliError::operation(format!("failed to parse summary start date: {from}"))
+    })?;
+    Ok((from, to, from_ms, now_ms))
+}
+
 fn tasknote_frontmatter_key(config: &vulcan_core::VaultConfig, property: &str) -> String {
     let property = property.trim();
     let mapping = &config.tasknotes.field_mapping;
@@ -4947,6 +5241,9 @@ where
 fn run_tasks_show_command(paths: &VaultPaths, task: &str) -> Result<TaskShowReport, CliError> {
     let loaded = load_tasknote_note(paths, task)?;
     let status_state = tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
+    let now_ms = current_utc_timestamp_ms();
+    let (total_time_minutes, active_time_minutes, estimate_remaining_minutes, efficiency_ratio) =
+        tasknote_time_metrics(&loaded.indexed, now_ms);
 
     Ok(TaskShowReport {
         path: loaded.path,
@@ -4971,9 +5268,487 @@ fn run_tasks_show_command(paths: &VaultPaths, task: &str) -> Result<TaskShowRepo
         blocked_by: loaded.indexed.blocked_by,
         reminders: loaded.indexed.reminders,
         time_entries: loaded.indexed.time_entries,
+        total_time_minutes,
+        active_time_minutes,
+        estimate_remaining_minutes,
+        efficiency_ratio,
         custom_fields: Value::Object(loaded.indexed.custom_fields),
         frontmatter: loaded.frontmatter_json,
         body: loaded.body,
+    })
+}
+
+fn run_tasks_track_start_command(
+    paths: &VaultPaths,
+    task: &str,
+    description: Option<&str>,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskTrackReport, CliError> {
+    let loaded = load_tasknote_note(paths, task)?;
+    let now_ms = current_utc_timestamp_ms();
+    if active_tasknote_time_entry(&loaded.indexed.time_entries, now_ms).is_some() {
+        return Err(CliError::operation(format!(
+            "time tracking is already active for {}",
+            loaded.path
+        )));
+    }
+
+    let start_time = current_utc_timestamp_string();
+    let session_description = description
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .unwrap_or("Work session")
+        .to_string();
+
+    let report = apply_loaded_tasknote_mutation(
+        paths,
+        &loaded,
+        "track_start",
+        dry_run,
+        output,
+        use_stderr_color,
+        |frontmatter, loaded| {
+            let key = &loaded.config.tasknotes.field_mapping.time_entries;
+            let yaml_key = YamlValue::String(key.clone());
+            let mut entries = yaml_sequence_value(frontmatter.get(&yaml_key))?;
+            entries.push(tasknote_time_entry_yaml_value(
+                &start_time,
+                None,
+                Some(&session_description),
+            ));
+
+            let mut changes = Vec::new();
+            if let Some(change) =
+                set_tasknote_frontmatter_value(frontmatter, key, Some(YamlValue::Sequence(entries)))
+            {
+                changes.push(change);
+            }
+            if let Some(change) = set_tasknote_frontmatter_value(
+                frontmatter,
+                &loaded.config.tasknotes.field_mapping.date_modified,
+                Some(YamlValue::String(current_utc_timestamp_string())),
+            ) {
+                changes.push(change);
+            }
+
+            Ok(TaskMutationPlan {
+                changes,
+                moved_to: None,
+            })
+        },
+    )?;
+
+    let mut updated_entries = loaded.indexed.time_entries.clone();
+    updated_entries.push(serde_json::json!({
+        "startTime": start_time,
+        "description": session_description,
+    }));
+    let session = active_tasknote_time_entry(&updated_entries, now_ms)
+        .map(task_time_entry_report)
+        .ok_or_else(|| CliError::operation("failed to resolve the started time entry"))?;
+    let updated_task = vulcan_core::IndexedTaskNote {
+        time_entries: updated_entries,
+        ..loaded.indexed.clone()
+    };
+    let (total_time_minutes, active_time_minutes, estimate_remaining_minutes, efficiency_ratio) =
+        tasknote_time_metrics(&updated_task, now_ms);
+
+    Ok(TaskTrackReport {
+        action: "start".to_string(),
+        dry_run,
+        path: loaded.path,
+        title: loaded.indexed.title,
+        session,
+        total_time_minutes,
+        active_time_minutes,
+        estimate_remaining_minutes,
+        efficiency_ratio,
+        changed_paths: report.changed_paths,
+    })
+}
+
+fn resolve_active_tasknote_record(
+    paths: &VaultPaths,
+    task: Option<&str>,
+    now_ms: i64,
+) -> Result<TaskNoteRecord, CliError> {
+    if let Some(task) = task {
+        let loaded = load_tasknote_note(paths, task)?;
+        return Ok(TaskNoteRecord {
+            path: loaded.path,
+            completed: tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status)
+                .completed,
+            indexed: loaded.indexed,
+        });
+    }
+
+    let active_records = load_tasknote_records(paths)?
+        .into_iter()
+        .filter(|record| active_tasknote_time_entry(&record.indexed.time_entries, now_ms).is_some())
+        .collect::<Vec<_>>();
+    match active_records.len() {
+        0 => Err(CliError::operation(
+            "no active TaskNotes time tracking sessions",
+        )),
+        1 => Ok(active_records
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| unreachable!())),
+        _ => Err(CliError::operation(
+            "multiple active TaskNotes time tracking sessions; specify the task to stop",
+        )),
+    }
+}
+
+fn run_tasks_track_stop_command(
+    paths: &VaultPaths,
+    task: Option<&str>,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskTrackReport, CliError> {
+    let now_ms = current_utc_timestamp_ms();
+    let record = resolve_active_tasknote_record(paths, task, now_ms)?;
+    let loaded = load_tasknote_note(paths, &record.path)?;
+    let active_entry = active_tasknote_time_entry(&loaded.indexed.time_entries, now_ms)
+        .ok_or_else(|| CliError::operation(format!("no active session for {}", loaded.path)))?;
+    let stop_time = current_utc_timestamp_string();
+
+    let report = apply_loaded_tasknote_mutation(
+        paths,
+        &loaded,
+        "track_stop",
+        dry_run,
+        output,
+        use_stderr_color,
+        |frontmatter, loaded| {
+            let key = &loaded.config.tasknotes.field_mapping.time_entries;
+            let yaml_key = YamlValue::String(key.clone());
+            let mut entries = yaml_sequence_value(frontmatter.get(&yaml_key))?;
+            let mut updated = false;
+
+            for entry in entries.iter_mut().rev() {
+                let Some(mapping) = entry.as_mapping_mut() else {
+                    continue;
+                };
+                let start_matches = mapping
+                    .get(YamlValue::String("startTime".to_string()))
+                    .and_then(YamlValue::as_str)
+                    .is_some_and(|value| value == active_entry.start_time);
+                let has_end = mapping
+                    .get(YamlValue::String("endTime".to_string()))
+                    .is_some();
+                if start_matches && !has_end {
+                    mapping.insert(
+                        YamlValue::String("endTime".to_string()),
+                        YamlValue::String(stop_time.clone()),
+                    );
+                    updated = true;
+                    break;
+                }
+            }
+
+            if !updated {
+                return Err(CliError::operation(format!(
+                    "failed to locate the active time entry in {}",
+                    loaded.path
+                )));
+            }
+
+            let mut changes = Vec::new();
+            if let Some(change) =
+                set_tasknote_frontmatter_value(frontmatter, key, Some(YamlValue::Sequence(entries)))
+            {
+                changes.push(change);
+            }
+            if let Some(change) = set_tasknote_frontmatter_value(
+                frontmatter,
+                &loaded.config.tasknotes.field_mapping.date_modified,
+                Some(YamlValue::String(current_utc_timestamp_string())),
+            ) {
+                changes.push(change);
+            }
+
+            Ok(TaskMutationPlan {
+                changes,
+                moved_to: None,
+            })
+        },
+    )?;
+
+    let mut updated_entries = loaded.indexed.time_entries.clone();
+    if let Some(entry) = updated_entries.iter_mut().rev().find(|entry| {
+        entry
+            .get("startTime")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == active_entry.start_time)
+            && entry.get("endTime").is_none()
+    }) {
+        if let Some(object) = entry.as_object_mut() {
+            object.insert("endTime".to_string(), Value::String(stop_time.clone()));
+        }
+    }
+    let stopped_entry = parse_tasknote_time_entries(&updated_entries, now_ms)
+        .into_iter()
+        .find(|entry| entry.start_time == active_entry.start_time)
+        .map(task_time_entry_report)
+        .ok_or_else(|| CliError::operation("failed to resolve the stopped time entry"))?;
+    let updated_task = vulcan_core::IndexedTaskNote {
+        time_entries: updated_entries,
+        ..loaded.indexed.clone()
+    };
+    let (total_time_minutes, active_time_minutes, estimate_remaining_minutes, efficiency_ratio) =
+        tasknote_time_metrics(&updated_task, now_ms);
+
+    Ok(TaskTrackReport {
+        action: "stop".to_string(),
+        dry_run,
+        path: loaded.path,
+        title: loaded.indexed.title,
+        session: stopped_entry,
+        total_time_minutes,
+        active_time_minutes,
+        estimate_remaining_minutes,
+        efficiency_ratio,
+        changed_paths: report.changed_paths,
+    })
+}
+
+fn run_tasks_track_status_command(paths: &VaultPaths) -> Result<TaskTrackStatusReport, CliError> {
+    let now_ms = current_utc_timestamp_ms();
+    let mut active_sessions = load_tasknote_records(paths)?
+        .into_iter()
+        .filter_map(|record| {
+            let session = active_tasknote_time_entry(&record.indexed.time_entries, now_ms)?;
+            Some(TaskTrackStatusItem {
+                path: record.path,
+                title: record.indexed.title,
+                status: record.indexed.status,
+                priority: record.indexed.priority,
+                session: task_time_entry_report(session),
+            })
+        })
+        .collect::<Vec<_>>();
+    active_sessions.sort_by(|left, right| {
+        left.session
+            .start_time
+            .cmp(&right.session.start_time)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let total_elapsed_minutes = active_sessions
+        .iter()
+        .map(|item| item.session.duration_minutes)
+        .sum();
+
+    Ok(TaskTrackStatusReport {
+        total_active_sessions: active_sessions.len(),
+        total_elapsed_minutes,
+        active_sessions,
+    })
+}
+
+fn run_tasks_track_log_command(
+    paths: &VaultPaths,
+    task: &str,
+) -> Result<TaskTrackLogReport, CliError> {
+    let loaded = load_tasknote_note(paths, task)?;
+    let now_ms = current_utc_timestamp_ms();
+    let entries = parse_tasknote_time_entries(&loaded.indexed.time_entries, now_ms)
+        .into_iter()
+        .map(task_time_entry_report)
+        .collect::<Vec<_>>();
+    let (total_time_minutes, active_time_minutes, estimate_remaining_minutes, efficiency_ratio) =
+        tasknote_time_metrics(&loaded.indexed, now_ms);
+
+    Ok(TaskTrackLogReport {
+        path: loaded.path,
+        title: loaded.indexed.title,
+        total_time_minutes,
+        active_time_minutes,
+        estimate_remaining_minutes,
+        efficiency_ratio,
+        entries,
+    })
+}
+
+fn run_tasks_track_summary_command(
+    paths: &VaultPaths,
+    period: TasksTrackSummaryPeriodArg,
+) -> Result<TaskTrackSummaryReport, CliError> {
+    let config = load_vault_config(paths).config;
+    let (from, to, from_ms, now_ms) = resolve_task_track_summary_window(&config, period)?;
+    let mut total_minutes = 0_i64;
+    let mut tasks_with_time = 0_usize;
+    let mut active_tasks = 0_usize;
+    let mut completed_tasks = 0_usize;
+    let mut task_totals = Vec::new();
+    let mut project_totals = HashMap::<String, i64>::new();
+
+    for record in load_tasknote_records(paths)? {
+        let entries = parse_tasknote_time_entries(&record.indexed.time_entries, now_ms);
+        let mut task_minutes = 0_i64;
+        let mut has_active_session = false;
+
+        for entry in entries {
+            let Some(start_ms) = parse_date_like_string(&entry.start_time) else {
+                continue;
+            };
+            if start_ms < from_ms || start_ms > now_ms {
+                continue;
+            }
+            task_minutes += entry.duration_minutes;
+            has_active_session |= entry.is_active;
+        }
+
+        if task_minutes <= 0 {
+            continue;
+        }
+
+        total_minutes += task_minutes;
+        tasks_with_time += 1;
+        if has_active_session {
+            active_tasks += 1;
+        } else if record.completed {
+            completed_tasks += 1;
+        }
+        task_totals.push(TaskTrackSummaryTaskItem {
+            path: record.path.clone(),
+            title: record.indexed.title.clone(),
+            minutes: task_minutes,
+        });
+        for project in &record.indexed.projects {
+            *project_totals.entry(project.clone()).or_default() += task_minutes;
+        }
+    }
+
+    task_totals.sort_by(|left, right| {
+        right
+            .minutes
+            .cmp(&left.minutes)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let mut top_projects = project_totals
+        .into_iter()
+        .map(|(project, minutes)| TaskTrackSummaryProjectItem { project, minutes })
+        .collect::<Vec<_>>();
+    top_projects.sort_by(|left, right| {
+        right
+            .minutes
+            .cmp(&left.minutes)
+            .then_with(|| left.project.cmp(&right.project))
+    });
+
+    Ok(TaskTrackSummaryReport {
+        period: match period {
+            TasksTrackSummaryPeriodArg::Day => "day",
+            TasksTrackSummaryPeriodArg::Week => "week",
+            TasksTrackSummaryPeriodArg::Month => "month",
+            TasksTrackSummaryPeriodArg::All => "all",
+        }
+        .to_string(),
+        from,
+        to,
+        total_minutes,
+        total_hours: parse_f64_value(total_minutes) / 60.0,
+        tasks_with_time,
+        active_tasks,
+        completed_tasks,
+        top_tasks: task_totals,
+        top_projects,
+    })
+}
+
+fn run_tasks_due_command(paths: &VaultPaths, within: &str) -> Result<TaskDueReport, CliError> {
+    let window_ms = parse_duration_string(within).ok_or_else(|| {
+        CliError::operation(format!("failed to parse due window duration: {within}"))
+    })?;
+    let now_ms = current_utc_timestamp_ms();
+    let deadline_ms = now_ms.saturating_add(window_ms.max(0));
+    let mut tasks = load_tasknote_records(paths)?
+        .into_iter()
+        .filter(|record| !record.indexed.archived && !record.completed)
+        .filter_map(|record| {
+            let due = record.indexed.due.as_ref()?;
+            let due_ms = parse_date_like_string(due)?;
+            (due_ms <= deadline_ms).then_some(TaskDueItem {
+                path: record.path,
+                title: record.indexed.title,
+                status: record.indexed.status,
+                priority: record.indexed.priority,
+                due: due.clone(),
+                overdue: due_ms < now_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| {
+        let left_due = parse_date_like_string(&left.due).unwrap_or(i64::MAX);
+        let right_due = parse_date_like_string(&right.due).unwrap_or(i64::MAX);
+        left_due
+            .cmp(&right_due)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    Ok(TaskDueReport {
+        reference_time: current_utc_timestamp_string(),
+        within: within.to_string(),
+        tasks,
+    })
+}
+
+fn run_tasks_reminders_command(
+    paths: &VaultPaths,
+    upcoming: &str,
+) -> Result<TaskRemindersReport, CliError> {
+    let window_ms = parse_duration_string(upcoming).ok_or_else(|| {
+        CliError::operation(format!(
+            "failed to parse reminder window duration: {upcoming}"
+        ))
+    })?;
+    let now_ms = current_utc_timestamp_ms();
+    let deadline_ms = now_ms.saturating_add(window_ms.max(0));
+    let mut reminders = Vec::new();
+
+    for record in load_tasknote_records(paths)?
+        .into_iter()
+        .filter(|record| !record.indexed.archived && !record.completed)
+    {
+        for reminder in parse_tasknote_reminders(&record.indexed.reminders) {
+            let Some(notify_at) = tasknotes_reminder_notify_at(&record.indexed, &reminder) else {
+                continue;
+            };
+            if notify_at > deadline_ms {
+                continue;
+            }
+            reminders.push(TaskReminderItem {
+                path: record.path.clone(),
+                title: record.indexed.title.clone(),
+                status: record.indexed.status.clone(),
+                priority: record.indexed.priority.clone(),
+                reminder_id: reminder.id,
+                reminder_type: reminder.reminder_type,
+                related_to: reminder.related_to,
+                description: reminder.description,
+                notify_at: format_utc_timestamp_ms(notify_at),
+                overdue: notify_at < now_ms,
+            });
+        }
+    }
+
+    reminders.sort_by(|left, right| {
+        let left_at = parse_date_like_string(&left.notify_at).unwrap_or(i64::MAX);
+        let right_at = parse_date_like_string(&right.notify_at).unwrap_or(i64::MAX);
+        left_at
+            .cmp(&right_at)
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.reminder_id.cmp(&right.reminder_id))
+    });
+
+    Ok(TaskRemindersReport {
+        reference_time: current_utc_timestamp_string(),
+        upcoming: upcoming.to_string(),
+        reminders,
     })
 }
 
@@ -13725,9 +14500,176 @@ fn print_task_show_report(output: OutputFormat, report: &TaskShowReport) -> Resu
             if !report.tags.is_empty() {
                 println!("Tags: {}", report.tags.join(", "));
             }
+            if report.total_time_minutes > 0 || report.active_time_minutes > 0 {
+                println!("Tracked: {}m", report.total_time_minutes);
+            }
+            if report.active_time_minutes > 0 {
+                println!("Active session: {}m", report.active_time_minutes);
+            }
+            if let Some(estimate_remaining_minutes) = report.estimate_remaining_minutes {
+                println!("Estimate remaining: {estimate_remaining_minutes}m");
+            }
+            if let Some(efficiency_ratio) = report.efficiency_ratio {
+                println!("Efficiency ratio: {efficiency_ratio}%");
+            }
             if !report.body.trim().is_empty() {
                 println!();
                 println!("{}", report.body.trim_end());
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_task_track_report(output: OutputFormat, report: &TaskTrackReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            let suffix = if report.dry_run { " (dry-run)" } else { "" };
+            println!("{}{}", report.path, suffix);
+            println!("Action: {}", report.action);
+            println!("Title: {}", report.title);
+            println!("Started: {}", report.session.start_time);
+            if let Some(end_time) = &report.session.end_time {
+                println!("Ended: {end_time}");
+            }
+            if let Some(description) = &report.session.description {
+                println!("Description: {description}");
+            }
+            println!("Duration: {}m", report.session.duration_minutes);
+            println!("Tracked total: {}m", report.total_time_minutes);
+            if report.active_time_minutes > 0 {
+                println!("Active now: {}m", report.active_time_minutes);
+            }
+            if let Some(estimate_remaining_minutes) = report.estimate_remaining_minutes {
+                println!("Estimate remaining: {estimate_remaining_minutes}m");
+            }
+            if let Some(efficiency_ratio) = report.efficiency_ratio {
+                println!("Efficiency ratio: {efficiency_ratio}%");
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_task_track_status_report(
+    output: OutputFormat,
+    report: &TaskTrackStatusReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.active_sessions.is_empty() {
+                println!("No active TaskNotes time tracking sessions.");
+                return Ok(());
+            }
+            for session in &report.active_sessions {
+                println!("{}", session.path);
+                println!(
+                    "- {} [{} / {}] {}m",
+                    session.title,
+                    session.status,
+                    session.priority,
+                    session.session.duration_minutes
+                );
+            }
+            println!(
+                "{} active session(s), {} total minute(s)",
+                report.total_active_sessions, report.total_elapsed_minutes
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_task_track_log_report(
+    output: OutputFormat,
+    report: &TaskTrackLogReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("{}", report.path);
+            println!("Title: {}", report.title);
+            println!("Tracked total: {}m", report.total_time_minutes);
+            if report.entries.is_empty() {
+                println!("No time entries.");
+                return Ok(());
+            }
+            for entry in &report.entries {
+                let end_time = entry.end_time.as_deref().unwrap_or("active");
+                println!(
+                    "- {} -> {} ({}m)",
+                    entry.start_time, end_time, entry.duration_minutes
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_task_track_summary_report(
+    output: OutputFormat,
+    report: &TaskTrackSummaryReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!(
+                "{} {} -> {}",
+                report.period.to_ascii_uppercase(),
+                report.from,
+                report.to
+            );
+            println!(
+                "Tracked: {}m ({:.1}h) across {} task(s)",
+                report.total_minutes, report.total_hours, report.tasks_with_time
+            );
+            if !report.top_tasks.is_empty() {
+                println!("Top tasks:");
+                for task in &report.top_tasks {
+                    println!("- {} ({}m)", task.path, task.minutes);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_task_due_report(output: OutputFormat, report: &TaskDueReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.tasks.is_empty() {
+                println!("No TaskNotes tasks due within {}.", report.within);
+                return Ok(());
+            }
+            for task in &report.tasks {
+                let overdue = if task.overdue { " overdue" } else { "" };
+                println!("{} {}{}", task.due, task.path, overdue);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_task_reminders_report(
+    output: OutputFormat,
+    report: &TaskRemindersReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.reminders.is_empty() {
+                println!("No TaskNotes reminders due within {}.", report.upcoming);
+                return Ok(());
+            }
+            for reminder in &report.reminders {
+                let overdue = if reminder.overdue { " overdue" } else { "" };
+                println!(
+                    "{} {}#{}{}",
+                    reminder.notify_at, reminder.path, reminder.reminder_id, overdue
+                );
             }
             Ok(())
         }
@@ -17228,6 +18170,83 @@ mod tests {
             cli.command,
             Command::Tasks {
                 command: TasksCommand::Graph,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_track_start_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "track",
+            "start",
+            "Write Docs",
+            "--description",
+            "Deep work",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Track {
+                    command: TasksTrackCommand::Start {
+                        task: "Write Docs".to_string(),
+                        description: Some("Deep work".to_string()),
+                        dry_run: true,
+                        no_commit: true,
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_track_summary_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "track", "summary", "--period", "month"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Track {
+                    command: TasksTrackCommand::Summary {
+                        period: TasksTrackSummaryPeriodArg::Month,
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_due_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "due", "--within", "30d"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Due {
+                    within: "30d".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_reminders_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "reminders", "--upcoming", "12h"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Reminders {
+                    upcoming: "12h".to_string(),
+                },
             }
         );
     }
