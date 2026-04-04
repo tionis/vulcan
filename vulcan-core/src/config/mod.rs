@@ -1018,6 +1018,96 @@ impl Default for TaskNotesTaskCreationDefaults {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TaskNotesSavedViewFilterValue {
+    Bool(bool),
+    Integer(i64),
+    Text(String),
+    TextList(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesSavedViewCondition {
+    #[serde(rename = "type")]
+    pub node_type: String,
+    pub id: String,
+    pub property: String,
+    pub operator: String,
+    #[serde(default)]
+    pub value: Option<TaskNotesSavedViewFilterValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesSavedViewGroup {
+    #[serde(rename = "type")]
+    pub node_type: String,
+    pub id: String,
+    pub conjunction: String,
+    #[serde(default)]
+    pub children: Vec<TaskNotesSavedViewNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TaskNotesSavedViewNode {
+    Condition(TaskNotesSavedViewCondition),
+    Group(TaskNotesSavedViewGroup),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesSavedViewQuery {
+    #[serde(rename = "type")]
+    pub node_type: String,
+    pub id: String,
+    pub conjunction: String,
+    #[serde(default)]
+    pub children: Vec<TaskNotesSavedViewNode>,
+    #[serde(default, rename = "sortKey")]
+    pub sort_key: Option<String>,
+    #[serde(default, rename = "sortDirection")]
+    pub sort_direction: Option<String>,
+    #[serde(default, rename = "groupKey")]
+    pub group_key: Option<String>,
+    #[serde(default, rename = "subgroupKey")]
+    pub subgroup_key: Option<String>,
+}
+
+impl Default for TaskNotesSavedViewQuery {
+    fn default() -> Self {
+        Self {
+            node_type: "group".to_string(),
+            id: "root".to_string(),
+            conjunction: "and".to_string(),
+            children: Vec::new(),
+            sort_key: None,
+            sort_direction: None,
+            group_key: None,
+            subgroup_key: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TaskNotesSavedViewOptionValue {
+    Bool(bool),
+    Integer(i64),
+    Text(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesSavedViewConfig {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub query: TaskNotesSavedViewQuery,
+    #[serde(default, rename = "viewOptions")]
+    pub view_options: BTreeMap<String, TaskNotesSavedViewOptionValue>,
+    #[serde(default, rename = "visibleProperties")]
+    pub visible_properties: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskNotesConfig {
     pub tasks_folder: String,
     pub archive_folder: String,
@@ -1047,6 +1137,8 @@ pub struct TaskNotesConfig {
     pub nlp_triggers: Vec<TaskNotesNlpTriggerConfig>,
     #[serde(default)]
     pub task_creation_defaults: TaskNotesTaskCreationDefaults,
+    #[serde(default)]
+    pub saved_views: Vec<TaskNotesSavedViewConfig>,
 }
 
 impl Default for TaskNotesConfig {
@@ -1070,6 +1162,7 @@ impl Default for TaskNotesConfig {
             nlp_language: default_tasknotes_nlp_language(),
             nlp_triggers: default_tasknotes_nlp_triggers(),
             task_creation_defaults: TaskNotesTaskCreationDefaults::default(),
+            saved_views: Vec::new(),
         }
     }
 }
@@ -1949,6 +2042,7 @@ struct PartialTaskNotesConfig {
     nlp_language: Option<String>,
     nlp_triggers: Option<Vec<TaskNotesNlpTriggerConfig>>,
     task_creation_defaults: Option<TaskNotesTaskCreationDefaults>,
+    saved_views: Option<Vec<TaskNotesSavedViewConfig>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2386,6 +2480,8 @@ struct ObsidianTaskNotesConfig {
     nlp_triggers: Option<ObsidianTaskNotesNlpTriggersConfig>,
     #[serde(rename = "taskCreationDefaults")]
     task_creation_defaults: Option<ObsidianTaskNotesCreationDefaults>,
+    #[serde(rename = "savedViews", default)]
+    saved_views: Vec<TaskNotesSavedViewConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -4861,12 +4957,6 @@ fn tasknotes_skipped_settings(raw: &Value) -> Vec<ImportSkippedSetting> {
     push_tasknotes_skipped_group(
         &mut skipped,
         settings,
-        &["savedViews"],
-        "saved views are not yet supported",
-    );
-    push_tasknotes_skipped_group(
-        &mut skipped,
-        settings,
         &[
             "enableBases",
             "enableMdbaseSpec",
@@ -5766,6 +5856,9 @@ fn apply_obsidian_tasknotes_defaults(config: &mut VaultConfig, obsidian: Obsidia
             defaults,
         );
     }
+    if !obsidian.saved_views.is_empty() {
+        config.tasknotes.saved_views = obsidian.saved_views;
+    }
 }
 
 fn apply_obsidian_tasknotes_field_mapping(
@@ -6177,6 +6270,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(task_creation_defaults) = tasknotes.task_creation_defaults {
             config.tasknotes.task_creation_defaults = task_creation_defaults;
+        }
+        if let Some(saved_views) = tasknotes.saved_views {
+            config.tasknotes.saved_views = saved_views;
         }
     }
 
@@ -8415,7 +8511,26 @@ time_format = "HH:mm:ss"
               "enableTaskLinkOverlay": true,
               "uiLanguage": "de",
               "icsIntegration": { "enabled": true },
-              "savedViews": [{ "id": "today", "name": "Today" }],
+              "savedViews": [{
+                "id": "today",
+                "name": "Today",
+                "query": {
+                  "type": "group",
+                  "id": "root",
+                  "conjunction": "and",
+                  "children": [
+                    {
+                      "type": "condition",
+                      "id": "status-1",
+                      "property": "status",
+                      "operator": "is",
+                      "value": "blocked"
+                    }
+                  ],
+                  "sortKey": "due",
+                  "sortDirection": "asc"
+                }
+              }],
               "enableAPI": true,
               "webhooks": [{ "url": "https://example.test/hook" }],
               "enableBases": true,
@@ -8530,6 +8645,16 @@ time_format = "HH:mm:ss"
                 .task_creation_defaults
                 .default_recurrence,
             TaskNotesRecurrenceDefault::Weekly
+        );
+        assert_eq!(loaded.config.tasknotes.saved_views.len(), 1);
+        assert_eq!(loaded.config.tasknotes.saved_views[0].id, "today");
+        assert_eq!(loaded.config.tasknotes.saved_views[0].name, "Today");
+        assert_eq!(
+            loaded.config.tasknotes.saved_views[0]
+                .query
+                .sort_key
+                .as_deref(),
+            Some("due")
         );
     }
 
@@ -9573,7 +9698,16 @@ default_mode = "off"
             "enableTaskLinkOverlay": true,
             "uiLanguage": "de",
             "icsIntegration": { "enabled": true },
-            "savedViews": [{ "id": "today", "name": "Today" }],
+            "savedViews": [{
+              "id": "today",
+              "name": "Today",
+              "query": {
+                "type": "group",
+                "id": "root",
+                "conjunction": "and",
+                "children": []
+              }
+            }],
             "enableAPI": true,
             "webhooks": [{ "url": "https://example.test/hook" }],
             "enableBases": true,
@@ -9603,6 +9737,9 @@ default_mode = "off"
         assert!(skipped.iter().any(|item| {
             item.reason == "Microsoft Calendar integration settings are not yet supported"
         }));
+        assert!(skipped
+            .iter()
+            .all(|item| item.reason != "saved views are not yet supported"));
         assert!(skipped
             .iter()
             .any(|item| { item.reason == "API and webhook settings are not yet supported" }));

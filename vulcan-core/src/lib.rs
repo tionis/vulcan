@@ -54,10 +54,12 @@ pub use config::{
     PeriodicNoteConfig, PeriodicNotesImporter, PeriodicStartOfWeek, PluginImporter, ScanConfig,
     TaskNotesConfig, TaskNotesDateDefault, TaskNotesFieldMapping, TaskNotesIdentificationMethod,
     TaskNotesImporter, TaskNotesNlpTriggerConfig, TaskNotesPriorityConfig,
-    TaskNotesRecurrenceDefault, TaskNotesStatusConfig, TaskNotesTaskCreationDefaults,
-    TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig,
-    TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplaterImporter, TemplatesConfig,
-    VaultConfig,
+    TaskNotesRecurrenceDefault, TaskNotesSavedViewCondition, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewGroup, TaskNotesSavedViewNode,
+    TaskNotesSavedViewOptionValue, TaskNotesSavedViewQuery, TaskNotesStatusConfig,
+    TaskNotesTaskCreationDefaults, TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter,
+    TemplaterCommandPairConfig, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
+    TemplaterImporter, TemplatesConfig, VaultConfig,
 };
 pub use dataview_js::{
     evaluate_dataview_js, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
