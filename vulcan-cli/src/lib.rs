@@ -3918,6 +3918,54 @@ fn run_tasks_create_command(
     })
 }
 
+fn run_tasks_reschedule_command(
+    paths: &VaultPaths,
+    task: &str,
+    due: &str,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskMutationReport, CliError> {
+    if let Ok(loaded) = load_tasknote_note(paths, task) {
+        let due_value = resolve_tasknote_date_input(&loaded.config, due, false)?;
+        return apply_loaded_tasknote_mutation(
+            paths,
+            &loaded,
+            "reschedule",
+            dry_run,
+            output,
+            use_stderr_color,
+            |frontmatter, loaded| {
+                let mut changes = Vec::new();
+                let due_key = &loaded.config.tasknotes.field_mapping.due;
+                if let Some(change) = set_tasknote_frontmatter_value(
+                    frontmatter,
+                    due_key,
+                    Some(YamlValue::String(due_value.clone())),
+                ) {
+                    changes.push(change);
+                }
+
+                let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
+                if let Some(change) = set_tasknote_frontmatter_value(
+                    frontmatter,
+                    modified_key,
+                    Some(YamlValue::String(current_utc_timestamp_string())),
+                ) {
+                    changes.push(change);
+                }
+
+                Ok(TaskMutationPlan {
+                    changes,
+                    moved_to: None,
+                })
+            },
+        );
+    }
+
+    run_inline_task_reschedule_command(paths, task, due, dry_run, output, use_stderr_color)
+}
+
 fn run_tasks_convert_command(
     paths: &VaultPaths,
     file: &str,
@@ -4382,6 +4430,44 @@ fn run_tasks_complete_command(
     run_inline_task_complete_command(paths, task, date, dry_run, output, use_stderr_color)
 }
 
+fn run_inline_task_reschedule_command(
+    paths: &VaultPaths,
+    task: &str,
+    due: &str,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskMutationReport, CliError> {
+    let resolved = resolve_inline_task(paths, task)?;
+    let config = load_vault_config(paths).config;
+    let due_value = resolve_tasknote_date_input(&config, due, false)?;
+    let absolute_path = paths.vault_root().join(&resolved.path);
+    let source = fs::read_to_string(&absolute_path).map_err(CliError::operation)?;
+    let (rendered, change) =
+        reschedule_inline_task_source(&source, resolved.line_number, &due_value)?;
+    let changes = change.into_iter().collect::<Vec<_>>();
+    let changed_paths = if dry_run || changes.is_empty() {
+        Vec::new()
+    } else {
+        vec![resolved.path.clone()]
+    };
+
+    if !dry_run && !changes.is_empty() {
+        fs::write(&absolute_path, rendered).map_err(CliError::operation)?;
+        run_incremental_scan(paths, output, use_stderr_color)?;
+    }
+
+    Ok(TaskMutationReport {
+        action: "reschedule".to_string(),
+        dry_run,
+        path: resolved.path,
+        moved_from: None,
+        moved_to: None,
+        changes,
+        changed_paths,
+    })
+}
+
 fn run_inline_task_complete_command(
     paths: &VaultPaths,
     task: &str,
@@ -4460,6 +4546,30 @@ fn complete_inline_task_source(
     Ok((lines.join("\n"), change))
 }
 
+fn reschedule_inline_task_source(
+    source: &str,
+    line_number: i64,
+    due: &str,
+) -> Result<(String, Option<RefactorChange>), CliError> {
+    let mut lines = source
+        .split('\n')
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let index = usize::try_from(line_number.saturating_sub(1))
+        .map_err(|_| CliError::operation(format!("invalid task line number: {line_number}")))?;
+    let current = lines
+        .get(index)
+        .cloned()
+        .ok_or_else(|| CliError::operation(format!("task line {line_number} not found")))?;
+    let updated = update_inline_task_due_marker(&current, due)?;
+    let change = (updated != current).then(|| RefactorChange {
+        before: current.clone(),
+        after: updated.clone(),
+    });
+    lines[index] = updated;
+    Ok((lines.join("\n"), change))
+}
+
 fn update_inline_task_line(
     line: &str,
     completed_symbol: &str,
@@ -4498,6 +4608,22 @@ fn update_inline_task_line(
         format!("{} ✅ {completed_date}", replaced.trim_end())
     };
     Ok(replaced)
+}
+
+fn update_inline_task_due_marker(line: &str, due: &str) -> Result<String, CliError> {
+    let checkbox = Regex::new(r"^\s*(?:[-*+]|\d+[.)])\s+\[[^\]]\]").expect("regex should compile");
+    if !checkbox.is_match(line) {
+        return Err(CliError::operation(format!(
+            "line is not an inline task and cannot be rescheduled: {line}"
+        )));
+    }
+
+    let due_marker = Regex::new(r"🗓(?:️)?\s+\S+").expect("regex should compile");
+    if due_marker.is_match(line) {
+        Ok(due_marker.replace(line, format!("🗓️ {due}")).into_owned())
+    } else {
+        Ok(format!("{} 🗓️ {due}", line.trim_end()))
+    }
 }
 
 fn run_tasks_archive_command(
@@ -9826,6 +9952,29 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         .map_err(CliError::operation)?;
                 }
                 print_task_create_report(cli.output, &report)
+            }
+            TasksCommand::Reschedule {
+                task,
+                due,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_tasks_reschedule_command(
+                    &paths,
+                    task,
+                    due,
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "tasks reschedule", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                print_task_mutation_report(cli.output, &report)
             }
             TasksCommand::Query { query } => {
                 let result = run_tasks_query_command(&paths, query)?;
@@ -17375,6 +17524,33 @@ mod tests {
                     note: Some("Inbox".to_string()),
                     due: Some("2026-04-12".to_string()),
                     priority: Some("high".to_string()),
+                    dry_run: true,
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_reschedule_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "reschedule",
+            "Inbox:3",
+            "--due",
+            "2026-04-12",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Reschedule {
+                    task: "Inbox:3".to_string(),
+                    due: "2026-04-12".to_string(),
                     dry_run: true,
                     no_commit: true,
                 },

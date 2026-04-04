@@ -453,6 +453,7 @@ Subcommands:
   archive     archive one completed TaskNotes task
   convert     convert a note, line, or heading into a TaskNotes task
   create      append one inline task to a note
+  reschedule  change one task's due date
   query       evaluate a Tasks plugin query string directly
   eval        evaluate indexed ```tasks``` blocks from one note
   list        list indexed tasks, optionally filtered
@@ -469,6 +470,7 @@ Notes:
 Examples:
   vulcan tasks add \"Buy groceries tomorrow @home\"
   vulcan tasks create \"Call Alice tomorrow\" --in Inbox
+  vulcan tasks reschedule Write\\ Docs --due 2026-04-12
   vulcan tasks query 'not done'
   vulcan tasks eval Dashboard --block 0
   vulcan tasks list
@@ -1421,6 +1423,17 @@ pub enum TasksCommand {
         #[arg(long, help = "Explicit priority name")]
         priority: Option<String>,
         #[arg(long, help = "Report the planned change without writing the note")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Change one task's due date")]
+    Reschedule {
+        #[arg(help = "Task path, filename, alias, title, or <note>:<line> for inline tasks")]
+        task: String,
+        #[arg(long, help = "New due date or natural-language date phrase")]
+        due: String,
+        #[arg(long, help = "Report the planned change without writing the task")]
         dry_run: bool,
         #[arg(long, help = "Skip auto-commit even when enabled in config")]
         no_commit: bool,
