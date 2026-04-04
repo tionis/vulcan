@@ -2233,27 +2233,27 @@ Core reminder data model and query support. Reminder *delivery* (desktop notific
 
 TaskNotes v4+ is built entirely on Obsidian Bases. Vulcan should register equivalent custom Bases view types:
 
-- [ ] Register custom Bases source type: `tasknotes` with config subtypes:
+- [x] Register custom Bases source type: `tasknotes` with config subtypes:
   | View type | Description |
   |---|---|
   | `tasknotesTaskList` | Filterable, sortable, groupable task table |
   | `tasknotesKanban` | Kanban board (columns = status or custom field) |
 - [ ] Calendar Bases views (`tasknotesCalendar`, `tasknotesMiniCalendar`) deferred to post-WebUI — calendar rendering is a visual concern. See [Deferred enhancements — Calendar Bases views](#deferred-calendar-bases-views).
-- [ ] Parse `.base` view files in `TaskNotes/Views/` (YAML format):
+- [x] Parse `.base` view files in `TaskNotes/Views/` (YAML format):
   - Filter conditions: grouped AND/OR tree of property-based conditions
   - Sort key and direction
   - Group key and optional sub-group key
   - Formula definitions for computed columns
-- [ ] Built-in formula support for TaskNotes views:
+- [x] Built-in formula support for TaskNotes views:
   | Formula | Expression |
   |---|---|
   | `daysUntilDue` | `if(due, ((number(date(due)) - number(today())) / 86400000).floor(), null)` |
   | `isOverdue` | `due && date(due) < today() && status != "done"` |
   | `urgencyScore` | `formula.priorityWeight + max(0, 10 - formula.daysUntilDue)` |
   | `efficiencyRatio` | `if(timeEstimate > 0, totalTimeSpent / timeEstimate, null)` |
-- [ ] `vulcan tasks view <name>` — evaluate a saved Bases view from the command line
-- [ ] `vulcan tasks view list` — list available TaskNotes views
-- [ ] `--output json|table` on view evaluation
+- [x] `vulcan tasks view <name>` — evaluate a saved Bases view from the command line
+- [x] `vulcan tasks view list` — list available TaskNotes views
+- [x] `--output json|table` on view evaluation (structured JSON or default human table output)
 - [ ] Saved filter views: support `savedViews` config (named filter+sort+group presets) as CLI aliases
 
 #### 9.15.9 Unified CLI surface (`vulcan tasks`)

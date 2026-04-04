@@ -13,8 +13,9 @@ pub use cli::{
     DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs, ExportCommand, ExportFormat,
     GitCommand, GraphCommand, InitArgs, KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs,
     PeriodicSubcommand, QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand,
-    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand,
+    WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -54,8 +55,8 @@ use vulcan_core::{
     evaluate_base_file, evaluate_dataview_js_query, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, expected_periodic_note_path,
     export_daily_events_to_ics, export_static_search_index, git_blame, git_commit, git_diff,
-    git_recent_log, git_status, index_vectors_with_progress, initialize_vault, inspect_cache,
-    inspect_vector_queue, link_mentions, list_checkpoints, list_daily_note_events,
+    git_recent_log, git_status, index_vectors_with_progress, initialize_vault, inspect_base_file,
+    inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints, list_daily_note_events,
     list_kanban_boards, list_saved_reports, list_vector_models, load_dataview_blocks,
     load_events_for_periodic_note, load_kanban_board, load_saved_report, load_tasks_blocks,
     load_vault_config, merge_tags, move_kanban_card, move_note, parse_dql_with_diagnostics,
@@ -2025,6 +2026,232 @@ fn run_tasks_query_command(paths: &VaultPaths, source: &str) -> Result<TasksQuer
     let mut result = evaluate_tasks_query(paths, &effective_source).map_err(CliError::operation)?;
     strip_global_filter_from_output(&mut result, &config);
     Ok(result)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskNotesViewListItem {
+    file: String,
+    file_stem: String,
+    view_name: Option<String>,
+    view_type: String,
+    supported: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskNotesViewListReport {
+    views: Vec<TaskNotesViewListItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskNotesViewTarget {
+    file: String,
+    view_name: Option<String>,
+}
+
+fn run_tasks_view_list_command(paths: &VaultPaths) -> Result<TaskNotesViewListReport, CliError> {
+    let mut files = Vec::new();
+    let root = paths.vault_root().join("TaskNotes/Views");
+    collect_tasknotes_base_files(&root, "TaskNotes/Views", &mut files)?;
+
+    let mut views = Vec::new();
+    for file in files {
+        let info = inspect_base_file(paths, &file).map_err(CliError::operation)?;
+        let file_stem = Path::new(&file)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_string();
+        for view in info.views {
+            views.push(TaskNotesViewListItem {
+                file: file.clone(),
+                file_stem: file_stem.clone(),
+                supported: matches!(
+                    view.view_type.to_ascii_lowercase().as_str(),
+                    "table" | "tasknotestasklist" | "tasknoteskanban"
+                ),
+                view_name: view.name,
+                view_type: view.view_type,
+            });
+        }
+    }
+
+    views.sort_by(|left, right| {
+        left.file
+            .cmp(&right.file)
+            .then_with(|| left.view_name.cmp(&right.view_name))
+            .then_with(|| left.view_type.cmp(&right.view_type))
+    });
+
+    Ok(TaskNotesViewListReport { views })
+}
+
+fn run_tasks_view_command(paths: &VaultPaths, name: &str) -> Result<BasesEvalReport, CliError> {
+    let target = resolve_tasknotes_view_target(paths, name)?;
+    let mut report = evaluate_base_file(paths, &target.file).map_err(CliError::operation)?;
+    if let Some(view_name) = target.view_name.as_deref() {
+        report
+            .views
+            .retain(|view| view.name.as_deref() == Some(view_name));
+        if report.views.is_empty() {
+            return Err(CliError::operation(format!(
+                "view `{view_name}` was not found in {}",
+                target.file
+            )));
+        }
+    }
+    Ok(report)
+}
+
+fn resolve_tasknotes_view_target(
+    paths: &VaultPaths,
+    name: &str,
+) -> Result<TaskNotesViewTarget, CliError> {
+    if is_explicit_tasknotes_view_path(name) {
+        let normalized = normalize_relative_input_path(
+            name,
+            RelativePathOptions {
+                expected_extension: Some("base"),
+                append_extension_if_missing: true,
+            },
+        )
+        .map_err(CliError::operation)?;
+        let _ = inspect_base_file(paths, &normalized).map_err(CliError::operation)?;
+        return Ok(TaskNotesViewTarget {
+            file: normalized,
+            view_name: None,
+        });
+    }
+
+    let catalog = run_tasks_view_list_command(paths)?;
+    if let Some(target) = unique_tasknotes_view_name_match(&catalog.views, name)? {
+        return Ok(target);
+    }
+    if let Some(target) = unique_tasknotes_view_file_match(&catalog.views, name)? {
+        return Ok(target);
+    }
+
+    Err(CliError::operation(format!(
+        "no TaskNotes view matched `{name}`"
+    )))
+}
+
+fn collect_tasknotes_base_files(
+    directory: &Path,
+    relative: &str,
+    files: &mut Vec<String>,
+) -> Result<(), CliError> {
+    if !directory.exists() {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(directory).map_err(CliError::operation)?;
+    for entry in entries {
+        let entry = entry.map_err(CliError::operation)?;
+        let path = entry.path();
+        let relative_path = format!("{relative}/{}", entry.file_name().to_string_lossy());
+        let file_type = entry.file_type().map_err(CliError::operation)?;
+        if file_type.is_dir() {
+            collect_tasknotes_base_files(&path, &relative_path, files)?;
+        } else if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("base"))
+        {
+            files.push(relative_path);
+        }
+    }
+    Ok(())
+}
+
+fn is_explicit_tasknotes_view_path(name: &str) -> bool {
+    name.contains('/')
+        || name.contains('\\')
+        || Path::new(name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("base"))
+}
+
+fn unique_tasknotes_view_name_match(
+    views: &[TaskNotesViewListItem],
+    name: &str,
+) -> Result<Option<TaskNotesViewTarget>, CliError> {
+    let matches = views
+        .iter()
+        .filter(|view| {
+            view.view_name
+                .as_deref()
+                .is_some_and(|view_name| view_name.eq_ignore_ascii_case(name))
+        })
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    if matches.len() > 1 {
+        let options = matches
+            .iter()
+            .map(|view| {
+                format!(
+                    "{} ({})",
+                    view.view_name.as_deref().unwrap_or("<unnamed>"),
+                    view.file
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(CliError::operation(format!(
+            "multiple TaskNotes views matched `{name}`: {options}"
+        )));
+    }
+
+    Ok(Some(TaskNotesViewTarget {
+        file: matches[0].file.clone(),
+        view_name: matches[0].view_name.clone(),
+    }))
+}
+
+fn unique_tasknotes_view_file_match(
+    views: &[TaskNotesViewListItem],
+    name: &str,
+) -> Result<Option<TaskNotesViewTarget>, CliError> {
+    let matches = views
+        .iter()
+        .filter(|view| {
+            tasknotes_view_file_aliases(&view.file_stem)
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(name))
+        })
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Ok(None);
+    }
+
+    let file = &matches[0].file;
+    if matches.iter().any(|view| view.file != *file) {
+        let options = matches
+            .iter()
+            .map(|view| view.file.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(CliError::operation(format!(
+            "multiple TaskNotes view files matched `{name}`: {options}"
+        )));
+    }
+
+    Ok(Some(TaskNotesViewTarget {
+        file: file.clone(),
+        view_name: None,
+    }))
+}
+
+fn tasknotes_view_file_aliases(file_stem: &str) -> Vec<String> {
+    let mut aliases = vec![file_stem.to_string()];
+    if let Some(alias) = file_stem.strip_suffix("-default") {
+        aliases.push(alias.to_string());
+    }
+    aliases
 }
 
 fn run_tasks_eval_command(
@@ -6956,6 +7183,24 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let report = build_tasks_graph_report(&paths)?;
                 print_tasks_graph_report(cli.output, &report)
             }
+            TasksCommand::View { command } => match command {
+                TasksViewCommand::Show { name, export } => {
+                    let report = run_tasks_view_command(&paths, name)?;
+                    let export = resolve_cli_export(export)?;
+                    print_bases_report(
+                        cli.output,
+                        &report,
+                        &list_controls,
+                        stdout_is_tty,
+                        use_stdout_color,
+                        export.as_ref(),
+                    )
+                }
+                TasksViewCommand::List => {
+                    let report = run_tasks_view_list_command(&paths)?;
+                    print_tasknotes_view_list_report(cli.output, &report)
+                }
+            },
         },
         Command::Kanban { ref command } => match command {
             KanbanCommand::List => {
@@ -10961,6 +11206,36 @@ fn print_tasks_query_result(
     }
 }
 
+fn print_tasknotes_view_list_report(
+    output: OutputFormat,
+    report: &TaskNotesViewListReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.views.is_empty() {
+                println!("No TaskNotes views.");
+                return Ok(());
+            }
+
+            let mut current_file: Option<&str> = None;
+            for view in &report.views {
+                if current_file != Some(view.file.as_str()) {
+                    if current_file.is_some() {
+                        println!();
+                    }
+                    current_file = Some(view.file.as_str());
+                    println!("{}", view.file);
+                }
+                let name = view.view_name.as_deref().unwrap_or("<unnamed>");
+                let support = if view.supported { "" } else { " [deferred]" };
+                println!("- {name} ({}){support}", view.view_type);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_tasks_eval_report(output: OutputFormat, report: &TasksEvalReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
@@ -14110,6 +14385,39 @@ mod tests {
             cli.command,
             Command::Tasks {
                 command: TasksCommand::Graph,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_view_show_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "view", "show", "Tasks"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::View {
+                    command: TasksViewCommand::Show {
+                        name: "Tasks".to_string(),
+                        export: ExportArgs::default(),
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_view_list_command() {
+        let cli =
+            Cli::try_parse_from(["vulcan", "tasks", "view", "list"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::View {
+                    command: TasksViewCommand::List,
+                },
             }
         );
     }

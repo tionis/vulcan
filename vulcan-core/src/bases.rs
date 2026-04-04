@@ -2,7 +2,10 @@ use crate::expression::eval::EvalContext;
 use crate::expression::parse_expression;
 use crate::expression::value::DataviewTimeZone;
 use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePathOptions};
-use crate::properties::load_note_index;
+use crate::properties::{
+    load_note_index, parse_note_filter_expression, FilterField, FilterOperator, FilterValue,
+};
+use crate::tasknotes::extract_tasknote;
 use crate::{load_vault_config, query_notes, NoteQuery, NoteRecord, PropertyError, VaultPaths};
 use serde::Serialize;
 use serde_json::Value;
@@ -75,6 +78,20 @@ pub struct BasesEvalReport {
     pub file: String,
     pub views: Vec<BasesEvaluatedView>,
     pub diagnostics: Vec<BasesDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BasesFileInfo {
+    pub file: String,
+    pub source_type: String,
+    pub views: Vec<BasesFileViewInfo>,
+    pub diagnostics: Vec<BasesDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BasesFileViewInfo {
+    pub name: Option<String>,
+    pub view_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -151,6 +168,40 @@ impl BasesSource for FileSource {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct TaskNotesSource;
+
+impl BasesSource for TaskNotesSource {
+    fn rows(
+        &self,
+        paths: &VaultPaths,
+        request: &BasesSourceRequest,
+    ) -> Result<Vec<NoteRecord>, BasesError> {
+        let config = load_vault_config(paths).config;
+        let include_archived = tasknotes_source_include_archived(request.config.as_ref());
+        let mut rows = query_notes(
+            paths,
+            &NoteQuery {
+                filters: request.filters.clone(),
+                sort_by: None,
+                sort_descending: false,
+            },
+        )
+        .map_err(BasesError::Property)?
+        .notes;
+        rows.retain(|note| {
+            extract_tasknote(
+                &note.document_path,
+                &note.file_name,
+                &note.properties,
+                &config.tasknotes,
+            )
+            .is_some_and(|tasknote| include_archived || !tasknote.archived)
+        });
+        Ok(rows)
+    }
+}
+
 #[derive(Default)]
 pub struct BasesEvaluator {
     sources: HashMap<String, Arc<dyn BasesSource>>,
@@ -161,6 +212,7 @@ impl BasesEvaluator {
     pub fn new() -> Self {
         let mut evaluator = Self::default();
         evaluator.register_source("file", FileSource);
+        evaluator.register_source("tasknotes", TaskNotesSource);
         evaluator
     }
 
@@ -227,6 +279,23 @@ impl BasesEvaluator {
             file: normalized.to_string(),
             views,
             diagnostics,
+        })
+    }
+
+    pub fn inspect_yaml(&self, normalized: &str, yaml: &str) -> Result<BasesFileInfo, BasesError> {
+        let parsed = parse_base_file(yaml)?;
+        Ok(BasesFileInfo {
+            file: normalized.to_string(),
+            source_type: parsed.source.source_type,
+            views: parsed
+                .views
+                .into_iter()
+                .map(|view| BasesFileViewInfo {
+                    name: view.name,
+                    view_type: view.view_type,
+                })
+                .collect(),
+            diagnostics: parsed.diagnostics,
         })
     }
 
@@ -715,6 +784,15 @@ pub fn evaluate_base_file(
     BasesEvaluator::new().evaluate_file(paths, relative_path)
 }
 
+pub fn inspect_base_file(
+    paths: &VaultPaths,
+    relative_path: &str,
+) -> Result<BasesFileInfo, BasesError> {
+    let normalized = normalize_base_path(relative_path)?;
+    let source = fs::read_to_string(paths.vault_root().join(&normalized))?;
+    BasesEvaluator::new().inspect_yaml(&normalized, &source)
+}
+
 #[allow(clippy::too_many_lines)]
 fn evaluate_base_view(
     evaluator: &BasesEvaluator,
@@ -726,7 +804,7 @@ fn evaluate_base_view(
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> Result<Option<BasesEvaluatedView>, BasesError> {
     let view_filters = combined_filters(base_filters, &view.filters);
-    if view.view_type != "table" {
+    if !supports_cli_base_view_type(&view.view_type) {
         diagnostics.push(BasesDiagnostic {
             path: view.name.as_ref().map(|name| format!("views.{name}.type")),
             message: format!("unsupported view type `{}`", view.view_type),
@@ -939,6 +1017,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
                 .or_insert_with(|| expression.clone());
         }
     }
+    inject_tasknotes_view_defaults(&source, &mut views);
 
     for key in root.keys().filter_map(serde_yaml::Value::as_str) {
         if !matches!(
@@ -993,7 +1072,20 @@ fn parse_view(
     for key in mapping.keys().filter_map(serde_yaml::Value::as_str) {
         if !matches!(
             key,
-            "name" | "type" | "filters" | "sort" | "formulas" | "order" | "groupBy" | "columnSize"
+            "name"
+                | "type"
+                | "filters"
+                | "sort"
+                | "formulas"
+                | "order"
+                | "groupBy"
+                | "columnSize"
+                | "options"
+                | "swimLane"
+                | "explodeListColumns"
+                | "calendarView"
+                | "dateProperty"
+                | "titleProperty"
         ) {
             diagnostics.push(BasesDiagnostic {
                 path: Some(format!("views[{index}].{key}")),
@@ -1104,7 +1196,7 @@ fn parse_base_filters(
             .iter()
             .enumerate()
             .filter_map(|(index, entry)| {
-                parse_base_filter_entry(&format!("{path}[{index}]"), entry, diagnostics)
+                parse_base_filter_clause(&format!("{path}[{index}]"), entry, diagnostics)
             })
             .collect();
     }
@@ -1113,13 +1205,50 @@ fn parse_base_filters(
         if let Some(and_filters) = mapping.get(serde_yaml::Value::String("and".to_string())) {
             return parse_base_filters(&format!("{path}.and"), and_filters, diagnostics);
         }
+        if mapping.contains_key(serde_yaml::Value::String("or".to_string())) {
+            return parse_base_filter_clause(path, value, diagnostics)
+                .into_iter()
+                .collect();
+        }
     }
 
     diagnostics.push(BasesDiagnostic {
         path: Some(path.to_string()),
-        message: "filters must be a list or an `and:` group".to_string(),
+        message: "filters must be a list or an `and:`/`or:` group".to_string(),
     });
     Vec::new()
+}
+
+fn parse_base_filter_clause(
+    path: &str,
+    value: &serde_yaml::Value,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> Option<String> {
+    if value.is_mapping() {
+        let mapping = value.as_mapping()?;
+        if let Some(and_filters) = mapping.get(serde_yaml::Value::String("and".to_string())) {
+            let clauses = parse_base_filters(&format!("{path}.and"), and_filters, diagnostics);
+            if clauses.is_empty() {
+                return None;
+            }
+            return Some(join_filter_clauses(clauses, "&&"));
+        }
+        if let Some(or_filters) = mapping.get(serde_yaml::Value::String("or".to_string())) {
+            let clauses = parse_base_filters(&format!("{path}.or"), or_filters, diagnostics);
+            if clauses.is_empty() {
+                return None;
+            }
+            return Some(join_filter_clauses(clauses, "||"));
+        }
+
+        diagnostics.push(BasesDiagnostic {
+            path: Some(path.to_string()),
+            message: "filter groups must use `and:` or `or:`".to_string(),
+        });
+        return None;
+    }
+
+    parse_base_filter_entry(path, value, diagnostics)
 }
 
 fn parse_base_filter_entry(
@@ -1141,44 +1270,56 @@ fn parse_base_filter_entry(
 }
 
 fn translate_base_filter_expression(expression: &str) -> Option<String> {
+    let expression = expression.trim();
+    if expression.is_empty() {
+        return None;
+    }
+
     if let Some(folder) = parse_in_folder_expression(expression) {
         let prefix = folder.trim_end_matches('/');
         return Some(format!("file.path starts_with \"{prefix}/\""));
     }
 
     if let Some(tag) = parse_has_tag_expression(expression) {
-        return Some(format!("tags has_tag \"{tag}\""));
+        return Some(format!("file.tags has_tag \"{tag}\""));
+    }
+
+    if should_preserve_base_expression(expression) {
+        return Some(normalize_base_expression(expression));
     }
 
     if let Some((field, value)) = expression.split_once(" is not ") {
-        return Some(format!("{} != {}", field.trim(), value.trim()));
+        return Some(translate_base_filter_comparison(field, "!=", value));
     }
 
     if let Some((field, value)) = expression.split_once(" is ") {
-        return Some(format!("{} = {}", field.trim(), value.trim()));
+        return Some(translate_base_filter_comparison(field, "=", value));
     }
 
     if let Some((field, value)) = expression.split_once("!=") {
-        return Some(format!("{} != {}", field.trim(), value.trim()));
+        return Some(translate_base_filter_comparison(field, "!=", value));
     }
 
     if let Some((field, value)) = expression.split_once("==") {
-        return Some(format!("{} = {}", field.trim(), value.trim()));
+        return Some(translate_base_filter_comparison(field, "=", value));
     }
 
-    if expression.contains(" starts_with ")
-        || expression.contains(" contains ")
-        || expression.contains(" >= ")
-        || expression.contains(" <= ")
-        || expression.contains(" != ")
-        || expression.contains(" = ")
-        || expression.contains(" > ")
-        || expression.contains(" < ")
-    {
-        return Some(expression.to_string());
+    for (separator, operator) in [
+        (" starts_with ", "starts_with"),
+        (" has_tag ", "has_tag"),
+        (" contains ", "contains"),
+        (" >= ", ">="),
+        (" <= ", "<="),
+        (" = ", "="),
+        (" > ", ">"),
+        (" < ", "<"),
+    ] {
+        if let Some((field, value)) = expression.split_once(separator) {
+            return Some(translate_base_filter_comparison(field, operator, value));
+        }
     }
 
-    None
+    Some(normalize_base_expression(expression))
 }
 
 fn parse_in_folder_expression(expression: &str) -> Option<String> {
@@ -1210,12 +1351,251 @@ fn strip_matching_quotes(value: &str) -> Option<&str> {
     }
 }
 
+fn translate_base_filter_comparison(field: &str, operator: &str, value: &str) -> String {
+    let normalized_field = normalize_base_filter_field(field);
+    if normalized_field.is_empty()
+        || (normalized_field.contains('.') && !normalized_field.starts_with("file."))
+    {
+        return normalize_base_expression(&format!(
+            "{} {} {}",
+            field.trim(),
+            operator,
+            value.trim()
+        ));
+    }
+
+    format!("{} {} {}", normalized_field, operator, value.trim())
+}
+
+fn normalize_base_filter_field(field: &str) -> String {
+    let trimmed = field.trim();
+    if let Some(rest) = trimmed.strip_prefix("this.file.") {
+        return format!("file.{rest}");
+    }
+    if let Some(rest) = trimmed.strip_prefix("this.note.") {
+        return rest.to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("note.") {
+        return rest.to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("this.") {
+        return rest.to_string();
+    }
+    trimmed.to_string()
+}
+
+fn should_preserve_base_expression(expression: &str) -> bool {
+    expression.contains("&&")
+        || expression.contains("||")
+        || expression.contains('(')
+        || expression.contains(')')
+        || expression.contains('[')
+        || expression.contains(']')
+        || expression.contains("formula.")
+}
+
+fn normalize_base_expression(expression: &str) -> String {
+    expression
+        .replace(" is not ", " != ")
+        .replace(" is ", " == ")
+}
+
+fn join_filter_clauses(clauses: Vec<String>, operator: &str) -> String {
+    clauses
+        .into_iter()
+        .map(|clause| format!("({})", filter_to_expression_string(&clause)))
+        .collect::<Vec<_>>()
+        .join(&format!(" {operator} "))
+}
+
+fn filter_to_expression_string(filter: &str) -> String {
+    parse_note_filter_expression(filter).map_or_else(
+        |_| filter.to_string(),
+        |parsed| render_expression_filter(&parsed),
+    )
+}
+
+fn render_expression_filter(parsed: &crate::properties::ParsedFilter) -> String {
+    let field = render_expression_filter_field(&parsed.field);
+    match parsed.operator {
+        FilterOperator::Eq => {
+            format!(
+                "{field} == {}",
+                render_expression_filter_value(&parsed.value)
+            )
+        }
+        FilterOperator::Ne => {
+            format!(
+                "{field} != {}",
+                render_expression_filter_value(&parsed.value)
+            )
+        }
+        FilterOperator::Gt => {
+            format!(
+                "{field} > {}",
+                render_expression_filter_value(&parsed.value)
+            )
+        }
+        FilterOperator::Gte => {
+            format!(
+                "{field} >= {}",
+                render_expression_filter_value(&parsed.value)
+            )
+        }
+        FilterOperator::Lt => {
+            format!(
+                "{field} < {}",
+                render_expression_filter_value(&parsed.value)
+            )
+        }
+        FilterOperator::Lte => {
+            format!(
+                "{field} <= {}",
+                render_expression_filter_value(&parsed.value)
+            )
+        }
+        FilterOperator::Exists => format!("{field} != null"),
+        FilterOperator::StartsWith => format!(
+            "startswith({field}, {})",
+            render_expression_filter_value(&parsed.value)
+        ),
+        FilterOperator::Contains | FilterOperator::HasTag => format!(
+            "contains({field}, {})",
+            render_expression_filter_value(&parsed.value)
+        ),
+        FilterOperator::Matches | FilterOperator::MatchesI => filter_to_expression_string_match(
+            &field,
+            &parsed.value,
+            parsed.operator == FilterOperator::MatchesI,
+        ),
+    }
+}
+
+fn render_expression_filter_field(field: &FilterField) -> String {
+    match field {
+        FilterField::Property(key) => key.clone(),
+        FilterField::FilePath => "file.path".to_string(),
+        FilterField::FileName => "file.name".to_string(),
+        FilterField::FileExt => "file.ext".to_string(),
+        FilterField::FileMtime => "file.mtime".to_string(),
+        FilterField::FileTags => "file.tags".to_string(),
+    }
+}
+
+fn render_expression_filter_value(value: &FilterValue) -> String {
+    match value {
+        FilterValue::Null => "null".to_string(),
+        FilterValue::Bool(value) => value.to_string(),
+        FilterValue::Number(value) => serde_json::Number::from_f64(*value)
+            .map_or_else(|| value.to_string(), |value| value.to_string()),
+        FilterValue::Date(value) | FilterValue::Text(value) => {
+            serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\""))
+        }
+    }
+}
+
+fn filter_to_expression_string_match(
+    field: &str,
+    value: &FilterValue,
+    case_insensitive: bool,
+) -> String {
+    match value {
+        FilterValue::Date(value) | FilterValue::Text(value) => {
+            let pattern = if case_insensitive {
+                format!("(?i:{value})")
+            } else {
+                value.clone()
+            };
+            format!(
+                "regexmatch({field}, {})",
+                serde_json::to_string(&pattern).unwrap_or_default()
+            )
+        }
+        _ => format!("{field} != null"),
+    }
+}
+
 fn normalize_source_type(source_type: &str) -> String {
     if source_type.eq_ignore_ascii_case("notes") {
         "file".to_string()
     } else {
         source_type.to_ascii_lowercase()
     }
+}
+
+fn supports_cli_base_view_type(view_type: &str) -> bool {
+    matches!(
+        normalize_source_type(view_type).as_str(),
+        "table" | "tasknotestasklist" | "tasknoteskanban"
+    )
+}
+
+fn is_tasknotes_view_type(view_type: &str) -> bool {
+    matches!(
+        normalize_source_type(view_type).as_str(),
+        "tasknotestasklist" | "tasknoteskanban"
+    )
+}
+
+fn tasknotes_source_view_type(config: Option<&Value>) -> Option<&str> {
+    config
+        .and_then(Value::as_object)
+        .and_then(|config| config.get("type"))
+        .and_then(Value::as_str)
+}
+
+fn tasknotes_source_include_archived(config: Option<&Value>) -> bool {
+    config
+        .and_then(Value::as_object)
+        .and_then(|config| config.get("includeArchived"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn is_tasknotes_source(source: &ParsedBaseSource) -> bool {
+    source.source_type == "tasknotes"
+}
+
+fn inject_tasknotes_view_defaults(source: &ParsedBaseSource, views: &mut [ParsedBaseView]) {
+    let source_view_type = tasknotes_source_view_type(source.config.as_ref());
+    for view in views {
+        let tasknotes_view = is_tasknotes_view_type(&view.view_type)
+            || (is_tasknotes_source(source)
+                && source_view_type.is_some_and(is_tasknotes_view_type));
+        if !tasknotes_view {
+            continue;
+        }
+        for (name, expression) in tasknotes_builtin_formulas() {
+            view.formulas
+                .entry(name.to_string())
+                .or_insert_with(|| expression.to_string());
+        }
+    }
+}
+
+fn tasknotes_builtin_formulas() -> [(&'static str, &'static str); 5] {
+    [
+        (
+            "daysUntilDue",
+            "if(due, ((number(date(due)) - number(today())) / 86400000).floor(), null)",
+        ),
+        (
+            "isOverdue",
+            "due && date(due) < today() && status != \"done\"",
+        ),
+        (
+            "priorityWeight",
+            "if(priority==\"none\",0,if(priority==\"low\",1,if(priority==\"normal\",2,if(priority==\"high\",3,999))))",
+        ),
+        (
+            "urgencyScore",
+            "formula.priorityWeight + max(0, 10 - default(formula.daysUntilDue, 0))",
+        ),
+        (
+            "efficiencyRatio",
+            "if(timeEstimate && timeEstimate > 0 && timeEntries, (list(timeEntries).filter(value.endTime).map((number(date(value.endTime)) - number(date(value.startTime))) / 60000).reduce(acc + value, 0) / timeEstimate * 100).round(), null)",
+        ),
+    ]
 }
 
 fn yaml_to_json_value(value: &serde_yaml::Value) -> Value {
@@ -1359,6 +1739,7 @@ fn parse_view_sort(
         if let Some(first) = sequence.first().and_then(serde_yaml::Value::as_mapping) {
             let sort_by = first
                 .get(serde_yaml::Value::String("property".to_string()))
+                .or_else(|| first.get(serde_yaml::Value::String("column".to_string())))
                 .and_then(serde_yaml::Value::as_str)
                 .map(ToOwned::to_owned);
             let sort_descending = first
@@ -1367,8 +1748,8 @@ fn parse_view_sort(
                 .is_some_and(|direction| direction.eq_ignore_ascii_case("desc"));
             if sort_by.is_none() {
                 diagnostics.push(BasesDiagnostic {
-                    path: Some(format!("views[{index}].sort[0].property")),
-                    message: "sort[0].property must be a string".to_string(),
+                    path: Some(format!("views[{index}].sort[0].column")),
+                    message: "sort[0].column must be a string".to_string(),
                 });
             }
             return (sort_by, sort_descending);
@@ -1962,6 +2343,49 @@ mod tests {
     }
 
     #[test]
+    fn parser_accepts_tasknotes_view_fields_and_or_filters() {
+        let report = parse_base_file(
+            "
+            filters:
+              or:
+                - note.status == \"open\"
+                - and:
+                    - file.hasTag(\"task\")
+                    - note.priority == \"high\"
+            views:
+              - name: Tasks
+                type: tasknotesKanban
+                order:
+                  - file.name
+                  - note.status
+                sort:
+                  - column: due
+                    direction: DESC
+                groupBy:
+                  property: status
+                  direction: ASC
+                options:
+                  hideEmptyColumns: false
+                swimLane: note.status
+                explodeListColumns: true
+            ",
+        )
+        .expect("base parse should succeed");
+
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(report.filters.len(), 1);
+        assert!(report.filters[0].contains("||"));
+        assert_eq!(report.views.len(), 1);
+        assert_eq!(report.views[0].view_type, "tasknotesKanban");
+        assert_eq!(report.views[0].sort_by.as_deref(), Some("due"));
+        assert!(report.views[0].sort_descending);
+        assert!(report.views[0].formulas.contains_key("daysUntilDue"));
+        assert!(report.views[0].formulas.contains_key("isOverdue"));
+        assert!(report.views[0].formulas.contains_key("urgencyScore"));
+        assert!(report.views[0].formulas.contains_key("efficiencyRatio"));
+    }
+
+    #[test]
     fn evaluates_supported_bases_view_and_reports_unsupported_features() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -2450,6 +2874,81 @@ SORT file.path ASC"#,
                 descending: false,
             })
         );
+    }
+
+    #[test]
+    fn tasknotes_source_filters_archived_notes_and_exposes_builtin_formulas() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("tasknotes", &vault_root);
+        fs::create_dir_all(vault_root.join("TaskNotes/Views"))
+            .expect("tasknotes views dir should be created");
+        fs::write(
+            vault_root.join("TaskNotes/Views/tasks-default.base"),
+            concat!(
+                "source:\n",
+                "  type: tasknotes\n",
+                "  config:\n",
+                "    type: tasknotesTaskList\n",
+                "    includeArchived: false\n",
+                "views:\n",
+                "  - name: Tasks\n",
+                "    type: tasknotesTaskList\n",
+                "    order:\n",
+                "      - file.name\n",
+                "      - priorityWeight\n",
+                "      - efficiencyRatio\n",
+                "      - urgencyScore\n",
+                "    sort:\n",
+                "      - column: file.name\n",
+                "        direction: ASC\n",
+            ),
+        )
+        .expect("tasknotes base file should be written");
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = evaluate_base_file(&paths, "TaskNotes/Views/tasks-default.base")
+            .expect("tasknotes base eval should succeed");
+
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(report.views.len(), 1);
+        assert_eq!(report.views[0].view_type, "tasknotesTaskList");
+        assert_eq!(
+            report.views[0]
+                .rows
+                .iter()
+                .map(|row| row.document_path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "TaskNotes/Tasks/Prep Outline.md",
+                "TaskNotes/Tasks/Write Docs.md",
+            ]
+        );
+
+        let write_docs = report.views[0]
+            .rows
+            .iter()
+            .find(|row| row.file_name == "Write Docs")
+            .expect("write docs row should exist");
+        assert_eq!(
+            write_docs
+                .cells
+                .get("priorityWeight")
+                .and_then(Value::as_i64),
+            Some(3)
+        );
+        assert_eq!(
+            write_docs
+                .cells
+                .get("efficiencyRatio")
+                .and_then(Value::as_i64),
+            Some(67)
+        );
+        assert!(write_docs
+            .cells
+            .get("urgencyScore")
+            .is_some_and(|value| !value.is_null()));
     }
 
     #[test]
