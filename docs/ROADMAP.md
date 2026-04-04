@@ -2279,14 +2279,14 @@ The `vulcan tasks` command group is the unified interface for all task operation
   - [x] `--status <s>`, `--priority <p>`, `--due-before <date>`, `--due-after <date>`, `--project <p>`, `--context <c>` — shorthand filters
   - [x] `--group-by <field>`, `--sort-by <field>` — grouping and sorting
   - [x] `--include-archived` — include archived tasks (excluded by default)
-- [ ] `vulcan tasks next <n>` — show next N upcoming task instances across all recurring tasks (both types)
-- [ ] `vulcan tasks blocked` — list all blocked tasks with their blocking dependencies (both types)
-- [ ] `vulcan tasks graph` — visualize task dependency graph (both types)
+- [x] `vulcan tasks next <n>` — show next N upcoming task instances across all recurring tasks (both types)
+- [x] `vulcan tasks blocked` — list all blocked tasks with their blocking dependencies (both types)
+- [x] `vulcan tasks graph` — visualize task dependency graph (both types)
 
 **Tasks plugin DSL (9.10 compatibility):**
 
-- [ ] `vulcan tasks query <query-string>` — evaluate a Tasks DSL query (from 9.10.1)
-- [ ] `vulcan tasks eval <file> [--block <n>]` — evaluate a `` ```tasks `` block from a note (from 9.10.6)
+- [x] `vulcan tasks query <query-string>` — evaluate a Tasks DSL query (from 9.10.1)
+- [x] `vulcan tasks eval <file> [--block <n>]` — evaluate a `` ```tasks `` block from a note (from 9.10.6)
 
 **Task mutations (from 9.18.9):**
 
@@ -2295,7 +2295,7 @@ The `vulcan tasks` command group is the unified interface for all task operation
 
 **Shared:**
 
-- [ ] `--output json` on all subcommands
+- [x] `--output json` on all subcommands
 
 #### ~~9.15.10 Calendar sync~~ — deferred
 
