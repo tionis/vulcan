@@ -3010,7 +3010,7 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a to
 - [x] `help(obj)` function available in the JS runtime
 - [x] Displays function signature, parameter descriptions, return type, examples, and cross-references
 - [x] Each Rust function exposed to JS carries its docstring as metadata
-- [ ] Example:
+Example:
   ```
   vulcan> help(vault.query)
   vault.query(dsl: string, opts?: QueryOpts): NoteResult[]
