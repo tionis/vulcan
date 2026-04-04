@@ -2185,8 +2185,8 @@ Reuses the RRULE parsing and recurrence expansion infrastructure from 9.10.2. Ta
 
 - [x] Parse `recurrence` field as RFC 5545 RRULE string (e.g., `FREQ=WEEKLY;BYDAY=MO,WE,FR`) — reuse 9.10.2 RRULE parser
 - [x] Recurrence expansion: compute next N occurrences for query and calendar display — reuse 9.10.2 expansion engine
-- [ ] Per-instance completion: `complete_instances` tracks which occurrences are done without completing the entire recurring task (TaskNotes-specific)
-- [ ] Per-instance skipping: `skipped_instances` marks occurrences as intentionally skipped (TaskNotes-specific)
+- [x] Per-instance completion: `complete_instances` tracks which occurrences are done without completing the entire recurring task (TaskNotes-specific)
+- [x] Per-instance skipping: `skipped_instances` marks occurrences as intentionally skipped (TaskNotes-specific)
 - [x] Flexible vs fixed scheduling: next instance calculated from completion date (flexible) or from original schedule (fixed) — configurable via `recurrenceAnchor`
 
 #### 9.15.5 Task dependencies
@@ -2265,11 +2265,11 @@ The `vulcan tasks` command group is the unified interface for all task operation
 - [ ] `vulcan tasks add <title-or-nlp-string>` — create a new TaskNotes task file
   - [ ] `--status`, `--priority`, `--due`, `--scheduled`, `--context`, `--project`, `--tag` flags for explicit property setting
   - [ ] `--template <name>` — create from a task template
-- [ ] `vulcan tasks show <task>` — display task details (all properties, time entries, dependencies)
-- [ ] `vulcan tasks edit <task>` — open task file in `$EDITOR`
-- [ ] `vulcan tasks set <task> <property> <value>` — update a task property
+- [x] `vulcan tasks show <task>` — display task details (all properties, time entries, dependencies)
+- [x] `vulcan tasks edit <task>` — open task file in `$EDITOR`
+- [x] `vulcan tasks set <task> <property> <value>` — update a task property
 - [ ] `vulcan tasks complete <task>` — mark task as completed (set status to done, record `completedDate`); works for both file-based and inline tasks
-- [ ] `vulcan tasks archive <task>` — archive a completed task (TaskNotes only)
+- [x] `vulcan tasks archive <task>` — archive a completed task (TaskNotes only)
 - [ ] `vulcan tasks convert <file> [--line <n>]` — convert a line, checkbox, or heading in an existing note into a TaskNotes task file
 
 **Unified query (both task types):**

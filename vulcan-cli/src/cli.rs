@@ -1300,6 +1300,54 @@ pub enum DataviewCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum TasksCommand {
+    #[command(about = "Display one TaskNotes task with its structured properties")]
+    Show {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+    },
+    #[command(about = "Open one TaskNotes task file in $EDITOR")]
+    Edit {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Update one TaskNotes task property")]
+    Set {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+        #[arg(help = "Logical TaskNotes field name or raw frontmatter property")]
+        property: String,
+        #[arg(help = "New YAML value; use `null` to remove the property")]
+        value: String,
+        #[arg(long, help = "Report the planned change without writing the task file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Mark one task as completed")]
+    Complete {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+        #[arg(
+            long,
+            help = "Recurring instance date to complete (YYYY-MM-DD); defaults to the scheduled/due date or today"
+        )]
+        date: Option<String>,
+        #[arg(long, help = "Report the planned change without writing the task file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Archive one completed TaskNotes task")]
+    Archive {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+        #[arg(long, help = "Report the planned change without writing the task file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
     #[command(about = "Evaluate a Tasks plugin query string")]
     Query {
         #[arg(help = "Quoted Tasks query string")]

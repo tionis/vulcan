@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 
 use crate::expression::functions::{date_components, date_field_value, parse_date_like_string};
 
@@ -66,7 +67,13 @@ pub fn task_upcoming_occurrences(
         return Vec::new();
     };
 
-    recurrence_occurrences(&recurrence, anchor_ms, from_ms, limit)
+    recurrence_occurrences(
+        &recurrence,
+        anchor_ms,
+        from_ms,
+        limit,
+        &task_recurrence_exclusions(task),
+    )
 }
 
 pub(crate) fn task_recurrence_properties(task: &Map<String, Value>) -> Vec<(String, Value)> {
@@ -153,6 +160,7 @@ fn recurrence_occurrences(
     anchor_ms: i64,
     from_ms: i64,
     limit: usize,
+    exclusions: &BTreeSet<String>,
 ) -> Vec<String> {
     if limit == 0 {
         return Vec::new();
@@ -175,8 +183,12 @@ fn recurrence_occurrences(
     while current_ms <= until_ms && results.len() < limit {
         if recurrence_matches(recurrence, anchor_ms, current_ms) {
             seen = seen.saturating_add(1);
-            if recurrence.count.map_or(true, |count| seen <= count) && current_ms >= start_ms {
-                results.push(format_day(current_ms));
+            let current_day = format_day(current_ms);
+            if recurrence.count.map_or(true, |count| seen <= count)
+                && current_ms >= start_ms
+                && !exclusions.contains(&current_day)
+            {
+                results.push(current_day);
             }
             if recurrence.count.is_some_and(|count| seen >= count) {
                 break;
@@ -460,6 +472,25 @@ fn task_recurrence_anchor_ms(task: &Map<String, Value>) -> Option<i64> {
     None
 }
 
+fn task_recurrence_exclusions(task: &Map<String, Value>) -> BTreeSet<String> {
+    ["complete_instances", "skipped_instances"]
+        .into_iter()
+        .filter_map(|field| task.get(field))
+        .flat_map(task_recurrence_dates)
+        .collect()
+}
+
+fn task_recurrence_dates(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(text) => normalized_date_string(text).into_iter().collect(),
+        Value::Array(values) => values
+            .iter()
+            .flat_map(task_recurrence_dates)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    }
+}
+
 fn normalized_date_ms(text: &str) -> Option<i64> {
     parse_date_like_string(text).map(day_start)
 }
@@ -699,6 +730,28 @@ mod tests {
         assert_eq!(
             task_upcoming_occurrences(&rrule_task, ms("2026-03-29"), 5),
             vec!["2026-04-09".to_string(), "2026-04-23".to_string()]
+        );
+    }
+
+    #[test]
+    fn excludes_completed_and_skipped_instances_from_upcoming_occurrences() {
+        let recurring_task = task(&[
+            ("scheduled", Value::String("2026-04-03".to_string())),
+            (
+                "recurrence",
+                Value::String("RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=FR".to_string()),
+            ),
+            ("complete_instances", serde_json::json!(["2026-04-10"])),
+            ("skipped_instances", serde_json::json!(["2026-04-17"])),
+        ]);
+
+        assert_eq!(
+            task_upcoming_occurrences(&recurring_task, ms("2026-04-04"), 3),
+            vec![
+                "2026-04-24".to_string(),
+                "2026-05-01".to_string(),
+                "2026-05-08".to_string()
+            ]
         );
     }
 
