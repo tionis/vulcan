@@ -3292,7 +3292,7 @@
       },
       {
         "about": "Import compatible plugin settings into .vulcan/config.toml",
-        "after_help": "Subcommands:\n  import core    import Obsidian core settings into Vulcan config\n  import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml\n  import tasknotes import Obsidian TaskNotes plugin settings into .vulcan/config.toml\n  import templater import Obsidian Templater plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Shared flags: --dry-run, --target <shared|local>, --no-commit\n  Use `config import --all` to apply every detected importer in registry order.\n  Use `config import --list` to inspect detectable sources without writing.\n  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.\n\nExamples:\n  vulcan config import core\n  vulcan config import dataview\n  vulcan config import kanban\n  vulcan config import --all --dry-run\n  vulcan config import --list\n  vulcan config import periodic-notes\n  vulcan config import tasknotes --dry-run\n  vulcan config import tasks --dry-run\n  vulcan config import templater --target local\n  vulcan --output json config import tasks",
+        "after_help": "Subcommands:\n  import core    import Obsidian core settings into Vulcan config\n  import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml\n  import quickadd import Obsidian QuickAdd plugin settings into .vulcan/config.toml\n  import tasknotes import Obsidian TaskNotes plugin settings into .vulcan/config.toml\n  import templater import Obsidian Templater plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Shared flags: --dry-run, --target <shared|local>, --no-commit\n  Use `config import --all` to apply every detected importer in registry order.\n  Use `config import --list` to inspect detectable sources without writing.\n  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.\n\nExamples:\n  vulcan config import core\n  vulcan config import dataview\n  vulcan config import kanban\n  vulcan config import --all --dry-run\n  vulcan config import --list\n  vulcan config import periodic-notes\n  vulcan config import quickadd\n  vulcan config import tasknotes --dry-run\n  vulcan config import tasks --dry-run\n  vulcan config import templater --target local\n  vulcan --output json config import tasks",
         "name": "config",
         "options": [],
         "subcommands": [
@@ -3345,6 +3345,12 @@
               {
                 "about": "Import Obsidian Templater plugin settings",
                 "name": "templater",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Import Obsidian QuickAdd plugin settings",
+                "name": "quickadd",
                 "options": [],
                 "subcommands": []
               },

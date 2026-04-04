@@ -43,6 +43,7 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
+use vulcan_core::config::QuickAddImporter;
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
 use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::expression::parse_expression;
@@ -12993,6 +12994,7 @@ fn importer_for_command(command: &ConfigImportCommand) -> Box<dyn PluginImporter
         ConfigImportCommand::Core => Box::new(CoreImporter),
         ConfigImportCommand::Dataview => Box::new(DataviewImporter),
         ConfigImportCommand::Templater => Box::new(TemplaterImporter),
+        ConfigImportCommand::Quickadd => Box::new(QuickAddImporter),
         ConfigImportCommand::Kanban => Box::new(KanbanImporter),
         ConfigImportCommand::PeriodicNotes => Box::new(PeriodicNotesImporter),
         ConfigImportCommand::TaskNotes => Box::new(TaskNotesImporter),
@@ -18501,6 +18503,28 @@ mod tests {
             Command::Config {
                 command: ConfigCommand::Import(ConfigImportSelection {
                     command: Some(ConfigImportCommand::Templater),
+                    all: false,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: false,
+                        target: ConfigImportTargetArg::Shared,
+                        no_commit: false,
+                    },
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_import_quickadd_command() {
+        let cli = Cli::try_parse_from(["vulcan", "config", "import", "quickadd"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: Some(ConfigImportCommand::Quickadd),
                     all: false,
                     list: false,
                     args: ConfigImportArgs {
