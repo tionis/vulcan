@@ -2227,10 +2227,25 @@ fn write_tasknotes_import_fixture(vault_root: &Path) {
             "defaultDueDate": "tomorrow",
             "defaultScheduledDate": "today",
             "defaultRecurrence": "weekly",
-            "defaultReminders": [{ "id": "rem-1", "type": "relative" }]
+            "defaultReminders": [
+              {
+                "id": "rem-relative",
+                "type": "relative",
+                "relatedTo": "due",
+                "offset": 15,
+                "unit": "minutes",
+                "direction": "before",
+                "description": "Before due"
+              }
+            ]
           },
           "calendarViewSettings": { "defaultView": "month" },
           "pomodoroWorkDuration": 25,
+          "pomodoroShortBreakDuration": 5,
+          "pomodoroLongBreakDuration": 15,
+          "pomodoroLongBreakInterval": 4,
+          "pomodoroStorageLocation": "daily-notes",
+          "pomodoroNotifications": true,
           "enableTaskLinkOverlay": true,
           "uiLanguage": "de",
           "icsIntegration": { "enabled": true },
@@ -2603,6 +2618,20 @@ fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
         .is_some_and(|mappings| mappings.iter().any(|mapping| {
             mapping["target"] == "tasknotes.field_mapping.due" && mapping["value"] == "deadline"
         })));
+    assert!(json["mappings"]
+        .as_array()
+        .is_some_and(|mappings| mappings.iter().any(|mapping| {
+            mapping["target"] == "tasknotes.pomodoro.storage_location"
+                && mapping["value"] == "daily-note"
+        })));
+    assert!(json["mappings"]
+        .as_array()
+        .is_some_and(|mappings| mappings.iter().any(|mapping| {
+            mapping["target"] == "tasknotes.task_creation_defaults.default_reminders"
+                && mapping["value"]
+                    .as_array()
+                    .is_some_and(|reminders| reminders.len() == 1)
+        })));
     assert!(json["skipped"]
         .as_array()
         .is_some_and(|skipped| skipped.iter().any(|item| {
@@ -2612,8 +2641,7 @@ fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
     assert!(json["skipped"]
         .as_array()
         .is_some_and(|skipped| skipped.iter().any(|item| {
-            item["source"] == "taskCreationDefaults.defaultReminders"
-                && item["reason"] == "default reminder settings are not yet supported"
+            item["reason"] == "advanced pomodoro automation settings are not yet supported"
         })));
     assert!(json["migrated_files"]
         .as_array()
@@ -2660,8 +2688,12 @@ fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
     assert!(rendered.contains("value = \"urgent\""));
     assert!(rendered.contains("[[tasknotes.user_fields]]"));
     assert!(rendered.contains("displayName = \"Effort\""));
+    assert!(rendered.contains("[tasknotes.pomodoro]"));
+    assert!(rendered.contains("storage_location = \"daily-note\""));
     assert!(rendered.contains("[tasknotes.task_creation_defaults]"));
     assert!(rendered.contains("default_due_date = \"tomorrow\""));
+    assert!(rendered.contains("[[tasknotes.task_creation_defaults.default_reminders]]"));
+    assert!(rendered.contains("id = \"rem-relative\""));
     let migrated_tasks = fs::read_to_string(vault_root.join("TaskNotes/Views/tasks-default.base"))
         .expect("migrated task list base should exist");
     assert!(migrated_tasks.starts_with("source: tasknotes\n\n# All Tasks\n"));
@@ -4720,6 +4752,77 @@ fn tasks_add_json_output_applies_template_frontmatter_and_body() {
         .expect("created task should exist");
     assert!(source.contains("owner: ops"));
     assert!(source.contains("Template body."));
+}
+
+#[test]
+fn tasks_add_json_output_applies_default_reminders_from_config() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        concat!(
+            "[tasknotes.task_creation_defaults]\n",
+            "\n",
+            "[[tasknotes.task_creation_defaults.default_reminders]]\n",
+            "id = \"rem-relative\"\n",
+            "type = \"relative\"\n",
+            "related_to = \"due\"\n",
+            "offset = 15\n",
+            "unit = \"minutes\"\n",
+            "direction = \"before\"\n",
+            "description = \"Before due\"\n",
+        ),
+    )
+    .expect("tasknotes config should be written");
+
+    let add_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "add",
+            "Prep launch tomorrow",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let add_json = parse_stdout_json(&add_assert);
+
+    assert_eq!(add_json["due"], "2026-04-05");
+    assert_eq!(
+        add_json["frontmatter"]["reminders"][0]["id"],
+        Value::String("rem-relative".to_string())
+    );
+    assert_eq!(
+        add_json["frontmatter"]["reminders"][0]["offset"],
+        Value::String("-PT15M".to_string())
+    );
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "show",
+            "TaskNotes/Tasks/Prep launch.md",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["reminders"][0]["relatedTo"], "due");
+    assert_eq!(show_json["reminders"][0]["offset"], "-PT15M");
 }
 
 #[test]

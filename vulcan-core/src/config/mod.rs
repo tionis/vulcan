@@ -849,6 +849,7 @@ pub struct TaskNotesFieldMapping {
     pub complete_instances: String,
     pub skipped_instances: String,
     pub blocked_by: String,
+    pub pomodoros: String,
     pub reminders: String,
 }
 
@@ -873,6 +874,7 @@ impl Default for TaskNotesFieldMapping {
             complete_instances: "complete_instances".to_string(),
             skipped_instances: "skipped_instances".to_string(),
             blocked_by: "blockedBy".to_string(),
+            pomodoros: "pomodoros".to_string(),
             reminders: "reminders".to_string(),
         }
     }
@@ -899,6 +901,7 @@ impl TaskNotesFieldMapping {
             self.complete_instances.as_str(),
             self.skipped_instances.as_str(),
             self.blocked_by.as_str(),
+            self.pomodoros.as_str(),
             self.reminders.as_str(),
             "tags",
         ]
@@ -985,6 +988,96 @@ pub enum TaskNotesRecurrenceDefault {
     Yearly,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskNotesReminderUnit {
+    #[default]
+    Minutes,
+    Hours,
+    Days,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskNotesReminderDirection {
+    #[default]
+    Before,
+    After,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskNotesReminderAnchor {
+    #[default]
+    Due,
+    Scheduled,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskNotesDefaultReminderType {
+    #[default]
+    Relative,
+    Absolute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesDefaultReminderConfig {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub reminder_type: TaskNotesDefaultReminderType,
+    #[serde(default)]
+    pub related_to: Option<TaskNotesReminderAnchor>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub unit: Option<TaskNotesReminderUnit>,
+    #[serde(default)]
+    pub direction: Option<TaskNotesReminderDirection>,
+    #[serde(default)]
+    pub absolute_time: Option<String>,
+    #[serde(default)]
+    pub absolute_date: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskNotesPomodoroStorageLocation {
+    #[default]
+    #[serde(alias = "plugin")]
+    Task,
+    #[serde(alias = "daily-notes")]
+    DailyNote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesPomodoroConfig {
+    #[serde(default = "default_tasknotes_pomodoro_work_duration")]
+    pub work_duration: usize,
+    #[serde(default = "default_tasknotes_pomodoro_short_break")]
+    pub short_break: usize,
+    #[serde(default = "default_tasknotes_pomodoro_long_break")]
+    pub long_break: usize,
+    #[serde(default = "default_tasknotes_pomodoro_long_break_interval")]
+    pub long_break_interval: usize,
+    #[serde(default)]
+    pub storage_location: TaskNotesPomodoroStorageLocation,
+}
+
+impl Default for TaskNotesPomodoroConfig {
+    fn default() -> Self {
+        Self {
+            work_duration: default_tasknotes_pomodoro_work_duration(),
+            short_break: default_tasknotes_pomodoro_short_break(),
+            long_break: default_tasknotes_pomodoro_long_break(),
+            long_break_interval: default_tasknotes_pomodoro_long_break_interval(),
+            storage_location: TaskNotesPomodoroStorageLocation::Task,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskNotesTaskCreationDefaults {
     #[serde(default)]
@@ -1001,6 +1094,8 @@ pub struct TaskNotesTaskCreationDefaults {
     pub default_scheduled_date: TaskNotesDateDefault,
     #[serde(default)]
     pub default_recurrence: TaskNotesRecurrenceDefault,
+    #[serde(default)]
+    pub default_reminders: Vec<TaskNotesDefaultReminderConfig>,
 }
 
 impl Default for TaskNotesTaskCreationDefaults {
@@ -1013,6 +1108,7 @@ impl Default for TaskNotesTaskCreationDefaults {
             default_due_date: TaskNotesDateDefault::None,
             default_scheduled_date: TaskNotesDateDefault::None,
             default_recurrence: TaskNotesRecurrenceDefault::None,
+            default_reminders: Vec::new(),
         }
     }
 }
@@ -1136,6 +1232,8 @@ pub struct TaskNotesConfig {
     #[serde(default = "default_tasknotes_nlp_triggers")]
     pub nlp_triggers: Vec<TaskNotesNlpTriggerConfig>,
     #[serde(default)]
+    pub pomodoro: TaskNotesPomodoroConfig,
+    #[serde(default)]
     pub task_creation_defaults: TaskNotesTaskCreationDefaults,
     #[serde(default)]
     pub saved_views: Vec<TaskNotesSavedViewConfig>,
@@ -1161,6 +1259,7 @@ impl Default for TaskNotesConfig {
             nlp_default_to_scheduled: false,
             nlp_language: default_tasknotes_nlp_language(),
             nlp_triggers: default_tasknotes_nlp_triggers(),
+            pomodoro: TaskNotesPomodoroConfig::default(),
             task_creation_defaults: TaskNotesTaskCreationDefaults::default(),
             saved_views: Vec::new(),
         }
@@ -2041,6 +2140,7 @@ struct PartialTaskNotesConfig {
     nlp_default_to_scheduled: Option<bool>,
     nlp_language: Option<String>,
     nlp_triggers: Option<Vec<TaskNotesNlpTriggerConfig>>,
+    pomodoro: Option<TaskNotesPomodoroConfig>,
     task_creation_defaults: Option<TaskNotesTaskCreationDefaults>,
     saved_views: Option<Vec<TaskNotesSavedViewConfig>>,
 }
@@ -2065,6 +2165,7 @@ struct PartialTaskNotesFieldMapping {
     complete_instances: Option<String>,
     skipped_instances: Option<String>,
     blocked_by: Option<String>,
+    pomodoros: Option<String>,
     reminders: Option<String>,
 }
 
@@ -2478,6 +2579,16 @@ struct ObsidianTaskNotesConfig {
     nlp_language: Option<String>,
     #[serde(rename = "nlpTriggers")]
     nlp_triggers: Option<ObsidianTaskNotesNlpTriggersConfig>,
+    #[serde(rename = "pomodoroWorkDuration")]
+    pomodoro_work_duration: Option<usize>,
+    #[serde(rename = "pomodoroShortBreakDuration")]
+    pomodoro_short_break_duration: Option<usize>,
+    #[serde(rename = "pomodoroLongBreakDuration")]
+    pomodoro_long_break_duration: Option<usize>,
+    #[serde(rename = "pomodoroLongBreakInterval")]
+    pomodoro_long_break_interval: Option<usize>,
+    #[serde(rename = "pomodoroStorageLocation")]
+    pomodoro_storage_location: Option<TaskNotesPomodoroStorageLocation>,
     #[serde(rename = "taskCreationDefaults")]
     task_creation_defaults: Option<ObsidianTaskNotesCreationDefaults>,
     #[serde(rename = "savedViews", default)]
@@ -2514,6 +2625,7 @@ struct ObsidianTaskNotesFieldMapping {
     skipped_instances: Option<String>,
     #[serde(rename = "blockedBy")]
     blocked_by: Option<String>,
+    pomodoros: Option<String>,
     reminders: Option<String>,
 }
 
@@ -2540,6 +2652,25 @@ struct ObsidianTaskNotesCreationDefaults {
     default_scheduled_date: Option<TaskNotesDateDefault>,
     #[serde(rename = "defaultRecurrence")]
     default_recurrence: Option<TaskNotesRecurrenceDefault>,
+    #[serde(rename = "defaultReminders", default)]
+    default_reminders: Vec<ObsidianTaskNotesDefaultReminder>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianTaskNotesDefaultReminder {
+    id: Option<String>,
+    #[serde(rename = "type")]
+    reminder_type: Option<TaskNotesDefaultReminderType>,
+    #[serde(rename = "relatedTo")]
+    related_to: Option<TaskNotesReminderAnchor>,
+    offset: Option<i64>,
+    unit: Option<TaskNotesReminderUnit>,
+    direction: Option<TaskNotesReminderDirection>,
+    #[serde(rename = "absoluteTime")]
+    absolute_time: Option<String>,
+    #[serde(rename = "absoluteDate")]
+    absolute_date: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2742,6 +2873,22 @@ fn default_tasknotes_priorities() -> Vec<TaskNotesPriorityConfig> {
             weight: 3,
         },
     ]
+}
+
+fn default_tasknotes_pomodoro_work_duration() -> usize {
+    25
+}
+
+fn default_tasknotes_pomodoro_short_break() -> usize {
+    5
+}
+
+fn default_tasknotes_pomodoro_long_break() -> usize {
+    15
+}
+
+fn default_tasknotes_pomodoro_long_break_interval() -> usize {
+    4
 }
 
 fn default_tasknotes_nlp_language() -> String {
@@ -4524,6 +4671,12 @@ fn tasknotes_config_import_mappings(
     )?;
     push_config_import_mapping(
         &mut mappings,
+        "fieldMapping.pomodoros",
+        "tasknotes.field_mapping.pomodoros",
+        &config.field_mapping.pomodoros,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
         "fieldMapping.reminders",
         "tasknotes.field_mapping.reminders",
         &config.field_mapping.reminders,
@@ -4572,6 +4725,36 @@ fn tasknotes_config_import_mappings(
     )?;
     push_config_import_mapping(
         &mut mappings,
+        "pomodoroWorkDuration",
+        "tasknotes.pomodoro.work_duration",
+        &config.pomodoro.work_duration,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "pomodoroShortBreakDuration",
+        "tasknotes.pomodoro.short_break",
+        &config.pomodoro.short_break,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "pomodoroLongBreakDuration",
+        "tasknotes.pomodoro.long_break",
+        &config.pomodoro.long_break,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "pomodoroLongBreakInterval",
+        "tasknotes.pomodoro.long_break_interval",
+        &config.pomodoro.long_break_interval,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "pomodoroStorageLocation",
+        "tasknotes.pomodoro.storage_location",
+        &config.pomodoro.storage_location,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
         "taskCreationDefaults.defaultContexts",
         "tasknotes.task_creation_defaults.default_contexts",
         &config.task_creation_defaults.default_contexts,
@@ -4611,6 +4794,12 @@ fn tasknotes_config_import_mappings(
         "taskCreationDefaults.defaultRecurrence",
         "tasknotes.task_creation_defaults.default_recurrence",
         &config.task_creation_defaults.default_recurrence,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCreationDefaults.defaultReminders",
+        "tasknotes.task_creation_defaults.default_reminders",
+        &config.task_creation_defaults.default_reminders,
     )?;
     Ok(mappings)
 }
@@ -4890,19 +5079,14 @@ fn tasknotes_skipped_settings(raw: &Value) -> Vec<ImportSkippedSetting> {
         &mut skipped,
         settings,
         &[
-            "pomodoroWorkDuration",
-            "pomodoroShortBreakDuration",
-            "pomodoroLongBreakDuration",
-            "pomodoroLongBreakInterval",
             "pomodoroAutoStartBreaks",
             "pomodoroAutoStartWork",
             "pomodoroNotifications",
             "pomodoroSoundEnabled",
             "pomodoroSoundVolume",
-            "pomodoroStorageLocation",
             "pomodoroMobileSidebar",
         ],
-        "pomodoro settings are not yet supported",
+        "advanced pomodoro automation settings are not yet supported",
     );
     push_tasknotes_skipped_group(
         &mut skipped,
@@ -5001,18 +5185,6 @@ fn tasknotes_skipped_settings(raw: &Value) -> Vec<ImportSkippedSetting> {
         ],
         "Microsoft Calendar integration settings are not yet supported",
     );
-
-    if settings
-        .get("taskCreationDefaults")
-        .and_then(Value::as_object)
-        .is_some_and(|defaults| defaults.contains_key("defaultReminders"))
-    {
-        skipped.push(ImportSkippedSetting {
-            source: "taskCreationDefaults.defaultReminders".to_string(),
-            reason: "default reminder settings are not yet supported".to_string(),
-        });
-    }
-
     skipped
 }
 
@@ -5850,6 +6022,21 @@ fn apply_obsidian_tasknotes_defaults(config: &mut VaultConfig, obsidian: Obsidia
             config.tasknotes.nlp_triggers = nlp_triggers.triggers;
         }
     }
+    if let Some(work_duration) = obsidian.pomodoro_work_duration {
+        config.tasknotes.pomodoro.work_duration = work_duration;
+    }
+    if let Some(short_break_duration) = obsidian.pomodoro_short_break_duration {
+        config.tasknotes.pomodoro.short_break = short_break_duration;
+    }
+    if let Some(long_break_duration) = obsidian.pomodoro_long_break_duration {
+        config.tasknotes.pomodoro.long_break = long_break_duration;
+    }
+    if let Some(long_break_interval) = obsidian.pomodoro_long_break_interval {
+        config.tasknotes.pomodoro.long_break_interval = long_break_interval;
+    }
+    if let Some(storage_location) = obsidian.pomodoro_storage_location {
+        config.tasknotes.pomodoro.storage_location = storage_location;
+    }
     if let Some(defaults) = obsidian.task_creation_defaults {
         apply_obsidian_tasknotes_creation_defaults(
             &mut config.tasknotes.task_creation_defaults,
@@ -5919,6 +6106,9 @@ fn apply_obsidian_tasknotes_field_mapping(
     if let Some(blocked_by) = obsidian.blocked_by {
         mapping.blocked_by = blocked_by;
     }
+    if let Some(pomodoros) = obsidian.pomodoros {
+        mapping.pomodoros = pomodoros;
+    }
     if let Some(reminders) = obsidian.reminders {
         mapping.reminders = reminders;
     }
@@ -5951,6 +6141,51 @@ fn apply_obsidian_tasknotes_creation_defaults(
     }
     if let Some(default_recurrence) = obsidian.default_recurrence {
         defaults.default_recurrence = default_recurrence;
+    }
+    if !obsidian.default_reminders.is_empty() {
+        defaults.default_reminders = obsidian
+            .default_reminders
+            .into_iter()
+            .filter_map(normalize_obsidian_tasknotes_default_reminder)
+            .collect();
+    }
+}
+
+fn normalize_obsidian_tasknotes_default_reminder(
+    reminder: ObsidianTaskNotesDefaultReminder,
+) -> Option<TaskNotesDefaultReminderConfig> {
+    let id = normalize_optional_text(reminder.id)?;
+    let reminder_type = reminder.reminder_type?;
+
+    match reminder_type {
+        TaskNotesDefaultReminderType::Relative => {
+            let related_to = reminder.related_to?;
+            let offset = reminder.offset?;
+            let unit = reminder.unit?;
+            let direction = reminder.direction?;
+            Some(TaskNotesDefaultReminderConfig {
+                id,
+                reminder_type,
+                related_to: Some(related_to),
+                offset: Some(offset),
+                unit: Some(unit),
+                direction: Some(direction),
+                absolute_time: None,
+                absolute_date: None,
+                description: normalize_optional_text(reminder.description),
+            })
+        }
+        TaskNotesDefaultReminderType::Absolute => Some(TaskNotesDefaultReminderConfig {
+            id,
+            reminder_type,
+            related_to: None,
+            offset: None,
+            unit: None,
+            direction: None,
+            absolute_time: normalize_optional_text(reminder.absolute_time),
+            absolute_date: normalize_optional_text(reminder.absolute_date),
+            description: normalize_optional_text(reminder.description),
+        }),
     }
 }
 
@@ -6267,6 +6502,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(nlp_triggers) = tasknotes.nlp_triggers {
             config.tasknotes.nlp_triggers = nlp_triggers;
+        }
+        if let Some(pomodoro) = tasknotes.pomodoro {
+            config.tasknotes.pomodoro = pomodoro;
         }
         if let Some(task_creation_defaults) = tasknotes.task_creation_defaults {
             config.tasknotes.task_creation_defaults = task_creation_defaults;
@@ -6934,6 +7172,9 @@ fn apply_partial_tasknotes_field_mapping(
     }
     if let Some(blocked_by) = overrides.blocked_by {
         mapping.blocked_by = blocked_by;
+    }
+    if let Some(pomodoros) = overrides.pomodoros {
+        mapping.pomodoros = pomodoros;
     }
     if let Some(reminders) = overrides.reminders {
         mapping.reminders = reminders;
@@ -8504,10 +8745,31 @@ time_format = "HH:mm:ss"
                 "defaultDueDate": "tomorrow",
                 "defaultScheduledDate": "today",
                 "defaultRecurrence": "weekly",
-                "defaultReminders": [{ "id": "rem-1", "type": "relative" }]
+                "defaultReminders": [
+                  {
+                    "id": "rem-relative",
+                    "type": "relative",
+                    "relatedTo": "due",
+                    "offset": 15,
+                    "unit": "minutes",
+                    "direction": "before",
+                    "description": "Before due"
+                  },
+                  {
+                    "id": "rem-absolute",
+                    "type": "absolute",
+                    "absoluteDate": "2026-04-10",
+                    "absoluteTime": "09:00",
+                    "description": "Morning review"
+                  }
+                ]
               },
               "calendarViewSettings": { "defaultView": "month" },
               "pomodoroWorkDuration": 25,
+              "pomodoroShortBreakDuration": 7,
+              "pomodoroLongBreakDuration": 20,
+              "pomodoroLongBreakInterval": 3,
+              "pomodoroStorageLocation": "daily-notes",
               "enableTaskLinkOverlay": true,
               "uiLanguage": "de",
               "icsIntegration": { "enabled": true },
@@ -8646,6 +8908,32 @@ time_format = "HH:mm:ss"
                 .default_recurrence,
             TaskNotesRecurrenceDefault::Weekly
         );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_reminders
+                .len(),
+            2
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_reminders[0]
+                .id,
+            "rem-relative"
+        );
+        assert_eq!(loaded.config.tasknotes.pomodoro.work_duration, 25);
+        assert_eq!(loaded.config.tasknotes.pomodoro.short_break, 7);
+        assert_eq!(loaded.config.tasknotes.pomodoro.long_break, 20);
+        assert_eq!(loaded.config.tasknotes.pomodoro.long_break_interval, 3);
+        assert_eq!(
+            loaded.config.tasknotes.pomodoro.storage_location,
+            TaskNotesPomodoroStorageLocation::DailyNote
+        );
         assert_eq!(loaded.config.tasknotes.saved_views.len(), 1);
         assert_eq!(loaded.config.tasknotes.saved_views[0].id, "today");
         assert_eq!(loaded.config.tasknotes.saved_views[0].name, "Today");
@@ -8682,6 +8970,7 @@ nlp_language = "fr"
 [tasknotes.field_mapping]
 due = "deadline"
 time_entries = "tracked"
+pomodoros = "focusSessions"
 
 [[tasknotes.statuses]]
 id = "blocked"
@@ -8711,6 +9000,13 @@ property_id = "contexts"
 trigger = "context:"
 enabled = true
 
+[tasknotes.pomodoro]
+work_duration = 30
+short_break = 6
+long_break = 18
+long_break_interval = 5
+storage_location = "daily-note"
+
 [tasknotes.task_creation_defaults]
 default_contexts = ["@office"]
 default_tags = ["work"]
@@ -8719,6 +9015,15 @@ default_time_estimate = 30
 default_due_date = "today"
 default_scheduled_date = "next-week"
 default_recurrence = "monthly"
+
+[[tasknotes.task_creation_defaults.default_reminders]]
+id = "default-reminder"
+type = "relative"
+related_to = "scheduled"
+offset = 2
+unit = "hours"
+direction = "before"
+description = "Prep"
 "##,
         )
         .expect("config should be written");
@@ -8752,6 +9057,10 @@ default_recurrence = "monthly"
             loaded.config.tasknotes.field_mapping.time_entries,
             "tracked"
         );
+        assert_eq!(
+            loaded.config.tasknotes.field_mapping.pomodoros,
+            "focusSessions"
+        );
         assert_eq!(loaded.config.tasknotes.statuses[0].auto_archive_delay, 30);
         assert_eq!(loaded.config.tasknotes.priorities[0].weight, 9);
         assert_eq!(loaded.config.tasknotes.user_fields[0].key, "effort");
@@ -8760,6 +9069,14 @@ default_recurrence = "monthly"
         assert_eq!(loaded.config.tasknotes.nlp_language, "fr");
         assert_eq!(loaded.config.tasknotes.nlp_triggers.len(), 1);
         assert_eq!(loaded.config.tasknotes.nlp_triggers[0].trigger, "context:");
+        assert_eq!(loaded.config.tasknotes.pomodoro.work_duration, 30);
+        assert_eq!(loaded.config.tasknotes.pomodoro.short_break, 6);
+        assert_eq!(loaded.config.tasknotes.pomodoro.long_break, 18);
+        assert_eq!(loaded.config.tasknotes.pomodoro.long_break_interval, 5);
+        assert_eq!(
+            loaded.config.tasknotes.pomodoro.storage_location,
+            TaskNotesPomodoroStorageLocation::DailyNote
+        );
         assert_eq!(
             loaded
                 .config
@@ -8811,6 +9128,24 @@ default_recurrence = "monthly"
                 .task_creation_defaults
                 .default_recurrence,
             TaskNotesRecurrenceDefault::Monthly
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_reminders
+                .len(),
+            1
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_reminders[0]
+                .id,
+            "default-reminder"
         );
     }
 
@@ -9573,8 +9908,24 @@ default_mode = "off"
                 "defaultTimeEstimate": 45,
                 "defaultDueDate": "tomorrow",
                 "defaultScheduledDate": "today",
-                "defaultRecurrence": "weekly"
+                "defaultRecurrence": "weekly",
+                "defaultReminders": [
+                  {
+                    "id": "rem-relative",
+                    "type": "relative",
+                    "relatedTo": "due",
+                    "offset": 15,
+                    "unit": "minutes",
+                    "direction": "before",
+                    "description": "Before due"
+                  }
+                ]
               },
+              "pomodoroWorkDuration": 25,
+              "pomodoroShortBreakDuration": 5,
+              "pomodoroLongBreakDuration": 15,
+              "pomodoroLongBreakInterval": 4,
+              "pomodoroStorageLocation": "daily-notes",
               "commandFileMapping": {
                 "open-tasks-view": "Views Source/tasks-custom.base",
                 "open-kanban-view": "Views Source/kanban-custom.base",
@@ -9606,6 +9957,17 @@ default_mode = "off"
             .iter()
             .any(|mapping| mapping.target == "tasknotes.field_mapping.due"
                 && mapping.value == Value::String("deadline".to_string())));
+        assert!(report.mappings.iter().any(|mapping| {
+            mapping.target == "tasknotes.pomodoro.storage_location"
+                && mapping.value == Value::String("daily-note".to_string())
+        }));
+        assert!(report.mappings.iter().any(|mapping| {
+            mapping.target == "tasknotes.task_creation_defaults.default_reminders"
+                && mapping
+                    .value
+                    .as_array()
+                    .is_some_and(|reminders| reminders.len() == 1)
+        }));
         assert_eq!(report.migrated_files.len(), 3);
         assert!(report.migrated_files.iter().any(|file| {
             file.target == vault_root.join("TaskNotes/Views/tasks-default.base")
@@ -9656,12 +10018,16 @@ default_mode = "off"
         assert!(rendered.contains("nlp_language = \"de\""));
         assert!(rendered.contains("[[tasknotes.nlp_triggers]]"));
         assert!(rendered.contains("property_id = \"contexts\""));
+        assert!(rendered.contains("[tasknotes.pomodoro]"));
+        assert!(rendered.contains("storage_location = \"daily-note\""));
         assert!(rendered.contains("[tasknotes.task_creation_defaults]"));
         assert!(rendered.contains("default_contexts"));
         assert!(rendered.contains("\"@office\""));
         assert!(rendered.contains("\"@home\""));
         assert!(rendered.contains("default_due_date = \"tomorrow\""));
         assert!(rendered.contains("default_recurrence = \"weekly\""));
+        assert!(rendered.contains("[[tasknotes.task_creation_defaults.default_reminders]]"));
+        assert!(rendered.contains("id = \"rem-relative\""));
         let migrated_tasks =
             fs::read_to_string(vault_root.join("TaskNotes/Views/tasks-default.base"))
                 .expect("migrated tasks base should exist");
@@ -9695,6 +10061,7 @@ default_mode = "off"
         let raw = serde_json::json!({
             "calendarViewSettings": { "defaultView": "month" },
             "pomodoroWorkDuration": 25,
+            "pomodoroNotifications": true,
             "enableTaskLinkOverlay": true,
             "uiLanguage": "de",
             "icsIntegration": { "enabled": true },
@@ -9728,9 +10095,11 @@ default_mode = "off"
                 && item.reason == "calendar view settings are not yet supported"
         }));
         assert!(skipped.iter().any(|item| {
-            item.source == "taskCreationDefaults.defaultReminders"
-                && item.reason == "default reminder settings are not yet supported"
+            item.reason == "advanced pomodoro automation settings are not yet supported"
         }));
+        assert!(skipped
+            .iter()
+            .all(|item| item.source != "taskCreationDefaults.defaultReminders"));
         assert!(skipped.iter().any(|item| {
             item.reason == "Google Calendar integration settings are not yet supported"
         }));

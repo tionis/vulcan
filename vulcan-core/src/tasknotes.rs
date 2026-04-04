@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::config::{
-    TaskNotesConfig, TaskNotesDateDefault, TaskNotesIdentificationMethod,
-    TaskNotesRecurrenceDefault, TaskNotesStatusConfig, TaskNotesUserFieldType,
+    TaskNotesConfig, TaskNotesDateDefault, TaskNotesDefaultReminderConfig,
+    TaskNotesDefaultReminderType, TaskNotesIdentificationMethod, TaskNotesRecurrenceDefault,
+    TaskNotesReminderDirection, TaskNotesReminderUnit, TaskNotesStatusConfig,
+    TaskNotesUserFieldType,
 };
 use crate::expression::functions::{date_components, parse_date_like_string};
 use crate::tasks::parse_recurrence_text;
@@ -367,12 +369,99 @@ pub fn tasknotes_default_recurrence_rule(default: TaskNotesRecurrenceDefault) ->
     }
 }
 
+#[must_use]
+pub fn tasknotes_default_reminder_values(
+    defaults: &[TaskNotesDefaultReminderConfig],
+) -> Vec<Value> {
+    defaults
+        .iter()
+        .filter_map(tasknotes_default_reminder_value)
+        .collect()
+}
+
 fn nlp_trigger<'a>(config: &'a TaskNotesConfig, property_id: &str) -> Option<&'a str> {
     config
         .nlp_triggers
         .iter()
         .find(|trigger| trigger.enabled && trigger.property_id.eq_ignore_ascii_case(property_id))
         .map(|trigger| trigger.trigger.as_str())
+}
+
+fn tasknotes_default_reminder_value(config: &TaskNotesDefaultReminderConfig) -> Option<Value> {
+    let id = config.id.trim();
+    if id.is_empty() {
+        return None;
+    }
+
+    let mut object = Map::new();
+    object.insert("id".to_string(), Value::String(id.to_string()));
+    if let Some(description) = config
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        object.insert(
+            "description".to_string(),
+            Value::String(description.to_string()),
+        );
+    }
+
+    match config.reminder_type {
+        TaskNotesDefaultReminderType::Relative => {
+            let related_to = config.related_to?;
+            let offset = config.offset?;
+            let unit = config.unit.unwrap_or_default();
+            let direction = config.direction.unwrap_or_default();
+            let duration = iso8601_duration_from_default(offset, unit, direction)?;
+            object.insert("type".to_string(), Value::String("relative".to_string()));
+            object.insert(
+                "relatedTo".to_string(),
+                Value::String(
+                    match related_to {
+                        crate::config::TaskNotesReminderAnchor::Due => "due",
+                        crate::config::TaskNotesReminderAnchor::Scheduled => "scheduled",
+                    }
+                    .to_string(),
+                ),
+            );
+            object.insert("offset".to_string(), Value::String(duration));
+        }
+        TaskNotesDefaultReminderType::Absolute => {
+            let absolute_date = config.absolute_date.as_deref().map(str::trim)?;
+            let absolute_time = config.absolute_time.as_deref().map(str::trim)?;
+            if absolute_date.is_empty() || absolute_time.is_empty() {
+                return None;
+            }
+            object.insert("type".to_string(), Value::String("absolute".to_string()));
+            object.insert(
+                "absoluteTime".to_string(),
+                Value::String(format!("{absolute_date}T{absolute_time}:00")),
+            );
+        }
+    }
+
+    Some(Value::Object(object))
+}
+
+fn iso8601_duration_from_default(
+    offset: i64,
+    unit: TaskNotesReminderUnit,
+    direction: TaskNotesReminderDirection,
+) -> Option<String> {
+    if offset < 0 {
+        return None;
+    }
+
+    let duration = match unit {
+        TaskNotesReminderUnit::Minutes => format!("PT{offset}M"),
+        TaskNotesReminderUnit::Hours => format!("PT{offset}H"),
+        TaskNotesReminderUnit::Days => format!("P{offset}D"),
+    };
+    Some(match direction {
+        TaskNotesReminderDirection::Before => format!("-{duration}"),
+        TaskNotesReminderDirection::After => duration,
+    })
 }
 
 fn extract_prefixed_values(
@@ -1060,8 +1149,10 @@ mod tests {
     use serde_json::json;
 
     use crate::config::{
-        TaskNotesConfig, TaskNotesDateDefault, TaskNotesIdentificationMethod,
-        TaskNotesRecurrenceDefault, TaskNotesUserFieldConfig, TaskNotesUserFieldType,
+        TaskNotesConfig, TaskNotesDateDefault, TaskNotesDefaultReminderConfig,
+        TaskNotesDefaultReminderType, TaskNotesIdentificationMethod, TaskNotesRecurrenceDefault,
+        TaskNotesReminderAnchor, TaskNotesReminderDirection, TaskNotesReminderUnit,
+        TaskNotesUserFieldConfig, TaskNotesUserFieldType,
     };
 
     use super::*;
@@ -1267,6 +1358,41 @@ mod tests {
             tasknotes_default_recurrence_rule(TaskNotesRecurrenceDefault::Monthly).as_deref(),
             Some("FREQ=MONTHLY;INTERVAL=1")
         );
+    }
+
+    #[test]
+    fn converts_default_reminders_into_task_reminder_objects() {
+        let reminders = tasknotes_default_reminder_values(&[
+            TaskNotesDefaultReminderConfig {
+                id: "rem-relative".to_string(),
+                reminder_type: TaskNotesDefaultReminderType::Relative,
+                related_to: Some(TaskNotesReminderAnchor::Due),
+                offset: Some(15),
+                unit: Some(TaskNotesReminderUnit::Minutes),
+                direction: Some(TaskNotesReminderDirection::Before),
+                absolute_time: None,
+                absolute_date: None,
+                description: Some("Before due".to_string()),
+            },
+            TaskNotesDefaultReminderConfig {
+                id: "rem-absolute".to_string(),
+                reminder_type: TaskNotesDefaultReminderType::Absolute,
+                related_to: None,
+                offset: None,
+                unit: None,
+                direction: None,
+                absolute_time: Some("09:00".to_string()),
+                absolute_date: Some("2026-04-10".to_string()),
+                description: Some("Morning review".to_string()),
+            },
+        ]);
+
+        assert_eq!(reminders.len(), 2);
+        assert_eq!(reminders[0]["type"], "relative");
+        assert_eq!(reminders[0]["relatedTo"], "due");
+        assert_eq!(reminders[0]["offset"], "-PT15M");
+        assert_eq!(reminders[1]["type"], "absolute");
+        assert_eq!(reminders[1]["absoluteTime"], "2026-04-10T09:00:00");
     }
 
     #[test]
