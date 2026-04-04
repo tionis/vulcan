@@ -89,12 +89,12 @@ use vulcan_core::{
     RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
     RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
     SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksImporter,
-    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
-    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
-    VectorRepairReport, WatchOptions, WatchReport,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths,
+    VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
+    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -12801,6 +12801,7 @@ fn importer_for_command(command: &ConfigImportCommand) -> Box<dyn PluginImporter
         ConfigImportCommand::Templater => Box::new(TemplaterImporter),
         ConfigImportCommand::Kanban => Box::new(KanbanImporter),
         ConfigImportCommand::PeriodicNotes => Box::new(PeriodicNotesImporter),
+        ConfigImportCommand::TaskNotes => Box::new(TaskNotesImporter),
         ConfigImportCommand::Tasks => Box::new(TasksImporter),
     }
 }
@@ -18162,6 +18163,28 @@ mod tests {
             Command::Config {
                 command: ConfigCommand::Import(ConfigImportSelection {
                     command: Some(ConfigImportCommand::PeriodicNotes),
+                    all: false,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: false,
+                        target: ConfigImportTargetArg::Shared,
+                        no_commit: false,
+                    },
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_import_tasknotes_command() {
+        let cli = Cli::try_parse_from(["vulcan", "config", "import", "tasknotes"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: Some(ConfigImportCommand::TaskNotes),
                     all: false,
                     list: false,
                     args: ConfigImportArgs {
