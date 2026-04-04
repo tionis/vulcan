@@ -13024,6 +13024,9 @@ fn print_config_import_batch_report(
                         conflict.sources.join(", ")
                     );
                 }
+                for skipped in &item.skipped {
+                    println!("    skipped: {} ({})", skipped.source, skipped.reason);
+                }
             }
             Ok(())
         }
@@ -13111,6 +13114,9 @@ fn print_config_import_report(
                     conflict.sources.join(", "),
                     render_config_import_value(&conflict.kept_value)?
                 );
+            }
+            for skipped in &report.skipped {
+                println!("  skipped: {} ({})", skipped.source, skipped.reason);
             }
             Ok(())
         }
