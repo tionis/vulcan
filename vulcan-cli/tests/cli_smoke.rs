@@ -8426,10 +8426,15 @@ fn run_json_output_executes_script_files_and_named_scripts() {
 
     assert_eq!(json["value"]["note"], "Alpha");
     assert_eq!(json["value"]["hits"], 1);
-    assert_eq!(
-        json["outputs"][0]["text"],
-        "vault.search(query: string, opts?: { limit?: number }): SearchReport\n\nRun indexed full-text search.\nExample: vault.search(\"Alpha\", { limit: 3 })"
+    let help_text = json["outputs"][0]["text"]
+        .as_str()
+        .expect("help text should be rendered");
+    assert!(
+        help_text.contains("vault.search(query: string, opts?: { limit?: number }): SearchReport")
     );
+    assert!(help_text.contains("Parameters:"));
+    assert!(help_text.contains("Example:"));
+    assert!(help_text.contains("See also: vault.notes(), vault.query()"));
 }
 
 #[test]

@@ -2143,108 +2143,252 @@ __vulcanRegisterHelp(
   `vault.note(path: string): Note
 
 Resolve one note and return a rich Note object.
-Example: vault.note("Projects/Alpha").content`
+
+Parameters:
+  path - Vault-relative path, filename, or alias-like note identifier.
+
+Example:
+  vault.note("Projects/Alpha").content
+
+See also: vault.notes(), vault.query()`
 );
 __vulcanRegisterHelp(
   vault.notes,
   `vault.notes(source?: string): DataArray<Note>
 
 Return note collections compatible with DataArray chaining.
-Example: vault.notes('"Projects"').where((note) => note.status === "active").limit(5)`
+
+Parameters:
+  source - Optional Dataview-style source selector such as a folder or tag filter.
+
+Example:
+  vault.notes('"Projects"').where((note) => note.status === "active").limit(5)
+
+See also: vault.note(), vault.query()`
 );
 __vulcanRegisterHelp(
   vault.query,
   `vault.query(dql: string, opts?: { file?: string }): QueryResult
 
 Run one DQL query against the indexed vault.
-Example: vault.query('TABLE status FROM "Projects"')`
+
+Parameters:
+  dql  - Query DSL string.
+  opts - Optional execution settings such as the current file context.
+
+Example:
+  vault.query('TABLE status FROM "Projects"')
+
+See also: vault.notes(), vault.search()`
 );
 __vulcanRegisterHelp(
   vault.search,
   `vault.search(query: string, opts?: { limit?: number }): SearchReport
 
 Run indexed full-text search.
-Example: vault.search("Alpha", { limit: 3 })`
+
+Parameters:
+  query - Search text or phrase.
+  opts  - Optional result controls such as limit.
+
+Example:
+  vault.search("Alpha", { limit: 3 })
+
+See also: vault.notes(), vault.query()`
 );
 __vulcanRegisterHelp(
   vault.graph.shortestPath,
   `vault.graph.shortestPath(from: string, to: string): GraphPathReport
 
 Return the shortest resolved path between two notes.
-See also: vault.note().neighbors()`
+
+Parameters:
+  from - Source note identifier.
+  to   - Destination note identifier.
+
+Example:
+  vault.graph.shortestPath("Dashboard", "Projects/Beta")
+
+See also: vault.note().neighbors(), vault.graph.hubs()`
 );
 __vulcanRegisterHelp(
   vault.daily.today,
   `vault.daily.today(): Note
 
-Return today's daily note, enriched with parsed periodic events.`
+Return today's daily note, enriched with parsed periodic events.
+
+Example:
+  vault.daily.today().events
+
+See also: vault.daily.get(), vault.events()`
 );
 __vulcanRegisterHelp(
   vault.daily.append,
   `vault.daily.append(text: string, opts?: { heading?: string, date?: string }): Note
 
-Append text to a daily note. Requires --sandbox fs or higher.`
+Append text to a daily note. Requires --sandbox fs or higher.
+
+Parameters:
+  text - Markdown text to append.
+  opts - Optional heading target and explicit date override.
+
+Example:
+  vault.daily.append("- [ ] Review plan", { heading: "Tasks", date: "2026-04-01" })
+
+See also: vault.append(), vault.daily.today()`
 );
 __vulcanRegisterHelp(
   vault.events,
   `vault.events(opts?: { from?: string, to?: string }): DataArray<Event>
 
-Aggregate periodic events across daily notes.`
+Aggregate periodic events across daily notes.
+
+Parameters:
+  opts - Optional date window bounds in YYYY-MM-DD form.
+
+Example:
+  vault.events({ from: "2026-04-01", to: "2026-04-07" })
+
+See also: vault.daily.range(), vault.daily.today()`
 );
 __vulcanRegisterHelp(
   vault.set,
   `vault.set(path: string, content: string, opts?: { preserveFrontmatter?: boolean }): Note
 
-Replace note contents. Requires --sandbox fs or higher.`
+Replace note contents. Requires --sandbox fs or higher.
+
+Parameters:
+  path    - Target note path.
+  content - Complete replacement markdown body.
+  opts    - Optional flags such as preserveFrontmatter.
+
+Example:
+  vault.set("Scratch", '# Scratch\\n\\nUpdated body')
+
+See also: vault.create(), vault.patch()`
 );
 __vulcanRegisterHelp(
   vault.create,
   `vault.create(path: string, opts?: { content?: string, frontmatter?: object }): Note
 
-Create a new note and return it as a Note object. Requires --sandbox fs or higher.`
+Create a new note and return it as a Note object. Requires --sandbox fs or higher.
+
+Parameters:
+  path - Target note path.
+  opts - Optional content and frontmatter fields for the new note.
+
+Example:
+  vault.create("Projects/New", { frontmatter: { status: "draft" } })
+
+See also: vault.set(), vault.transaction()`
 );
 __vulcanRegisterHelp(
   vault.append,
   `vault.append(path: string, text: string, opts?: { heading?: string, prepend?: boolean }): Note
 
-Append or prepend text in one note. Requires --sandbox fs or higher.`
+Append or prepend text in one note. Requires --sandbox fs or higher.
+
+Parameters:
+  path - Target note path.
+  text - Markdown snippet to insert.
+  opts - Optional heading target or prepend flag.
+
+Example:
+  vault.append("Scratch", "- item", { heading: "Log" })
+
+See also: vault.patch(), vault.daily.append()`
 );
 __vulcanRegisterHelp(
   vault.patch,
   `vault.patch(path: string, find: string | RegExp, replace: string, opts?: { all?: boolean }): Note
 
-Patch one note. Regex patterns use the JS RegExp source. Requires --sandbox fs or higher.`
+Patch one note. Regex patterns use the JS RegExp source. Requires --sandbox fs or higher.
+
+Parameters:
+  path    - Target note path.
+  find    - Literal string or JS RegExp.
+  replace - Replacement text.
+  opts    - Optional all=true for multi-match replacement.
+
+Example:
+  vault.patch("Scratch", /TODO/g, "DONE", { all: true })
+
+See also: vault.set(), vault.update()`
 );
 __vulcanRegisterHelp(
   vault.update,
   `vault.update(path: string, key: string, value: unknown): Note
 
-Set one frontmatter property. Requires --sandbox fs or higher.`
+Set one frontmatter property. Requires --sandbox fs or higher.
+
+Parameters:
+  path  - Target note path.
+  key   - Frontmatter key.
+  value - New serialized property value.
+
+Example:
+  vault.update("Scratch", "status", "active")
+
+See also: vault.unset(), vault.transaction()`
 );
 __vulcanRegisterHelp(
   vault.unset,
   `vault.unset(path: string, key: string): Note
 
-Remove one frontmatter property. Requires --sandbox fs or higher.`
+Remove one frontmatter property. Requires --sandbox fs or higher.
+
+Parameters:
+  path - Target note path.
+  key  - Frontmatter key to remove.
+
+Example:
+  vault.unset("Scratch", "status")
+
+See also: vault.update(), vault.transaction()`
 );
 __vulcanRegisterHelp(
   vault.transaction,
   `vault.transaction(fn: (tx) => unknown): unknown
 
 Run several fs mutations with rollback on JS exceptions.
-Example: vault.transaction((tx) => { const note = tx.create("Scratch"); tx.append("Index", "- [[" + note.name + "]]"); })`
+
+Parameters:
+  fn - Callback that receives transactional mutation helpers.
+
+Example:
+  vault.transaction((tx) => { const note = tx.create("Scratch"); tx.append("Index", "- [[" + note.name + "]]"); })
+
+See also: vault.create(), vault.update(), vault.daily.append()`
 );
 __vulcanRegisterHelp(
   web.search,
   `web.search(query: string, opts?: { limit?: number }): WebSearchReport
 
-Run external web search via the configured backend. Requires --sandbox net or higher.`
+Run external web search via the configured backend. Requires --sandbox net or higher.
+
+Parameters:
+  query - Search text.
+  opts  - Optional result controls such as limit.
+
+Example:
+  web.search("Alpha release notes", { limit: 3 })
+
+See also: web.fetch(), vault.search()`
 );
 __vulcanRegisterHelp(
   web.fetch,
   `web.fetch(url: string, opts?: { mode?: "markdown" | "html" | "raw", extractArticle?: boolean }): WebFetchReport
 
-Fetch one URL through Vulcan's web client. Requires --sandbox net or higher.`
+Fetch one URL through Vulcan's web client. Requires --sandbox net or higher.
+
+Parameters:
+  url  - Absolute URL to fetch.
+  opts - Optional fetch mode and article-extraction behavior.
+
+Example:
+  web.fetch("https://example.com", { mode: "markdown", extractArticle: true })
+
+See also: web.search(), vault.transaction()`
 );
 
 globalThis.dv = dv;
@@ -4746,12 +4890,17 @@ globalThis.Function = undefined;
             )
             .expect("DataviewJS should evaluate");
 
-            assert_eq!(
-                result.outputs[0],
-                DataviewJsOutput::Paragraph {
-                    text: "vault.search(query: string, opts?: { limit?: number }): SearchReport\n\nRun indexed full-text search.\nExample: vault.search(\"Alpha\", { limit: 3 })".to_string(),
+            match &result.outputs[0] {
+                DataviewJsOutput::Paragraph { text } => {
+                    assert!(text.contains(
+                        "vault.search(query: string, opts?: { limit?: number }): SearchReport"
+                    ));
+                    assert!(text.contains("Parameters:"));
+                    assert!(text.contains("Example:"));
+                    assert!(text.contains("See also: vault.notes(), vault.query()"));
                 }
-            );
+                other => panic!("expected paragraph output, got {other:?}"),
+            }
             match &result.outputs[1] {
                 DataviewJsOutput::Table { headers, rows } => {
                     assert_eq!(

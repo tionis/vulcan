@@ -1,10 +1,13 @@
 mod bases_tui;
 mod browse_tui;
 mod cli;
+mod commands;
 mod commit;
 mod editor;
 mod js_repl;
 mod note_picker;
+mod output;
+mod resolve;
 mod serve;
 mod template_engine;
 mod terminal_markdown;
@@ -23,6 +26,11 @@ pub use cli::{
 
 use crate::commit::AutoCommitPolicy;
 use crate::editor::open_in_editor;
+use crate::output::{
+    paginated_items, print_json, print_json_lines, print_selected_human_fields,
+    render_dataview_inline_value, render_human_value, select_fields, ListOutputControls,
+};
+use crate::resolve::{interactive_note_selection_allowed, resolve_note_argument};
 use crate::template_engine::{
     parse_template_var_bindings, render_template_request, TemplateEngineKind,
     TemplateRenderRequest, TemplateRunMode,
@@ -55,33 +63,25 @@ use vulcan_core::expression::parse_expression;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
-    add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bases_view_add,
-    bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace, bulk_set_property,
-    cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault, drop_vector_model,
-    evaluate_base_file, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
-    evaluate_dql, evaluate_note_inline_expressions, evaluate_tasks_query, execute_query_report,
-    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index,
-    extract_tasknote, git_blame, git_commit, git_diff, git_recent_log, git_status,
-    index_vectors_with_progress, initialize_vault, inspect_base_file, inspect_cache,
-    inspect_vector_queue, link_mentions, list_checkpoints, list_daily_note_events,
-    list_kanban_boards, list_saved_reports, list_vector_models, load_dataview_blocks,
+    add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bulk_replace,
+    cache_vacuum, create_checkpoint, doctor_fix, doctor_vault, evaluate_base_file,
+    evaluate_dataview_js_query, evaluate_dataview_js_with_options, evaluate_dql,
+    evaluate_note_inline_expressions, evaluate_tasks_query, expected_periodic_note_path,
+    export_daily_events_to_ics, export_static_search_index, extract_tasknote, git_blame, git_diff,
+    git_recent_log, git_status, initialize_vault, inspect_base_file, inspect_cache, link_mentions,
+    list_checkpoints, list_daily_note_events, list_saved_reports, load_dataview_blocks,
     load_events_for_periodic_note, load_kanban_board, load_saved_report, load_tasks_blocks,
     load_vault_config, merge_tags, move_kanban_card, move_note, parse_dql_with_diagnostics,
     parse_tasknote_natural_language, parse_tasks_query, period_range_for_date,
-    plan_base_note_create, query_backlinks, query_change_report, query_graph_analytics,
-    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
-    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
-    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
-    repair_vectors_with_progress, resolve_link, resolve_note_reference, resolve_periodic_note,
-    save_saved_report, scan_vault_with_progress, search_vault, shape_tasks_query_result,
-    step_period_start, suggest_duplicates, suggest_mentions, task_upcoming_occurrences,
+    plan_base_note_create, query_change_report, query_notes, rebuild_vault_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts, resolve_link,
+    resolve_note_reference, resolve_periodic_note, save_saved_report, scan_vault_with_progress,
+    search_vault, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
     tasknotes_default_date_value, tasknotes_default_recurrence_rule, tasknotes_status_state,
-    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
-    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesCreateContext, BasesEvalReport,
-    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterQuery, ClusterReport, ConfigImportReport, CoreImporter,
+    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
+    BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
+    ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport, CoreImporter,
     DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
     DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
     DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
@@ -92,16 +92,14 @@ use vulcan_core::{
     LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
     MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
     OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
-    PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
-    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths,
-    VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
-    VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
+    PluginImporter, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
+    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
+    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -1439,40 +1437,6 @@ fn path_to_string(path: &Path) -> Result<String, CliError> {
     path.to_str()
         .map(ToString::to_string)
         .ok_or_else(|| CliError::operation("export paths must be valid UTF-8"))
-}
-
-fn interactive_note_selection_allowed(cli: &Cli, stdout_is_tty: bool) -> bool {
-    cli.output == OutputFormat::Human && stdout_is_tty && io::stdin().is_terminal()
-}
-
-fn resolve_note_argument(
-    paths: &VaultPaths,
-    identifier: Option<&str>,
-    interactive: bool,
-    prompt: &str,
-) -> Result<String, CliError> {
-    match identifier {
-        Some(identifier) => match resolve_note_reference(paths, identifier) {
-            Ok(_) => Ok(identifier.to_string()),
-            Err(GraphQueryError::AmbiguousIdentifier { matches, .. }) if interactive => {
-                note_picker::pick_note(paths, Some(identifier), Some(&matches))
-                    .map_err(CliError::operation)?
-                    .ok_or_else(|| CliError::operation(format!("cancelled {prompt} selection")))
-            }
-            Err(GraphQueryError::NoteNotFound { .. }) if interactive => {
-                note_picker::pick_note(paths, Some(identifier), None)
-                    .map_err(CliError::operation)?
-                    .ok_or_else(|| CliError::operation(format!("cancelled {prompt} selection")))
-            }
-            Err(error) => Err(CliError::operation(error)),
-        },
-        None if interactive => note_picker::pick_note(paths, None, None)
-            .map_err(CliError::operation)?
-            .ok_or_else(|| CliError::operation(format!("cancelled {prompt} selection"))),
-        None => Err(CliError::operation(format!(
-            "missing {prompt}; provide a note identifier or run interactively"
-        ))),
-    }
 }
 
 fn run_incremental_scan(
@@ -9126,205 +9090,36 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let interactive_note_selection = interactive_note_selection_allowed(cli, stdout_is_tty);
 
     match cli.command {
-        Command::Index { ref command } => match command {
-            IndexCommand::Init(ref args) => {
-                let report = run_init_command(&paths, args)?;
-                print_init_summary(cli.output, &paths, &report)?;
-                Ok(())
-            }
-            IndexCommand::Scan { full, no_commit } => {
-                let auto_commit = AutoCommitPolicy::for_scan(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let mut progress = (cli.output == OutputFormat::Human)
-                    .then(|| ScanProgressReporter::new(use_stderr_color));
-                let summary = scan_vault_with_progress(
-                    &paths,
-                    if *full {
-                        ScanMode::Full
-                    } else {
-                        ScanMode::Incremental
-                    },
-                    |event| {
-                        if let Some(progress) = progress.as_mut() {
-                            progress.record(&event);
-                        }
-                    },
-                )
-                .map_err(CliError::operation)?;
-                if summary.added + summary.updated + summary.deleted > 0 {
-                    auto_commit
-                        .commit(&paths, "scan", &[])
-                        .map_err(CliError::operation)?;
-                }
-                print_scan_summary(cli.output, &summary, use_stdout_color);
-                Ok(())
-            }
-            IndexCommand::Rebuild { dry_run } => {
-                let mut progress = (cli.output == OutputFormat::Human)
-                    .then(|| ScanProgressReporter::new(use_stderr_color));
-                let report = rebuild_vault_with_progress(
-                    &paths,
-                    &RebuildQuery { dry_run: *dry_run },
-                    |event| {
-                        if let Some(progress) = progress.as_mut() {
-                            progress.record(&event);
-                        }
-                    },
-                )
-                .map_err(CliError::operation)?;
-                print_rebuild_report(cli.output, &report, use_stdout_color)
-            }
-            IndexCommand::Repair { command } => match command {
-                RepairCommand::Fts { dry_run } => {
-                    let report = repair_fts(&paths, &RepairFtsQuery { dry_run: *dry_run })
-                        .map_err(CliError::operation)?;
-                    print_repair_fts_report(cli.output, &report)
-                }
-            },
-            IndexCommand::Watch {
-                debounce_ms,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_scan(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                if cli.output == OutputFormat::Human && stdout_is_tty {
-                    println!(
-                        "Watching {} (debounce {}ms)",
-                        paths.vault_root().display(),
-                        debounce_ms
-                    );
-                }
-                watch_vault(
-                    &paths,
-                    &WatchOptions {
-                        debounce_ms: *debounce_ms,
-                    },
-                    |report| {
-                        print_watch_report(cli.output, &report)?;
-                        if !report.startup
-                            && report.summary.added
-                                + report.summary.updated
-                                + report.summary.deleted
-                                > 0
-                        {
-                            auto_commit
-                                .commit(&paths, "scan", &report.paths)
-                                .map_err(CliError::operation)?;
-                        }
-                        Ok::<(), CliError>(())
-                    },
-                )
-                .map_err(CliError::operation)
-            }
-            IndexCommand::Serve {
-                bind,
-                no_watch,
-                debounce_ms,
-                auth_token,
-            } => serve_forever(
-                &paths,
-                &ServeOptions {
-                    bind: bind.clone(),
-                    watch: !no_watch,
-                    debounce_ms: *debounce_ms,
-                    auth_token: auth_token.clone(),
-                },
-            ),
-        },
+        Command::Index { ref command } => commands::index::handle_index_command(
+            cli,
+            &paths,
+            command,
+            stdout_is_tty,
+            use_stderr_color,
+            use_stdout_color,
+        ),
         Command::Backlinks {
             ref note,
             ref export,
-        } => {
-            let note =
-                resolve_note_argument(&paths, note.as_deref(), interactive_note_selection, "note")?;
-            let report = query_backlinks(&paths, &note).map_err(CliError::operation)?;
-            let export = resolve_cli_export(export)?;
-            print_backlinks_report(
-                cli.output,
-                &report,
-                &list_controls,
-                stdout_is_tty,
-                use_stdout_color,
-                export.as_ref(),
-            )?;
-            Ok(())
-        }
-        Command::Graph { ref command } => match command {
-            GraphCommand::Path { from, to } => {
-                let from = resolve_note_argument(
-                    &paths,
-                    from.as_deref(),
-                    interactive_note_selection,
-                    "from note",
-                )?;
-                let to = resolve_note_argument(
-                    &paths,
-                    to.as_deref(),
-                    interactive_note_selection,
-                    "to note",
-                )?;
-                let report = query_graph_path(&paths, &from, &to).map_err(CliError::operation)?;
-                print_graph_path_report(cli.output, &report)
-            }
-            GraphCommand::Hubs { export } => {
-                let report = query_graph_hubs(&paths).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_graph_hubs_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )
-            }
-            GraphCommand::Moc { export } => {
-                let report = query_graph_moc_candidates(&paths).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_graph_moc_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )
-            }
-            GraphCommand::DeadEnds { export } => {
-                let report = query_graph_dead_ends(&paths).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_graph_dead_ends_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )
-            }
-            GraphCommand::Components { export } => {
-                let report = query_graph_components(&paths).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_graph_components_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )
-            }
-            GraphCommand::Stats { export } => {
-                let report = query_graph_analytics(&paths).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_graph_analytics_report(cli.output, &report, export.as_ref())
-            }
-            GraphCommand::Trends { limit, export } => {
-                let report = query_graph_trends(&paths, *limit).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_graph_trends_report(cli.output, &report, &list_controls, export.as_ref())
-            }
-        },
+        } => commands::query::handle_backlinks_command(
+            cli,
+            &paths,
+            note.as_deref(),
+            export,
+            interactive_note_selection,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
+        Command::Graph { ref command } => commands::graph::handle_graph_command(
+            cli,
+            &paths,
+            command,
+            interactive_note_selection,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Edit {
             ref note,
             new,
@@ -9351,453 +9146,64 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_open_report(cli.output, &report)
         }
         Command::Browse { no_commit } => {
-            if cli.output != OutputFormat::Human || !stdout_is_tty || !io::stdin().is_terminal() {
-                return Err(CliError::operation(
-                    "browse requires an interactive terminal with `--output human`",
-                ));
-            }
-            let refresh_mode = refresh_mode_for_target(&paths, cli, RefreshTarget::Browse);
-            browse_tui::run_browse_tui(&paths, refresh_mode, no_commit).map_err(CliError::operation)
+            commands::browse::handle_browse_command(cli, &paths, stdout_is_tty, no_commit)
         }
-        Command::Note { ref command } => match command {
-            NoteCommand::Get {
-                note,
-                heading,
-                block_ref,
-                lines,
-                match_pattern,
-                context,
-                no_frontmatter,
-                raw,
-            } => {
-                let report = run_note_get_command(
-                    &paths,
-                    NoteGetOptions {
-                        note,
-                        heading: heading.as_deref(),
-                        block_ref: block_ref.as_deref(),
-                        lines: lines.as_deref(),
-                        match_pattern: match_pattern.as_deref(),
-                        context: *context,
-                        no_frontmatter: *no_frontmatter,
-                        raw: *raw,
-                    },
-                )?;
-                print_note_get_report(cli.output, &report)
-            }
-            NoteCommand::Set {
-                note,
-                file,
-                no_frontmatter,
-                check,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_note_set_command(
-                    &paths,
-                    note,
-                    file.as_ref(),
-                    *no_frontmatter,
-                    *check,
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                auto_commit
-                    .commit(&paths, "note-set", std::slice::from_ref(&report.path))
-                    .map_err(CliError::operation)?;
-                print_note_set_report(cli.output, &report)
-            }
-            NoteCommand::Create {
-                path,
-                template,
-                frontmatter,
-                check,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_note_create_command(
-                    &paths,
-                    path,
-                    template.as_deref(),
-                    frontmatter,
-                    *check,
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                auto_commit
-                    .commit(&paths, "note-create", &report.changed_paths)
-                    .map_err(CliError::operation)?;
-                print_note_create_report(cli.output, &report)
-            }
-            NoteCommand::Append {
-                note_or_text,
-                text,
-                heading,
-                prepend,
-                append: _,
-                periodic,
-                date,
-                vars,
-                check,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let (note, text) = match (*periodic, text.as_deref()) {
-                    (Some(_), None) => (None, note_or_text.as_str()),
-                    (None, Some(text)) => (Some(note_or_text.as_str()), text),
-                    (Some(_), Some(_)) => {
-                        return Err(CliError::operation(format!(
-                            "`note append --periodic` accepts only the appended text; got unexpected note argument `{note_or_text}`"
-                        )));
-                    }
-                    (None, None) => {
-                        return Err(CliError::operation(format!(
-                            "`note append` requires both NOTE and TEXT; got only `{note_or_text}`"
-                        )));
-                    }
-                };
-                let report = run_note_append_command(
-                    &paths,
-                    NoteAppendOptions {
-                        note,
-                        text,
-                        mode: if *prepend {
-                            NoteAppendMode::Prepend
-                        } else if heading.is_some() {
-                            NoteAppendMode::AfterHeading
-                        } else {
-                            NoteAppendMode::Append
-                        },
-                        heading: heading.as_deref(),
-                        periodic: *periodic,
-                        date: date.as_deref(),
-                        vars,
-                        check: *check,
-                    },
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                auto_commit
-                    .commit(&paths, "note-append", std::slice::from_ref(&report.path))
-                    .map_err(CliError::operation)?;
-                print_note_append_report(cli.output, &report)
-            }
-            NoteCommand::Patch {
-                note,
-                find,
-                replace,
-                all,
-                check,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_note_patch_command(
-                    &paths,
-                    NotePatchOptions {
-                        note,
-                        find,
-                        replace,
-                        replace_all: *all,
-                        check: *check,
-                        dry_run: *dry_run,
-                    },
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                if !*dry_run {
-                    auto_commit
-                        .commit(&paths, "note-patch", std::slice::from_ref(&report.path))
-                        .map_err(CliError::operation)?;
-                }
-                print_note_patch_report(cli.output, &report)
-            }
-            NoteCommand::Links { note, export } => {
-                let note = resolve_note_argument(
-                    &paths,
-                    note.as_deref(),
-                    interactive_note_selection,
-                    "note",
-                )?;
-                let report = query_links(&paths, &note).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_links_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )?;
-                Ok(())
-            }
-            NoteCommand::Backlinks { note, export } => {
-                let note = resolve_note_argument(
-                    &paths,
-                    note.as_deref(),
-                    interactive_note_selection,
-                    "note",
-                )?;
-                let report = query_backlinks(&paths, &note).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_backlinks_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )?;
-                Ok(())
-            }
-            NoteCommand::Doctor { note } => {
-                let report = run_note_doctor_command(&paths, note)?;
-                print_note_doctor_report(cli.output, &report)
-            }
-            NoteCommand::Diff { note, since } => {
-                let report = run_diff_command(&paths, Some(note), since.as_deref(), false)?;
-                print_diff_report(cli.output, &report)
-            }
-        },
+        Command::Note { ref command } => commands::note::handle_note_command(
+            cli,
+            &paths,
+            command,
+            interactive_note_selection,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+            use_stderr_color,
+        ),
         Command::Completions { shell } => {
             let mut command = Cli::command();
             generate(shell, &mut command, "vulcan", &mut io::stdout());
             Ok(())
         }
-        Command::Bases { ref command } => match command {
-            BasesCommand::Eval { file, export } => {
-                let report = evaluate_base_file(&paths, file).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_bases_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )?;
-                Ok(())
-            }
-            BasesCommand::Create {
-                ref file,
-                ref title,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report =
-                    create_note_from_bases_view(&paths, file, 0, title.as_deref(), *dry_run)?;
-                if !*dry_run {
-                    run_incremental_scan(&paths, cli.output, use_stderr_color)?;
-                    auto_commit
-                        .commit(&paths, "bases-create", std::slice::from_ref(&report.path))
-                        .map_err(CliError::operation)?;
-                }
-                print_bases_create_report(cli.output, &report)
-            }
-            BasesCommand::Tui { file } => {
-                let report = evaluate_base_file(&paths, file).map_err(CliError::operation)?;
-                if cli.output == OutputFormat::Human && stdout_is_tty && io::stdin().is_terminal() {
-                    bases_tui::run_bases_tui(&paths, file, &report).map_err(CliError::operation)
-                } else {
-                    print_bases_report(
-                        cli.output,
-                        &report,
-                        &list_controls,
-                        stdout_is_tty,
-                        use_stdout_color,
-                        None,
-                    )
-                }
-            }
-            BasesCommand::ViewAdd {
-                ref file,
-                ref name,
-                ref filters,
-                ref column,
-                ref sort,
-                sort_desc,
-                ref group_by,
-                group_desc,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let spec = BaseViewSpec {
-                    name: Some(name.clone()),
-                    view_type: "table".to_string(),
-                    filters: filters.clone(),
-                    sort_by: sort.clone(),
-                    sort_descending: *sort_desc,
-                    columns: column.clone(),
-                    group_by: group_by.as_deref().map(|p| BaseViewGroupBy {
-                        property: p.to_string(),
-                        descending: *group_desc,
-                    }),
-                };
-                let report =
-                    bases_view_add(&paths, file, spec, *dry_run).map_err(CliError::operation)?;
-                if !*dry_run {
-                    auto_commit
-                        .commit(&paths, "bases-view-add", std::slice::from_ref(file))
-                        .map_err(CliError::operation)?;
-                }
-                print_bases_view_edit_report(cli.output, &report)
-            }
-            BasesCommand::ViewDelete {
-                ref file,
-                ref name,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report =
-                    bases_view_delete(&paths, file, name, *dry_run).map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "bases-view-delete", std::slice::from_ref(file))
-                        .map_err(CliError::operation)?;
-                }
-                print_bases_view_edit_report(cli.output, &report)
-            }
-            BasesCommand::ViewRename {
-                ref file,
-                ref old_name,
-                ref new_name,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = bases_view_rename(&paths, file, old_name, new_name, *dry_run)
-                    .map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "bases-view-rename", std::slice::from_ref(file))
-                        .map_err(CliError::operation)?;
-                }
-                print_bases_view_edit_report(cli.output, &report)
-            }
-            BasesCommand::ViewEdit {
-                ref file,
-                ref name,
-                ref add_filters,
-                ref remove_filters,
-                ref column,
-                ref sort,
-                sort_desc,
-                ref group_by,
-                group_desc,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let patch = BaseViewPatch {
-                    add_filters: add_filters.clone(),
-                    remove_filters: remove_filters.clone(),
-                    set_columns: if column.is_empty() {
-                        None
-                    } else {
-                        Some(column.clone())
-                    },
-                    set_sort: sort.as_deref().map(|s| {
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s.to_string())
-                        }
-                    }),
-                    set_sort_descending: if sort.is_some() {
-                        Some(*sort_desc)
-                    } else {
-                        None
-                    },
-                    set_group_by: group_by.as_deref().map(|p| {
-                        if p.is_empty() {
-                            None
-                        } else {
-                            Some(BaseViewGroupBy {
-                                property: p.to_string(),
-                                descending: *group_desc,
-                            })
-                        }
-                    }),
-                    ..Default::default()
-                };
-                let report = bases_view_edit(&paths, file, name, patch, *dry_run)
-                    .map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "bases-view-edit", std::slice::from_ref(file))
-                        .map_err(CliError::operation)?;
-                }
-                print_bases_view_edit_report(cli.output, &report)
-            }
-        },
+        Command::Bases { ref command } => commands::bases::handle_bases_command(
+            cli,
+            &paths,
+            command,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+            use_stderr_color,
+        ),
         Command::Cluster {
             clusters,
             dry_run,
             ref export,
-        } => {
-            let report = cluster_vectors(
-                &paths,
-                &ClusterQuery {
-                    provider: cli.provider.clone(),
-                    clusters,
-                    dry_run,
-                },
-            )
-            .map_err(CliError::operation)?;
-            let export = resolve_cli_export(export)?;
-            print_cluster_report(
-                cli.output,
-                &report,
-                &list_controls,
-                stdout_is_tty,
-                use_stdout_color,
-                export.as_ref(),
-            )?;
-            Ok(())
-        }
+        } => commands::vectors::handle_cluster_command(
+            cli,
+            &paths,
+            clusters,
+            dry_run,
+            export,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Related {
             ref note,
             ref export,
-        } => {
-            let note =
-                resolve_note_argument(&paths, note.as_deref(), interactive_note_selection, "note")?;
-            let report = query_related_notes(
-                &paths,
-                &RelatedNotesQuery {
-                    provider: cli.provider.clone(),
-                    note,
-                    limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
-                },
-            )
-            .map_err(CliError::operation)?;
-            let export = resolve_cli_export(export)?;
-            print_related_notes_report(
-                cli.output,
-                &report,
-                &list_controls,
-                stdout_is_tty,
-                use_stdout_color,
-                export.as_ref(),
-            )?;
-            Ok(())
-        }
+        } => commands::vectors::handle_related_command(
+            cli,
+            &paths,
+            note.as_deref(),
+            export,
+            interactive_note_selection,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Help {
             ref search,
             ref topic,
-        } => print_help_command(cli.output, topic, search.as_deref()),
-        Command::Describe { format } => print_describe_report(cli.output, format),
+        } => commands::docs::handle_help_command(cli.output, topic, search.as_deref()),
+        Command::Describe { format } => commands::docs::handle_describe_command(cli.output, format),
         Command::Doctor {
             fix,
             dry_run,
@@ -10036,21 +9442,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Links {
             ref note,
             ref export,
-        } => {
-            let note =
-                resolve_note_argument(&paths, note.as_deref(), interactive_note_selection, "note")?;
-            let report = query_links(&paths, &note).map_err(CliError::operation)?;
-            let export = resolve_cli_export(export)?;
-            print_links_report(
-                cli.output,
-                &report,
-                &list_controls,
-                stdout_is_tty,
-                use_stdout_color,
-                export.as_ref(),
-            )?;
-            Ok(())
-        }
+        } => commands::query::handle_links_command(
+            cli,
+            &paths,
+            note.as_deref(),
+            export,
+            interactive_note_selection,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Query {
             ref dsl,
             ref json,
@@ -10058,545 +9459,88 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref glob,
             explain,
             ref export,
-        } => {
-            let ast = match (dsl.as_deref(), json.as_deref()) {
-                (Some(_), Some(_)) => {
-                    return Err(CliError::operation(
-                        "provide either a DSL argument or --json, not both",
-                    ))
-                }
-                (Some(dsl), None) => QueryAst::from_dsl(dsl).map_err(CliError::operation)?,
-                (None, Some(json)) => QueryAst::from_json(json).map_err(CliError::operation)?,
-                (None, None) => {
-                    return Err(CliError::operation(
-                        "provide a DSL query argument or --json payload",
-                    ))
-                }
-            };
-            let report = execute_query_report(&paths, ast).map_err(CliError::operation)?;
-            // Merge DSL-embedded limit/offset with global list controls; global flags win.
-            let effective_controls = ListOutputControls {
-                limit: list_controls.limit.or(report.query.limit),
-                offset: if list_controls.offset > 0 {
-                    list_controls.offset
-                } else {
-                    report.query.offset
-                },
-                fields: list_controls.fields.clone(),
-            };
-            let export = resolve_cli_export(export)?;
-            print_query_report(
-                &paths,
-                cli.output,
-                &report,
-                &effective_controls,
-                QueryReportRenderOptions {
-                    format,
-                    glob: glob.as_deref(),
-                    explain,
-                    stdout_is_tty,
-                    use_color: use_stdout_color,
-                    export: export.as_ref(),
-                },
-            )?;
-            Ok(())
-        }
+        } => commands::query::handle_query_command(
+            cli,
+            &paths,
+            dsl.as_deref(),
+            json.as_deref(),
+            format,
+            glob.as_deref(),
+            explain,
+            export,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Ls {
             ref filters,
             ref glob,
             ref tag,
             format,
             ref export,
-        } => {
-            let mut query_filters = filters.clone();
-            if let Some(tag) = tag.as_deref() {
-                query_filters.push(format!("file.tags has_tag {tag}"));
-            }
-            let note_query = NoteQuery {
-                filters: query_filters,
-                sort_by: Some("file.path".to_string()),
-                sort_descending: false,
-            };
-            let notes_report = query_notes(&paths, &note_query).map_err(CliError::operation)?;
-            let ast = QueryAst::from_note_query(&note_query).map_err(CliError::operation)?;
-            let export = resolve_cli_export(export)?;
-            print_query_report(
-                &paths,
-                cli.output,
-                &QueryReport {
-                    query: ast,
-                    notes: notes_report.notes,
-                },
-                &list_controls,
-                QueryReportRenderOptions {
-                    format,
-                    glob: glob.as_deref(),
-                    explain: false,
-                    stdout_is_tty,
-                    use_color: use_stdout_color,
-                    export: export.as_ref(),
-                },
-            )?;
-            Ok(())
-        }
+        } => commands::query::handle_ls_command(
+            cli,
+            &paths,
+            filters,
+            glob.as_deref(),
+            tag.as_deref(),
+            format,
+            export,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Update {
             ref filters,
             ref key,
             ref value,
             dry_run,
             no_commit,
-        } => {
-            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
-            let report = bulk_set_property(&paths, filters, key, Some(value.as_str()), dry_run)
-                .map_err(CliError::operation)?;
-            if !dry_run {
-                auto_commit
-                    .commit(&paths, "update", &bulk_mutation_changed_files(&report))
-                    .map_err(CliError::operation)?;
-            }
-            print_bulk_mutation_report(cli.output, &report)
-        }
+        } => commands::query::handle_update_command(
+            cli, &paths, filters, key, value, dry_run, no_commit,
+        ),
         Command::Unset {
             ref filters,
             ref key,
             dry_run,
             no_commit,
-        } => {
-            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
-            let report = bulk_set_property(&paths, filters, key, None, dry_run)
-                .map_err(CliError::operation)?;
-            if !dry_run {
-                auto_commit
-                    .commit(&paths, "unset", &bulk_mutation_changed_files(&report))
-                    .map_err(CliError::operation)?;
-            }
-            print_bulk_mutation_report(cli.output, &report)
-        }
+        } => commands::query::handle_unset_command(cli, &paths, filters, key, dry_run, no_commit),
         Command::Notes {
             ref filters,
             ref sort,
             desc,
             ref export,
-        } => {
-            let report = query_notes(
-                &paths,
-                &NoteQuery {
-                    filters: filters.clone(),
-                    sort_by: sort.clone(),
-                    sort_descending: desc,
-                },
-            )
-            .map_err(CliError::operation)?;
-            let export = resolve_cli_export(export)?;
-            print_notes_report(
-                cli.output,
-                &report,
-                &list_controls,
-                stdout_is_tty,
-                use_stdout_color,
-                export.as_ref(),
-            )?;
-            Ok(())
+        } => commands::query::handle_notes_command(
+            cli,
+            &paths,
+            filters,
+            sort.as_ref(),
+            desc,
+            export,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
+        Command::Dataview { ref command } => {
+            commands::dataview::handle_dataview_command(cli, &paths, command)
         }
-        Command::Dataview { ref command } => match command {
-            DataviewCommand::Inline { file } => {
-                let report = run_dataview_inline_command(&paths, file)?;
-                print_dataview_inline_report(cli.output, &report)
-            }
-            DataviewCommand::Query { dql } => {
-                let result = run_dataview_query_command(&paths, dql)?;
-                print_dql_query_result(
-                    cli.output,
-                    &result,
-                    load_vault_config(&paths)
-                        .config
-                        .dataview
-                        .display_result_count,
-                )
-            }
-            DataviewCommand::QueryJs { js, file } => {
-                let result = run_dataview_query_js_command(&paths, js, file.as_deref())?;
-                print_dataview_js_result(
-                    cli.output,
-                    &result,
-                    load_vault_config(&paths)
-                        .config
-                        .dataview
-                        .display_result_count,
-                )
-            }
-            DataviewCommand::Eval { file, block } => {
-                let report = run_dataview_eval_command(&paths, file, *block)?;
-                print_dataview_eval_report(
-                    cli.output,
-                    &report,
-                    load_vault_config(&paths)
-                        .config
-                        .dataview
-                        .display_result_count,
-                )
-            }
-        },
-        Command::Tasks { ref command } => match command {
-            TasksCommand::Add {
-                text,
-                no_nlp,
-                status,
-                priority,
-                due,
-                scheduled,
-                contexts,
-                projects,
-                tags,
-                template,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_tasks_add_command(
-                    &paths,
-                    text,
-                    *no_nlp,
-                    status.as_deref(),
-                    priority.as_deref(),
-                    due.as_deref(),
-                    scheduled.as_deref(),
-                    contexts,
-                    projects,
-                    tags,
-                    template.as_deref(),
-                    *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "tasks add", &report.changed_paths)
-                        .map_err(CliError::operation)?;
-                }
-                print_task_add_report(cli.output, &report)
-            }
-            TasksCommand::Show { task } => {
-                let report = run_tasks_show_command(&paths, task)?;
-                print_task_show_report(cli.output, &report)
-            }
-            TasksCommand::Edit { task, no_commit } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_tasks_edit_command(&paths, task, cli.output, use_stderr_color)?;
-                auto_commit
-                    .commit(&paths, "tasks edit", std::slice::from_ref(&report.path))
-                    .map_err(CliError::operation)?;
-                print_edit_report(cli.output, &report);
-                Ok(())
-            }
-            TasksCommand::Set {
-                task,
-                property,
-                value,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_tasks_set_command(
-                    &paths,
-                    task,
-                    property,
-                    value,
-                    *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "tasks set", &report.changed_paths)
-                        .map_err(CliError::operation)?;
-                }
-                print_task_mutation_report(cli.output, &report)
-            }
-            TasksCommand::Complete {
-                task,
-                date,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_tasks_complete_command(
-                    &paths,
-                    task,
-                    date.as_deref(),
-                    *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "tasks complete", &report.changed_paths)
-                        .map_err(CliError::operation)?;
-                }
-                print_task_mutation_report(cli.output, &report)
-            }
-            TasksCommand::Archive {
-                task,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_tasks_archive_command(
-                    &paths,
-                    task,
-                    *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "tasks archive", &report.changed_paths)
-                        .map_err(CliError::operation)?;
-                }
-                print_task_mutation_report(cli.output, &report)
-            }
-            TasksCommand::Convert {
-                file,
-                line,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_tasks_convert_command(
-                    &paths,
-                    file,
-                    *line,
-                    *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "tasks convert", &report.changed_paths)
-                        .map_err(CliError::operation)?;
-                }
-                print_task_convert_report(cli.output, &report)
-            }
-            TasksCommand::Create {
-                text,
-                note,
-                due,
-                priority,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_tasks_create_command(
-                    &paths,
-                    TasksCreateOptions {
-                        text,
-                        note: note.as_deref(),
-                        due: due.as_deref(),
-                        priority: priority.as_deref(),
-                        dry_run: *dry_run,
-                    },
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "tasks create", &report.changed_paths)
-                        .map_err(CliError::operation)?;
-                }
-                print_task_create_report(cli.output, &report)
-            }
-            TasksCommand::Reschedule {
-                task,
-                due,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_tasks_reschedule_command(
-                    &paths,
-                    task,
-                    due,
-                    *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                )?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "tasks reschedule", &report.changed_paths)
-                        .map_err(CliError::operation)?;
-                }
-                print_task_mutation_report(cli.output, &report)
-            }
-            TasksCommand::Query { query } => {
-                let result = run_tasks_query_command(&paths, query)?;
-                print_tasks_query_result(cli.output, &result)
-            }
-            TasksCommand::Eval { file, block } => {
-                let report = run_tasks_eval_command(&paths, file, *block)?;
-                print_tasks_eval_report(cli.output, &report)
-            }
-            TasksCommand::List {
-                filter,
-                source,
-                status,
-                priority,
-                due_before,
-                due_after,
-                project,
-                context,
-                group_by,
-                sort_by,
-                include_archived,
-            } => {
-                let result = run_tasks_list_command(
-                    &paths,
-                    TasksListOptions {
-                        filter: filter.as_deref(),
-                        source: *source,
-                        status: status.as_deref(),
-                        priority: priority.as_deref(),
-                        due_before: due_before.as_deref(),
-                        due_after: due_after.as_deref(),
-                        project: project.as_deref(),
-                        context: context.as_deref(),
-                        group_by: group_by.as_deref(),
-                        sort_by: sort_by.as_deref(),
-                        include_archived: *include_archived,
-                    },
-                )?;
-                print_tasks_query_result(cli.output, &result)
-            }
-            TasksCommand::Next { count, from } => {
-                let report = run_tasks_next_command(&paths, *count, from.as_deref())?;
-                print_tasks_next_report(cli.output, &report)
-            }
-            TasksCommand::Blocked => {
-                let report = run_tasks_blocked_command(&paths)?;
-                print_tasks_blocked_report(cli.output, &report)
-            }
-            TasksCommand::Graph => {
-                let report = build_tasks_graph_report(&paths)?;
-                print_tasks_graph_report(cli.output, &report)
-            }
-            TasksCommand::View { command } => match command {
-                TasksViewCommand::Show { name, export } => {
-                    let report = run_tasks_view_command(&paths, name)?;
-                    let export = resolve_cli_export(export)?;
-                    print_bases_report(
-                        cli.output,
-                        &report,
-                        &list_controls,
-                        stdout_is_tty,
-                        use_stdout_color,
-                        export.as_ref(),
-                    )
-                }
-                TasksViewCommand::List => {
-                    let report = run_tasks_view_list_command(&paths)?;
-                    print_tasknotes_view_list_report(cli.output, &report)
-                }
-            },
-        },
-        Command::Kanban { ref command } => match command {
-            KanbanCommand::List => {
-                let boards = list_kanban_boards(&paths).map_err(CliError::operation)?;
-                print_kanban_board_list(
-                    cli.output,
-                    &boards,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                )
-            }
-            KanbanCommand::Show {
-                board,
-                verbose,
-                include_archive,
-            } => {
-                let report = load_kanban_board(&paths, board, *include_archive)
-                    .map_err(CliError::operation)?;
-                print_kanban_board_report(cli.output, &report, *verbose)
-            }
-            KanbanCommand::Cards {
-                board,
-                column,
-                status,
-            } => {
-                let report =
-                    run_kanban_cards_command(&paths, board, column.as_deref(), status.as_deref())?;
-                print_kanban_cards_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                )
-            }
-            KanbanCommand::Archive {
-                board,
-                card,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_kanban_archive_command(&paths, board, card, *dry_run)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(
-                            &paths,
-                            "kanban-archive",
-                            &kanban_archive_changed_files(&report),
-                        )
-                        .map_err(CliError::operation)?;
-                }
-                print_kanban_archive_report(cli.output, &report)
-            }
-            KanbanCommand::Move {
-                board,
-                card,
-                target_column,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_kanban_move_command(&paths, board, card, target_column, *dry_run)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "kanban-move", &kanban_move_changed_files(&report))
-                        .map_err(CliError::operation)?;
-                }
-                print_kanban_move_report(cli.output, &report)
-            }
-            KanbanCommand::Add {
-                board,
-                column,
-                text,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = run_kanban_add_command(&paths, board, column, text, *dry_run)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "kanban-add", &kanban_add_changed_files(&report))
-                        .map_err(CliError::operation)?;
-                }
-                print_kanban_add_report(cli.output, &report)
-            }
-        },
+        Command::Tasks { ref command } => commands::tasks::handle_tasks_command(
+            cli,
+            &paths,
+            command,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+            use_stderr_color,
+        ),
+        Command::Kanban { ref command } => commands::kanban::handle_kanban_command(
+            cli,
+            &paths,
+            command,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Search {
             ref query,
             ref regex,
@@ -10612,257 +9556,44 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             fuzzy,
             explain,
             ref export,
-        } => {
-            let effective_query = match (query.as_deref(), regex.as_deref()) {
-                (Some(_), Some(_)) => {
-                    return Err(CliError::operation(
-                        "provide either a query string or --regex, not both",
-                    ))
-                }
-                (Some(query), None) => query.to_string(),
-                (None, Some(regex)) => format!("/{regex}/"),
-                (None, None) => {
-                    return Err(CliError::operation(
-                        "provide a search query or --regex pattern",
-                    ))
-                }
-            };
-            let report = search_vault(
-                &paths,
-                &SearchQuery {
-                    text: effective_query,
-                    tag: tag.clone(),
-                    path_prefix: path_prefix.clone(),
-                    has_property: has_property.clone(),
-                    filters: filters.clone(),
-                    provider: cli.provider.clone(),
-                    mode: cli_search_mode(mode),
-                    sort: sort.map(cli_search_sort),
-                    match_case: match_case.then_some(true),
-                    limit: cli.limit.map(|limit| limit.saturating_add(cli.offset)),
-                    context_size,
-                    raw_query,
-                    fuzzy,
-                    explain,
-                },
-            )
-            .map_err(CliError::operation)?;
-            let export = resolve_cli_export(export)?;
-            print_search_report(
-                cli.output,
-                &report,
-                &list_controls,
-                stdout_is_tty,
-                use_stdout_color,
-                export.as_ref(),
-            )?;
-            Ok(())
-        }
-        Command::Refactor { ref command } => match command {
-            RefactorCommand::RenameAlias {
-                note,
-                old,
-                new,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report =
-                    rename_alias(&paths, note, old, new, *dry_run).map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "rename-alias", &refactor_changed_files(&report))
-                        .map_err(CliError::operation)?;
-                }
-                print_refactor_report(cli.output, &report)
-            }
-            RefactorCommand::RenameHeading {
-                note,
-                old,
-                new,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = rename_heading(&paths, note, old, new, *dry_run)
-                    .map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "rename-heading", &refactor_changed_files(&report))
-                        .map_err(CliError::operation)?;
-                }
-                print_refactor_report(cli.output, &report)
-            }
-            RefactorCommand::RenameBlockRef {
-                note,
-                old,
-                new,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = rename_block_ref(&paths, note, old, new, *dry_run)
-                    .map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "rename-block-ref", &refactor_changed_files(&report))
-                        .map_err(CliError::operation)?;
-                }
-                print_refactor_report(cli.output, &report)
-            }
-            RefactorCommand::RenameProperty {
-                old,
-                new,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report =
-                    rename_property(&paths, old, new, *dry_run).map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "rename-property", &refactor_changed_files(&report))
-                        .map_err(CliError::operation)?;
-                }
-                print_refactor_report(cli.output, &report)
-            }
-            RefactorCommand::MergeTags {
-                source,
-                dest,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report =
-                    merge_tags(&paths, source, dest, *dry_run).map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "merge-tags", &refactor_changed_files(&report))
-                        .map_err(CliError::operation)?;
-                }
-                print_refactor_report(cli.output, &report)
-            }
-            RefactorCommand::Rewrite {
-                filters,
-                find,
-                replace,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = bulk_replace(&paths, filters, find, replace, *dry_run)
-                    .map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "rewrite", &refactor_changed_files(&report))
-                        .map_err(CliError::operation)?;
-                }
-                print_refactor_report(cli.output, &report)
-            }
-            RefactorCommand::Move {
-                source,
-                dest,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let summary =
-                    move_note(&paths, source, dest, *dry_run).map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "move", &move_changed_files(&summary))
-                        .map_err(CliError::operation)?;
-                }
-                print_move_summary(cli.output, &summary)
-            }
-            RefactorCommand::LinkMentions {
-                note,
-                dry_run,
-                no_commit,
-            } => {
-                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
-                let report = link_mentions(&paths, note.as_deref(), *dry_run)
-                    .map_err(CliError::operation)?;
-                if !dry_run {
-                    auto_commit
-                        .commit(&paths, "link-mentions", &refactor_changed_files(&report))
-                        .map_err(CliError::operation)?;
-                }
-                print_refactor_report(cli.output, &report)
-            }
-            RefactorCommand::Suggest { command } => match command {
-                SuggestCommand::Mentions { note, export } => {
-                    let report =
-                        suggest_mentions(&paths, note.as_deref()).map_err(CliError::operation)?;
-                    let export = resolve_cli_export(export)?;
-                    print_mention_suggestions_report(
-                        cli.output,
-                        &report,
-                        &list_controls,
-                        stdout_is_tty,
-                        use_stdout_color,
-                        export.as_ref(),
-                    )
-                }
-                SuggestCommand::Duplicates { export } => {
-                    let report = suggest_duplicates(&paths).map_err(CliError::operation)?;
-                    let export = resolve_cli_export(export)?;
-                    print_duplicate_suggestions_report(
-                        cli.output,
-                        &report,
-                        &list_controls,
-                        stdout_is_tty,
-                        use_stdout_color,
-                        export.as_ref(),
-                    )
-                }
-            },
-        },
-        Command::Suggest { ref command } => match command {
-            SuggestCommand::Mentions { note, export } => {
-                let note = if note.is_some() || interactive_note_selection {
-                    Some(resolve_note_argument(
-                        &paths,
-                        note.as_deref(),
-                        interactive_note_selection,
-                        "note",
-                    )?)
-                } else {
-                    None
-                };
-                let report =
-                    suggest_mentions(&paths, note.as_deref()).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_mention_suggestions_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )
-            }
-            SuggestCommand::Duplicates { export } => {
-                let report = suggest_duplicates(&paths).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_duplicate_suggestions_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )
-            }
-        },
+        } => commands::query::handle_search_command(
+            cli,
+            &paths,
+            query.as_deref(),
+            regex.as_deref(),
+            filters,
+            mode,
+            tag.as_deref(),
+            path_prefix.as_deref(),
+            has_property.as_deref(),
+            sort,
+            match_case,
+            context_size,
+            raw_query,
+            fuzzy,
+            explain,
+            export,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
+        Command::Refactor { ref command } => commands::refactor::handle_refactor_command(
+            cli,
+            &paths,
+            command,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
+        Command::Suggest { ref command } => commands::refactor::handle_suggest_command(
+            cli,
+            &paths,
+            command,
+            interactive_note_selection,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Saved { ref command } => match command {
             SavedCommand::List => {
                 let reports = list_saved_reports(&paths).map_err(CliError::operation)?;
@@ -11048,195 +9779,54 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 run_config_import(&paths, cli.output, importer.as_ref(), &selection.args)
             }
         },
-        Command::Daily { ref command } => match command {
-            DailyCommand::Today { no_edit, no_commit } => {
-                let report = run_periodic_open_command(
-                    &paths,
-                    "daily",
-                    None,
-                    *no_edit,
-                    *no_commit,
-                    interactive_note_selection,
-                )?;
-                print_periodic_open_report(cli.output, &report)
-            }
-            DailyCommand::Show { date } => {
-                let report = run_daily_show_command(&paths, date.as_deref())?;
-                print_daily_show_report(cli.output, &report)
-            }
-            DailyCommand::List {
-                from,
-                to,
-                week,
-                month,
-            } => {
-                let report =
-                    run_daily_list_command(&paths, from.as_deref(), to.as_deref(), *week, *month)?;
-                print_daily_list_report(cli.output, &report, &list_controls)
-            }
-            DailyCommand::ExportIcs {
-                from,
-                to,
-                week,
-                month,
-                path,
-                calendar_name,
-            } => {
-                let report = run_daily_export_ics_command(
-                    &paths,
-                    from.as_deref(),
-                    to.as_deref(),
-                    *week,
-                    *month,
-                    path.as_deref(),
-                    calendar_name.as_deref(),
-                )?;
-                print_daily_export_ics_report(cli.output, &report)
-            }
-            DailyCommand::Append {
-                text,
-                heading,
-                date,
-                no_commit,
-            } => {
-                let report = run_daily_append_command(
-                    &paths,
-                    text,
-                    heading.as_deref(),
-                    date.as_deref(),
-                    *no_commit,
-                )?;
-                print_daily_append_report(cli.output, &report)
-            }
-        },
-        Command::Git { ref command } => match command {
-            GitCommand::Status => {
-                let mut report = git_status(paths.vault_root()).map_err(CliError::operation)?;
-                report.staged = filter_vault_git_paths(report.staged);
-                report.unstaged = filter_vault_git_paths(report.unstaged);
-                report.untracked = filter_vault_git_paths(report.untracked);
-                report.clean = report.staged.is_empty()
-                    && report.unstaged.is_empty()
-                    && report.untracked.is_empty();
-                print_git_status_report(cli.output, &report)
-            }
-            GitCommand::Log { limit } => {
-                let report = run_git_log_command(&paths, *limit)?;
-                print_git_log_report(cli.output, &report)
-            }
-            GitCommand::Diff { path } => {
-                let report = run_git_diff_group_command(&paths, path.as_deref())?;
-                print_git_diff_group_report(cli.output, &report)
-            }
-            GitCommand::Commit { message } => {
-                let report =
-                    git_commit(paths.vault_root(), message).map_err(CliError::operation)?;
-                print_git_commit_report(cli.output, &report)
-            }
-            GitCommand::Blame { path } => {
-                let report = run_git_blame_command(&paths, path)?;
-                print_git_blame_report(cli.output, &report)
-            }
-        },
+        Command::Daily { ref command } => commands::periodic::handle_daily_command(
+            cli,
+            &paths,
+            command,
+            interactive_note_selection,
+            &list_controls,
+        ),
+        Command::Git { ref command } => commands::runtime::handle_git_command(cli, &paths, command),
         Command::Run {
             ref script,
             script_mode,
             ref timeout,
             ref sandbox,
-        } => {
-            let timeout = parse_run_timeout(timeout.as_deref())?;
-            let sandbox = parse_run_sandbox(sandbox.as_deref())?;
-            if script.is_none() && io::stdin().is_terminal() {
-                js_repl::run_js_repl(&paths, cli.output, timeout, sandbox)
-            } else {
-                let result =
-                    run_js_command(&paths, script.as_deref(), script_mode, timeout, sandbox)?;
-                print_dataview_js_result(cli.output, &result, false)
-            }
-        }
-        Command::Web { ref command } => match command {
-            WebCommand::Search {
-                query,
-                backend,
-                limit,
-            } => {
-                let report = run_web_search_command(&paths, query, backend.as_deref(), *limit)?;
-                print_web_search_report(cli.output, &report)
-            }
-            WebCommand::Fetch {
-                url,
-                mode,
-                save,
-                extract_article,
-            } => {
-                let report =
-                    run_web_fetch_command(&paths, url, *mode, save.as_ref(), *extract_article)?;
-                print_web_fetch_report(cli.output, &report)
-            }
-        },
+        } => commands::runtime::handle_run_command(
+            cli,
+            &paths,
+            script.as_deref(),
+            script_mode,
+            timeout.as_deref(),
+            sandbox.as_deref(),
+        ),
+        Command::Web { ref command } => commands::runtime::handle_web_command(cli, &paths, command),
         Command::Weekly { ref args } => {
-            let report = run_periodic_open_command(
-                &paths,
-                "weekly",
-                args.date.as_deref(),
-                args.no_edit,
-                args.no_commit,
-                interactive_note_selection,
-            )?;
-            print_periodic_open_report(cli.output, &report)
+            commands::periodic::handle_weekly_command(cli, &paths, args, interactive_note_selection)
         }
-        Command::Monthly { ref args } => {
-            let report = run_periodic_open_command(
-                &paths,
-                "monthly",
-                args.date.as_deref(),
-                args.no_edit,
-                args.no_commit,
-                interactive_note_selection,
-            )?;
-            print_periodic_open_report(cli.output, &report)
-        }
+        Command::Monthly { ref args } => commands::periodic::handle_monthly_command(
+            cli,
+            &paths,
+            args,
+            interactive_note_selection,
+        ),
         Command::Periodic {
             ref command,
             ref period_type,
             ref date,
             no_edit,
             no_commit,
-        } => match command {
-            Some(PeriodicSubcommand::List { period_type }) => {
-                let report = run_periodic_list_command(&paths, period_type.as_deref())?;
-                print_periodic_list_report(cli.output, &report, &list_controls)
-            }
-            Some(PeriodicSubcommand::Gaps {
-                period_type,
-                from,
-                to,
-            }) => {
-                let report = run_periodic_gaps_command(
-                    &paths,
-                    period_type.as_deref(),
-                    from.as_deref(),
-                    to.as_deref(),
-                )?;
-                print_periodic_gap_report(cli.output, &report, &list_controls)
-            }
-            None => {
-                let period_type = period_type.as_deref().ok_or_else(|| {
-                    CliError::operation(
-                        "`periodic` requires a period type unless `list` or `gaps` is used",
-                    )
-                })?;
-                let report = run_periodic_open_command(
-                    &paths,
-                    period_type,
-                    date.as_deref(),
-                    no_edit,
-                    no_commit,
-                    interactive_note_selection,
-                )?;
-                print_periodic_open_report(cli.output, &report)
-            }
-        },
+        } => commands::periodic::handle_periodic_command(
+            cli,
+            &paths,
+            command.as_ref(),
+            period_type.as_deref(),
+            date.as_deref(),
+            no_edit,
+            no_commit,
+            interactive_note_selection,
+            &list_controls,
+        ),
         Command::Changes {
             ref checkpoint,
             ref export,
@@ -11422,208 +10012,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 Ok(())
             }
         }
-        Command::Vectors { ref command } => match command {
-            VectorsCommand::Index { dry_run } => {
-                let verbose = cli.verbose;
-                let mut progress = (cli.output == OutputFormat::Human)
-                    .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbose));
-                let report = index_vectors_with_progress(
-                    &paths,
-                    &VectorIndexQuery {
-                        provider: cli.provider.clone(),
-                        dry_run: *dry_run,
-                        verbose,
-                    },
-                    |event| {
-                        if let Some(progress) = progress.as_mut() {
-                            progress.record(&event);
-                        }
-                    },
-                )
-                .map_err(CliError::operation)?;
-                print_vector_index_report(cli.output, &report, use_stdout_color)?;
-                Ok(())
-            }
-            VectorsCommand::Repair { dry_run } => {
-                let mut progress = (cli.output == OutputFormat::Human)
-                    .then(|| VectorIndexProgressReporter::new(use_stderr_color, false));
-                let report = repair_vectors_with_progress(
-                    &paths,
-                    &VectorRepairQuery {
-                        provider: cli.provider.clone(),
-                        dry_run: *dry_run,
-                    },
-                    |event| {
-                        if let Some(progress) = progress.as_mut() {
-                            progress.record(&event);
-                        }
-                    },
-                )
-                .map_err(CliError::operation)?;
-                print_vector_repair_report(cli.output, &report, use_stdout_color)
-            }
-            VectorsCommand::Rebuild { dry_run } => {
-                let mut progress = (cli.output == OutputFormat::Human)
-                    .then(|| VectorIndexProgressReporter::new(use_stderr_color, false));
-                let report = rebuild_vectors_with_progress(
-                    &paths,
-                    &VectorRebuildQuery {
-                        provider: cli.provider.clone(),
-                        dry_run: *dry_run,
-                    },
-                    |event| {
-                        if let Some(progress) = progress.as_mut() {
-                            progress.record(&event);
-                        }
-                    },
-                )
-                .map_err(CliError::operation)?;
-                print_vector_index_report(cli.output, &report, use_stdout_color)?;
-                Ok(())
-            }
-            VectorsCommand::Queue { ref command } => match command {
-                VectorQueueCommand::Status => {
-                    let report = inspect_vector_queue(&paths, cli.provider.as_deref())
-                        .map_err(CliError::operation)?;
-                    print_vector_queue_report(cli.output, &report)
-                }
-                VectorQueueCommand::Run { dry_run } => {
-                    let verbose = cli.verbose;
-                    let mut progress = (cli.output == OutputFormat::Human)
-                        .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbose));
-                    let report = index_vectors_with_progress(
-                        &paths,
-                        &VectorIndexQuery {
-                            provider: cli.provider.clone(),
-                            dry_run: *dry_run,
-                            verbose,
-                        },
-                        |event| {
-                            if let Some(progress) = progress.as_mut() {
-                                progress.record(&event);
-                            }
-                        },
-                    )
-                    .map_err(CliError::operation)?;
-                    print_vector_index_report(cli.output, &report, use_stdout_color)?;
-                    Ok(())
-                }
-            },
-            VectorsCommand::Neighbors {
-                query,
-                note,
-                export,
-            } => {
-                let resolved_note = if note.is_some() || query.is_none() {
-                    Some(resolve_note_argument(
-                        &paths,
-                        note.as_deref(),
-                        interactive_note_selection && query.is_none(),
-                        "note",
-                    )?)
-                } else {
-                    None
-                };
-                let report = query_vector_neighbors(
-                    &paths,
-                    &VectorNeighborsQuery {
-                        provider: cli.provider.clone(),
-                        text: query.clone(),
-                        note: resolved_note,
-                        limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
-                    },
-                )
-                .map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_vector_neighbors_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )?;
-                Ok(())
-            }
-            VectorsCommand::Related { note, export } => {
-                let note = resolve_note_argument(
-                    &paths,
-                    note.as_deref(),
-                    interactive_note_selection,
-                    "note",
-                )?;
-                let report = query_related_notes(
-                    &paths,
-                    &RelatedNotesQuery {
-                        provider: cli.provider.clone(),
-                        note,
-                        limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
-                    },
-                )
-                .map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_related_notes_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )?;
-                Ok(())
-            }
-            VectorsCommand::Duplicates { threshold, export } => {
-                let report = vector_duplicates(
-                    &paths,
-                    &VectorDuplicatesQuery {
-                        provider: cli.provider.clone(),
-                        threshold: *threshold,
-                        limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
-                    },
-                )
-                .map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_vector_duplicates_report(
-                    cli.output,
-                    &report,
-                    &list_controls,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )?;
-                Ok(())
-            }
-            VectorsCommand::Models { export } => {
-                let models = list_vector_models(&paths).map_err(CliError::operation)?;
-                let export = resolve_cli_export(export)?;
-                print_vector_models_report(
-                    cli.output,
-                    &models,
-                    stdout_is_tty,
-                    use_stdout_color,
-                    export.as_ref(),
-                )?;
-                Ok(())
-            }
-            VectorsCommand::DropModel { key } => {
-                let dropped = drop_vector_model(&paths, key).map_err(CliError::operation)?;
-                if dropped {
-                    if cli.output == OutputFormat::Json {
-                        println!("{}", serde_json::json!({"dropped": true, "cache_key": key}));
-                    } else {
-                        eprintln!("Dropped model: {key}");
-                    }
-                } else if cli.output == OutputFormat::Json {
-                    println!(
-                        "{}",
-                        serde_json::json!({"dropped": false, "cache_key": key})
-                    );
-                } else {
-                    eprintln!("No model found with cache key: {key}");
-                }
-                Ok(())
-            }
-        },
+        Command::Vectors { ref command } => commands::vectors::handle_vectors_command(
+            cli,
+            &paths,
+            command,
+            interactive_note_selection,
+            &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+            use_stderr_color,
+        ),
         Command::Scan { full, no_commit } => {
             let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit);
@@ -15399,13 +13797,6 @@ fn print_dql_diagnostics_human(diagnostics: &[vulcan_core::DqlDiagnostic]) {
     }
 }
 
-pub(crate) fn render_dataview_inline_value(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        _ => serde_json::to_string(value).expect("inline result should serialize"),
-    }
-}
-
 fn print_inbox_report(output: OutputFormat, report: &InboxReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
@@ -15885,26 +14276,6 @@ fn print_cache_vacuum_report(
         }
         OutputFormat::Json => print_json(report),
     }
-}
-
-fn print_json<T: Serialize>(value: &T) -> Result<(), CliError> {
-    println!(
-        "{}",
-        serde_json::to_string(value).map_err(CliError::operation)?
-    );
-    Ok(())
-}
-
-fn print_json_lines(rows: Vec<Value>, fields: Option<&[String]>) -> Result<(), CliError> {
-    for row in rows {
-        let selected = select_fields(row, fields);
-        println!(
-            "{}",
-            serde_json::to_string(&selected).map_err(CliError::operation)?
-        );
-    }
-
-    Ok(())
 }
 
 fn resolve_vault_root(vault: &PathBuf) -> Result<PathBuf, CliError> {
@@ -16957,57 +15328,6 @@ fn saved_report_summary_rows(reports: &[SavedReportSummary]) -> Vec<Value> {
         .collect()
 }
 
-fn select_fields(row: Value, fields: Option<&[String]>) -> Value {
-    let Some(fields) = fields else {
-        return row;
-    };
-    let Some(object) = row.as_object() else {
-        return row;
-    };
-    let mut selected = Map::new();
-    for field in fields {
-        if let Some(value) = object.get(field) {
-            selected.insert(field.clone(), value.clone());
-        }
-    }
-    Value::Object(selected)
-}
-
-fn print_selected_human_fields(row: &Value, fields: &[String]) {
-    let Some(object) = row.as_object() else {
-        println!("{row}");
-        return;
-    };
-
-    let rendered = fields
-        .iter()
-        .filter_map(|field| {
-            object
-                .get(field)
-                .map(|value| format!("{field}={}", render_human_value(value)))
-        })
-        .collect::<Vec<_>>();
-
-    println!("{}", rendered.join(" | "));
-}
-
-#[allow(clippy::float_cmp, clippy::cast_possible_truncation)]
-fn render_human_value(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Null => "null".to_string(),
-        Value::Number(n) => {
-            let f = n.as_f64().unwrap_or(0.0);
-            if f == f.trunc() && f.abs() < 1e15 {
-                format!("{}", f as i64)
-            } else {
-                n.to_string()
-            }
-        }
-        _ => value.to_string(),
-    }
-}
-
 fn print_outgoing_link(link: &OutgoingLinkRecord) {
     let target = link
         .resolved_target_path
@@ -17599,44 +15919,6 @@ fn zero_summary() -> vulcan_core::DoctorSummary {
         orphan_assets: 0,
         html_links: 0,
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ListOutputControls {
-    fields: Option<Vec<String>>,
-    limit: Option<usize>,
-    offset: usize,
-}
-
-impl ListOutputControls {
-    fn from_cli(cli: &Cli) -> Self {
-        Self {
-            fields: cli.fields.clone(),
-            limit: cli.limit,
-            offset: cli.offset,
-        }
-    }
-
-    fn with_saved_defaults(&self, fields: Option<Vec<String>>, limit: Option<usize>) -> Self {
-        Self {
-            fields: self.fields.clone().or(fields),
-            limit: self.limit.or(limit),
-            offset: self.offset,
-        }
-    }
-
-    fn requested_result_limit(&self) -> Option<usize> {
-        self.limit.map(|limit| limit.saturating_add(self.offset))
-    }
-}
-
-fn paginated_items<'a, T>(items: &'a [T], controls: &ListOutputControls) -> &'a [T] {
-    let start = controls.offset.min(items.len());
-    let end = controls.limit.map_or(items.len(), |limit| {
-        start.saturating_add(limit).min(items.len())
-    });
-
-    &items[start..end]
 }
 
 fn graph_hub_rows(notes: &[vulcan_core::GraphNodeScore]) -> Vec<Value> {
