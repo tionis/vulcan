@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::time::Duration;
 
 use crate::dql::DqlQueryResult;
 #[cfg(not(feature = "js_runtime"))]
@@ -29,6 +30,11 @@ pub struct DataviewJsResult {
     pub outputs: Vec<DataviewJsOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DataviewJsEvalOptions {
+    pub timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -71,6 +77,21 @@ pub fn evaluate_dataview_js(
     _source: &str,
     _current_file: Option<&str>,
 ) -> Result<DataviewJsResult, DataviewJsError> {
+    evaluate_dataview_js_with_options(
+        _paths,
+        _source,
+        _current_file,
+        DataviewJsEvalOptions::default(),
+    )
+}
+
+#[cfg(not(feature = "js_runtime"))]
+pub fn evaluate_dataview_js_with_options(
+    _paths: &VaultPaths,
+    _source: &str,
+    _current_file: Option<&str>,
+    _options: DataviewJsEvalOptions,
+) -> Result<DataviewJsResult, DataviewJsError> {
     Err(DataviewJsError::Disabled)
 }
 
@@ -81,6 +102,25 @@ pub fn evaluate_dataview_js_query(
     current_file: Option<&str>,
 ) -> Result<DataviewJsResult, DataviewJsError> {
     evaluate_dataview_js(paths, source, current_file)
+}
+
+#[cfg(not(feature = "js_runtime"))]
+#[derive(Debug, Clone, Default)]
+pub struct DataviewJsSession;
+
+#[cfg(not(feature = "js_runtime"))]
+impl DataviewJsSession {
+    pub fn new(
+        _paths: &VaultPaths,
+        _current_file: Option<&str>,
+        _options: DataviewJsEvalOptions,
+    ) -> Result<Self, DataviewJsError> {
+        Err(DataviewJsError::Disabled)
+    }
+
+    pub fn evaluate(&self, _source: &str) -> Result<DataviewJsResult, DataviewJsError> {
+        Err(DataviewJsError::Disabled)
+    }
 }
 
 #[cfg(all(test, not(feature = "js_runtime")))]
@@ -141,7 +181,7 @@ mod runtime {
     use std::fs;
     use std::path::{Component, Path, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use csv::ReaderBuilder;
     use rquickjs::function::Func;
@@ -151,7 +191,7 @@ mod runtime {
     use serde::de::DeserializeOwned;
     use serde::Serialize;
 
-    use super::{DataviewJsError, DataviewJsOutput, DataviewJsResult};
+    use super::{DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult};
     use crate::config::load_vault_config;
     use crate::dql::{evaluate_dql, DqlQueryResult};
     use crate::expression::eval::{compare_values, value_to_display};
@@ -189,6 +229,13 @@ mod runtime {
         value: Option<DqlQueryResult>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    }
+
+    pub struct DataviewJsSession {
+        runtime: Runtime,
+        context: Context,
+        outputs: Arc<Mutex<Vec<DataviewJsOutput>>>,
+        timeout: Duration,
     }
 
     const DATAVIEW_JS_PRELUDE: &str = r#"
@@ -1785,71 +1832,21 @@ globalThis.Function = undefined;
         source: &str,
         current_file: Option<&str>,
     ) -> Result<DataviewJsResult, DataviewJsError> {
-        let loaded_config = load_vault_config(paths).config;
-        if !loaded_config.dataview.enable_dataview_js {
-            return Err(DataviewJsError::Disabled);
-        }
+        evaluate_dataview_js_with_options(
+            paths,
+            source,
+            current_file,
+            DataviewJsEvalOptions::default(),
+        )
+    }
 
-        let note_index =
-            load_note_index(paths).map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        let state = Arc::new(JsEvalState {
-            paths: paths.clone(),
-            current_file: current_file.map(ToOwned::to_owned),
-            note_index,
-            periodic_config: loaded_config.periodic.clone(),
-        });
-        let outputs = Arc::new(Mutex::new(Vec::new()));
-        let runtime =
-            Runtime::new().map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        runtime.set_memory_limit(loaded_config.dataview.js_memory_limit_bytes);
-        runtime.set_max_stack_size(loaded_config.dataview.js_max_stack_size_bytes);
-
-        let deadline = Instant::now();
-        let timeout_seconds = loaded_config.dataview.js_timeout_seconds;
-        runtime.set_interrupt_handler(Some(Box::new(move || {
-            deadline.elapsed().as_secs() >= u64::try_from(timeout_seconds).unwrap_or(u64::MAX)
-        })));
-
-        let context =
-            Context::full(&runtime).map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        let eval_result = context.with(|ctx| -> Result<Option<Value>, DataviewJsError> {
-            install_dataview_globals(ctx.clone(), Arc::clone(&state), Arc::clone(&outputs))?;
-            ctx.eval::<(), _>(DATAVIEW_JS_PRELUDE)
-                .catch(&ctx)
-                .map_err(|error| map_caught_runtime_error(&error, timeout_seconds))?;
-            let value: JsValue<'_> = ctx
-                .eval(source)
-                .catch(&ctx)
-                .map_err(|error| map_caught_runtime_error(&error, timeout_seconds))?;
-            if value.is_undefined() {
-                Ok(None)
-            } else {
-                let serialize_fn: rquickjs::Function<'_> =
-                    ctx.globals()
-                        .get("__vulcanSerialize")
-                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                let serialized_json: String = serialize_fn
-                    .call((value,))
-                    .catch(&ctx)
-                    .map_err(|error| map_caught_runtime_error(&error, timeout_seconds))?;
-                serde_json::from_str(&serialized_json)
-                    .map(Some)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))
-            }
-        });
-
-        let drain_result = drain_pending_jobs(&runtime, timeout_seconds);
-        runtime.set_interrupt_handler(None);
-        drain_result?;
-        let value = eval_result?;
-
-        Ok(DataviewJsResult {
-            outputs: outputs
-                .lock()
-                .map(|guard| guard.clone())
-                .unwrap_or_default(),
-            value,
-        })
+    pub fn evaluate_dataview_js_with_options(
+        paths: &VaultPaths,
+        source: &str,
+        current_file: Option<&str>,
+        options: DataviewJsEvalOptions,
+    ) -> Result<DataviewJsResult, DataviewJsError> {
+        DataviewJsSession::new(paths, current_file, options)?.evaluate(source)
     }
 
     pub fn evaluate_dataview_js_query(
@@ -1858,6 +1855,93 @@ globalThis.Function = undefined;
         current_file: Option<&str>,
     ) -> Result<DataviewJsResult, DataviewJsError> {
         evaluate_dataview_js(paths, source, current_file)
+    }
+
+    impl DataviewJsSession {
+        pub fn new(
+            paths: &VaultPaths,
+            current_file: Option<&str>,
+            options: DataviewJsEvalOptions,
+        ) -> Result<Self, DataviewJsError> {
+            let loaded_config = load_vault_config(paths).config;
+            if !loaded_config.dataview.enable_dataview_js {
+                return Err(DataviewJsError::Disabled);
+            }
+
+            let note_index = load_note_index(paths)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            let state = Arc::new(JsEvalState {
+                paths: paths.clone(),
+                current_file: current_file.map(ToOwned::to_owned),
+                note_index,
+                periodic_config: loaded_config.periodic.clone(),
+            });
+            let outputs = Arc::new(Mutex::new(Vec::new()));
+            let runtime =
+                Runtime::new().map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            runtime.set_memory_limit(loaded_config.dataview.js_memory_limit_bytes);
+            runtime.set_max_stack_size(loaded_config.dataview.js_max_stack_size_bytes);
+
+            let timeout = options.timeout.unwrap_or_else(|| {
+                Duration::from_secs(
+                    u64::try_from(loaded_config.dataview.js_timeout_seconds).unwrap_or(u64::MAX),
+                )
+            });
+            if timeout.is_zero() {
+                return Err(DataviewJsError::Message(
+                    "DataviewJS timeout must be greater than 0ms".to_string(),
+                ));
+            }
+            let timeout_description = format_timeout(timeout);
+
+            let context = Context::full(&runtime)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            context.with(|ctx| -> Result<(), DataviewJsError> {
+                install_dataview_globals(ctx.clone(), Arc::clone(&state), Arc::clone(&outputs))?;
+                ctx.eval::<(), _>(DATAVIEW_JS_PRELUDE)
+                    .catch(&ctx)
+                    .map_err(|error| map_caught_runtime_error(&error, &timeout_description))?;
+                Ok(())
+            })?;
+
+            Ok(Self {
+                runtime,
+                context,
+                outputs,
+                timeout,
+            })
+        }
+
+        pub fn evaluate(&self, source: &str) -> Result<DataviewJsResult, DataviewJsError> {
+            {
+                let mut outputs = self.outputs.lock().map_err(|_| {
+                    DataviewJsError::Message("DataviewJS output lock poisoned".to_string())
+                })?;
+                outputs.clear();
+            }
+
+            let deadline = Instant::now();
+            let timeout = self.timeout;
+            let timeout_description = format_timeout(timeout);
+            self.runtime
+                .set_interrupt_handler(Some(Box::new(move || deadline.elapsed() >= timeout)));
+
+            let eval_result = self
+                .context
+                .with(|ctx| evaluate_value(&ctx, source, &timeout_description));
+            let drain_result = drain_pending_jobs(&self.runtime, &timeout_description);
+            self.runtime.set_interrupt_handler(None);
+            drain_result?;
+            let value = eval_result?;
+            let outputs = self.outputs.lock().map_err(|_| {
+                DataviewJsError::Message("DataviewJS output lock poisoned".to_string())
+            })?;
+
+            Ok(DataviewJsResult {
+                outputs: outputs.clone(),
+                value,
+            })
+        }
     }
 
     #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
@@ -2558,10 +2642,54 @@ globalThis.Function = undefined;
         }
     }
 
-    fn map_runtime_message(message: &str, timeout_seconds: usize) -> DataviewJsError {
+    fn evaluate_value<'js>(
+        ctx: &Ctx<'js>,
+        source: &str,
+        timeout_description: &str,
+    ) -> Result<Option<Value>, DataviewJsError> {
+        let value: JsValue<'js> = ctx
+            .eval(source)
+            .catch(ctx)
+            .map_err(|error| map_caught_runtime_error(&error, timeout_description))?;
+        if value.is_undefined() {
+            Ok(None)
+        } else {
+            serialize_value(ctx, value, timeout_description).map(Some)
+        }
+    }
+
+    fn serialize_value<'js>(
+        ctx: &Ctx<'js>,
+        value: JsValue<'js>,
+        timeout_description: &str,
+    ) -> Result<Value, DataviewJsError> {
+        let serialize_fn: rquickjs::Function<'js> = ctx
+            .globals()
+            .get("__vulcanSerialize")
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let serialized_json: String = serialize_fn
+            .call((value,))
+            .catch(ctx)
+            .map_err(|error| map_caught_runtime_error(&error, timeout_description))?;
+        serde_json::from_str(&serialized_json)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))
+    }
+
+    fn format_timeout(timeout: Duration) -> String {
+        if timeout.as_secs() > 0 && timeout.subsec_nanos() == 0 {
+            match timeout.as_secs() {
+                1 => "1 second".to_string(),
+                seconds => format!("{seconds} seconds"),
+            }
+        } else {
+            format!("{} ms", timeout.as_millis().max(1))
+        }
+    }
+
+    fn map_runtime_message(message: &str, timeout_description: &str) -> DataviewJsError {
         if message.to_ascii_lowercase().contains("interrupted") {
             DataviewJsError::Message(format!(
-                "DataviewJS execution timed out after {timeout_seconds} second(s)"
+                "DataviewJS execution timed out after {timeout_description}"
             ))
         } else {
             DataviewJsError::Message(message.trim().to_string())
@@ -2570,21 +2698,21 @@ globalThis.Function = undefined;
 
     fn map_caught_runtime_error(
         error: &CaughtError<'_>,
-        timeout_seconds: usize,
+        timeout_description: &str,
     ) -> DataviewJsError {
-        map_runtime_message(&error.to_string(), timeout_seconds)
+        map_runtime_message(&error.to_string(), timeout_description)
     }
 
     fn drain_pending_jobs(
         runtime: &Runtime,
-        timeout_seconds: usize,
+        timeout_description: &str,
     ) -> Result<(), DataviewJsError> {
         while runtime.is_job_pending() {
             runtime.execute_pending_job().map_err(|error| {
                 error.0.with(|ctx| {
                     map_caught_runtime_error(
                         &CaughtError::from_error(&ctx, rquickjs::Error::Exception),
-                        timeout_seconds,
+                        timeout_description,
                     )
                 })
             })?;
@@ -2956,6 +3084,30 @@ globalThis.Function = undefined;
         }
 
         #[test]
+        fn dataviewjs_session_preserves_values_between_evaluations() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let session = DataviewJsSession::new(
+                &paths,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions::default(),
+            )
+            .expect("session should initialize");
+            session
+                .evaluate("const project = vault.note('Projects/Alpha').file.name;")
+                .expect("first evaluation should succeed");
+            let result = session
+                .evaluate("project")
+                .expect("second evaluation should reuse the same context");
+
+            assert_eq!(result.value, Some(Value::String("Alpha".to_string())));
+        }
+
+        #[test]
         fn dataviewjs_reports_runtime_disabled_primitives() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
@@ -3071,4 +3223,7 @@ globalThis.Function = undefined;
 }
 
 #[cfg(feature = "js_runtime")]
-pub use runtime::{evaluate_dataview_js, evaluate_dataview_js_query};
+pub use runtime::{
+    evaluate_dataview_js, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
+    DataviewJsSession,
+};

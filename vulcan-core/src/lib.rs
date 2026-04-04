@@ -59,8 +59,8 @@ pub use config::{
     TemplaterFolderTemplateConfig, TemplaterImporter, TemplatesConfig, VaultConfig,
 };
 pub use dataview_js::{
-    evaluate_dataview_js, evaluate_dataview_js_query, DataviewJsError, DataviewJsOutput,
-    DataviewJsResult,
+    evaluate_dataview_js, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
+    DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DataviewJsSession,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,

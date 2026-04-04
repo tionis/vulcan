@@ -140,7 +140,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # max_recursive_render_depth = 4
 # primary_column_name = "File"
 # group_column_name = "Group"
-# js_timeout_seconds = 5
+# js_timeout_seconds = 30
 # js_memory_limit_bytes = 16777216
 # js_max_stack_size_bytes = 262144
 
@@ -2688,7 +2688,7 @@ fn default_dataview_group_column_name() -> String {
 }
 
 fn default_dataview_js_timeout_seconds() -> usize {
-    5
+    30
 }
 
 fn default_dataview_js_memory_limit_bytes() -> usize {

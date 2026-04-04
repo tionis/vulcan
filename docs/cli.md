@@ -227,7 +227,8 @@ Behavior:
 
 - `console.log(...)` emits paragraph output before the final return value.
 - `--output json` returns both `outputs` and the final `value`.
-- The current REPL executes one line at a time and does not preserve JS variables between prompts.
+- `--timeout <duration>` overrides the JS execution limit for one script run or REPL session.
+- The current REPL executes one line at a time and preserves JS variables between prompts.
 - The current runtime exposes read-oriented helpers such as `vault.note()`, `vault.notes()`, `vault.query()`, `vault.search()`, `vault.graph.*`, `vault.daily.*`, `vault.events()`, and `help(obj)`.
 
 ### Web commands
@@ -825,8 +826,7 @@ vulcan run                          # current line-oriented REPL
 
 **Main remaining runtime work:**
 - sandbox selection flags such as `--sandbox strict|fs|net|none`
-- explicit per-run timeout overrides such as `--timeout 30s`
-- persistent REPL context, history, multiline input, and completion
+- REPL history, multiline input, completion, and richer pretty-printing
 - write-capable JS APIs such as `vault.transaction()` and network-gated `web.*`
 
 ### `canvas` (Roadmap Phase 18)
