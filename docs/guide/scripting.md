@@ -17,14 +17,12 @@ Current `vulcan run` highlights:
 - `vulcan run <file.js>` executes one script file and strips a leading shebang when present.
 - `vulcan run <name>` resolves `.vulcan/scripts/<name>` or `.vulcan/scripts/<name>.js`.
 - `vulcan run --script <file>` is the shebang-friendly form for executable script files.
-- `vulcan run` opens the current line-oriented REPL.
+- `vulcan run` opens the interactive REPL.
+- `--sandbox strict|fs|net|none` selects the runtime capability tier.
 - `--timeout <duration>` overrides the JS execution limit for one script run or REPL session.
 - `console.log(...)` and `help(obj)` are available inside the runtime.
-- REPL variables persist across prompts within the same session.
-
-Current limitations:
-
-- The REPL is still line-oriented and does not yet support history, multiline input, or completion.
-- Runtime sandbox selection flags and write-capable JS APIs are not available yet.
+- REPL variables persist across prompts within the same session, with multiline input, completion, and history in `.vulcan/repl_history`.
+- Write-capable helpers such as `vault.transaction()` require `--sandbox fs` or higher.
+- Web helpers such as `web.search()` and `web.fetch()` require `--sandbox net` or higher.
 
 See also: `help sandbox`, `help js`, `help describe`.

@@ -1,17 +1,18 @@
-`vault.note(...)` currently returns the Dataview-style page object for one note, which wraps indexed note metadata and selected content accessors.
+`vault.note(...)` returns a rich `Note` object backed by indexed metadata plus lazily loaded note details.
 
-Current shape is centered on page/file metadata:
+Current shape:
 
 - identity: `path`, `name`, `aliases`
-- file metadata: timestamps, tags, headings, frontmatter, `file.day`
+- content accessors: `content`, `frontmatter`, `headings`, `blocks`, `tasks`, `dataview_fields`
+- file metadata: timestamps, tags, aliases, `file.day`
 - query/search interop through `vault.query()` and `vault.search()`
-- graph traversal through `vault.graph.*`
+- relationship helpers: `links()`, `backlinks()`, `neighbors(depth)`
 
 Guidance:
 
 - Resolve a note once, then operate on its typed fields instead of reparsing raw markdown in JS.
 - Prefer structured fields and `vault.query()` when possible.
-- Use CLI mutations for writes until transaction-style JS APIs land in the general runtime.
+- Use `vault.set()/append()/patch()/update()/unset()` or `vault.transaction()` for writes when the sandbox is `fs` or higher.
 
 Closest CLI tools:
 

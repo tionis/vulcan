@@ -2431,7 +2431,7 @@ schedule_heading = "Schedule"   # heading to parse events from (optional)
 - [x] `--output json` on all subcommands
 - [x] Auto-commit if enabled
 
-**Note:** The daily and periodic note commands already live under top-level `daily`, `weekly`, `monthly`, and `periodic` groups. The broader command-tree cleanup in Phase 9.18.1 is still pending for the rest of the CLI.
+**Note:** The daily and periodic note commands already live under top-level `daily`, `weekly`, `monthly`, and `periodic` groups. Phase 9.18.1 extends the grouped command-tree cleanup across the broader CLI surface, including browse calendar mode and per-group dispatch modules.
 
 #### 9.16.4 Settings import
 
@@ -2626,7 +2626,7 @@ Restructure all existing commands into logical groups. The public command surfac
 
 **Top-level commands (not grouped):** `doctor` (vault-wide), `diff` (vault-wide), `inbox`, `ls`, `describe`, `completions`, `checkpoint`, `changes`, `batch`, `automation`, `export`, `browse`
 
-- [ ] **Split `vulcan-cli/src/lib.rs` into per-group modules.** The current `lib.rs` is ~10,400 lines containing the dispatch match, ~95 `print_*`/`render_*` functions, and command-specific logic in a single file. As part of this reorganization, split into:
+- [x] **Split `vulcan-cli/src/lib.rs` into per-group modules.** The current `lib.rs` is ~10,400 lines containing the dispatch match, ~95 `print_*`/`render_*` functions, and command-specific logic in a single file. As part of this reorganization, split into:
   - `commands/note.rs`, `commands/graph.rs`, `commands/tasks.rs`, `commands/refactor.rs`, etc. — each module owns its dispatch arm and print functions
   - `output.rs` — shared output utilities (color, pagination, JSON helpers, `ListOutputControls`)
   - `resolve.rs` — note resolution and interactive selection helpers
@@ -2638,10 +2638,10 @@ Restructure all existing commands into logical groups. The public command surfac
   - `suggest` → `refactor suggest`
   - `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
 - [x] Alias commands that appear in both group and top-level: `note doctor` → `doctor <note>`, `note diff` → `diff <note>`
-- [ ] Add a calendar navigation/rendering mode for periodic notes in the browse TUI; Phase 13 WebUI can reuse the same periodic/event data foundation for a graphical calendar view
+- [x] Add a calendar navigation/rendering mode for periodic notes in the browse TUI; Phase 13 WebUI can reuse the same periodic/event data foundation for a graphical calendar view
 - [x] Update `describe` command output to reflect new hierarchy
 - [x] Update shell completion generation
-- [ ] Update all integration tests
+- [x] Update all integration tests
 - [x] Update `docs/cli.md` with new command reference
 
 #### 9.18.2 Note CRUD commands (`note` group)
@@ -2762,7 +2762,7 @@ Move existing mutation commands under `refactor` namespace. No behavioral change
 - [x] `vulcan run <script.js>` — execute a JS file (strips `#!` shebang line if present)
 - [x] `vulcan run <script-name>` — look up by name in `.vulcan/scripts/` directory (strips `#!` shebang line if present)
 - [x] `vulcan run --script` — shebang entry point: identical to `vulcan run <script.js>` but designed for use in shebang lines (`#!/usr/bin/env -S vulcan run --script`). Makes JS scripts directly executable by the OS, external agent harnesses (Claude Code, Codex, Gemini CLI), and shell pipelines without knowing they are Vulcan JS.
-- [ ] `--sandbox strict|fs|net|none` — sandbox isolation level (default: `strict`)
+- [x] `--sandbox strict|fs|net|none` — sandbox isolation level (default: `strict`)
   - `strict`: CPU/memory limits, no I/O beyond read-only vault API
   - `fs`: adds write access to vault (note CRUD, frontmatter mutations, refactors)
   - `net`: adds network access (`web.search()`, `web.fetch()`)
@@ -2776,11 +2776,11 @@ Move existing mutation commands under `refactor` namespace. No behavioral change
 
 - [x] `vulcan run` (no arguments) — drops into interactive JS REPL
 - [x] Persistent `Context` across evaluations (variables survive between prompts)
-- [ ] Multi-line input: detect incomplete expressions (unmatched `{`, `(`, template literals)
-- [ ] Tab completion for `vault.`, `vault.graph.`, `note.` and other API namespaces
-- [ ] Pretty-printed results: colored JSON for objects, formatted tables for note collections
-- [ ] REPL history saved to `.vulcan/repl_history`
-- [ ] Sandbox level configurable: `vulcan run --sandbox fs` then REPL has write access
+- [x] Multi-line input: detect incomplete expressions (unmatched `{`, `(`, template literals)
+- [x] Tab completion for `vault.`, `vault.graph.`, `note.` and other API namespaces
+- [x] Pretty-printed results: colored JSON for objects, formatted tables for note collections
+- [x] REPL history saved to `.vulcan/repl_history`
+- [x] Sandbox level configurable: `vulcan run --sandbox fs` then REPL has write access
 
 **Deep vault JS API**
 
@@ -2889,17 +2889,17 @@ scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
 ```
 
 - [x] Implement `vault` global object with note(), notes(), query(), search() methods
-- [ ] Implement `Note` JS class wrapping `NoteIndex`/`NoteRecord` core structs
+- [x] Implement `Note` JS class wrapping `NoteIndex`/`NoteRecord` core structs
 - [x] Implement `vault.graph` object wrapping petgraph structure
 - [x] Implement collection API with `.where()`, `.sortBy()`, `.limit()`, `.forEach()`
 - [x] Implement `vault.daily` namespace (delegates to 9.16 infrastructure)
 - [x] Implement `vault.events()` aggregation across daily notes
-- [ ] Implement write methods (Tier 2) with sandbox level checks
-- [ ] Implement `vault.transaction()` for atomic batch mutations
-- [ ] Implement `web.search()` and `web.fetch()` (Tier 3), gated on `net` sandbox
+- [x] Implement write methods (Tier 2) with sandbox level checks
+- [x] Implement `vault.transaction()` for atomic batch mutations
+- [x] Implement `web.search()` and `web.fetch()` (Tier 3), gated on `net` sandbox
 - [x] Implement `help(obj)` introspection function (see 9.18.7)
-- [ ] Unit tests: each API method, sandbox enforcement, timeout/memory limits
-- [ ] Integration tests: scripts against test vault, REPL session simulation
+- [x] Unit tests: each API method, sandbox enforcement, timeout/memory limits
+- [x] Integration tests: scripts against test vault, REPL session simulation
 
 #### 9.18.6 Web tools (`web` group)
 
@@ -2949,7 +2949,7 @@ This sub-phase covers three related concerns: human-facing documentation (`help`
   - Guides: `help getting-started`, `help examples`
 - [x] `vulcan help --search <keyword>` — search across all documentation topics
 - [x] `vulcan help --output json <topic>` — structured help output for machine consumption (parameter names, types, descriptions, defaults, examples as JSON)
-- [ ] Rendered markdown in terminal with colors/formatting (using `termimad` or similar)
+- [x] Rendered markdown in terminal with colors/formatting (using `termimad` or similar)
 - [x] Distinct from `--help` which remains terse and flag-focused
 
 **`describe` command enhancements**
@@ -2959,7 +2959,7 @@ This sub-phase covers three related concerns: human-facing documentation (`help`
 - [x] `vulcan describe --format openai-tools` — export as OpenAI function-calling tool definitions (name, description, parameters as JSON Schema)
 - [x] `vulcan describe --format mcp` — export as MCP tool definitions for direct integration with Claude Code, Cursor, etc.
 - [x] Each format includes: command name, description, parameters with types/defaults/required flags, and examples
-- [ ] The embedded agent (9.12) uses `describe` output internally; external harnesses can call it to auto-generate tool configs
+- [x] External harnesses can call `describe` to auto-generate tool configs. Embedded-agent consumption is tracked in Phase 9.12.
 
 **External LLM harness support**
 
@@ -2972,12 +2972,12 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a to
   - Common pitfalls: `note patch` fails on multiple matches (safety), property types are lenient, etc.
 - [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault on `vulcan init` or `vulcan assistant init`. See 9.12.7 for the full skill list. These serve external harnesses identically: Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API.
 - [x] **Consistent JSON error output** — all commands in `--output json` mode return structured errors: `{"error": "<message>", "code": "<error_code>"}` rather than unstructured stderr text. Error codes are stable and documented.
-- [ ] **Non-interactive guarantee** — all commands detect non-TTY mode and never prompt. Ambiguous note matches return an error with candidates rather than opening a picker.
+- [x] **Non-interactive guarantee** — all commands detect non-TTY mode and never prompt. Ambiguous note matches return an error with candidates rather than opening a picker.
 
 **Documentation source**
 
 - [x] Docs stored as markdown files in `docs/` directory in the repo
-- [ ] Organization:
+- [x] Organization:
   ```
   docs/
     guide/
@@ -3008,8 +3008,8 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a to
 **`help()` in JS REPL**
 
 - [x] `help(obj)` function available in the JS runtime
-- [ ] Displays function signature, parameter descriptions, return type, examples, and cross-references
-- [ ] Each Rust function exposed to JS carries its docstring as metadata
+- [x] Displays function signature, parameter descriptions, return type, examples, and cross-references
+- [x] Each Rust function exposed to JS carries its docstring as metadata
 - [ ] Example:
   ```
   vulcan> help(vault.query)
