@@ -1575,6 +1575,11 @@ pub enum TasksCommand {
         #[command(subcommand)]
         command: TasksTrackCommand,
     },
+    #[command(about = "Manage TaskNotes pomodoro sessions")]
+    Pomodoro {
+        #[command(subcommand)]
+        command: TasksPomodoroCommand,
+    },
     #[command(about = "List TaskNotes reminders due within a time window")]
     Reminders {
         #[arg(
@@ -1639,6 +1644,36 @@ pub enum TasksTrackCommand {
         )]
         period: TasksTrackSummaryPeriodArg,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum TasksPomodoroCommand {
+    #[command(about = "Start a pomodoro work session for one TaskNotes task")]
+    Start {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+        #[arg(
+            long,
+            help = "Report the planned change without writing session history"
+        )]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Stop the active pomodoro session")]
+    Stop {
+        #[arg(help = "Optional task path, filename, alias, or title")]
+        task: Option<String>,
+        #[arg(
+            long,
+            help = "Report the planned change without writing session history"
+        )]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Show the currently active pomodoro session")]
+    Status,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

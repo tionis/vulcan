@@ -19,7 +19,7 @@ pub use cli::{
     GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg,
     NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryFormatArg,
     RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
-    SuggestCommand, TasksCommand, TasksListSourceArg, TasksTrackCommand,
+    SuggestCommand, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
     TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
     TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
@@ -41,7 +41,7 @@ use clap_complete::generate;
 use regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::header::AUTHORIZATION;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use serve::{serve_forever, ServeOptions};
@@ -899,6 +899,77 @@ struct TaskTrackSummaryProjectItem {
     minutes: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskPomodoroActivePeriod {
+    start_time: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    end_time: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskPomodoroSession {
+    id: String,
+    start_time: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    end_time: Option<String>,
+    planned_duration: usize,
+    #[serde(rename = "type")]
+    session_type: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    task_path: Option<String>,
+    completed: bool,
+    #[serde(skip_serializing_if = "is_false", default)]
+    interrupted: bool,
+    active_periods: Vec<TaskPomodoroActivePeriod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskPomodoroSessionReport {
+    id: String,
+    session_type: String,
+    start_time: String,
+    end_time: Option<String>,
+    planned_duration_minutes: usize,
+    elapsed_minutes: i64,
+    remaining_seconds: i64,
+    completed: bool,
+    interrupted: bool,
+    active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskPomodoroReport {
+    action: String,
+    dry_run: bool,
+    storage_note_path: String,
+    task_path: Option<String>,
+    title: Option<String>,
+    session: TaskPomodoroSessionReport,
+    completed_work_sessions: usize,
+    suggested_break_type: String,
+    suggested_break_minutes: usize,
+    #[serde(skip)]
+    changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskPomodoroStatusReport {
+    active: Option<TaskPomodoroStatusItem>,
+    completed_work_sessions: usize,
+    suggested_break_type: String,
+    suggested_break_minutes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskPomodoroStatusItem {
+    storage_note_path: String,
+    task_path: Option<String>,
+    title: Option<String>,
+    session: TaskPomodoroSessionReport,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct TaskDueReport {
     reference_time: String,
@@ -1031,6 +1102,22 @@ struct TaskNoteRecord {
     path: String,
     indexed: vulcan_core::IndexedTaskNote,
     completed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedNoteMutation {
+    path: String,
+    body: String,
+    frontmatter: YamlMapping,
+    created: bool,
+}
+
+#[derive(Debug, Clone)]
+struct StoredPomodoroSession {
+    storage_note_path: String,
+    task_path: Option<String>,
+    title: Option<String>,
+    session: TaskPomodoroSession,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3462,6 +3549,118 @@ fn parse_f64_value(value: i64) -> f64 {
     value.to_string().parse::<f64>().unwrap_or(0.0)
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn parse_task_pomodoro_session_json(value: &Value) -> Option<TaskPomodoroSession> {
+    serde_json::from_value(value.clone()).ok()
+}
+
+fn parse_task_pomodoro_session_yaml(value: &YamlValue) -> Option<TaskPomodoroSession> {
+    serde_yaml::from_value(value.clone()).ok()
+}
+
+fn task_pomodoro_session_yaml_value(session: &TaskPomodoroSession) -> Result<YamlValue, CliError> {
+    serde_yaml::to_value(session).map_err(CliError::operation)
+}
+
+fn task_pomodoro_elapsed_minutes(session: &TaskPomodoroSession, now_ms: i64) -> i64 {
+    let Some(start_ms) = parse_date_like_string(&session.start_time) else {
+        return 0;
+    };
+    let end_ms = session
+        .end_time
+        .as_deref()
+        .and_then(parse_date_like_string)
+        .unwrap_or(now_ms);
+    end_ms.saturating_sub(start_ms).div_euclid(60_000)
+}
+
+fn task_pomodoro_remaining_seconds(session: &TaskPomodoroSession, now_ms: i64) -> i64 {
+    let Some(start_ms) = parse_date_like_string(&session.start_time) else {
+        return 0;
+    };
+    let planned_ms = i64::try_from(session.planned_duration)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(60_000);
+    let elapsed_ms = now_ms.saturating_sub(start_ms);
+    planned_ms.saturating_sub(elapsed_ms).div_euclid(1_000)
+}
+
+fn task_pomodoro_due_completion_ms(session: &TaskPomodoroSession) -> Option<i64> {
+    let start_ms = parse_date_like_string(&session.start_time)?;
+    let planned_ms = i64::try_from(session.planned_duration)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(60_000);
+    Some(start_ms.saturating_add(planned_ms))
+}
+
+fn finalize_task_pomodoro_session(
+    session: &TaskPomodoroSession,
+    end_time: &str,
+    completed: bool,
+    interrupted: bool,
+) -> TaskPomodoroSession {
+    let mut updated = session.clone();
+    updated.end_time = Some(end_time.to_string());
+    updated.completed = completed;
+    updated.interrupted = interrupted;
+    if let Some(period) = updated
+        .active_periods
+        .iter_mut()
+        .rev()
+        .find(|period| period.end_time.is_none())
+    {
+        period.end_time = Some(end_time.to_string());
+    }
+    updated
+}
+
+fn task_pomodoro_session_report(
+    session: &TaskPomodoroSession,
+    now_ms: i64,
+) -> TaskPomodoroSessionReport {
+    TaskPomodoroSessionReport {
+        id: session.id.clone(),
+        session_type: session.session_type.clone(),
+        start_time: session.start_time.clone(),
+        end_time: session.end_time.clone(),
+        planned_duration_minutes: session.planned_duration,
+        elapsed_minutes: task_pomodoro_elapsed_minutes(session, now_ms),
+        remaining_seconds: task_pomodoro_remaining_seconds(session, now_ms).max(0),
+        completed: session.completed,
+        interrupted: session.interrupted,
+        active: session.end_time.is_none(),
+    }
+}
+
+fn suggested_task_pomodoro_break(
+    config: &vulcan_core::VaultConfig,
+    completed_work_sessions: usize,
+) -> (String, usize) {
+    let interval = config.tasknotes.pomodoro.long_break_interval.max(1);
+    if completed_work_sessions > 0 && completed_work_sessions % interval == 0 {
+        (
+            "long-break".to_string(),
+            config.tasknotes.pomodoro.long_break.max(1),
+        )
+    } else {
+        (
+            "short-break".to_string(),
+            config.tasknotes.pomodoro.short_break.max(1),
+        )
+    }
+}
+
+fn completed_work_task_pomodoros(sessions: &[StoredPomodoroSession]) -> usize {
+    sessions
+        .iter()
+        .filter(|stored| stored.session.session_type == "work" && stored.session.completed)
+        .count()
+}
+
 fn tasknote_estimate_minutes(task: &vulcan_core::IndexedTaskNote) -> Option<i64> {
     task.time_estimate.and_then(|minutes| {
         minutes
@@ -3545,6 +3744,175 @@ fn load_tasknote_records(paths: &VaultPaths) -> Result<Vec<TaskNoteRecord>, CliE
     Ok(records)
 }
 
+fn load_note_frontmatter_for_mutation(
+    paths: &VaultPaths,
+    relative_path: &str,
+    create_periodic: Option<&str>,
+) -> Result<LoadedNoteMutation, CliError> {
+    let absolute_path = paths.vault_root().join(relative_path);
+    let (source, created) = if absolute_path.is_file() {
+        (
+            fs::read_to_string(&absolute_path).map_err(CliError::operation)?,
+            false,
+        )
+    } else if absolute_path.exists() {
+        return Err(CliError::operation(format!(
+            "path exists but is not a note file: {relative_path}"
+        )));
+    } else if let Some(period_type) = create_periodic {
+        let mut warnings = Vec::new();
+        (
+            render_periodic_note_contents(paths, period_type, relative_path, &mut warnings)?,
+            true,
+        )
+    } else {
+        return Err(CliError::operation(format!(
+            "note not found: {relative_path}"
+        )));
+    };
+
+    let (frontmatter, body) =
+        parse_frontmatter_document(&source, false).map_err(CliError::operation)?;
+    Ok(LoadedNoteMutation {
+        path: relative_path.to_string(),
+        body: normalize_tasknote_body(&body),
+        frontmatter: frontmatter.unwrap_or_default(),
+        created,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_note_frontmatter_mutation<F>(
+    paths: &VaultPaths,
+    relative_path: &str,
+    create_periodic: Option<&str>,
+    action: &str,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+    mutate: F,
+) -> Result<TaskMutationReport, CliError>
+where
+    F: FnOnce(&mut YamlMapping, &LoadedNoteMutation) -> Result<Vec<RefactorChange>, CliError>,
+{
+    let loaded = load_note_frontmatter_for_mutation(paths, relative_path, create_periodic)?;
+    let mut frontmatter = loaded.frontmatter.clone();
+    let mut changes = mutate(&mut frontmatter, &loaded)?;
+    let rendered =
+        render_note_from_parts(Some(&frontmatter), &loaded.body).map_err(CliError::operation)?;
+
+    let has_writes = loaded.created || !changes.is_empty();
+    let changed_paths = if has_writes {
+        vec![loaded.path.clone()]
+    } else {
+        Vec::new()
+    };
+
+    if !dry_run && has_writes {
+        let absolute_path = paths.vault_root().join(&loaded.path);
+        if let Some(parent) = absolute_path.parent() {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
+        }
+        fs::write(&absolute_path, rendered).map_err(CliError::operation)?;
+        run_incremental_scan(paths, output, use_stderr_color)?;
+    }
+
+    if loaded.created {
+        changes.insert(
+            0,
+            RefactorChange {
+                before: "<missing>".to_string(),
+                after: loaded.path.clone(),
+            },
+        );
+    }
+
+    Ok(TaskMutationReport {
+        action: action.to_string(),
+        dry_run,
+        path: loaded.path,
+        moved_from: None,
+        moved_to: None,
+        changes,
+        changed_paths,
+    })
+}
+
+fn collect_tasknotes_pomodoro_sessions(
+    paths: &VaultPaths,
+) -> Result<Vec<StoredPomodoroSession>, CliError> {
+    let config = load_vault_config(paths).config;
+    let note_index = load_note_index(paths).map_err(CliError::operation)?;
+    let field_name = config.tasknotes.field_mapping.pomodoros.clone();
+    let mut task_titles = HashMap::new();
+    let mut task_sessions = Vec::new();
+    let mut daily_sessions = Vec::new();
+
+    for note in note_index.values() {
+        let title = Path::new(&note.document_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        if let Some(tasknote) = extract_tasknote(
+            &note.document_path,
+            title,
+            &note.properties,
+            &config.tasknotes,
+        ) {
+            task_titles.insert(note.document_path.clone(), tasknote.title.clone());
+
+            if let Some(values) = note
+                .properties
+                .as_object()
+                .and_then(|object| object.get(&field_name))
+                .and_then(Value::as_array)
+            {
+                for session in values.iter().filter_map(parse_task_pomodoro_session_json) {
+                    task_sessions.push(StoredPomodoroSession {
+                        storage_note_path: note.document_path.clone(),
+                        task_path: Some(note.document_path.clone()),
+                        title: Some(tasknote.title.clone()),
+                        session,
+                    });
+                }
+            }
+        }
+
+        if note.periodic_type.as_deref() == Some("daily") {
+            if let Some(values) = note
+                .properties
+                .as_object()
+                .and_then(|object| object.get(&field_name))
+                .and_then(Value::as_array)
+            {
+                for session in values.iter().filter_map(parse_task_pomodoro_session_json) {
+                    daily_sessions.push(StoredPomodoroSession {
+                        storage_note_path: note.document_path.clone(),
+                        task_path: session.task_path.clone(),
+                        title: session
+                            .task_path
+                            .as_ref()
+                            .and_then(|path| task_titles.get(path).cloned()),
+                        session,
+                    });
+                }
+            }
+        }
+    }
+
+    let mut sessions = match config.tasknotes.pomodoro.storage_location {
+        vulcan_core::config::TaskNotesPomodoroStorageLocation::Task => task_sessions,
+        vulcan_core::config::TaskNotesPomodoroStorageLocation::DailyNote => daily_sessions,
+    };
+    sessions.sort_by(|left, right| {
+        left.storage_note_path
+            .cmp(&right.storage_note_path)
+            .then_with(|| left.session.start_time.cmp(&right.session.start_time))
+            .then_with(|| left.session.id.cmp(&right.session.id))
+    });
+    Ok(sessions)
+}
+
 fn yaml_sequence_value(value: Option<&YamlValue>) -> Result<Vec<YamlValue>, CliError> {
     match value {
         None | Some(YamlValue::Null) => Ok(Vec::new()),
@@ -3626,6 +3994,209 @@ fn tasknote_auto_archive_due(
         .unwrap_or(i64::MAX)
         .saturating_mul(60_000);
     now_ms >= completed_at.saturating_add(delay_ms)
+}
+
+fn resolve_active_task_pomodoro_session(
+    paths: &VaultPaths,
+    task: Option<&str>,
+) -> Result<Option<StoredPomodoroSession>, CliError> {
+    let sessions = collect_tasknotes_pomodoro_sessions(paths)?;
+    let active_sessions = sessions
+        .into_iter()
+        .filter(|stored| stored.session.end_time.is_none())
+        .collect::<Vec<_>>();
+
+    if let Some(task) = task {
+        let task_path = load_tasknote_note(paths, task)?.path;
+        let mut matches = active_sessions
+            .into_iter()
+            .filter(|stored| stored.task_path.as_deref() == Some(task_path.as_str()))
+            .collect::<Vec<_>>();
+        return match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => Err(CliError::operation(
+                "multiple active TaskNotes pomodoro sessions match that task",
+            )),
+        };
+    }
+
+    match active_sessions.len() {
+        0 => Ok(None),
+        1 => Ok(active_sessions.into_iter().next()),
+        _ => Err(CliError::operation(
+            "multiple active TaskNotes pomodoro sessions; specify the task to stop",
+        )),
+    }
+}
+
+fn task_pomodoro_storage_target_path(
+    config: &vulcan_core::VaultConfig,
+    task_path: &str,
+    now_ms: i64,
+) -> Result<String, CliError> {
+    match config.tasknotes.pomodoro.storage_location {
+        vulcan_core::config::TaskNotesPomodoroStorageLocation::Task => Ok(task_path.to_string()),
+        vulcan_core::config::TaskNotesPomodoroStorageLocation::DailyNote => {
+            let daily = config.periodic.note("daily").ok_or_else(|| {
+                CliError::operation("daily periodic note configuration is missing")
+            })?;
+            if !daily.enabled {
+                return Err(CliError::operation(
+                    "tasknotes pomodoro daily-note storage requires periodic.daily.enabled = true",
+                ));
+            }
+            let date = TemplateTimestamp::from_millis(now_ms).default_date_string();
+            expected_periodic_note_path(&config.periodic, "daily", &date).ok_or_else(|| {
+                CliError::operation("failed to resolve the daily note path for pomodoro storage")
+            })
+        }
+    }
+}
+
+fn update_pomodoro_session_sequence(
+    frontmatter: &mut YamlMapping,
+    key: &str,
+    update: impl FnOnce(&mut Vec<YamlValue>) -> Result<(), CliError>,
+) -> Result<Option<RefactorChange>, CliError> {
+    let yaml_key = YamlValue::String(key.to_string());
+    let before = frontmatter.get(&yaml_key).cloned();
+    let mut sessions = yaml_sequence_value(before.as_ref())?;
+    update(&mut sessions)?;
+    Ok(set_tasknote_frontmatter_value(
+        frontmatter,
+        key,
+        Some(YamlValue::Sequence(sessions)),
+    ))
+}
+
+#[allow(clippy::too_many_lines)]
+fn process_due_tasknote_pomodoros(
+    paths: &VaultPaths,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<Vec<String>, CliError> {
+    let now_ms = current_utc_timestamp_ms();
+    let config = load_vault_config(paths).config;
+    let due_sessions = collect_tasknotes_pomodoro_sessions(paths)?
+        .into_iter()
+        .filter_map(|stored| {
+            let due_ms = task_pomodoro_due_completion_ms(&stored.session)?;
+            (stored.session.end_time.is_none() && now_ms >= due_ms).then_some((stored, due_ms))
+        })
+        .collect::<Vec<_>>();
+
+    let mut changed_paths = Vec::new();
+    for (stored, due_ms) in due_sessions {
+        let finished_at = format_utc_timestamp_ms(due_ms);
+        let key = config.tasknotes.field_mapping.pomodoros.clone();
+        let mutation = if matches!(
+            config.tasknotes.pomodoro.storage_location,
+            vulcan_core::config::TaskNotesPomodoroStorageLocation::Task
+        ) {
+            let loaded = load_tasknote_note(paths, &stored.storage_note_path)?;
+            apply_loaded_tasknote_mutation(
+                paths,
+                &loaded,
+                "pomodoro_complete",
+                dry_run,
+                output,
+                use_stderr_color,
+                |frontmatter, loaded| {
+                    let mut changes = Vec::new();
+                    if let Some(change) = update_pomodoro_session_sequence(
+                        frontmatter,
+                        &loaded.config.tasknotes.field_mapping.pomodoros,
+                        |sessions| {
+                            let Some((index, _)) =
+                                sessions.iter().enumerate().rev().find(|(_, value)| {
+                                    parse_task_pomodoro_session_yaml(value).is_some_and(|session| {
+                                        session.id == stored.session.id
+                                            && session.end_time.is_none()
+                                    })
+                                })
+                            else {
+                                return Err(CliError::operation(format!(
+                                    "failed to locate the active pomodoro session in {path}",
+                                    path = &loaded.path
+                                )));
+                            };
+                            let updated = finalize_task_pomodoro_session(
+                                &stored.session,
+                                &finished_at,
+                                true,
+                                false,
+                            );
+                            sessions[index] = task_pomodoro_session_yaml_value(&updated)?;
+                            Ok(())
+                        },
+                    )? {
+                        changes.push(change);
+                    }
+                    if let Some(change) = set_tasknote_frontmatter_value(
+                        frontmatter,
+                        &loaded.config.tasknotes.field_mapping.date_modified,
+                        Some(YamlValue::String(current_utc_timestamp_string())),
+                    ) {
+                        changes.push(change);
+                    }
+                    Ok(TaskMutationPlan {
+                        changes,
+                        moved_to: None,
+                    })
+                },
+            )?
+        } else {
+            apply_note_frontmatter_mutation(
+                paths,
+                &stored.storage_note_path,
+                Some("daily"),
+                "pomodoro_complete",
+                dry_run,
+                output,
+                use_stderr_color,
+                |frontmatter, _loaded| {
+                    let mut changes = Vec::new();
+                    if let Some(change) = update_pomodoro_session_sequence(
+                        frontmatter,
+                        &key,
+                        |sessions| {
+                            let Some((index, _)) =
+                                sessions.iter().enumerate().rev().find(|(_, value)| {
+                                    parse_task_pomodoro_session_yaml(value).is_some_and(|session| {
+                                        session.id == stored.session.id
+                                            && session.end_time.is_none()
+                                    })
+                                })
+                            else {
+                                return Err(CliError::operation(format!(
+                                    "failed to locate the active pomodoro session in {storage_note_path}",
+                                    storage_note_path = &stored.storage_note_path
+                                )));
+                            };
+                            let updated = finalize_task_pomodoro_session(
+                                &stored.session,
+                                &finished_at,
+                                true,
+                                false,
+                            );
+                            sessions[index] = task_pomodoro_session_yaml_value(&updated)?;
+                            Ok(())
+                        },
+                    )? {
+                        changes.push(change);
+                    }
+                    Ok(changes)
+                },
+            )?
+        };
+        changed_paths.extend(mutation.changed_paths);
+    }
+
+    changed_paths.sort();
+    changed_paths.dedup();
+    Ok(changed_paths)
 }
 
 fn resolve_task_track_summary_window(
@@ -5717,6 +6288,299 @@ fn run_tasks_track_summary_command(
         completed_tasks,
         top_tasks: task_totals,
         top_projects,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_tasks_pomodoro_start_command(
+    paths: &VaultPaths,
+    task: &str,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskPomodoroReport, CliError> {
+    let mut changed_paths = if dry_run {
+        Vec::new()
+    } else {
+        process_due_tasknote_pomodoros(paths, false, output, use_stderr_color)?
+    };
+    if resolve_active_task_pomodoro_session(paths, None)?.is_some() {
+        return Err(CliError::operation(
+            "a TaskNotes pomodoro session is already active",
+        ));
+    }
+
+    let loaded = load_tasknote_note(paths, task)?;
+    let now_ms = current_utc_timestamp_ms();
+    let start_time = current_utc_timestamp_string();
+    let config = loaded.config.clone();
+    let storage_note_path = task_pomodoro_storage_target_path(&config, &loaded.path, now_ms)?;
+    let session = TaskPomodoroSession {
+        id: current_utc_timestamp_ms().to_string(),
+        start_time: start_time.clone(),
+        end_time: None,
+        planned_duration: config.tasknotes.pomodoro.work_duration.max(1),
+        session_type: "work".to_string(),
+        task_path: Some(loaded.path.clone()),
+        completed: false,
+        interrupted: false,
+        active_periods: vec![TaskPomodoroActivePeriod {
+            start_time,
+            end_time: None,
+        }],
+    };
+    let session_value = task_pomodoro_session_yaml_value(&session)?;
+
+    let mutation = if matches!(
+        config.tasknotes.pomodoro.storage_location,
+        vulcan_core::config::TaskNotesPomodoroStorageLocation::Task
+    ) {
+        apply_loaded_tasknote_mutation(
+            paths,
+            &loaded,
+            "pomodoro_start",
+            dry_run,
+            output,
+            use_stderr_color,
+            |frontmatter, loaded| {
+                let mut changes = Vec::new();
+                if let Some(change) = update_pomodoro_session_sequence(
+                    frontmatter,
+                    &loaded.config.tasknotes.field_mapping.pomodoros,
+                    |sessions| {
+                        sessions.push(session_value.clone());
+                        Ok(())
+                    },
+                )? {
+                    changes.push(change);
+                }
+                if let Some(change) = set_tasknote_frontmatter_value(
+                    frontmatter,
+                    &loaded.config.tasknotes.field_mapping.date_modified,
+                    Some(YamlValue::String(current_utc_timestamp_string())),
+                ) {
+                    changes.push(change);
+                }
+                Ok(TaskMutationPlan {
+                    changes,
+                    moved_to: None,
+                })
+            },
+        )?
+    } else {
+        apply_note_frontmatter_mutation(
+            paths,
+            &storage_note_path,
+            Some("daily"),
+            "pomodoro_start",
+            dry_run,
+            output,
+            use_stderr_color,
+            |frontmatter, _loaded| {
+                let mut changes = Vec::new();
+                if let Some(change) = update_pomodoro_session_sequence(
+                    frontmatter,
+                    &config.tasknotes.field_mapping.pomodoros,
+                    |sessions| {
+                        sessions.push(session_value.clone());
+                        Ok(())
+                    },
+                )? {
+                    changes.push(change);
+                }
+                Ok(changes)
+            },
+        )?
+    };
+
+    changed_paths.extend(mutation.changed_paths);
+    changed_paths.sort();
+    changed_paths.dedup();
+
+    let completed_work_sessions =
+        completed_work_task_pomodoros(&collect_tasknotes_pomodoro_sessions(paths)?);
+    let (suggested_break_type, suggested_break_minutes) =
+        suggested_task_pomodoro_break(&config, completed_work_sessions.saturating_add(1));
+
+    Ok(TaskPomodoroReport {
+        action: "start".to_string(),
+        dry_run,
+        storage_note_path,
+        task_path: Some(loaded.path),
+        title: Some(loaded.indexed.title),
+        session: task_pomodoro_session_report(&session, now_ms),
+        completed_work_sessions,
+        suggested_break_type,
+        suggested_break_minutes,
+        changed_paths,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_tasks_pomodoro_stop_command(
+    paths: &VaultPaths,
+    task: Option<&str>,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskPomodoroReport, CliError> {
+    let mut changed_paths = if dry_run {
+        Vec::new()
+    } else {
+        process_due_tasknote_pomodoros(paths, false, output, use_stderr_color)?
+    };
+    let active = resolve_active_task_pomodoro_session(paths, task)?
+        .ok_or_else(|| CliError::operation("no active TaskNotes pomodoro session"))?;
+
+    let config = load_vault_config(paths).config;
+    let now_ms = current_utc_timestamp_ms();
+    let stop_time = current_utc_timestamp_string();
+    let updated_session = finalize_task_pomodoro_session(&active.session, &stop_time, false, true);
+    let storage_note_path = active.storage_note_path.clone();
+
+    let mutation = if matches!(
+        config.tasknotes.pomodoro.storage_location,
+        vulcan_core::config::TaskNotesPomodoroStorageLocation::Task
+    ) {
+        let target_task = active
+            .task_path
+            .as_deref()
+            .unwrap_or(storage_note_path.as_str());
+        let loaded = load_tasknote_note(paths, target_task)?;
+        apply_loaded_tasknote_mutation(
+            paths,
+            &loaded,
+            "pomodoro_stop",
+            dry_run,
+            output,
+            use_stderr_color,
+            |frontmatter, loaded| {
+                let mut changes = Vec::new();
+                if let Some(change) = update_pomodoro_session_sequence(
+                    frontmatter,
+                    &loaded.config.tasknotes.field_mapping.pomodoros,
+                    |sessions| {
+                        let Some((index, _)) =
+                            sessions.iter().enumerate().rev().find(|(_, value)| {
+                                parse_task_pomodoro_session_yaml(value).is_some_and(|session| {
+                                    session.id == active.session.id && session.end_time.is_none()
+                                })
+                            })
+                        else {
+                            return Err(CliError::operation(format!(
+                                "failed to locate the active pomodoro session in {path}",
+                                path = &loaded.path
+                            )));
+                        };
+                        sessions[index] = task_pomodoro_session_yaml_value(&updated_session)?;
+                        Ok(())
+                    },
+                )? {
+                    changes.push(change);
+                }
+                if let Some(change) = set_tasknote_frontmatter_value(
+                    frontmatter,
+                    &loaded.config.tasknotes.field_mapping.date_modified,
+                    Some(YamlValue::String(current_utc_timestamp_string())),
+                ) {
+                    changes.push(change);
+                }
+                Ok(TaskMutationPlan {
+                    changes,
+                    moved_to: None,
+                })
+            },
+        )?
+    } else {
+        apply_note_frontmatter_mutation(
+            paths,
+            &storage_note_path,
+            Some("daily"),
+            "pomodoro_stop",
+            dry_run,
+            output,
+            use_stderr_color,
+            |frontmatter, _loaded| {
+                let mut changes = Vec::new();
+                if let Some(change) = update_pomodoro_session_sequence(
+                    frontmatter,
+                    &config.tasknotes.field_mapping.pomodoros,
+                    |sessions| {
+                        let Some((index, _)) =
+                            sessions.iter().enumerate().rev().find(|(_, value)| {
+                                parse_task_pomodoro_session_yaml(value).is_some_and(|session| {
+                                    session.id == active.session.id && session.end_time.is_none()
+                                })
+                            })
+                        else {
+                            return Err(CliError::operation(format!(
+                                "failed to locate the active pomodoro session in {storage_note_path}"
+                            )));
+                        };
+                        sessions[index] = task_pomodoro_session_yaml_value(&updated_session)?;
+                        Ok(())
+                    },
+                )? {
+                    changes.push(change);
+                }
+                Ok(changes)
+            },
+        )?
+    };
+
+    changed_paths.extend(mutation.changed_paths);
+    changed_paths.sort();
+    changed_paths.dedup();
+
+    let completed_work_sessions =
+        completed_work_task_pomodoros(&collect_tasknotes_pomodoro_sessions(paths)?);
+    let (suggested_break_type, suggested_break_minutes) =
+        suggested_task_pomodoro_break(&config, completed_work_sessions);
+
+    Ok(TaskPomodoroReport {
+        action: "stop".to_string(),
+        dry_run,
+        storage_note_path,
+        task_path: active.task_path,
+        title: active.title,
+        session: task_pomodoro_session_report(&updated_session, now_ms),
+        completed_work_sessions,
+        suggested_break_type,
+        suggested_break_minutes,
+        changed_paths,
+    })
+}
+
+fn run_tasks_pomodoro_status_command(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskPomodoroStatusReport, CliError> {
+    process_due_tasknote_pomodoros(paths, false, output, use_stderr_color)?;
+    let config = load_vault_config(paths).config;
+    let sessions = collect_tasknotes_pomodoro_sessions(paths)?;
+    let completed_work_sessions = completed_work_task_pomodoros(&sessions);
+    let active = resolve_active_task_pomodoro_session(paths, None)?;
+    let projected_sessions = completed_work_sessions.saturating_add(
+        active
+            .as_ref()
+            .filter(|stored| stored.session.session_type == "work")
+            .map_or(0, |_| 1),
+    );
+    let (suggested_break_type, suggested_break_minutes) =
+        suggested_task_pomodoro_break(&config, projected_sessions);
+    let now_ms = current_utc_timestamp_ms();
+
+    Ok(TaskPomodoroStatusReport {
+        active: active.map(|stored| TaskPomodoroStatusItem {
+            storage_note_path: stored.storage_note_path,
+            task_path: stored.task_path,
+            title: stored.title,
+            session: task_pomodoro_session_report(&stored.session, now_ms),
+        }),
+        completed_work_sessions,
+        suggested_break_type,
+        suggested_break_minutes,
     })
 }
 
@@ -14739,6 +15603,85 @@ fn print_task_track_summary_report(
     }
 }
 
+fn print_task_pomodoro_report(
+    output: OutputFormat,
+    report: &TaskPomodoroReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            let suffix = if report.dry_run { " (dry-run)" } else { "" };
+            println!("{}{}", report.storage_note_path, suffix);
+            println!("Action: {}", report.action);
+            if let Some(task_path) = &report.task_path {
+                println!("Task: {task_path}");
+            }
+            if let Some(title) = &report.title {
+                println!("Title: {title}");
+            }
+            println!("Started: {}", report.session.start_time);
+            if let Some(end_time) = &report.session.end_time {
+                println!("Ended: {end_time}");
+            }
+            println!(
+                "Planned duration: {}m",
+                report.session.planned_duration_minutes
+            );
+            if report.session.active {
+                println!("Remaining: {}s", report.session.remaining_seconds);
+            }
+            println!(
+                "Completed work sessions: {}",
+                report.completed_work_sessions
+            );
+            println!(
+                "Suggested break: {} ({}m)",
+                report.suggested_break_type, report.suggested_break_minutes
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_task_pomodoro_status_report(
+    output: OutputFormat,
+    report: &TaskPomodoroStatusReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if let Some(active) = &report.active {
+                println!("{}", active.storage_note_path);
+                if let Some(task_path) = &active.task_path {
+                    println!("Task: {task_path}");
+                }
+                if let Some(title) = &active.title {
+                    println!("Title: {title}");
+                }
+                println!(
+                    "Running: {} ({}s remaining)",
+                    active.session.session_type, active.session.remaining_seconds
+                );
+                println!(
+                    "Planned duration: {}m",
+                    active.session.planned_duration_minutes
+                );
+            } else {
+                println!("No active TaskNotes pomodoro session.");
+            }
+            println!(
+                "Completed work sessions: {}",
+                report.completed_work_sessions
+            );
+            println!(
+                "Suggested break: {} ({}m)",
+                report.suggested_break_type, report.suggested_break_minutes
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_task_due_report(output: OutputFormat, report: &TaskDueReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
@@ -18318,6 +19261,48 @@ mod tests {
                     command: TasksTrackCommand::Summary {
                         period: TasksTrackSummaryPeriodArg::Month,
                     },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_pomodoro_start_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "pomodoro",
+            "start",
+            "Write Docs",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Pomodoro {
+                    command: TasksPomodoroCommand::Start {
+                        task: "Write Docs".to_string(),
+                        dry_run: true,
+                        no_commit: true,
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_pomodoro_status_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "pomodoro", "status"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Pomodoro {
+                    command: TasksPomodoroCommand::Status,
                 },
             }
         );

@@ -2214,10 +2214,10 @@ Core time tracking and a simple CLI pomodoro timer. GUI (progress bars, visual t
 - [x] `vulcan tasks track status` — show currently active tracking session
 - [x] `vulcan tasks track log <task>` — show time entries for a task
 - [x] `vulcan tasks track summary [--period day|week|month]` — aggregate time spent across tasks
-- [ ] Pomodoro timer (CLI):
-  - [ ] `vulcan tasks pomodoro start <task>` — start a pomodoro work session
-  - [ ] Configurable durations: `pomodoro.work_duration` (default 25min), `pomodoro.short_break` (5min), `pomodoro.long_break` (15min), `pomodoro.long_break_interval` (every 4 pomodoros)
-  - [ ] Pomodoro session history stored in task frontmatter (`pomodoros` array) or daily note (configurable)
+- [x] Pomodoro timer (CLI):
+  - [x] `vulcan tasks pomodoro start <task>` — start a pomodoro work session
+  - [x] Configurable durations: `pomodoro.work_duration` (default 25min), `pomodoro.short_break` (5min), `pomodoro.long_break` (15min), `pomodoro.long_break_interval` (every 4 pomodoros)
+  - [x] Pomodoro session history stored in task frontmatter (`pomodoros` array) or daily note (configurable)
 - [x] `timeEstimate` field: compare estimated vs actual time in reports
 
 #### 9.15.7 Reminders
@@ -2303,7 +2303,7 @@ Deferred to post-Phase 9 enhancements. Calendar integration needs deeper researc
 
 #### 9.15.11 Settings import
 
-- [~] Read TaskNotes settings from `.obsidian/plugins/tasknotes/data.json` — import settings for implemented features:
+- [x] Read TaskNotes settings from `.obsidian/plugins/tasknotes/data.json` — import settings for implemented features:
   | Setting category | Key settings |
   |---|---|
   | **Core** | `tasksFolder`, `archiveFolder`, `taskTag`, `taskIdentificationMethod`, `taskPropertyName`, `taskPropertyValue`, `excludedFolders`, `defaultTaskPriority`, `defaultTaskStatus` |

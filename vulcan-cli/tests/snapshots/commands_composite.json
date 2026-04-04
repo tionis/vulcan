@@ -1882,6 +1882,111 @@
             ]
           },
           {
+            "about": "Manage TaskNotes pomodoro sessions",
+            "name": "pomodoro",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Start a pomodoro work session for one TaskNotes task",
+                "name": "start",
+                "options": [
+                  {
+                    "help": "Task path, filename, alias, or title",
+                    "id": "task",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "TASK"
+                    ]
+                  },
+                  {
+                    "help": "Report the planned change without writing session history",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Skip auto-commit even when enabled in config",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Stop the active pomodoro session",
+                "name": "stop",
+                "options": [
+                  {
+                    "help": "Optional task path, filename, alias, or title",
+                    "id": "task",
+                    "long": null,
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TASK"
+                    ]
+                  },
+                  {
+                    "help": "Report the planned change without writing session history",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Skip auto-commit even when enabled in config",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Show the currently active pomodoro session",
+                "name": "status",
+                "options": [],
+                "subcommands": []
+              }
+            ]
+          },
+          {
             "about": "List TaskNotes reminders due within a time window",
             "name": "reminders",
             "options": [

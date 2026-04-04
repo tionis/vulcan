@@ -3539,6 +3539,216 @@ fn tasks_track_log_and_summary_json_output_report_totals() {
 }
 
 #[test]
+fn tasks_pomodoro_start_stop_and_status_json_output_manage_task_storage() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        concat!(
+            "[tasknotes.pomodoro]\n",
+            "work_duration = 30\n",
+            "short_break = 5\n",
+            "long_break = 20\n",
+            "long_break_interval = 4\n",
+            "storage_location = \"task\"\n",
+        ),
+    )
+    .expect("config should be written");
+    run_scan(&vault_root);
+
+    let start_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "pomodoro",
+            "start",
+            "Write Docs",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let start_json = parse_stdout_json(&start_assert);
+
+    assert_eq!(start_json["action"], "start");
+    assert_eq!(
+        start_json["storage_note_path"],
+        "TaskNotes/Tasks/Write Docs.md"
+    );
+    assert_eq!(start_json["task_path"], "TaskNotes/Tasks/Write Docs.md");
+    assert_eq!(start_json["session"]["planned_duration_minutes"], 30);
+    assert_eq!(start_json["session"]["active"], true);
+    assert_eq!(start_json["suggested_break_type"], "short-break");
+    assert_eq!(start_json["suggested_break_minutes"], 5);
+
+    let task_file = fs::read_to_string(vault_root.join("TaskNotes/Tasks/Write Docs.md"))
+        .expect("task file should be readable");
+    assert!(task_file.contains("pomodoros:"));
+    assert!(task_file.contains("plannedDuration: 30"));
+
+    let status_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "pomodoro",
+            "status",
+        ])
+        .assert()
+        .success();
+    let status_json = parse_stdout_json(&status_assert);
+    assert_eq!(
+        status_json["active"]["storage_note_path"],
+        "TaskNotes/Tasks/Write Docs.md"
+    );
+    assert_eq!(
+        status_json["active"]["task_path"],
+        "TaskNotes/Tasks/Write Docs.md"
+    );
+    assert_eq!(status_json["active"]["session"]["active"], true);
+
+    let stop_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "pomodoro",
+            "stop",
+            "Write Docs",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let stop_json = parse_stdout_json(&stop_assert);
+
+    assert_eq!(stop_json["action"], "stop");
+    assert_eq!(stop_json["task_path"], "TaskNotes/Tasks/Write Docs.md");
+    assert_eq!(stop_json["session"]["active"], false);
+    assert_eq!(stop_json["session"]["interrupted"], true);
+    assert!(stop_json["session"]["end_time"].is_string());
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "show",
+            "Write Docs",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert!(show_json["frontmatter"]["pomodoros"].is_array());
+    assert_eq!(
+        show_json["frontmatter"]["pomodoros"][0]["interrupted"],
+        true
+    );
+}
+
+#[test]
+fn tasks_pomodoro_daily_note_storage_completes_due_sessions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        concat!(
+            "[tasknotes.pomodoro]\n",
+            "work_duration = 1\n",
+            "short_break = 3\n",
+            "long_break = 20\n",
+            "long_break_interval = 1\n",
+            "storage_location = \"daily-note\"\n",
+        ),
+    )
+    .expect("config should be written");
+    run_scan(&vault_root);
+
+    let start_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "pomodoro",
+            "start",
+            "Prep Outline",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let start_json = parse_stdout_json(&start_assert);
+    let daily_note_path = start_json["storage_note_path"]
+        .as_str()
+        .expect("storage note path should be a string");
+    assert_eq!(daily_note_path, "Journal/Daily/2026-04-04.md");
+
+    let start_time = start_json["session"]["start_time"]
+        .as_str()
+        .expect("start time should be a string")
+        .to_string();
+    let daily_note = vault_root.join(daily_note_path);
+    let updated = fs::read_to_string(&daily_note)
+        .expect("daily note should be readable")
+        .replace(&start_time, "2026-04-04T08:00:00Z");
+    fs::write(&daily_note, updated).expect("daily note should be updated");
+    run_scan(&vault_root);
+
+    let status_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "pomodoro",
+            "status",
+        ])
+        .assert()
+        .success();
+    let status_json = parse_stdout_json(&status_assert);
+
+    assert!(status_json["active"].is_null());
+    assert_eq!(status_json["completed_work_sessions"], 1);
+    assert_eq!(status_json["suggested_break_type"], "long-break");
+    assert_eq!(status_json["suggested_break_minutes"], 20);
+
+    let rendered = fs::read_to_string(&daily_note).expect("daily note should still be readable");
+    assert!(rendered.contains("completed: true"));
+    assert!(rendered.contains("taskPath: TaskNotes/Tasks/Prep Outline.md"));
+}
+
+#[test]
 fn tasks_due_json_output_lists_due_tasknotes() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
