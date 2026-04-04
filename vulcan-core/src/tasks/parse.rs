@@ -317,6 +317,7 @@ impl FilterParser {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_primitive_tokens(tokens: &[FilterToken]) -> Result<TasksFilter, String> {
     let words = tokens
         .iter()
@@ -337,6 +338,12 @@ fn parse_primitive_tokens(tokens: &[FilterToken]) -> Result<TasksFilter, String>
         [not, done] if not == "not" && done == "done" => {
             return Ok(TasksFilter::Done { value: false });
         }
+        [is, archived] if is == "is" && archived == "archived" => {
+            return Ok(TasksFilter::Archived { value: true });
+        }
+        [is, not, archived] if is == "is" && not == "not" && archived == "archived" => {
+            return Ok(TasksFilter::Archived { value: false });
+        }
         [has, id] if has == "has" && id == "id" => return Ok(TasksFilter::HasId),
         [is, recurring] if is == "is" && recurring == "recurring" => {
             return Ok(TasksFilter::Recurring { value: true });
@@ -353,6 +360,11 @@ fn parse_primitive_tokens(tokens: &[FilterToken]) -> Result<TasksFilter, String>
         _ => {}
     }
 
+    if lower.len() >= 3 && lower[0] == "status" && lower[1] == "is" {
+        return Ok(TasksFilter::StatusIs {
+            value: join_value(&words[2..], "status is")?,
+        });
+    }
     if lower.len() >= 3 && lower[0] == "status.name" && lower[1] == "includes" {
         return Ok(TasksFilter::StatusNameIncludes {
             value: join_value(&words[2..], "status.name includes")?,
@@ -399,10 +411,25 @@ fn parse_primitive_tokens(tokens: &[FilterToken]) -> Result<TasksFilter, String>
                 value: join_value(&words[2..], "tag includes")?,
             });
         }
+        if lower[0] == "context" {
+            return Ok(TasksFilter::ContextIncludes {
+                value: join_value(&words[2..], "context includes")?,
+            });
+        }
+        if lower[0] == "project" {
+            return Ok(TasksFilter::ProjectIncludes {
+                value: join_value(&words[2..], "project includes")?,
+            });
+        }
     }
     if lower.len() >= 3 && lower[0] == "priority" && lower[1] == "is" {
         return Ok(TasksFilter::PriorityIs {
             value: join_value(&words[2..], "priority is")?,
+        });
+    }
+    if lower.len() >= 3 && lower[0] == "source" && lower[1] == "is" {
+        return Ok(TasksFilter::SourceIs {
+            value: join_value(&words[2..], "source is")?,
         });
     }
 
@@ -458,7 +485,8 @@ mod tests {
     #[test]
     fn parses_status_filters() {
         let query = parse_tasks_query(
-            "not done\n\
+            "status is in-progress\n\
+             not done\n\
              done\n\
              status.name includes \"Waiting review\"\n\
              status.type is in_progress\n",
@@ -468,6 +496,11 @@ mod tests {
         assert_eq!(
             query.commands,
             vec![
+                TasksQueryCommand::Filter {
+                    filter: TasksFilter::StatusIs {
+                        value: "in-progress".to_string(),
+                    },
+                },
                 TasksQueryCommand::Filter {
                     filter: TasksFilter::Done { value: false },
                 },
@@ -498,7 +531,11 @@ mod tests {
              path includes Projects\n\
              heading includes \"Sprint Board\"\n\
              tag includes #work\n\
+             context includes @desk\n\
+             project includes [[Projects/Website]]\n\
              priority is high\n\
+             source is file\n\
+             is archived\n\
              is recurring\n\
              is not blocked\n\
              has id\n",
@@ -551,9 +588,27 @@ mod tests {
                     },
                 },
                 TasksQueryCommand::Filter {
+                    filter: TasksFilter::ContextIncludes {
+                        value: "@desk".to_string(),
+                    },
+                },
+                TasksQueryCommand::Filter {
+                    filter: TasksFilter::ProjectIncludes {
+                        value: "[[Projects/Website]]".to_string(),
+                    },
+                },
+                TasksQueryCommand::Filter {
                     filter: TasksFilter::PriorityIs {
                         value: "high".to_string(),
                     },
+                },
+                TasksQueryCommand::Filter {
+                    filter: TasksFilter::SourceIs {
+                        value: "file".to_string(),
+                    },
+                },
+                TasksQueryCommand::Filter {
+                    filter: TasksFilter::Archived { value: true },
                 },
                 TasksQueryCommand::Filter {
                     filter: TasksFilter::Recurring { value: true },

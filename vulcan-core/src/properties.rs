@@ -1192,6 +1192,7 @@ fn tasknote_properties(
         "path".to_string(),
         Value::String(note.document_path.clone()),
     );
+    properties.insert("taskSource".to_string(), Value::String("file".to_string()));
 
     properties
 }
@@ -3395,6 +3396,7 @@ completed = ["x", "v"]
             tasks[0]["statusType"],
             Value::String("IN_PROGRESS".to_string())
         );
+        assert_eq!(tasks[0]["taskSource"], Value::String("file".to_string()));
         assert_eq!(
             tasks[0]["priorityWeight"],
             Value::Number(serde_json::Number::from_f64(3.0).expect("number"))

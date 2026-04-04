@@ -239,6 +239,10 @@ fn task_object(
         .or_insert_with(|| json_string_array(note.links.clone()));
     object.entry("parent".to_string()).or_insert(Value::Null);
     object.insert("task".to_string(), Value::Bool(true));
+    object.insert(
+        "taskSource".to_string(),
+        Value::String("inline".to_string()),
+    );
     object
         .entry("annotated".to_string())
         .or_insert(Value::Bool(false));
@@ -648,6 +652,7 @@ mod tests {
         assert_eq!(tasks[0]["checked"], Value::Bool(true));
         assert_eq!(tasks[0]["completed"], Value::Bool(true));
         assert_eq!(tasks[0]["fullyCompleted"], Value::Bool(true));
+        assert_eq!(tasks[0]["taskSource"], Value::String("inline".to_string()));
         assert_eq!(tasks[0]["visual"], tasks[0]["text"]);
         assert_eq!(tasks[0]["due"], Value::String("2026-04-18".to_string()));
         assert_eq!(tasks[0]["reviewed"], Value::Bool(true));

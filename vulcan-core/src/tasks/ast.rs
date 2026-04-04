@@ -25,6 +25,9 @@ pub enum TasksFilter {
     Done {
         value: bool,
     },
+    StatusIs {
+        value: String,
+    },
     StatusNameIncludes {
         value: String,
     },
@@ -47,8 +50,20 @@ pub enum TasksFilter {
     TagIncludes {
         value: String,
     },
+    ContextIncludes {
+        value: String,
+    },
+    ProjectIncludes {
+        value: String,
+    },
     PriorityIs {
         value: String,
+    },
+    SourceIs {
+        value: String,
+    },
+    Archived {
+        value: bool,
     },
     Recurring {
         value: bool,
