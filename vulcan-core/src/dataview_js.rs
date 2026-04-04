@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::time::Duration;
 
+use crate::config::JsRuntimeSandbox;
 use crate::dql::DqlQueryResult;
 #[cfg(not(feature = "js_runtime"))]
 use crate::VaultPaths;
@@ -35,6 +36,7 @@ pub struct DataviewJsResult {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DataviewJsEvalOptions {
     pub timeout: Option<Duration>,
+    pub sandbox: Option<JsRuntimeSandbox>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -178,12 +180,16 @@ mod disabled_tests {
 
 #[cfg(feature = "js_runtime")]
 mod runtime {
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::fs;
     use std::path::{Component, Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use csv::ReaderBuilder;
+    use regex::Regex;
+    use reqwest::blocking::Client;
+    use reqwest::header::AUTHORIZATION;
     use rquickjs::function::Func;
     use rquickjs::{
         CatchResultExt, CaughtError, Context, Ctx, Exception, Runtime, Value as JsValue,
@@ -192,7 +198,9 @@ mod runtime {
     use serde::Serialize;
 
     use super::{DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult};
-    use crate::config::load_vault_config;
+    use crate::config::{
+        load_vault_config, JsRuntimeConfig, JsRuntimeSandbox, VaultConfig, WebConfig,
+    };
     use crate::dql::{evaluate_dql, DqlQueryResult};
     use crate::expression::eval::{compare_values, value_to_display};
     use crate::expression::functions::{
@@ -208,9 +216,14 @@ mod runtime {
         resolve_periodic_note, today_utc_string,
     };
     use crate::properties::{load_note_index, NoteRecord};
+    use crate::refactor::{
+        merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property,
+        set_note_property,
+    };
     use crate::resolve_note_reference;
     use crate::search::{search_vault, SearchQuery};
     use crate::VaultPaths;
+    use crate::{move_note, parse_document, query_backlinks, query_links, scan_vault, ScanMode};
     use serde_json::{Map, Value};
     use std::cmp::Ordering;
 
@@ -218,8 +231,17 @@ mod runtime {
     struct JsEvalState {
         paths: VaultPaths,
         current_file: Option<String>,
-        note_index: std::collections::HashMap<String, NoteRecord>,
+        note_index: Mutex<HashMap<String, NoteRecord>>,
         periodic_config: crate::PeriodicConfig,
+        inbox_config: crate::InboxConfig,
+        web_config: WebConfig,
+        sandbox: JsRuntimeSandbox,
+        transaction: Mutex<Option<JsTransactionState>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct JsTransactionState {
+        originals: HashMap<String, Option<String>>,
     }
 
     #[derive(Debug, Clone, Serialize)]
@@ -231,11 +253,34 @@ mod runtime {
         error: Option<String>,
     }
 
+    #[derive(Debug, Clone, Serialize)]
+    struct WebSearchResult {
+        title: String,
+        url: String,
+        snippet: String,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    struct WebSearchReport {
+        backend: String,
+        query: String,
+        results: Vec<WebSearchResult>,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    struct WebFetchReport {
+        url: String,
+        status: u16,
+        content_type: String,
+        mode: String,
+        content: String,
+    }
+
     pub struct DataviewJsSession {
         runtime: Runtime,
         context: Context,
         outputs: Arc<Mutex<Vec<DataviewJsOutput>>>,
-        timeout: Duration,
+        timeout: Option<Duration>,
     }
 
     const DATAVIEW_JS_PRELUDE: &str = r#"
@@ -1739,18 +1784,288 @@ const dv = {
 };
 
 dv.func = buildDvFunctions(dv);
+const __vulcanJsHelp = new Map();
+
+function __vulcanRegisterHelp(target, text) {
+  if (target != null && text) {
+    __vulcanJsHelp.set(target, String(text).trim());
+  }
+}
+
+function __vulcanHydrateAny(value) {
+  if (Array.isArray(value)) {
+    return value.map(__vulcanHydrateAny);
+  }
+  if (value && typeof value === "object" && value.file?.path) {
+    return new Note(value);
+  }
+  return value;
+}
+
+function __vulcanHydrateRelationship(value) {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const hydrated = { ...value };
+  if (hydrated.note?.file?.path) {
+    hydrated.note = new Note(hydrated.note);
+  }
+  return hydrated;
+}
+
+class Note {
+  constructor(data = {}) {
+    this.__data = data ?? {};
+    this.__details = null;
+    return new Proxy(this, {
+      get(target, prop, receiver) {
+        if (prop in target) {
+          const value = Reflect.get(target, prop, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        if (typeof prop === "string" && prop in target.__data) {
+          return __vulcanHydrateAny(target.__data[prop]);
+        }
+        return undefined;
+      },
+      has(target, prop) {
+        return prop in target || prop in target.__data;
+      },
+      ownKeys(target) {
+        return Reflect.ownKeys(target.__data);
+      },
+      getOwnPropertyDescriptor(target, prop) {
+        if (typeof prop === "string" && prop in target.__data) {
+          return { configurable: true, enumerable: true };
+        }
+        return Object.getOwnPropertyDescriptor(target, prop);
+      }
+    });
+  }
+
+  __ensureDetails() {
+    if (this.__details == null) {
+      this.__details = JSON.parse(__vulcan_note_details_json(this.file.path));
+      if (this.__details?.page && typeof this.__details.page === "object") {
+        this.__data = { ...this.__data, ...this.__details.page };
+      }
+      if (this.__details?.file && typeof this.__details.file === "object") {
+        this.__data.file = this.__details.file;
+      }
+    }
+    return this.__details ?? {};
+  }
+
+  get file() {
+    return this.__data.file ?? {};
+  }
+
+  get path() {
+    return this.file.path ?? null;
+  }
+
+  get name() {
+    return this.file.name ?? null;
+  }
+
+  get content() {
+    return this.__ensureDetails().content ?? "";
+  }
+
+  get frontmatter() {
+    return this.file.frontmatter ?? this.__ensureDetails().frontmatter ?? {};
+  }
+
+  get tags() {
+    return this.file.tags ?? [];
+  }
+
+  get aliases() {
+    return this.file.aliases ?? [];
+  }
+
+  get headings() {
+    return this.__ensureDetails().headings ?? [];
+  }
+
+  get blocks() {
+    return this.__ensureDetails().blocks ?? [];
+  }
+
+  get tasks() {
+    return this.file.tasks ?? [];
+  }
+
+  get dataview_fields() {
+    return this.__ensureDetails().dataview_fields ?? [];
+  }
+
+  links() {
+    return new DataArray(
+      JSON.parse(__vulcan_note_links_json(this.file.path, "outgoing")).map(__vulcanHydrateRelationship)
+    );
+  }
+
+  backlinks() {
+    return new DataArray(
+      JSON.parse(__vulcan_note_links_json(this.file.path, "incoming")).map(__vulcanHydrateRelationship)
+    );
+  }
+
+  neighbors(depth = 1) {
+    return new DataArray(
+      JSON.parse(__vulcan_note_neighbors_json(this.file.path, Number(depth) || 1)).map(
+        __vulcanHydrateAny
+      )
+    );
+  }
+
+  toJSON() {
+    const merged = { ...this.__data };
+    if (this.__details != null) {
+      merged.content = this.__details.content ?? merged.content;
+      merged.frontmatter = this.__details.frontmatter ?? merged.frontmatter;
+      merged.headings = this.__details.headings ?? merged.headings;
+      merged.blocks = this.__details.blocks ?? merged.blocks;
+      merged.dataview_fields = this.__details.dataview_fields ?? merged.dataview_fields;
+    }
+    return merged;
+  }
+}
+
+function __vulcanNote(value) {
+  return value == null ? null : new Note(value);
+}
+
+function __vulcanNotes(values) {
+  return new DataArray(__vulcanAsArray(values).map(__vulcanNote));
+}
+
+function __vulcanMutation(kind, payload) {
+  return JSON.parse(__vulcan_mutate_json(String(kind), JSON.stringify(__vulcanPlain(payload))));
+}
+
 const vault = {
   note(path) {
-    return dv.page(path);
+    return __vulcanNote(JSON.parse(__vulcan_page_json(path)));
   },
   notes(source) {
-    return dv.pages(source);
+    return __vulcanNotes(JSON.parse(__vulcan_pages_json(source)));
   },
   query(dql, opts = {}) {
     return dv.tryQuery(dql, opts?.file ?? null, opts);
   },
   search(query, opts = {}) {
     return JSON.parse(__vulcan_search_json(String(query), opts?.limit ?? null));
+  },
+  set(path, content, opts = {}) {
+    return __vulcanNote(
+      __vulcanMutation("set", {
+        path,
+        content,
+        preserveFrontmatter: !!(opts?.preserveFrontmatter ?? opts?.noFrontmatter),
+      }).note
+    );
+  },
+  create(path, opts = {}) {
+    return __vulcanNote(
+      __vulcanMutation("create", {
+        path,
+        content: opts?.content ?? "",
+        frontmatter: opts?.frontmatter ?? null,
+      }).note
+    );
+  },
+  append(path, text, opts = {}) {
+    return __vulcanNote(
+      __vulcanMutation("append", {
+        path,
+        text,
+        heading: opts?.heading ?? null,
+        prepend: !!opts?.prepend,
+      }).note
+    );
+  },
+  patch(path, find, replace, opts = {}) {
+    const regex = find instanceof RegExp;
+    const response = __vulcanMutation("patch", {
+      path,
+      find: regex ? find.source : String(find),
+      replace,
+      regex,
+      replaceAll: !!opts?.all,
+    });
+    return response.note ? __vulcanNote(response.note) : response;
+  },
+  update(path, key, value) {
+    return __vulcanNote(
+      __vulcanMutation("update", { path, key, value }).note
+    );
+  },
+  unset(path, key) {
+    return __vulcanNote(
+      __vulcanMutation("unset", { path, key }).note
+    );
+  },
+  inbox(text) {
+    return __vulcanMutation("inbox", { text });
+  },
+  transaction(callback) {
+    __vulcan_tx_begin();
+    const tx = {
+      set: (...args) => vault.set(...args),
+      create: (...args) => vault.create(...args),
+      append: (...args) => vault.append(...args),
+      patch: (...args) => vault.patch(...args),
+      update: (...args) => vault.update(...args),
+      unset: (...args) => vault.unset(...args),
+      inbox: (...args) => vault.inbox(...args),
+      daily: {
+        append: (...args) => vault.daily.append(...args),
+      },
+      refactor: null,
+    };
+    tx.refactor = vault.refactor;
+    try {
+      const result = callback(tx);
+      __vulcan_tx_commit();
+      return result;
+    } catch (error) {
+      __vulcan_tx_rollback();
+      throw error;
+    }
+  },
+  refactor: {
+    renameAlias(note, oldAlias, newAlias) {
+      return __vulcanMutation("refactor.renameAlias", {
+        note,
+        oldAlias,
+        newAlias,
+      });
+    },
+    renameHeading(note, oldHeading, newHeading) {
+      return __vulcanMutation("refactor.renameHeading", {
+        note,
+        oldHeading,
+        newHeading,
+      });
+    },
+    renameBlockRef(note, oldBlockId, newBlockId) {
+      return __vulcanMutation("refactor.renameBlockRef", {
+        note,
+        oldBlockId,
+        newBlockId,
+      });
+    },
+    renameProperty(oldKey, newKey) {
+      return __vulcanMutation("refactor.renameProperty", { oldKey, newKey });
+    },
+    mergeTags(fromTag, toTag) {
+      return __vulcanMutation("refactor.mergeTags", { fromTag, toTag });
+    },
+    move(source, destination) {
+      return __vulcanMutation("refactor.move", { source, destination });
+    },
   },
   graph: {
     shortestPath(from, to) {
@@ -1768,18 +2083,44 @@ const vault = {
   },
   daily: {
     today() {
-      return JSON.parse(__vulcan_vault_daily_json(__vulcan_today()));
+      return __vulcanNote(JSON.parse(__vulcan_vault_daily_json(__vulcan_today())));
     },
     get(date) {
-      return JSON.parse(__vulcan_vault_daily_json(String(date)));
+      return __vulcanNote(JSON.parse(__vulcan_vault_daily_json(String(date))));
     },
     range(from, to) {
-      return new DataArray(JSON.parse(__vulcan_vault_daily_range_json(String(from), String(to))));
+      return __vulcanNotes(JSON.parse(__vulcan_vault_daily_range_json(String(from), String(to))));
+    },
+    append(text, opts = {}) {
+      return __vulcanNote(
+        __vulcanMutation("daily.append", {
+          text,
+          heading: opts?.heading ?? null,
+          date: opts?.date ?? null,
+        }).note
+      );
     },
   },
   events(options = {}) {
     return new DataArray(
       JSON.parse(__vulcan_vault_events_json(options?.from ?? null, options?.to ?? null))
+    );
+  },
+};
+
+const web = {
+  search(query, opts = {}) {
+    return JSON.parse(
+      __vulcan_web_search_json(String(query), opts?.limit ?? null)
+    );
+  },
+  fetch(url, opts = {}) {
+    return JSON.parse(
+      __vulcan_web_fetch_json(
+        String(url),
+        opts?.mode ?? "markdown",
+        !!opts?.extractArticle
+      )
     );
   },
 };
@@ -1794,32 +2135,121 @@ const console = {
 };
 
 function help(obj) {
-  if (obj === vault.note) {
-    return "vault.note(path): note page object for one note.";
-  }
-  if (obj === vault.notes) {
-    return "vault.notes(source?): DataArray of note page objects.";
-  }
-  if (obj === vault.query) {
-    return "vault.query(dql, opts?): execute one DQL query.";
-  }
-  if (obj === vault.search) {
-    return "vault.search(query, opts?): run one indexed search query.";
-  }
-  if (obj === vault.graph.shortestPath) {
-    return "vault.graph.shortestPath(from, to): shortest resolved path between notes.";
-  }
-  if (obj === vault.daily.today) {
-    return "vault.daily.today(): today\\'s daily note object with parsed events.";
-  }
-  if (obj === vault.events) {
-    return "vault.events({ from, to }): DataArray of periodic events.";
-  }
-  return "No help available for this object.";
+  return __vulcanJsHelp.get(obj) ?? "No help available for this object.";
 }
+
+__vulcanRegisterHelp(
+  vault.note,
+  `vault.note(path: string): Note
+
+Resolve one note and return a rich Note object.
+Example: vault.note("Projects/Alpha").content`
+);
+__vulcanRegisterHelp(
+  vault.notes,
+  `vault.notes(source?: string): DataArray<Note>
+
+Return note collections compatible with DataArray chaining.
+Example: vault.notes('"Projects"').where((note) => note.status === "active").limit(5)`
+);
+__vulcanRegisterHelp(
+  vault.query,
+  `vault.query(dql: string, opts?: { file?: string }): QueryResult
+
+Run one DQL query against the indexed vault.
+Example: vault.query('TABLE status FROM "Projects"')`
+);
+__vulcanRegisterHelp(
+  vault.search,
+  `vault.search(query: string, opts?: { limit?: number }): SearchReport
+
+Run indexed full-text search.
+Example: vault.search("Alpha", { limit: 3 })`
+);
+__vulcanRegisterHelp(
+  vault.graph.shortestPath,
+  `vault.graph.shortestPath(from: string, to: string): GraphPathReport
+
+Return the shortest resolved path between two notes.
+See also: vault.note().neighbors()`
+);
+__vulcanRegisterHelp(
+  vault.daily.today,
+  `vault.daily.today(): Note
+
+Return today's daily note, enriched with parsed periodic events.`
+);
+__vulcanRegisterHelp(
+  vault.daily.append,
+  `vault.daily.append(text: string, opts?: { heading?: string, date?: string }): Note
+
+Append text to a daily note. Requires --sandbox fs or higher.`
+);
+__vulcanRegisterHelp(
+  vault.events,
+  `vault.events(opts?: { from?: string, to?: string }): DataArray<Event>
+
+Aggregate periodic events across daily notes.`
+);
+__vulcanRegisterHelp(
+  vault.set,
+  `vault.set(path: string, content: string, opts?: { preserveFrontmatter?: boolean }): Note
+
+Replace note contents. Requires --sandbox fs or higher.`
+);
+__vulcanRegisterHelp(
+  vault.create,
+  `vault.create(path: string, opts?: { content?: string, frontmatter?: object }): Note
+
+Create a new note and return it as a Note object. Requires --sandbox fs or higher.`
+);
+__vulcanRegisterHelp(
+  vault.append,
+  `vault.append(path: string, text: string, opts?: { heading?: string, prepend?: boolean }): Note
+
+Append or prepend text in one note. Requires --sandbox fs or higher.`
+);
+__vulcanRegisterHelp(
+  vault.patch,
+  `vault.patch(path: string, find: string | RegExp, replace: string, opts?: { all?: boolean }): Note
+
+Patch one note. Regex patterns use the JS RegExp source. Requires --sandbox fs or higher.`
+);
+__vulcanRegisterHelp(
+  vault.update,
+  `vault.update(path: string, key: string, value: unknown): Note
+
+Set one frontmatter property. Requires --sandbox fs or higher.`
+);
+__vulcanRegisterHelp(
+  vault.unset,
+  `vault.unset(path: string, key: string): Note
+
+Remove one frontmatter property. Requires --sandbox fs or higher.`
+);
+__vulcanRegisterHelp(
+  vault.transaction,
+  `vault.transaction(fn: (tx) => unknown): unknown
+
+Run several fs mutations with rollback on JS exceptions.
+Example: vault.transaction((tx) => { const note = tx.create("Scratch"); tx.append("Index", "- [[" + note.name + "]]"); })`
+);
+__vulcanRegisterHelp(
+  web.search,
+  `web.search(query: string, opts?: { limit?: number }): WebSearchReport
+
+Run external web search via the configured backend. Requires --sandbox net or higher.`
+);
+__vulcanRegisterHelp(
+  web.fetch,
+  `web.fetch(url: string, opts?: { mode?: "markdown" | "html" | "raw", extractArticle?: boolean }): WebFetchReport
+
+Fetch one URL through Vulcan's web client. Requires --sandbox net or higher.`
+);
 
 globalThis.dv = dv;
 globalThis.vault = vault;
+globalThis.web = web;
 globalThis.console = console;
 globalThis.help = help;
 globalThis.this = dv.current();
@@ -1870,29 +2300,35 @@ globalThis.Function = undefined;
 
             let note_index = load_note_index(paths)
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            let sandbox = options
+                .sandbox
+                .unwrap_or(loaded_config.js_runtime.default_sandbox);
             let state = Arc::new(JsEvalState {
                 paths: paths.clone(),
                 current_file: current_file.map(ToOwned::to_owned),
-                note_index,
+                note_index: Mutex::new(note_index),
                 periodic_config: loaded_config.periodic.clone(),
+                inbox_config: loaded_config.inbox.clone(),
+                web_config: loaded_config.web.clone(),
+                sandbox,
+                transaction: Mutex::new(None),
             });
             let outputs = Arc::new(Mutex::new(Vec::new()));
             let runtime =
                 Runtime::new().map_err(|error| DataviewJsError::Message(error.to_string()))?;
-            runtime.set_memory_limit(loaded_config.dataview.js_memory_limit_bytes);
-            runtime.set_max_stack_size(loaded_config.dataview.js_max_stack_size_bytes);
+            if sandbox_uses_resource_limits(sandbox) {
+                runtime.set_memory_limit(runtime_memory_limit_bytes(&loaded_config.js_runtime));
+                runtime.set_max_stack_size(runtime_stack_limit_bytes(&loaded_config.js_runtime));
+            }
 
-            let timeout = options.timeout.unwrap_or_else(|| {
-                Duration::from_secs(
-                    u64::try_from(loaded_config.dataview.js_timeout_seconds).unwrap_or(u64::MAX),
-                )
-            });
-            if timeout.is_zero() {
+            let timeout = effective_timeout(&loaded_config, sandbox, options.timeout)?;
+            if timeout.is_some_and(|timeout| timeout.is_zero()) {
                 return Err(DataviewJsError::Message(
                     "DataviewJS timeout must be greater than 0ms".to_string(),
                 ));
             }
-            let timeout_description = format_timeout(timeout);
+            let timeout_description =
+                timeout.map_or_else(|| "no limit".to_string(), format_timeout);
 
             let context = Context::full(&runtime)
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -1920,11 +2356,16 @@ globalThis.Function = undefined;
                 outputs.clear();
             }
 
-            let deadline = Instant::now();
-            let timeout = self.timeout;
-            let timeout_description = format_timeout(timeout);
-            self.runtime
-                .set_interrupt_handler(Some(Box::new(move || deadline.elapsed() >= timeout)));
+            let timeout_description = self
+                .timeout
+                .map_or_else(|| "no limit".to_string(), format_timeout);
+            if let Some(timeout) = self.timeout {
+                let deadline = Instant::now();
+                self.runtime
+                    .set_interrupt_handler(Some(Box::new(move || deadline.elapsed() >= timeout)));
+            } else {
+                self.runtime.set_interrupt_handler(None);
+            }
 
             let eval_result = self
                 .context
@@ -1973,16 +2414,18 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_pages_json",
                 Func::from(move |ctx: Ctx<'_>, source: Option<String>| {
-                    to_json_string(
-                        &ctx,
-                        load_pages_from_source(
-                            &pages_state.paths,
-                            &pages_state.note_index,
-                            pages_state.current_file.as_deref(),
-                            source.as_deref(),
+                    with_note_index(&pages_state, &ctx, |note_index| {
+                        to_json_string(
+                            &ctx,
+                            load_pages_from_source(
+                                &pages_state.paths,
+                                note_index,
+                                pages_state.current_file.as_deref(),
+                                source.as_deref(),
+                            )
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                         )
-                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                    )
+                    })
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -1992,15 +2435,17 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_page_json",
                 Func::from(move |ctx: Ctx<'_>, path: String| {
-                    to_json_string(
-                        &ctx,
-                        page_object_by_reference(
-                            &single_page_state.paths,
-                            &single_page_state.note_index,
-                            &path,
+                    with_note_index(&single_page_state, &ctx, |note_index| {
+                        to_json_string(
+                            &ctx,
+                            page_object_by_reference(
+                                &single_page_state.paths,
+                                note_index,
+                                &path,
+                            )
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                         )
-                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                    )
+                    })
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -2010,22 +2455,82 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_current_json",
                 Func::from(move |ctx: Ctx<'_>| {
-                    to_json_string(
-                        &ctx,
-                        current_state
-                            .current_file
-                            .as_deref()
-                            .map(|path| {
-                                page_object_by_reference(
-                                    &current_state.paths,
-                                    &current_state.note_index,
-                                    path,
-                                )
-                            })
-                            .transpose()
-                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?
-                            .unwrap_or(Value::Null),
-                    )
+                    with_note_index(&current_state, &ctx, |note_index| {
+                        to_json_string(
+                            &ctx,
+                            current_state
+                                .current_file
+                                .as_deref()
+                                .map(|path| {
+                                    page_object_by_reference(&current_state.paths, note_index, path)
+                                })
+                                .transpose()
+                                .map_err(|error| {
+                                    Exception::throw_message(&ctx, &error.to_string())
+                                })?
+                                .unwrap_or(Value::Null),
+                        )
+                    })
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let note_details_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_note_details_json",
+                Func::from(move |ctx: Ctx<'_>, path: String| {
+                    with_note_index(&note_details_state, &ctx, |note_index| {
+                        to_json_string(
+                            &ctx,
+                            load_note_details(&note_details_state.paths, note_index, &path)
+                                .map_err(|error| {
+                                    Exception::throw_message(&ctx, &error.to_string())
+                                })?,
+                        )
+                    })
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let note_links_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_note_links_json",
+                Func::from(move |ctx: Ctx<'_>, path: String, direction: String| {
+                    with_note_index(&note_links_state, &ctx, |note_index| {
+                        to_json_string(
+                            &ctx,
+                            load_note_relationships(
+                                &note_links_state.paths,
+                                note_index,
+                                &path,
+                                &direction,
+                            )
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                        )
+                    })
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let note_neighbors_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_note_neighbors_json",
+                Func::from(move |ctx: Ctx<'_>, path: String, depth: i32| {
+                    with_note_index(&note_neighbors_state, &ctx, |note_index| {
+                        to_json_string(
+                            &ctx,
+                            load_note_neighbors(
+                                &note_neighbors_state.paths,
+                                note_index,
+                                &path,
+                                depth,
+                            )
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                        )
+                    })
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -2039,16 +2544,18 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_vault_daily_json",
                 Func::from(move |ctx: Ctx<'_>, date: String| {
-                    to_json_string(
-                        &ctx,
-                        load_daily_page_object(
-                            &vault_daily_state.paths,
-                            &vault_daily_state.periodic_config,
-                            &vault_daily_state.note_index,
-                            &date,
+                    with_note_index(&vault_daily_state, &ctx, |note_index| {
+                        to_json_string(
+                            &ctx,
+                            load_daily_page_object(
+                                &vault_daily_state.paths,
+                                &vault_daily_state.periodic_config,
+                                note_index,
+                                &date,
+                            )
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                         )
-                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                    )
+                    })
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -2058,16 +2565,18 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_vault_daily_range_json",
                 Func::from(move |ctx: Ctx<'_>, from: String, to: String| {
-                    to_json_string(
-                        &ctx,
-                        load_daily_range_objects(
-                            &vault_daily_range_state.paths,
-                            &vault_daily_range_state.note_index,
-                            &from,
-                            &to,
+                    with_note_index(&vault_daily_range_state, &ctx, |note_index| {
+                        to_json_string(
+                            &ctx,
+                            load_daily_range_objects(
+                                &vault_daily_range_state.paths,
+                                note_index,
+                                &from,
+                                &to,
+                            )
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                         )
-                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                    )
+                    })
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -2344,12 +2853,1195 @@ globalThis.Function = undefined;
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
+        let mutation_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_mutate_json",
+                Func::from(move |ctx: Ctx<'_>, kind: String, payload_json: String| {
+                    let payload: Value = parse_json_string(&ctx, &payload_json)?;
+                    to_json_string(
+                        &ctx,
+                        apply_js_mutation(&mutation_state, &kind, payload)
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let tx_begin_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_tx_begin",
+                Func::from(move |ctx: Ctx<'_>| {
+                    begin_transaction(&tx_begin_state)
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let tx_commit_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_tx_commit",
+                Func::from(move |ctx: Ctx<'_>| {
+                    commit_transaction(&tx_commit_state)
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let tx_rollback_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_tx_rollback",
+                Func::from(move |ctx: Ctx<'_>| {
+                    rollback_transaction(&tx_rollback_state)
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let web_search_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_web_search_json",
+                Func::from(move |ctx: Ctx<'_>, query: String, limit: Option<usize>| {
+                    to_json_string(
+                        &ctx,
+                        run_js_web_search(&web_search_state, &query, limit.unwrap_or(10))
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let web_fetch_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_web_fetch_json",
+                Func::from(
+                    move |ctx: Ctx<'_>, url: String, mode: String, extract_article: bool| {
+                        to_json_string(
+                            &ctx,
+                            run_js_web_fetch(&web_fetch_state, &url, &mode, extract_article)
+                                .map_err(|error| {
+                                    Exception::throw_message(&ctx, &error.to_string())
+                                })?,
+                        )
+                    },
+                ),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
         Ok(())
+    }
+
+    fn with_note_index<T>(
+        state: &JsEvalState,
+        ctx: &Ctx<'_>,
+        f: impl FnOnce(&HashMap<String, NoteRecord>) -> rquickjs::Result<T>,
+    ) -> rquickjs::Result<T> {
+        let note_index = state
+            .note_index
+            .lock()
+            .map_err(|_| Exception::throw_message(ctx, "DataviewJS note index lock poisoned"))?;
+        f(&note_index)
+    }
+
+    fn reload_note_index(state: &JsEvalState) -> Result<(), DataviewJsError> {
+        let note_index = load_note_index(&state.paths)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let mut current = state.note_index.lock().map_err(|_| {
+            DataviewJsError::Message("DataviewJS note index lock poisoned".to_string())
+        })?;
+        *current = note_index;
+        Ok(())
+    }
+
+    fn resolve_existing_note_path(
+        paths: &VaultPaths,
+        note: &str,
+    ) -> Result<String, DataviewJsError> {
+        if let Ok(resolved) = resolve_note_reference(paths, note) {
+            Ok(resolved.path)
+        } else {
+            let normalized = normalize_vault_path(paths.vault_root(), note, None, true)?;
+            if paths.vault_root().join(&normalized).is_file() {
+                Ok(normalized)
+            } else {
+                Err(DataviewJsError::Message(format!("note not found: {note}")))
+            }
+        }
+    }
+
+    fn normalize_note_path_for_write(
+        paths: &VaultPaths,
+        note: &str,
+    ) -> Result<String, DataviewJsError> {
+        let normalized = normalize_vault_path(paths.vault_root(), note, None, false)?;
+        if Path::new(&normalized).extension().is_none() {
+            Ok(PathBuf::from(normalized)
+                .with_extension("md")
+                .to_string_lossy()
+                .replace('\\', "/"))
+        } else {
+            Ok(normalized)
+        }
+    }
+
+    fn load_note_details(
+        paths: &VaultPaths,
+        note_index: &HashMap<String, NoteRecord>,
+        note: &str,
+    ) -> Result<Value, DataviewJsError> {
+        let path = resolve_existing_note_path(paths, note)?;
+        let source = fs::read_to_string(paths.vault_root().join(&path))
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let note = note_by_path(note_index, &path)
+            .ok_or_else(|| DataviewJsError::Message(format!("note is not indexed: {path}")))?;
+        let config = load_vault_config(paths).config;
+        let parsed = parse_document(&source, &config);
+        Ok(serde_json::json!({
+            "page": page_object(note),
+            "file": FileMetadataResolver::object(note),
+            "frontmatter": note.frontmatter.clone(),
+            "content": source,
+            "headings": parsed.headings.into_iter().map(|heading| serde_json::json!({
+                "level": heading.level,
+                "text": heading.text,
+                "byteOffset": heading.byte_offset,
+            })).collect::<Vec<_>>(),
+            "blocks": parsed.block_refs.into_iter().map(|block| serde_json::json!({
+                "id": block.block_id_text,
+                "byteOffset": block.block_id_byte_offset,
+                "targetStart": block.target_block_byte_start,
+                "targetEnd": block.target_block_byte_end,
+            })).collect::<Vec<_>>(),
+            "dataview_fields": parsed.inline_fields.into_iter().map(|field| serde_json::json!({
+                "key": field.key,
+                "value": field.value_text,
+                "line": field.line_number,
+                "kind": format!("{:?}", field.kind).to_ascii_lowercase(),
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
+    fn load_note_relationships(
+        paths: &VaultPaths,
+        note_index: &HashMap<String, NoteRecord>,
+        note: &str,
+        direction: &str,
+    ) -> Result<Vec<Value>, DataviewJsError> {
+        let path = resolve_existing_note_path(paths, note)?;
+        match direction {
+            "outgoing" => query_links(paths, &path)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?
+                .links
+                .into_iter()
+                .map(|record| {
+                    let resolved_target_path = record.resolved_target_path.clone();
+                    Ok(serde_json::json!({
+                        "rawText": record.raw_text,
+                        "linkKind": record.link_kind,
+                        "displayText": record.display_text,
+                        "targetPathCandidate": record.target_path_candidate,
+                        "targetHeading": record.target_heading,
+                        "targetBlock": record.target_block,
+                        "resolvedTargetPath": resolved_target_path,
+                        "resolutionStatus": format!("{:?}", record.resolution_status).to_ascii_lowercase(),
+                        "context": record.context,
+                        "note": resolved_target_path
+                            .as_deref()
+                            .and_then(|target| note_by_path(note_index, target))
+                            .map_or(Value::Null, page_object),
+                    }))
+                })
+                .collect(),
+            "incoming" => query_backlinks(paths, &path)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?
+                .backlinks
+                .into_iter()
+                .map(|record| {
+                    let source_path = record.source_path.clone();
+                    Ok(serde_json::json!({
+                        "sourcePath": source_path,
+                        "rawText": record.raw_text,
+                        "linkKind": record.link_kind,
+                        "displayText": record.display_text,
+                        "context": record.context,
+                        "note": note_by_path(note_index, &source_path)
+                            .map_or(Value::Null, page_object),
+                    }))
+                })
+                .collect(),
+            other => Err(DataviewJsError::Message(format!(
+                "unsupported note relationship direction: {other}"
+            ))),
+        }
+    }
+
+    fn load_note_neighbors(
+        paths: &VaultPaths,
+        note_index: &HashMap<String, NoteRecord>,
+        note: &str,
+        depth: i32,
+    ) -> Result<Vec<Value>, DataviewJsError> {
+        let path = resolve_existing_note_path(paths, note)?;
+        let max_depth = usize::try_from(depth.max(1)).unwrap_or(1);
+        let mut seen = HashSet::from([path.clone()]);
+        let mut queue = VecDeque::from([(path.clone(), 0_usize)]);
+        let mut neighbors = Vec::new();
+
+        while let Some((current, current_depth)) = queue.pop_front() {
+            if current_depth >= max_depth {
+                continue;
+            }
+            let outgoing = query_links(paths, &current)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?
+                .links
+                .into_iter()
+                .filter_map(|record| record.resolved_target_path)
+                .collect::<Vec<_>>();
+            let incoming = query_backlinks(paths, &current)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?
+                .backlinks
+                .into_iter()
+                .map(|record| record.source_path)
+                .collect::<Vec<_>>();
+            for related in outgoing.into_iter().chain(incoming) {
+                if !seen.insert(related.clone()) {
+                    continue;
+                }
+                if let Some(related_note) = note_by_path(note_index, &related) {
+                    neighbors.push(page_object(related_note));
+                    queue.push_back((related.clone(), current_depth + 1));
+                }
+            }
+        }
+
+        neighbors.sort_by(|left, right| {
+            compare_json_ordering(
+                left.get("file")
+                    .and_then(|file| file.get("path"))
+                    .unwrap_or(&Value::Null),
+                right
+                    .get("file")
+                    .and_then(|file| file.get("path"))
+                    .unwrap_or(&Value::Null),
+            )
+        });
+        Ok(neighbors)
+    }
+
+    fn begin_transaction(state: &JsEvalState) -> Result<(), DataviewJsError> {
+        ensure_fs_access(state, "vault.transaction()")?;
+        let mut transaction = state.transaction.lock().map_err(|_| {
+            DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
+        })?;
+        if transaction.is_some() {
+            return Err(DataviewJsError::Message(
+                "a JS transaction is already active".to_string(),
+            ));
+        }
+        *transaction = Some(JsTransactionState::default());
+        Ok(())
+    }
+
+    fn commit_transaction(state: &JsEvalState) -> Result<(), DataviewJsError> {
+        let mut transaction = state.transaction.lock().map_err(|_| {
+            DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
+        })?;
+        if transaction.is_none() {
+            return Ok(());
+        }
+        *transaction = None;
+        scan_and_reload_state(state)
+    }
+
+    fn rollback_transaction(state: &JsEvalState) -> Result<(), DataviewJsError> {
+        let originals = {
+            let mut transaction = state.transaction.lock().map_err(|_| {
+                DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
+            })?;
+            transaction.take()
+        };
+        let Some(transaction) = originals else {
+            return Ok(());
+        };
+
+        for (path, original) in transaction.originals {
+            let absolute = state.paths.vault_root().join(&path);
+            match original {
+                Some(contents) => {
+                    if let Some(parent) = absolute.parent() {
+                        fs::create_dir_all(parent)
+                            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                    }
+                    fs::write(&absolute, contents)
+                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                }
+                None => {
+                    if absolute.is_file() {
+                        fs::remove_file(&absolute)
+                            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                    }
+                }
+            }
+        }
+
+        scan_and_reload_state(state)
+    }
+
+    #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
+    fn apply_js_mutation(
+        state: &JsEvalState,
+        kind: &str,
+        payload: Value,
+    ) -> Result<Value, DataviewJsError> {
+        match kind {
+            "set" => {
+                ensure_fs_access(state, "vault.set()")?;
+                let path = payload_string(&payload, "path")?;
+                let content = payload_string(&payload, "content")?.to_string();
+                let preserve_frontmatter = payload_bool(&payload, "preserveFrontmatter");
+                let resolved_path = resolve_existing_note_path(&state.paths, path)?;
+                record_transaction_original(state, &resolved_path)?;
+                let existing = fs::read_to_string(state.paths.vault_root().join(&resolved_path))
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                let updated = if preserve_frontmatter {
+                    preserve_existing_frontmatter(&existing, &content)
+                } else {
+                    content
+                };
+                fs::write(state.paths.vault_root().join(&resolved_path), updated)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                scan_and_reload_state(state)?;
+                mutation_note_response(state, &resolved_path)
+            }
+            "create" => {
+                ensure_fs_access(state, "vault.create()")?;
+                let path =
+                    normalize_note_path_for_write(&state.paths, payload_string(&payload, "path")?)?;
+                let absolute = state.paths.vault_root().join(&path);
+                if absolute.exists() {
+                    return Err(DataviewJsError::Message(format!(
+                        "destination note already exists: {path}"
+                    )));
+                }
+                record_transaction_original(state, &path)?;
+                if let Some(parent) = absolute.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                }
+                let content = payload
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let rendered = render_note_document(payload.get("frontmatter"), content)?;
+                fs::write(&absolute, rendered)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                scan_and_reload_state(state)?;
+                mutation_note_response(state, &path)
+            }
+            "append" => {
+                ensure_fs_access(state, "vault.append()")?;
+                let path =
+                    resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
+                let absolute = state.paths.vault_root().join(&path);
+                let existing = fs::read_to_string(&absolute)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                record_transaction_original(state, &path)?;
+                let text = payload_string(&payload, "text")?;
+                let heading = payload.get("heading").and_then(Value::as_str);
+                let prepend = payload_bool(&payload, "prepend");
+                let updated = if prepend {
+                    prepend_entry_after_frontmatter(&existing, text)
+                } else if let Some(heading) = heading {
+                    append_under_heading(&existing, heading, text)
+                } else {
+                    append_at_end(&existing, text)
+                };
+                fs::write(&absolute, updated)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                scan_and_reload_state(state)?;
+                mutation_note_response(state, &path)
+            }
+            "patch" => {
+                ensure_fs_access(state, "vault.patch()")?;
+                let path =
+                    resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
+                let absolute = state.paths.vault_root().join(&path);
+                let existing = fs::read_to_string(&absolute)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                record_transaction_original(state, &path)?;
+                let find = payload_string(&payload, "find")?;
+                let replace = payload_string(&payload, "replace")?;
+                let regex = payload_bool(&payload, "regex");
+                let replace_all = payload_bool(&payload, "replaceAll");
+                let (updated, match_count) =
+                    apply_note_patch(&existing, find, replace, regex, replace_all)?;
+                fs::write(&absolute, updated)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                scan_and_reload_state(state)?;
+                let mut response = mutation_note_response(state, &path)?;
+                if let Value::Object(ref mut object) = response {
+                    object.insert(
+                        "matchCount".to_string(),
+                        Value::from(u64::try_from(match_count).unwrap_or(u64::MAX)),
+                    );
+                }
+                Ok(response)
+            }
+            "update" => {
+                ensure_fs_access(state, "vault.update()")?;
+                let path =
+                    resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
+                record_transaction_original(state, &path)?;
+                let key = payload_string(&payload, "key")?;
+                let value = render_property_value(payload.get("value").unwrap_or(&Value::Null))?;
+                set_note_property(&state.paths, &path, key, Some(value.as_str()), false)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                reload_note_index(state)?;
+                mutation_note_response(state, &path)
+            }
+            "unset" => {
+                ensure_fs_access(state, "vault.unset()")?;
+                let path =
+                    resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
+                record_transaction_original(state, &path)?;
+                let key = payload_string(&payload, "key")?;
+                set_note_property(&state.paths, &path, key, None, false)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                reload_note_index(state)?;
+                mutation_note_response(state, &path)
+            }
+            "inbox" => {
+                ensure_fs_access(state, "vault.inbox()")?;
+                let path = normalize_note_path_for_write(&state.paths, &state.inbox_config.path)?;
+                record_transaction_original(state, &path)?;
+                let absolute = state.paths.vault_root().join(&path);
+                if let Some(parent) = absolute.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                }
+                let existing = fs::read_to_string(&absolute).unwrap_or_default();
+                let entry = render_inbox_entry(
+                    &state.inbox_config.format,
+                    payload_string(&payload, "text")?,
+                    &current_utc_timestamp_string(),
+                    &today_utc_string(),
+                );
+                let rendered_entry = if state.inbox_config.timestamp {
+                    format!("{} {}", current_utc_timestamp_string(), entry)
+                } else {
+                    entry
+                };
+                let updated = state.inbox_config.heading.as_deref().map_or_else(
+                    || append_at_end(&existing, &rendered_entry),
+                    |heading| append_under_heading(&existing, heading, &rendered_entry),
+                );
+                fs::write(&absolute, updated)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                scan_and_reload_state(state)?;
+                Ok(serde_json::json!({ "path": path, "appended": true }))
+            }
+            "daily.append" => {
+                ensure_fs_access(state, "vault.daily.append()")?;
+                let date = normalize_daily_event_date(payload.get("date").and_then(Value::as_str))?;
+                let path =
+                    crate::expected_periodic_note_path(&state.periodic_config, "daily", &date)
+                        .ok_or_else(|| {
+                            DataviewJsError::Message(format!(
+                                "failed to resolve daily note path for {date}"
+                            ))
+                        })?;
+                record_transaction_original(state, &path)?;
+                let absolute = state.paths.vault_root().join(&path);
+                if let Some(parent) = absolute.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                }
+                let existing = fs::read_to_string(&absolute).unwrap_or_default();
+                let text = payload_string(&payload, "text")?;
+                let updated = payload.get("heading").and_then(Value::as_str).map_or_else(
+                    || append_at_end(&existing, text),
+                    |heading| append_under_heading(&existing, heading, text),
+                );
+                fs::write(&absolute, updated)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                scan_and_reload_state(state)?;
+                mutation_note_response(state, &path)
+            }
+            "refactor.renameAlias" => {
+                ensure_fs_access(state, "vault.refactor.renameAlias()")?;
+                ensure_no_transaction(state, "vault.refactor.renameAlias()")?;
+                let note = payload_string(&payload, "note")?;
+                let old_alias = payload_string(&payload, "oldAlias")?;
+                let new_alias = payload_string(&payload, "newAlias")?;
+                let report = rename_alias(&state.paths, note, old_alias, new_alias, false)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                reload_note_index(state)?;
+                serde_json::to_value(report)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+            }
+            "refactor.renameHeading" => {
+                ensure_fs_access(state, "vault.refactor.renameHeading()")?;
+                ensure_no_transaction(state, "vault.refactor.renameHeading()")?;
+                let note = payload_string(&payload, "note")?;
+                let old_heading = payload_string(&payload, "oldHeading")?;
+                let new_heading = payload_string(&payload, "newHeading")?;
+                let report = rename_heading(&state.paths, note, old_heading, new_heading, false)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                reload_note_index(state)?;
+                serde_json::to_value(report)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+            }
+            "refactor.renameBlockRef" => {
+                ensure_fs_access(state, "vault.refactor.renameBlockRef()")?;
+                ensure_no_transaction(state, "vault.refactor.renameBlockRef()")?;
+                let note = payload_string(&payload, "note")?;
+                let old_block_id = payload_string(&payload, "oldBlockId")?;
+                let new_block_id = payload_string(&payload, "newBlockId")?;
+                let report =
+                    rename_block_ref(&state.paths, note, old_block_id, new_block_id, false)
+                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                reload_note_index(state)?;
+                serde_json::to_value(report)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+            }
+            "refactor.renameProperty" => {
+                ensure_fs_access(state, "vault.refactor.renameProperty()")?;
+                ensure_no_transaction(state, "vault.refactor.renameProperty()")?;
+                let old_key = payload_string(&payload, "oldKey")?;
+                let new_key = payload_string(&payload, "newKey")?;
+                let report = rename_property(&state.paths, old_key, new_key, false)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                reload_note_index(state)?;
+                serde_json::to_value(report)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+            }
+            "refactor.mergeTags" => {
+                ensure_fs_access(state, "vault.refactor.mergeTags()")?;
+                ensure_no_transaction(state, "vault.refactor.mergeTags()")?;
+                let from_tag = payload_string(&payload, "fromTag")?;
+                let to_tag = payload_string(&payload, "toTag")?;
+                let report = merge_tags(&state.paths, from_tag, to_tag, false)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                reload_note_index(state)?;
+                serde_json::to_value(report)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+            }
+            "refactor.move" => {
+                ensure_fs_access(state, "vault.refactor.move()")?;
+                ensure_no_transaction(state, "vault.refactor.move()")?;
+                let source = payload_string(&payload, "source")?;
+                let destination = normalize_note_path_for_write(
+                    &state.paths,
+                    payload_string(&payload, "destination")?,
+                )?;
+                let report = move_note(&state.paths, source, &destination, false)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                reload_note_index(state)?;
+                serde_json::to_value(report)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+            }
+            other => Err(DataviewJsError::Message(format!(
+                "unsupported JS mutation kind: {other}"
+            ))),
+        }
+    }
+
+    fn ensure_fs_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
+        if sandbox_allows_fs(state.sandbox) {
+            Ok(())
+        } else {
+            Err(DataviewJsError::Message(format!(
+                "{operation} requires --sandbox fs or higher"
+            )))
+        }
+    }
+
+    fn ensure_network_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
+        if sandbox_allows_network(state.sandbox) {
+            Ok(())
+        } else {
+            Err(DataviewJsError::Message(format!(
+                "{operation} requires --sandbox net or higher"
+            )))
+        }
+    }
+
+    fn ensure_no_transaction(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
+        let transaction = state.transaction.lock().map_err(|_| {
+            DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
+        })?;
+        if transaction.is_some() {
+            Err(DataviewJsError::Message(format!(
+                "{operation} is not supported inside vault.transaction()"
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn record_transaction_original(state: &JsEvalState, path: &str) -> Result<(), DataviewJsError> {
+        let mut transaction = state.transaction.lock().map_err(|_| {
+            DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
+        })?;
+        let Some(transaction) = transaction.as_mut() else {
+            return Ok(());
+        };
+        if transaction.originals.contains_key(path) {
+            return Ok(());
+        }
+        let absolute = state.paths.vault_root().join(path);
+        let original = if absolute.is_file() {
+            Some(
+                fs::read_to_string(&absolute)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        transaction.originals.insert(path.to_string(), original);
+        Ok(())
+    }
+
+    fn scan_and_reload_state(state: &JsEvalState) -> Result<(), DataviewJsError> {
+        scan_vault(&state.paths, ScanMode::Incremental)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        reload_note_index(state)
+    }
+
+    fn mutation_note_response(state: &JsEvalState, path: &str) -> Result<Value, DataviewJsError> {
+        let note_index = state.note_index.lock().map_err(|_| {
+            DataviewJsError::Message("DataviewJS note index lock poisoned".to_string())
+        })?;
+        let note = note_by_path(&note_index, path)
+            .ok_or_else(|| DataviewJsError::Message(format!("note is not indexed: {path}")))?;
+        Ok(serde_json::json!({
+            "note": page_object(note),
+        }))
+    }
+
+    fn payload_string<'a>(payload: &'a Value, key: &str) -> Result<&'a str, DataviewJsError> {
+        payload
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| DataviewJsError::Message(format!("missing string field `{key}`")))
+    }
+
+    fn payload_bool(payload: &Value, key: &str) -> bool {
+        payload.get(key).and_then(Value::as_bool).unwrap_or(false)
+    }
+
+    fn render_note_document(
+        frontmatter: Option<&Value>,
+        body: &str,
+    ) -> Result<String, DataviewJsError> {
+        let mut rendered = String::new();
+        if let Some(frontmatter) = frontmatter.filter(|value| !value.is_null()) {
+            if !frontmatter.is_object() {
+                return Err(DataviewJsError::Message(
+                    "note frontmatter must be a JSON object".to_string(),
+                ));
+            }
+            let yaml_source = serde_yaml::to_string(frontmatter)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            let yaml = strip_yaml_doc_marker(&yaml_source);
+            rendered.push_str("---\n");
+            rendered.push_str(yaml.trim_end_matches('\n'));
+            rendered.push_str("\n---");
+            if body.is_empty() {
+                rendered.push('\n');
+            } else {
+                rendered.push_str("\n\n");
+            }
+        }
+        rendered.push_str(body);
+        Ok(rendered)
+    }
+
+    fn preserve_existing_frontmatter(existing: &str, body: &str) -> String {
+        find_frontmatter_block(existing).map_or_else(
+            || body.to_string(),
+            |(_, _, body_start)| {
+                let mut rendered = existing[..body_start].to_string();
+                rendered.push_str(body);
+                rendered
+            },
+        )
+    }
+
+    fn strip_yaml_doc_marker(yaml: &str) -> &str {
+        yaml.strip_prefix("---\n").unwrap_or(yaml)
+    }
+
+    fn render_property_value(value: &Value) -> Result<String, DataviewJsError> {
+        let yaml = serde_yaml::to_string(value)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        Ok(strip_yaml_doc_marker(&yaml).trim().to_string())
+    }
+
+    fn find_frontmatter_block(source: &str) -> Option<(usize, usize, usize)> {
+        let mut lines = source.split_inclusive('\n');
+        let first_line = lines.next()?;
+        if !matches!(first_line, "---\n" | "---\r\n" | "---") {
+            return None;
+        }
+
+        let yaml_start = first_line.len();
+        let mut offset = yaml_start;
+        for line in lines {
+            let trimmed = line.trim_end_matches(['\n', '\r']);
+            if trimmed == "---" {
+                return Some((yaml_start, offset, offset + line.len()));
+            }
+            offset += line.len();
+        }
+        None
+    }
+
+    fn append_at_end(contents: &str, entry: &str) -> String {
+        let mut prefix = contents.trim_end_matches('\n').to_string();
+        if !prefix.is_empty() {
+            prefix.push_str("\n\n");
+        }
+        prefix.push_str(entry.trim_end());
+        prefix.push('\n');
+        prefix
+    }
+
+    fn prepend_entry_after_frontmatter(contents: &str, entry: &str) -> String {
+        let body_start =
+            find_frontmatter_block(contents).map_or(0, |(_, _, body_start)| body_start);
+        let prefix = &contents[..body_start];
+        let body = contents[body_start..].trim_start_matches('\n');
+        let mut updated = prefix.to_string();
+        updated.push_str(entry.trim_end());
+        updated.push('\n');
+        if !body.is_empty() {
+            updated.push('\n');
+            updated.push_str(body.trim_end_matches('\n'));
+            updated.push('\n');
+        }
+        updated
+    }
+
+    fn append_under_heading(contents: &str, heading: &str, entry: &str) -> String {
+        let heading = heading.trim();
+        if heading.is_empty() {
+            return append_at_end(contents, entry);
+        }
+
+        let heading_level = markdown_heading_level(heading);
+        let mut offset = 0usize;
+        let mut insert_at = None;
+        for line in contents.split_inclusive('\n') {
+            let trimmed = line.trim_end_matches(['\n', '\r']);
+            if insert_at.is_none() && trimmed == heading {
+                insert_at = Some(offset + line.len());
+            } else if insert_at.is_some()
+                && markdown_heading_level(trimmed).is_some_and(|level| Some(level) <= heading_level)
+            {
+                insert_at = Some(offset);
+                break;
+            }
+            offset += line.len();
+        }
+
+        if let Some(insert_at) = insert_at {
+            let mut prefix = String::new();
+            prefix.push_str(&contents[..insert_at]);
+            if !prefix.ends_with('\n') {
+                prefix.push('\n');
+            }
+            if !prefix.ends_with("\n\n") {
+                prefix.push('\n');
+            }
+            let mut updated = prefix;
+            updated.push_str(entry.trim_end());
+            updated.push('\n');
+            if insert_at < contents.len() && !contents[insert_at..].starts_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(&contents[insert_at..]);
+            updated
+        } else {
+            let mut prefix = contents.trim_end_matches('\n').to_string();
+            if !prefix.is_empty() {
+                prefix.push_str("\n\n");
+            }
+            prefix.push_str(heading);
+            prefix.push_str("\n\n");
+            prefix.push_str(entry.trim_end());
+            prefix.push('\n');
+            prefix
+        }
+    }
+
+    fn markdown_heading_level(line: &str) -> Option<usize> {
+        let hashes = line.chars().take_while(|ch| *ch == '#').count();
+        (hashes > 0 && hashes <= 6 && line.chars().nth(hashes).is_some_and(char::is_whitespace))
+            .then_some(hashes)
+    }
+
+    fn apply_note_patch(
+        source: &str,
+        find: &str,
+        replace: &str,
+        regex: bool,
+        replace_all: bool,
+    ) -> Result<(String, usize), DataviewJsError> {
+        let matches = if regex {
+            let regex =
+                Regex::new(find).map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            regex
+                .find_iter(source)
+                .map(|matched| {
+                    if matched.start() == matched.end() {
+                        Err(DataviewJsError::Message(
+                            "regex patterns for vault.patch() must not match empty strings"
+                                .to_string(),
+                        ))
+                    } else {
+                        Ok((
+                            matched.start(),
+                            matched.end(),
+                            regex.replace(matched.as_str(), replace).into_owned(),
+                        ))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            source
+                .match_indices(find)
+                .map(|(start, matched)| (start, start + matched.len(), replace.to_string()))
+                .collect::<Vec<_>>()
+        };
+
+        match matches.len() {
+            0 => Err(DataviewJsError::Message(
+                "pattern not found in note".to_string(),
+            )),
+            count if count > 1 && !replace_all => Err(DataviewJsError::Message(format!(
+                "pattern matched {count} times; rerun with opts.all = true to replace every match"
+            ))),
+            count => {
+                let mut updated = source.to_string();
+                for (start, end, replacement) in matches.iter().rev() {
+                    updated.replace_range(*start..*end, replacement);
+                }
+                Ok((updated, count))
+            }
+        }
+    }
+
+    fn render_inbox_entry(format: &str, text: &str, datetime: &str, date: &str) -> String {
+        format
+            .replace("{text}", text.trim_end())
+            .replace("{date}", date)
+            .replace("{time}", datetime.split('T').nth(1).unwrap_or(datetime))
+            .replace("{datetime}", datetime)
+    }
+
+    fn current_utc_timestamp_string() -> String {
+        let seconds = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        )
+        .unwrap_or(i64::MAX);
+        let days_since_epoch = seconds.div_euclid(86_400);
+        let seconds_of_day = seconds.rem_euclid(86_400);
+        let hour = seconds_of_day / 3_600;
+        let minute = (seconds_of_day % 3_600) / 60;
+        let second = seconds_of_day % 60;
+        let (year, month, day) = civil_from_days(days_since_epoch);
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+    }
+
+    fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
+        let z = days_since_epoch + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = mp + if mp < 10 { 3 } else { -9 };
+        let year = y + i64::from(month <= 2);
+        (year, month, day)
+    }
+
+    fn run_js_web_search(
+        state: &JsEvalState,
+        query: &str,
+        limit: usize,
+    ) -> Result<WebSearchReport, DataviewJsError> {
+        ensure_network_access(state, "web.search()")?;
+        let client = build_web_client(&state.web_config.user_agent)?;
+        let backend = state.web_config.search.backend.as_str();
+        match backend {
+            "kagi" => {
+                let api_key =
+                    std::env::var(&state.web_config.search.api_key_env).map_err(|_| {
+                        DataviewJsError::Message(format!(
+                            "missing web search API key env var {}",
+                            state.web_config.search.api_key_env
+                        ))
+                    })?;
+                let limit_value = limit.max(1).to_string();
+                let response = client
+                    .get(&state.web_config.search.base_url)
+                    .header(AUTHORIZATION, format!("Bot {api_key}"))
+                    .query(&[("q", query), ("limit", limit_value.as_str())])
+                    .send()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                if !response.status().is_success() {
+                    return Err(DataviewJsError::Message(format!(
+                        "web search failed with status {}",
+                        response.status()
+                    )));
+                }
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                let results = parse_search_results(&payload).ok_or_else(|| {
+                    DataviewJsError::Message(
+                        "web search backend returned an unexpected payload shape".to_string(),
+                    )
+                })?;
+                Ok(WebSearchReport {
+                    backend: backend.to_string(),
+                    query: query.to_string(),
+                    results,
+                })
+            }
+            other => Err(DataviewJsError::Message(format!(
+                "unsupported web search backend: {other}"
+            ))),
+        }
+    }
+
+    fn run_js_web_fetch(
+        state: &JsEvalState,
+        url: &str,
+        mode: &str,
+        extract_article: bool,
+    ) -> Result<WebFetchReport, DataviewJsError> {
+        ensure_network_access(state, "web.fetch()")?;
+        let client = build_web_client(&state.web_config.user_agent)?;
+        if !robots_allow_fetch(&client, url, &state.web_config.user_agent) {
+            return Err(DataviewJsError::Message(
+                "fetch blocked by robots.txt (best-effort check)".to_string(),
+            ));
+        }
+        let response = client
+            .get(url)
+            .send()
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let bytes = response
+            .bytes()
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        Ok(WebFetchReport {
+            url: url.to_string(),
+            status,
+            content_type: content_type.clone(),
+            mode: mode.to_string(),
+            content: render_fetched_content(&bytes, &content_type, mode, extract_article),
+        })
+    }
+
+    fn build_web_client(user_agent: &str) -> Result<Client, DataviewJsError> {
+        Client::builder()
+            .user_agent(user_agent)
+            .build()
+            .map_err(|error| DataviewJsError::Message(error.to_string()))
+    }
+
+    fn parse_search_results(payload: &Value) -> Option<Vec<WebSearchResult>> {
+        let results = payload
+            .get("data")
+            .and_then(Value::as_array)
+            .or_else(|| payload.get("results").and_then(Value::as_array))?;
+
+        Some(
+            results
+                .iter()
+                .filter_map(|item| {
+                    let title = item
+                        .get("title")
+                        .or_else(|| item.get("t"))
+                        .and_then(Value::as_str)?;
+                    let url = item
+                        .get("url")
+                        .or_else(|| item.get("u"))
+                        .and_then(Value::as_str)?;
+                    let snippet = item
+                        .get("snippet")
+                        .or_else(|| item.get("desc"))
+                        .or_else(|| item.get("body"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    Some(WebSearchResult {
+                        title: title.to_string(),
+                        url: url.to_string(),
+                        snippet: snippet.to_string(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn render_fetched_content(
+        bytes: &[u8],
+        content_type: &str,
+        mode: &str,
+        extract_article: bool,
+    ) -> String {
+        let rendered = String::from_utf8_lossy(bytes).to_string();
+        match mode {
+            "raw" | "html" => rendered,
+            _ => {
+                if content_type.contains("html") {
+                    html_to_markdown(&rendered, extract_article)
+                } else {
+                    rendered
+                }
+            }
+        }
+    }
+
+    fn html_to_markdown(html: &str, extract_article: bool) -> String {
+        let relevant = if extract_article {
+            extract_article_html(html).unwrap_or(html)
+        } else {
+            html
+        };
+        let mut rendered = Regex::new(r"(?is)<script[^>]*>.*?</script>")
+            .expect("regex should compile")
+            .replace_all(relevant, "")
+            .into_owned();
+        rendered = Regex::new(r"(?is)<style[^>]*>.*?</style>")
+            .expect("regex should compile")
+            .replace_all(&rendered, "")
+            .into_owned();
+        for (pattern, replacement) in [
+            (r"(?i)<br\s*/?>", "\n"),
+            (
+                r"(?i)</(p|div|section|article|main|body|h1|h2|h3|h4|h5|h6|tr)>",
+                "\n",
+            ),
+            (r"(?i)<li[^>]*>", "- "),
+            (r"(?i)</li>", "\n"),
+        ] {
+            rendered = Regex::new(pattern)
+                .expect("regex should compile")
+                .replace_all(&rendered, replacement)
+                .into_owned();
+        }
+        rendered = Regex::new(r"(?is)<[^>]+>")
+            .expect("regex should compile")
+            .replace_all(&rendered, "")
+            .into_owned();
+        rendered = decode_html_entities(&rendered);
+        Regex::new(r"\n{3,}")
+            .expect("regex should compile")
+            .replace_all(rendered.trim(), "\n\n")
+            .into_owned()
+    }
+
+    fn extract_article_html(html: &str) -> Option<&str> {
+        for pattern in [
+            r"(?is)<article[^>]*>(.*?)</article>",
+            r"(?is)<main[^>]*>(.*?)</main>",
+            r"(?is)<body[^>]*>(.*?)</body>",
+        ] {
+            let regex = Regex::new(pattern).expect("regex should compile");
+            if let Some(captures) = regex.captures(html) {
+                if let Some(content) = captures.get(1) {
+                    return Some(content.as_str());
+                }
+            }
+        }
+        None
+    }
+
+    fn decode_html_entities(input: &str) -> String {
+        [
+            ("&amp;", "&"),
+            ("&lt;", "<"),
+            ("&gt;", ">"),
+            ("&quot;", "\""),
+            ("&#39;", "'"),
+            ("&nbsp;", " "),
+        ]
+        .into_iter()
+        .fold(input.to_string(), |acc, (from, to)| acc.replace(from, to))
+    }
+
+    fn robots_allow_fetch(client: &Client, url: &str, user_agent: &str) -> bool {
+        let Ok(parsed) = reqwest::Url::parse(url) else {
+            return true;
+        };
+        let Some(host) = parsed.host_str() else {
+            return true;
+        };
+        let authority = parsed
+            .port()
+            .map_or_else(|| host.to_string(), |port| format!("{host}:{port}"));
+        let robots_url = format!("{}://{authority}/robots.txt", parsed.scheme());
+        let Ok(response) = client.get(robots_url).send() else {
+            return true;
+        };
+        if !response.status().is_success() {
+            return true;
+        }
+        let Ok(robots) = response.text() else {
+            return true;
+        };
+        robots_allows_path(&robots, parsed.path(), user_agent)
+    }
+
+    fn robots_allows_path(robots: &str, path: &str, user_agent: &str) -> bool {
+        let mut applies = false;
+        let normalized_agent = user_agent.to_ascii_lowercase();
+
+        for raw_line in robots.lines() {
+            let line = raw_line.split('#').next().unwrap_or_default().trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let key = key.trim().to_ascii_lowercase();
+            let value = value.trim();
+
+            if key == "user-agent" {
+                let value = value.to_ascii_lowercase();
+                applies = value == "*" || normalized_agent.starts_with(&value);
+            } else if applies && key == "disallow" && !value.is_empty() && path.starts_with(value) {
+                return false;
+            }
+        }
+
+        true
     }
 
     fn load_pages_from_source(
         paths: &VaultPaths,
-        note_index: &std::collections::HashMap<String, NoteRecord>,
+        note_index: &HashMap<String, NoteRecord>,
         current_file: Option<&str>,
         source: Option<&str>,
     ) -> Result<Vec<Value>, DataviewJsError> {
@@ -2394,9 +4086,10 @@ globalThis.Function = undefined;
         note_index: &std::collections::HashMap<String, NoteRecord>,
         file: &str,
     ) -> Result<Value, DataviewJsError> {
-        let resolved = resolve_note_reference(paths, file)
-            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        Ok(note_by_path(note_index, &resolved.path).map_or(Value::Null, page_object))
+        let resolved_path = resolve_note_reference(paths, file)
+            .map(|resolved| resolved.path)
+            .or_else(|_| normalize_note_path_for_write(paths, file))?;
+        Ok(note_by_path(note_index, &resolved_path).map_or(Value::Null, page_object))
     }
 
     fn note_by_path<'a>(
@@ -2686,6 +4379,50 @@ globalThis.Function = undefined;
         }
     }
 
+    fn sandbox_uses_resource_limits(sandbox: JsRuntimeSandbox) -> bool {
+        sandbox != JsRuntimeSandbox::None
+    }
+
+    fn sandbox_allows_fs(sandbox: JsRuntimeSandbox) -> bool {
+        matches!(
+            sandbox,
+            JsRuntimeSandbox::Fs | JsRuntimeSandbox::Net | JsRuntimeSandbox::None
+        )
+    }
+
+    fn sandbox_allows_network(sandbox: JsRuntimeSandbox) -> bool {
+        matches!(sandbox, JsRuntimeSandbox::Net | JsRuntimeSandbox::None)
+    }
+
+    fn runtime_memory_limit_bytes(config: &JsRuntimeConfig) -> usize {
+        config.memory_limit_mb.saturating_mul(1024 * 1024)
+    }
+
+    fn runtime_stack_limit_bytes(config: &JsRuntimeConfig) -> usize {
+        config.stack_limit_kb.saturating_mul(1024)
+    }
+
+    fn effective_timeout(
+        config: &VaultConfig,
+        sandbox: JsRuntimeSandbox,
+        requested: Option<Duration>,
+    ) -> Result<Option<Duration>, DataviewJsError> {
+        if let Some(timeout) = requested {
+            if timeout.is_zero() {
+                return Err(DataviewJsError::Message(
+                    "DataviewJS timeout must be greater than 0ms".to_string(),
+                ));
+            }
+            return Ok(Some(timeout));
+        }
+        if sandbox == JsRuntimeSandbox::None {
+            return Ok(None);
+        }
+        Ok(Some(Duration::from_secs(
+            u64::try_from(config.js_runtime.default_timeout_seconds).unwrap_or(u64::MAX),
+        )))
+    }
+
     fn map_runtime_message(message: &str, timeout_description: &str) -> DataviewJsError {
         if message.to_ascii_lowercase().contains("interrupted") {
             DataviewJsError::Message(format!(
@@ -2757,7 +4494,10 @@ globalThis.Function = undefined;
     #[cfg(test)]
     mod tests {
         use std::fs;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
         use std::path::Path;
+        use std::thread;
         use std::time::Duration;
 
         use tempfile::tempdir;
@@ -3009,7 +4749,7 @@ globalThis.Function = undefined;
             assert_eq!(
                 result.outputs[0],
                 DataviewJsOutput::Paragraph {
-                    text: "vault.search(query, opts?): run one indexed search query.".to_string(),
+                    text: "vault.search(query: string, opts?: { limit?: number }): SearchReport\n\nRun indexed full-text search.\nExample: vault.search(\"Alpha\", { limit: 3 })".to_string(),
                 }
             );
             match &result.outputs[1] {
@@ -3105,6 +4845,238 @@ globalThis.Function = undefined;
                 .expect("second evaluation should reuse the same context");
 
             assert_eq!(result.value, Some(Value::String("Alpha".to_string())));
+        }
+
+        #[test]
+        fn dataviewjs_note_class_exposes_details_and_relationships() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const dashboard = vault.note("Dashboard");
+                const alpha = vault.note("Projects/Alpha");
+                dv.table(
+                  ["name", "content", "headings", "fields", "links", "backlinks", "neighbors"],
+                  [[
+                    dashboard.name,
+                    dashboard.content.includes("priority:: 2"),
+                    dashboard.headings.length,
+                    dashboard.dataview_fields.length,
+                    dashboard.links().length,
+                    alpha.backlinks().length,
+                    dashboard.neighbors(1).length
+                  ]]
+                );
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            match &result.outputs[0] {
+                DataviewJsOutput::Table { headers, rows } => {
+                    assert_eq!(
+                        headers,
+                        &vec![
+                            "name".to_string(),
+                            "content".to_string(),
+                            "headings".to_string(),
+                            "fields".to_string(),
+                            "links".to_string(),
+                            "backlinks".to_string(),
+                            "neighbors".to_string(),
+                        ]
+                    );
+                    assert_eq!(rows[0][0], Value::String("Dashboard".to_string()));
+                    assert_eq!(rows[0][1], Value::Bool(true));
+                    assert!(rows[0][2].as_i64().is_some_and(|value| value >= 2));
+                    assert!(rows[0][3].as_i64().is_some_and(|value| value >= 6));
+                    assert!(rows[0][4].as_i64().is_some_and(|value| value >= 2));
+                    assert!(rows[0][5].as_i64().is_some_and(|value| value >= 1));
+                    assert!(rows[0][6].as_i64().is_some_and(|value| value >= 1));
+                }
+                other => panic!("expected table output, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn dataviewjs_enforces_fs_sandbox_and_supports_transactions() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                r##"vault.create("Scratch", { content: "# Scratch" })"##,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: None,
+                    sandbox: Some(JsRuntimeSandbox::Strict),
+                },
+            )
+            .expect_err("strict sandbox should reject writes");
+            assert!(matches!(
+                error,
+                DataviewJsError::Message(message)
+                    if message.contains("requires --sandbox fs or higher")
+            ));
+
+            let session = DataviewJsSession::new(
+                &paths,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: None,
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                },
+            )
+            .expect("fs sandbox session should initialize");
+            let result = session
+                .evaluate(
+                    r###"
+                    const created = vault.create("Scratch", {
+                      content: "Body",
+                      frontmatter: { status: "draft" }
+                    });
+                    vault.append("Scratch", "Follow-up", { heading: "## Log" });
+                    vault.update("Scratch", "owner", "alice");
+                    vault.unset("Scratch", "status");
+                    created.name
+                    "###,
+                )
+                .expect("fs sandbox mutations should succeed");
+            assert_eq!(result.value, Some(Value::String("Scratch".to_string())));
+
+            let scratch = fs::read_to_string(vault_root.join("Scratch.md"))
+                .expect("scratch note should exist");
+            assert!(scratch.contains("owner: alice"));
+            assert!(!scratch.contains("status: draft"));
+            assert!(scratch.contains("## Log"));
+            assert!(scratch.contains("Follow-up"));
+
+            let error = session
+                .evaluate(
+                    r#"
+                    vault.transaction((tx) => {
+                      tx.create("Temp", { content: "temporary" });
+                      throw new Error("rollback");
+                    });
+                    "#,
+                )
+                .expect_err("transaction should roll back on error");
+            assert!(matches!(
+                error,
+                DataviewJsError::Message(message) if message.contains("rollback")
+            ));
+            assert!(!vault_root.join("Temp.md").exists());
+        }
+
+        #[test]
+        fn dataviewjs_web_helpers_require_net_sandbox_and_can_fetch() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+            let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+            let address = listener
+                .local_addr()
+                .expect("listener should have a local address");
+            let base_url = format!("http://{address}");
+            let handle = thread::spawn(move || {
+                for _ in 0..3 {
+                    let (mut stream, _) = listener.accept().expect("connection should be accepted");
+                    let mut buffer = [0_u8; 4096];
+                    let read = stream
+                        .read(&mut buffer)
+                        .expect("request should be readable");
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let path = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    let (content_type, body) = match path {
+                        "/robots.txt" => ("text/plain", "User-agent: *\nAllow: /\n".to_string()),
+                        path if path.starts_with("/search") => (
+                            "application/json",
+                            r#"{"data":[{"title":"Alpha","url":"https://example.test/alpha","snippet":"Alpha result"}]}"#
+                                .to_string(),
+                        ),
+                        _ => (
+                            "text/html",
+                            "<html><body><article><h1>Hello</h1><p>Alpha page</p></article></body></html>"
+                                .to_string(),
+                        ),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("response should be writable");
+                }
+            });
+            fs::write(
+                vault_root.join(".vulcan/config.toml"),
+                format!(
+                    "[web.search]\nbase_url = \"{base_url}/search\"\napi_key_env = \"VULCAN_JS_TEST_KAGI_KEY\"\n"
+                ),
+            )
+            .expect("config should be written");
+            std::env::set_var("VULCAN_JS_TEST_KAGI_KEY", "test-key");
+
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                r#"web.fetch("http://127.0.0.1")"#,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: None,
+                    sandbox: Some(JsRuntimeSandbox::Strict),
+                },
+            )
+            .expect_err("strict sandbox should reject network");
+            assert!(matches!(
+                error,
+                DataviewJsError::Message(message)
+                    if message.contains("requires --sandbox net or higher")
+            ));
+
+            let result = evaluate_dataview_js_with_options(
+                &paths,
+                &format!(
+                    r#"
+                    const search = web.search("Alpha", {{ limit: 1 }});
+                    const fetched = web.fetch("{base_url}/article", {{ mode: "markdown", extractArticle: true }});
+                    dv.table(["title", "status", "content"], [[search.results[0].title, fetched.status, fetched.content.includes("Alpha page")]]);
+                    "#
+                ),
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: None,
+                    sandbox: Some(JsRuntimeSandbox::Net),
+                },
+            )
+            .expect("net sandbox should allow web helpers");
+
+            handle.join().expect("server thread should finish");
+
+            match &result.outputs[0] {
+                DataviewJsOutput::Table { rows, .. } => {
+                    assert_eq!(rows[0][0], Value::String("Alpha".to_string()));
+                    assert_eq!(rows[0][1], Value::from(200));
+                    assert_eq!(rows[0][2], Value::Bool(true));
+                }
+                other => panic!("expected table output, got {other:?}"),
+            }
         }
 
         #[test]

@@ -2242,6 +2242,7 @@ dependencies = [
  "pulldown-cmark",
  "rayon",
  "regex",
+ "reqwest",
  "rquickjs",
  "rquickjs-serde",
  "rusqlite",

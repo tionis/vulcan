@@ -144,6 +144,13 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # js_memory_limit_bytes = 16777216
 # js_max_stack_size_bytes = 262144
 
+# [js_runtime]
+# memory_limit_mb = 64
+# stack_limit_kb = 256
+# default_timeout_seconds = 30
+# default_sandbox = "strict"  # strict | fs | net | none
+# scripts_folder = ".vulcan/scripts"
+
 # [templates]
 # date_format = "YYYY-MM-DD"
 # time_format = "HH:mm"
@@ -636,6 +643,42 @@ impl Default for WebConfig {
         Self {
             user_agent: "Vulcan/0.1 (+https://github.com/tionis/vulcan)".to_string(),
             search: WebSearchConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JsRuntimeSandbox {
+    #[default]
+    Strict,
+    Fs,
+    Net,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JsRuntimeConfig {
+    #[serde(default = "default_js_runtime_memory_limit_mb")]
+    pub memory_limit_mb: usize,
+    #[serde(default = "default_js_runtime_stack_limit_kb")]
+    pub stack_limit_kb: usize,
+    #[serde(default = "default_js_runtime_default_timeout_seconds")]
+    pub default_timeout_seconds: usize,
+    #[serde(default)]
+    pub default_sandbox: JsRuntimeSandbox,
+    #[serde(default = "default_js_runtime_scripts_folder")]
+    pub scripts_folder: PathBuf,
+}
+
+impl Default for JsRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            memory_limit_mb: default_js_runtime_memory_limit_mb(),
+            stack_limit_kb: default_js_runtime_stack_limit_kb(),
+            default_timeout_seconds: default_js_runtime_default_timeout_seconds(),
+            default_sandbox: JsRuntimeSandbox::default(),
+            scripts_folder: default_js_runtime_scripts_folder(),
         }
     }
 }
@@ -1525,6 +1568,7 @@ pub struct VaultConfig {
     pub tasknotes: TaskNotesConfig,
     pub kanban: KanbanConfig,
     pub dataview: DataviewConfig,
+    pub js_runtime: JsRuntimeConfig,
     pub templates: TemplatesConfig,
     pub quickadd: QuickAddConfig,
     pub web: WebConfig,
@@ -1549,6 +1593,7 @@ impl Default for VaultConfig {
             tasknotes: TaskNotesConfig::default(),
             kanban: KanbanConfig::default(),
             dataview: DataviewConfig::default(),
+            js_runtime: JsRuntimeConfig::default(),
             templates: TemplatesConfig::default(),
             quickadd: QuickAddConfig::default(),
             web: WebConfig::default(),
@@ -1755,6 +1800,7 @@ struct PartialVulcanConfig {
     tasknotes: Option<PartialTaskNotesConfig>,
     kanban: Option<PartialKanbanConfig>,
     dataview: Option<PartialDataviewConfig>,
+    js_runtime: Option<PartialJsRuntimeConfig>,
     templates: Option<PartialTemplatesConfig>,
     quickadd: Option<PartialQuickAddConfig>,
     web: Option<PartialWebConfig>,
@@ -2003,6 +2049,15 @@ struct PartialDataviewConfig {
     js_timeout_seconds: Option<usize>,
     js_memory_limit_bytes: Option<usize>,
     js_max_stack_size_bytes: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialJsRuntimeConfig {
+    memory_limit_mb: Option<usize>,
+    stack_limit_kb: Option<usize>,
+    default_timeout_seconds: Option<usize>,
+    default_sandbox: Option<JsRuntimeSandbox>,
+    scripts_folder: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2697,6 +2752,30 @@ fn default_dataview_js_memory_limit_bytes() -> usize {
 
 fn default_dataview_js_max_stack_size_bytes() -> usize {
     256 * 1024
+}
+
+fn default_js_runtime_memory_limit_mb() -> usize {
+    64
+}
+
+fn default_js_runtime_stack_limit_kb() -> usize {
+    256
+}
+
+fn default_js_runtime_default_timeout_seconds() -> usize {
+    30
+}
+
+fn default_js_runtime_scripts_folder() -> PathBuf {
+    PathBuf::from(".vulcan/scripts")
+}
+
+fn bytes_to_megabytes_ceil(bytes: usize) -> usize {
+    bytes.saturating_add((1024 * 1024) - 1) / (1024 * 1024)
+}
+
+fn bytes_to_kilobytes_ceil(bytes: usize) -> usize {
+    bytes.saturating_add(1024 - 1) / 1024
 }
 
 pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error> {
@@ -6291,12 +6370,34 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(timeout) = dataview.js_timeout_seconds {
             config.dataview.js_timeout_seconds = timeout;
+            config.js_runtime.default_timeout_seconds = timeout;
         }
         if let Some(limit) = dataview.js_memory_limit_bytes {
             config.dataview.js_memory_limit_bytes = limit;
+            config.js_runtime.memory_limit_mb = bytes_to_megabytes_ceil(limit);
         }
         if let Some(limit) = dataview.js_max_stack_size_bytes {
             config.dataview.js_max_stack_size_bytes = limit;
+            config.js_runtime.stack_limit_kb = bytes_to_kilobytes_ceil(limit);
+        }
+    }
+
+    if let Some(js_runtime) = overrides.js_runtime {
+        if let Some(limit) = js_runtime.memory_limit_mb {
+            config.js_runtime.memory_limit_mb = limit;
+        }
+        if let Some(limit) = js_runtime.stack_limit_kb {
+            config.js_runtime.stack_limit_kb = limit;
+        }
+        if let Some(timeout) = js_runtime.default_timeout_seconds {
+            config.js_runtime.default_timeout_seconds = timeout;
+        }
+        if let Some(sandbox) = js_runtime.default_sandbox {
+            config.js_runtime.default_sandbox = sandbox;
+        }
+        if let Some(scripts_folder) = js_runtime.scripts_folder {
+            config.js_runtime.scripts_folder =
+                normalize_filesystem_pathbuf(&scripts_folder).unwrap_or(scripts_folder);
         }
     }
 

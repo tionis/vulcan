@@ -3585,6 +3585,22 @@
             "value_names": [
               "DURATION"
             ]
+          },
+          {
+            "help": "Select the JS sandbox level",
+            "id": "sandbox",
+            "long": "sandbox",
+            "possible_values": [
+              "strict",
+              "fs",
+              "net",
+              "none"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "LEVEL"
+            ]
           }
         ],
         "subcommands": []

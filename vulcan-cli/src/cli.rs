@@ -2291,6 +2291,13 @@ pub enum Command {
             help = "Override the JS execution timeout (for example 500ms, 30s, or 2m)"
         )]
         timeout: Option<String>,
+        #[arg(
+            long,
+            value_name = "LEVEL",
+            value_parser = ["strict", "fs", "net", "none"],
+            help = "Select the JS sandbox level"
+        )]
+        sandbox: Option<String>,
     },
     #[command(
         about = "Fetch and search external web content",

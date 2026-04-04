@@ -8409,7 +8409,7 @@ fn run_json_output_executes_script_files_and_named_scripts() {
     assert_eq!(json["value"]["hits"], 1);
     assert_eq!(
         json["outputs"][0]["text"],
-        "vault.search(query, opts?): run one indexed search query."
+        "vault.search(query: string, opts?: { limit?: number }): SearchReport\n\nRun indexed full-text search.\nExample: vault.search(\"Alpha\", { limit: 3 })"
     );
 }
 
@@ -8448,6 +8448,188 @@ fn run_json_output_reports_timeout_failures() {
         .as_str()
         .expect("error should be present")
         .contains("timed out after 200 ms"));
+}
+
+#[test]
+fn run_json_output_enforces_sandbox_levels_and_supports_configured_script_roots() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::create_dir_all(vault_root.join("Runtime/Scripts")).expect("scripts dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[js_runtime]\ndefault_sandbox = \"fs\"\nscripts_folder = \"Runtime/Scripts\"\n",
+    )
+    .expect("config should be written");
+    fs::write(
+        vault_root.join("Runtime/Scripts/mutate.js"),
+        r###"
+        const created = vault.transaction((tx) => {
+          const note = tx.create("Scratch", { content: "# Scratch\n\n## Log\n" });
+          tx.append("Scratch", "Follow-up", { heading: "Log" });
+          tx.update("Scratch", "status", "draft");
+          tx.unset("Scratch", "status");
+          return note;
+        });
+        ({ path: created.path, headings: vault.note("Scratch").headings.length, hasStatus: vault.note("Scratch").frontmatter.status !== undefined });
+        "###,
+    )
+    .expect("script should be written");
+
+    let strict_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "run",
+            "mutate",
+            "--sandbox",
+            "strict",
+        ])
+        .assert()
+        .failure();
+    let strict_json = parse_stdout_json(&strict_assert);
+    assert_eq!(strict_json["code"], "operation_failed");
+    assert!(strict_json["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("requires --sandbox fs or higher")));
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "run",
+            "mutate",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["value"]["path"], "Scratch.md");
+    assert_eq!(json["value"]["headings"], 2);
+    assert_eq!(json["value"]["hasStatus"], false);
+
+    let scratch =
+        fs::read_to_string(vault_root.join("Scratch.md")).expect("scratch note should exist");
+    assert!(scratch.contains("## Log"));
+    assert!(scratch.contains("Follow-up"));
+    assert!(!scratch.contains("status: draft"));
+}
+
+#[test]
+fn run_json_output_net_sandbox_exposes_web_helpers() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should have a local address");
+    let base_url = format!("http://{address}");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            "[web.search]\nbackend = \"kagi\"\napi_key_env = \"VULCAN_JS_TEST_KAGI_KEY\"\nbase_url = \"{base_url}/search\"\n"
+        ),
+    )
+    .expect("config should be written");
+    std::env::set_var("VULCAN_JS_TEST_KAGI_KEY", "test-key");
+
+    let handle = thread::spawn(move || {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().expect("connection should be accepted");
+            let mut buffer = [0_u8; 4096];
+            let read = stream
+                .read(&mut buffer)
+                .expect("request should be readable");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("/");
+            let (content_type, body) = if path.starts_with("/search") {
+                (
+                    "application/json",
+                    r#"{"meta":{"id":"test"},"data":[{"t":"Alpha","url":"http://example.com/alpha","snippet":"Alpha snippet"}]}"#,
+                )
+            } else if path == "/robots.txt" {
+                ("text/plain", "User-agent: *\nAllow: /\n")
+            } else {
+                (
+                    "text/html",
+                    "<html><body><main><h1>Alpha page</h1><p>Fetched content.</p></main></body></html>",
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                content_type,
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response should be written");
+        }
+    });
+
+    let script_path = vault_root.join("runtime-web.js");
+    fs::write(
+        &script_path,
+        format!(
+            r#"
+            const search = web.search("Alpha", {{ limit: 1 }});
+            const fetched = web.fetch("{base_url}/article", {{ mode: "markdown", extractArticle: true }});
+            ({{
+              title: search.results[0].title,
+              status: fetched.status,
+              containsAlpha: fetched.content.includes("Alpha page")
+            }});
+            "#
+        ),
+    )
+    .expect("script should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "run",
+            script_path
+                .to_str()
+                .expect("script path should be valid utf-8"),
+            "--sandbox",
+            "net",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    handle.join().expect("server thread should finish");
+
+    assert_eq!(json["value"]["title"], "Alpha");
+    assert_eq!(json["value"]["status"], 200);
+    assert_eq!(json["value"]["containsAlpha"], true);
 }
 
 #[test]
