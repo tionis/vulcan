@@ -1400,6 +1400,63 @@
             "subcommands": []
           },
           {
+            "about": "Convert an existing note into a TaskNotes task",
+            "name": "convert",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to convert",
+                "id": "file",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "1-based source line to convert instead of converting the whole note",
+                "id": "line",
+                "long": "line",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LINE"
+                ]
+              },
+              {
+                "help": "Report the planned change without writing the task file",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Skip auto-commit even when enabled in config",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Evaluate a Tasks plugin query string",
             "name": "query",
             "options": [

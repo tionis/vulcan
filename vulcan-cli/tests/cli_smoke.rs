@@ -3084,6 +3084,96 @@ fn tasks_complete_json_output_marks_inline_tasks_done() {
 }
 
 #[test]
+fn tasks_convert_json_output_turns_existing_note_into_tasknote() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
+    fs::write(
+        vault_root.join("Notes/Idea.md"),
+        concat!(
+            "---\n",
+            "owner: Alice\n",
+            "tags:\n",
+            "  - research\n",
+            "---\n",
+            "\n",
+            "# Follow up\n",
+            "\n",
+            "Need task details.\n",
+        ),
+    )
+    .expect("source note should be written");
+    run_scan(&vault_root);
+
+    let convert_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "convert",
+            "Notes/Idea.md",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let convert_json = parse_stdout_json(&convert_assert);
+
+    assert_eq!(convert_json["action"], "convert");
+    assert_eq!(convert_json["mode"], "note");
+    assert_eq!(convert_json["source_path"], "Notes/Idea.md");
+    assert_eq!(convert_json["target_path"], "Notes/Idea.md");
+    assert_eq!(convert_json["title"], "Idea");
+    assert_eq!(convert_json["created"], Value::Bool(false));
+    assert_eq!(convert_json["frontmatter"]["owner"], "Alice");
+    assert_eq!(convert_json["frontmatter"]["title"], "Idea");
+    assert_eq!(convert_json["frontmatter"]["status"], "open");
+    assert_eq!(convert_json["frontmatter"]["priority"], "normal");
+    assert!(convert_json["frontmatter"]["tags"]
+        .as_array()
+        .is_some_and(|tags| tags.iter().any(|tag| tag == "research")));
+    assert!(convert_json["frontmatter"]["tags"]
+        .as_array()
+        .is_some_and(|tags| tags.iter().any(|tag| tag == "task")));
+
+    let updated =
+        fs::read_to_string(vault_root.join("Notes/Idea.md")).expect("updated note should exist");
+    assert!(updated.contains("owner: Alice"));
+    assert!(updated.contains("title: Idea"));
+    assert!(updated.contains("status: open"));
+    assert!(updated.contains("priority: normal"));
+    assert!(updated.contains("- research"));
+    assert!(updated.contains("- task"));
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "show",
+            "Notes/Idea.md",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+
+    assert_eq!(show_json["title"], "Idea");
+    assert_eq!(show_json["status"], "open");
+    assert_eq!(show_json["priority"], "normal");
+    assert_eq!(show_json["body"], "# Follow up\n\nNeed task details.\n");
+}
+
+#[test]
 fn tasks_archive_json_output_moves_completed_task_into_archive_folder() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

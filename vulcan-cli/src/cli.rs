@@ -1383,6 +1383,20 @@ pub enum TasksCommand {
         #[arg(long, help = "Skip auto-commit even when enabled in config")]
         no_commit: bool,
     },
+    #[command(about = "Convert an existing note into a TaskNotes task")]
+    Convert {
+        #[arg(help = "Note path, filename, or alias to convert")]
+        file: String,
+        #[arg(
+            long,
+            help = "1-based source line to convert instead of converting the whole note"
+        )]
+        line: Option<i64>,
+        #[arg(long, help = "Report the planned change without writing the task file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
     #[command(about = "Evaluate a Tasks plugin query string")]
     Query {
         #[arg(help = "Quoted Tasks query string")]
