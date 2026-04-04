@@ -20,6 +20,7 @@ notify.workspace = true
 pulldown-cmark.workspace = true
 rayon.workspace = true
 regex.workspace = true
+reqwest.workspace = true
 rquickjs = { workspace = true, optional = true }
 rquickjs-serde = { workspace = true, optional = true }
 rusqlite.workspace = true

@@ -85,19 +85,19 @@ use vulcan_core::{
     DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
     GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
     GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
-    PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
-    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths,
-    VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
+    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
+    KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
+    PeriodicNotesImporter, PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
+    TaskNotesImporter, TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig,
+    VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
     VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
     VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
 };
@@ -2189,11 +2189,20 @@ fn strip_shebang_line(source: &str) -> &str {
 }
 
 fn resolve_named_run_script_path(paths: &VaultPaths, script: &str) -> Option<PathBuf> {
-    let scripts_root = paths.vulcan_dir().join("scripts");
+    let scripts_root = resolve_run_scripts_root(paths);
     [PathBuf::from(script), PathBuf::from(format!("{script}.js"))]
         .into_iter()
         .map(|candidate| scripts_root.join(candidate))
         .find(|candidate| candidate.is_file())
+}
+
+fn resolve_run_scripts_root(paths: &VaultPaths) -> PathBuf {
+    let configured = load_vault_config(paths).config.js_runtime.scripts_folder;
+    if configured.is_absolute() {
+        configured
+    } else {
+        paths.vault_root().join(configured)
+    }
 }
 
 fn load_run_script_source(
@@ -2246,18 +2255,32 @@ fn parse_run_timeout(timeout: Option<&str>) -> Result<Option<Duration>, CliError
     Ok(Some(Duration::from_millis(millis)))
 }
 
+fn parse_run_sandbox(sandbox: Option<&str>) -> Result<Option<JsRuntimeSandbox>, CliError> {
+    match sandbox {
+        None => Ok(None),
+        Some("strict") => Ok(Some(JsRuntimeSandbox::Strict)),
+        Some("fs") => Ok(Some(JsRuntimeSandbox::Fs)),
+        Some("net") => Ok(Some(JsRuntimeSandbox::Net)),
+        Some("none") => Ok(Some(JsRuntimeSandbox::None)),
+        Some(other) => Err(CliError::operation(format!(
+            "invalid sandbox level `{other}`; expected strict, fs, net, or none"
+        ))),
+    }
+}
+
 fn run_js_command(
     paths: &VaultPaths,
     script: Option<&str>,
     script_mode: bool,
     timeout: Option<Duration>,
+    sandbox: Option<JsRuntimeSandbox>,
 ) -> Result<DataviewJsResult, CliError> {
     let source = load_run_script_source(paths, script, script_mode)?;
     evaluate_dataview_js_with_options(
         paths,
         strip_shebang_line(&source),
         None,
-        DataviewJsEvalOptions { timeout },
+        DataviewJsEvalOptions { timeout, sandbox },
     )
     .map_err(CliError::operation)
 }
@@ -2266,8 +2289,9 @@ fn run_js_repl(
     paths: &VaultPaths,
     output: OutputFormat,
     timeout: Option<Duration>,
+    sandbox: Option<JsRuntimeSandbox>,
 ) -> Result<(), CliError> {
-    let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout })
+    let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout, sandbox })
         .map_err(CliError::operation)?;
     let mut line = String::new();
     let stdin = io::stdin();
@@ -11152,12 +11176,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref script,
             script_mode,
             ref timeout,
+            ref sandbox,
         } => {
             let timeout = parse_run_timeout(timeout.as_deref())?;
+            let sandbox = parse_run_sandbox(sandbox.as_deref())?;
             if script.is_none() && io::stdin().is_terminal() {
-                run_js_repl(&paths, cli.output, timeout)
+                run_js_repl(&paths, cli.output, timeout, sandbox)
             } else {
-                let result = run_js_command(&paths, script.as_deref(), script_mode, timeout)?;
+                let result =
+                    run_js_command(&paths, script.as_deref(), script_mode, timeout, sandbox)?;
                 print_dataview_js_result(cli.output, &result, false)
             }
         }
@@ -20667,6 +20694,7 @@ mod tests {
                 script: Some("demo".to_string()),
                 script_mode: true,
                 timeout: Some("45s".to_string()),
+                sandbox: None,
             }
         );
     }
