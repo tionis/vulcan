@@ -1999,6 +1999,78 @@ fn write_tasks_import_fixture(vault_root: &Path) {
     .expect("tasks plugin config should be written");
 }
 
+fn write_tasknotes_import_fixture(vault_root: &Path) {
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/tasknotes"))
+        .expect("tasknotes plugin dir should exist");
+    fs::write(
+        vault_root.join(".obsidian/plugins/tasknotes/data.json"),
+        r##"{
+          "tasksFolder": "Tasks",
+          "archiveFolder": "Archive",
+          "taskTag": "todo",
+          "taskIdentificationMethod": "property",
+          "taskPropertyName": "isTask",
+          "taskPropertyValue": "yes",
+          "excludedFolders": "Archive, Someday",
+          "defaultTaskStatus": "in-progress",
+          "defaultTaskPriority": "high",
+          "fieldMapping": {
+            "due": "deadline",
+            "timeEstimate": "estimateMinutes",
+            "archiveTag": "archived-task"
+          },
+          "customStatuses": [
+            {
+              "id": "blocked",
+              "value": "blocked",
+              "label": "Blocked",
+              "color": "#ff8800",
+              "isCompleted": false,
+              "order": 4,
+              "autoArchive": false,
+              "autoArchiveDelay": 15
+            }
+          ],
+          "customPriorities": [
+            {
+              "id": "urgent",
+              "value": "urgent",
+              "label": "Urgent",
+              "color": "#ff0000",
+              "weight": 9
+            }
+          ],
+          "userFields": [
+            {
+              "id": "effort",
+              "displayName": "Effort",
+              "key": "effort",
+              "type": "number"
+            }
+          ],
+          "enableNaturalLanguageInput": false,
+          "nlpDefaultToScheduled": true,
+          "nlpLanguage": "de",
+          "nlpTriggers": {
+            "triggers": [
+              { "propertyId": "contexts", "trigger": "context:", "enabled": true },
+              { "propertyId": "tags", "trigger": "#", "enabled": true }
+            ]
+          },
+          "taskCreationDefaults": {
+            "defaultContexts": "@office, @home",
+            "defaultTags": "work, urgent",
+            "defaultProjects": "[[Projects/Alpha]], [[Projects/Beta]]",
+            "defaultTimeEstimate": 45,
+            "defaultDueDate": "tomorrow",
+            "defaultScheduledDate": "today",
+            "defaultRecurrence": "weekly"
+          }
+        }"##,
+    )
+    .expect("tasknotes plugin config should be written");
+}
+
 fn write_kanban_cli_fixture(vault_root: &Path) {
     fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
     fs::write(
@@ -2309,6 +2381,64 @@ fn config_import_tasks_json_output_writes_config_and_reports_mapping() {
     assert!(rendered.contains("remove_global_filter = true"));
     assert!(rendered.contains("[[tasks.statuses.definitions]]"));
     assert!(rendered.contains("name = \"Waiting\""));
+}
+
+#[test]
+fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_tasknotes_import_fixture(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "tasknotes",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["plugin"], Value::String("tasknotes".to_string()));
+    assert_eq!(json["created_config"], Value::Bool(true));
+    assert_eq!(json["updated"], Value::Bool(true));
+    assert!(json["mappings"]
+        .as_array()
+        .is_some_and(|mappings| mappings.iter().any(|mapping| {
+            mapping["target"] == "tasknotes.tasks_folder" && mapping["value"] == "Tasks"
+        })));
+    assert!(json["mappings"]
+        .as_array()
+        .is_some_and(|mappings| mappings.iter().any(|mapping| {
+            mapping["target"] == "tasknotes.field_mapping.due" && mapping["value"] == "deadline"
+        })));
+
+    let rendered =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(rendered.contains("[tasknotes]"));
+    assert!(rendered.contains("tasks_folder = \"Tasks\""));
+    assert!(rendered.contains("archive_folder = \"Archive\""));
+    assert!(rendered.contains("task_tag = \"todo\""));
+    assert!(rendered.contains("task_property_name = \"isTask\""));
+    assert!(rendered.contains("[tasknotes.field_mapping]"));
+    assert!(rendered.contains("due = \"deadline\""));
+    assert!(rendered.contains("[[tasknotes.statuses]]"));
+    assert!(rendered.contains("value = \"blocked\""));
+    assert!(rendered.contains("[[tasknotes.priorities]]"));
+    assert!(rendered.contains("value = \"urgent\""));
+    assert!(rendered.contains("[[tasknotes.user_fields]]"));
+    assert!(rendered.contains("displayName = \"Effort\""));
+    assert!(rendered.contains("[tasknotes.task_creation_defaults]"));
+    assert!(rendered.contains("default_due_date = \"tomorrow\""));
 }
 
 #[test]

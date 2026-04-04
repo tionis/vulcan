@@ -2390,6 +2390,9 @@ pub struct KanbanImporter;
 pub struct PeriodicNotesImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct TaskNotesImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TasksImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2402,6 +2405,7 @@ pub fn all_importers() -> Vec<Box<dyn PluginImporter>> {
         Box::new(DataviewImporter),
         Box::new(KanbanImporter),
         Box::new(PeriodicNotesImporter),
+        Box::new(TaskNotesImporter),
         Box::new(TasksImporter),
         Box::new(TemplaterImporter),
     ]
@@ -2411,6 +2415,12 @@ pub fn import_tasks_plugin_config(
     paths: &VaultPaths,
 ) -> Result<ConfigImportReport, ConfigImportError> {
     TasksImporter.import(paths, ImportTarget::Shared)
+}
+
+pub fn import_tasknotes_plugin_config(
+    paths: &VaultPaths,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    TaskNotesImporter.import(paths, ImportTarget::Shared)
 }
 
 pub fn import_templater_plugin_config(
@@ -2872,6 +2882,54 @@ impl PluginImporter for PeriodicNotesImporter {
     }
 }
 
+impl PluginImporter for TaskNotesImporter {
+    fn name(&self) -> &'static str {
+        "tasknotes"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian TaskNotes plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/tasknotes/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+
+        let obsidian =
+            serde_json::from_str::<ObsidianTaskNotesConfig>(&fs::read_to_string(&source_path)?)?;
+        let imported_tasknotes = imported_tasknotes_config(obsidian);
+        let settings =
+            import_settings_from_mappings(tasknotes_config_import_mappings(&imported_tasknotes)?);
+        apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
+            &settings,
+            target,
+            dry_run,
+        )
+    }
+}
+
 impl PluginImporter for CoreImporter {
     fn name(&self) -> &'static str {
         "core"
@@ -3280,6 +3338,12 @@ fn imported_dataview_config(obsidian: ObsidianDataviewConfig) -> DataviewConfig 
     config.dataview
 }
 
+fn imported_tasknotes_config(obsidian: ObsidianTaskNotesConfig) -> TaskNotesConfig {
+    let mut config = VaultConfig::default();
+    apply_obsidian_tasknotes_defaults(&mut config, obsidian);
+    config.tasknotes
+}
+
 fn imported_kanban_config(obsidian: ObsidianKanbanConfig) -> KanbanConfig {
     let mut config = VaultConfig::default();
     apply_obsidian_kanban_defaults(&mut config, obsidian);
@@ -3566,6 +3630,266 @@ fn dataview_config_import_mappings(
         "groupColumnName",
         "dataview.group_column_name",
         &config.group_column_name,
+    )?;
+    Ok(mappings)
+}
+
+#[allow(clippy::too_many_lines)]
+fn tasknotes_config_import_mappings(
+    config: &TaskNotesConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let mut mappings = Vec::new();
+    push_config_import_mapping(
+        &mut mappings,
+        "tasksFolder",
+        "tasknotes.tasks_folder",
+        &config.tasks_folder,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "archiveFolder",
+        "tasknotes.archive_folder",
+        &config.archive_folder,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskTag",
+        "tasknotes.task_tag",
+        &config.task_tag,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskIdentificationMethod",
+        "tasknotes.identification_method",
+        &config.identification_method,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskPropertyName",
+        "tasknotes.task_property_name",
+        &config.task_property_name,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskPropertyValue",
+        "tasknotes.task_property_value",
+        &config.task_property_value,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "excludedFolders",
+        "tasknotes.excluded_folders",
+        &config.excluded_folders,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "defaultTaskStatus",
+        "tasknotes.default_status",
+        &config.default_status,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "defaultTaskPriority",
+        "tasknotes.default_priority",
+        &config.default_priority,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.title",
+        "tasknotes.field_mapping.title",
+        &config.field_mapping.title,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.status",
+        "tasknotes.field_mapping.status",
+        &config.field_mapping.status,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.priority",
+        "tasknotes.field_mapping.priority",
+        &config.field_mapping.priority,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.due",
+        "tasknotes.field_mapping.due",
+        &config.field_mapping.due,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.scheduled",
+        "tasknotes.field_mapping.scheduled",
+        &config.field_mapping.scheduled,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.contexts",
+        "tasknotes.field_mapping.contexts",
+        &config.field_mapping.contexts,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.projects",
+        "tasknotes.field_mapping.projects",
+        &config.field_mapping.projects,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.timeEstimate",
+        "tasknotes.field_mapping.time_estimate",
+        &config.field_mapping.time_estimate,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.completedDate",
+        "tasknotes.field_mapping.completed_date",
+        &config.field_mapping.completed_date,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.dateCreated",
+        "tasknotes.field_mapping.date_created",
+        &config.field_mapping.date_created,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.dateModified",
+        "tasknotes.field_mapping.date_modified",
+        &config.field_mapping.date_modified,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.recurrence",
+        "tasknotes.field_mapping.recurrence",
+        &config.field_mapping.recurrence,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.recurrenceAnchor",
+        "tasknotes.field_mapping.recurrence_anchor",
+        &config.field_mapping.recurrence_anchor,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.archiveTag",
+        "tasknotes.field_mapping.archive_tag",
+        &config.field_mapping.archive_tag,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.timeEntries",
+        "tasknotes.field_mapping.time_entries",
+        &config.field_mapping.time_entries,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.completeInstances",
+        "tasknotes.field_mapping.complete_instances",
+        &config.field_mapping.complete_instances,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.skippedInstances",
+        "tasknotes.field_mapping.skipped_instances",
+        &config.field_mapping.skipped_instances,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.blockedBy",
+        "tasknotes.field_mapping.blocked_by",
+        &config.field_mapping.blocked_by,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "fieldMapping.reminders",
+        "tasknotes.field_mapping.reminders",
+        &config.field_mapping.reminders,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "customStatuses",
+        "tasknotes.statuses",
+        &config.statuses,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "customPriorities",
+        "tasknotes.priorities",
+        &config.priorities,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "userFields",
+        "tasknotes.user_fields",
+        &config.user_fields,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "enableNaturalLanguageInput",
+        "tasknotes.enable_natural_language_input",
+        &config.enable_natural_language_input,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "nlpDefaultToScheduled",
+        "tasknotes.nlp_default_to_scheduled",
+        &config.nlp_default_to_scheduled,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "nlpLanguage",
+        "tasknotes.nlp_language",
+        &config.nlp_language,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "nlpTriggers.triggers",
+        "tasknotes.nlp_triggers",
+        &config.nlp_triggers,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCreationDefaults.defaultContexts",
+        "tasknotes.task_creation_defaults.default_contexts",
+        &config.task_creation_defaults.default_contexts,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCreationDefaults.defaultTags",
+        "tasknotes.task_creation_defaults.default_tags",
+        &config.task_creation_defaults.default_tags,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCreationDefaults.defaultProjects",
+        "tasknotes.task_creation_defaults.default_projects",
+        &config.task_creation_defaults.default_projects,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCreationDefaults.defaultTimeEstimate",
+        "tasknotes.task_creation_defaults.default_time_estimate",
+        &config.task_creation_defaults.default_time_estimate,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCreationDefaults.defaultDueDate",
+        "tasknotes.task_creation_defaults.default_due_date",
+        &config.task_creation_defaults.default_due_date,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCreationDefaults.defaultScheduledDate",
+        "tasknotes.task_creation_defaults.default_scheduled_date",
+        &config.task_creation_defaults.default_scheduled_date,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "taskCreationDefaults.defaultRecurrence",
+        "tasknotes.task_creation_defaults.default_recurrence",
+        &config.task_creation_defaults.default_recurrence,
     )?;
     Ok(mappings)
 }
@@ -7236,6 +7560,154 @@ default_mode = "off"
     }
 
     #[test]
+    fn import_tasknotes_plugin_config_preserves_existing_sections_and_is_idempotent() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/tasknotes"))
+            .expect("tasknotes plugin dir should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/tasknotes/data.json"),
+            r##"{
+              "tasksFolder": "Tasks",
+              "archiveFolder": "Archive",
+              "taskTag": "todo",
+              "taskIdentificationMethod": "property",
+              "taskPropertyName": "isTask",
+              "taskPropertyValue": "yes",
+              "excludedFolders": "Archive, Someday",
+              "defaultTaskStatus": "in-progress",
+              "defaultTaskPriority": "high",
+              "fieldMapping": {
+                "due": "deadline",
+                "timeEstimate": "estimateMinutes",
+                "archiveTag": "archived-task"
+              },
+              "customStatuses": [
+                {
+                  "id": "blocked",
+                  "value": "blocked",
+                  "label": "Blocked",
+                  "color": "#ff8800",
+                  "isCompleted": false,
+                  "order": 4,
+                  "autoArchive": false,
+                  "autoArchiveDelay": 15
+                }
+              ],
+              "customPriorities": [
+                {
+                  "id": "urgent",
+                  "value": "urgent",
+                  "label": "Urgent",
+                  "color": "#ff0000",
+                  "weight": 9
+                }
+              ],
+              "userFields": [
+                {
+                  "id": "effort",
+                  "displayName": "Effort",
+                  "key": "effort",
+                  "type": "number"
+                }
+              ],
+              "enableNaturalLanguageInput": false,
+              "nlpDefaultToScheduled": true,
+              "nlpLanguage": "de",
+              "nlpTriggers": {
+                "triggers": [
+                  { "propertyId": "contexts", "trigger": "context:", "enabled": true },
+                  { "propertyId": "tags", "trigger": "#", "enabled": true }
+                ]
+              },
+              "taskCreationDefaults": {
+                "defaultContexts": "@office, @home",
+                "defaultTags": "work, urgent",
+                "defaultProjects": "[[Projects/Alpha]], [[Projects/Beta]]",
+                "defaultTimeEstimate": 45,
+                "defaultDueDate": "tomorrow",
+                "defaultScheduledDate": "today",
+                "defaultRecurrence": "weekly"
+              }
+            }"##,
+        )
+        .expect("tasknotes config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .expect("existing config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = import_tasknotes_plugin_config(&paths).expect("import should succeed");
+
+        assert_eq!(report.plugin, "tasknotes");
+        assert!(!report.created_config);
+        assert!(report.updated);
+        assert!(report
+            .mappings
+            .iter()
+            .any(|mapping| mapping.target == "tasknotes.tasks_folder"
+                && mapping.value == Value::String("Tasks".to_string())));
+        assert!(report
+            .mappings
+            .iter()
+            .any(|mapping| mapping.target == "tasknotes.field_mapping.due"
+                && mapping.value == Value::String("deadline".to_string())));
+
+        let rendered = fs::read_to_string(paths.config_file()).expect("config should exist");
+        assert!(rendered.contains("[git]"));
+        assert!(rendered.contains("auto_commit = true"));
+        assert!(rendered.contains("[tasknotes]"));
+        assert!(rendered.contains("tasks_folder = \"Tasks\""));
+        assert!(rendered.contains("archive_folder = \"Archive\""));
+        assert!(rendered.contains("task_tag = \"todo\""));
+        assert!(rendered.contains("identification_method = \"property\""));
+        assert!(rendered.contains("task_property_name = \"isTask\""));
+        assert!(rendered.contains("task_property_value = \"yes\""));
+        assert!(rendered.contains("excluded_folders"));
+        assert!(rendered.contains("\"Archive\""));
+        assert!(rendered.contains("\"Someday\""));
+        assert!(rendered.contains("default_status = \"in-progress\""));
+        assert!(rendered.contains("default_priority = \"high\""));
+        assert!(rendered.contains("[tasknotes.field_mapping]"));
+        assert!(rendered.contains("due = \"deadline\""));
+        assert!(rendered.contains("time_estimate = \"estimateMinutes\""));
+        assert!(rendered.contains("archive_tag = \"archived-task\""));
+        assert!(rendered.contains("[[tasknotes.statuses]]"));
+        assert!(rendered.contains("value = \"blocked\""));
+        assert!(rendered.contains("[[tasknotes.priorities]]"));
+        assert!(rendered.contains("value = \"urgent\""));
+        assert!(rendered.contains("[[tasknotes.user_fields]]"));
+        assert!(rendered.contains("displayName = \"Effort\""));
+        assert!(rendered.contains("enable_natural_language_input = false"));
+        assert!(rendered.contains("nlp_default_to_scheduled = true"));
+        assert!(rendered.contains("nlp_language = \"de\""));
+        assert!(rendered.contains("[[tasknotes.nlp_triggers]]"));
+        assert!(rendered.contains("property_id = \"contexts\""));
+        assert!(rendered.contains("[tasknotes.task_creation_defaults]"));
+        assert!(rendered.contains("default_contexts"));
+        assert!(rendered.contains("\"@office\""));
+        assert!(rendered.contains("\"@home\""));
+        assert!(rendered.contains("default_due_date = \"tomorrow\""));
+        assert!(rendered.contains("default_recurrence = \"weekly\""));
+
+        let second_report =
+            import_tasknotes_plugin_config(&paths).expect("second import should succeed");
+        assert!(!second_report.updated);
+    }
+
+    #[test]
+    fn import_tasknotes_plugin_config_errors_when_source_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let error = import_tasknotes_plugin_config(&paths).expect_err("import should fail");
+        assert!(matches!(error, ConfigImportError::MissingSource(_)));
+    }
+
+    #[test]
     fn importer_registry_dispatches_existing_importers_in_priority_order() {
         let importer_names = all_importers()
             .into_iter()
@@ -7249,6 +7721,7 @@ default_mode = "off"
                 "dataview",
                 "kanban",
                 "periodic-notes",
+                "tasknotes",
                 "tasks",
                 "templater"
             ]
