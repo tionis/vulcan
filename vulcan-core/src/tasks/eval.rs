@@ -228,15 +228,17 @@ fn task_matches_filter(
 }
 
 fn task_is_blocked(row: &TaskRow, completion_by_id: &HashMap<String, bool>) -> bool {
-    let blocked_by_value = row.field("blocked-by");
-    let Some(blocked_by) = non_empty_string(&blocked_by_value) else {
+    let blocker_ids = dependency_ids(&row.field("blocked-by"));
+    if blocker_ids.is_empty() {
         return false;
-    };
-
-    match completion_by_id.get(blocked_by) {
-        Some(completed) => !completed,
-        None => true,
     }
+
+    blocker_ids
+        .into_iter()
+        .any(|blocker_id| match completion_by_id.get(&blocker_id) {
+            Some(completed) => !completed,
+            None => true,
+        })
 }
 
 fn compare_task_rows(left: &TaskRow, right: &TaskRow, field: &str, reverse: bool) -> Ordering {
@@ -348,9 +350,40 @@ fn stringify_value(value: &Value) -> String {
     }
 }
 
+fn dependency_ids(value: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    collect_dependency_ids(value, &mut ids);
+    ids
+}
+
+fn collect_dependency_ids(value: &Value, ids: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            let text = text.trim();
+            if !text.is_empty() {
+                ids.push(text.to_string());
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_dependency_ids(value, ids);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(uid) = object.get("uid").and_then(Value::as_str).map(str::trim) {
+                if !uid.is_empty() {
+                    ids.push(uid.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use tempfile::TempDir;
 
@@ -464,11 +497,66 @@ mod tests {
         assert!(result.plan.is_some());
     }
 
+    #[test]
+    fn evaluates_tasknotes_file_tasks_through_the_shared_query_engine() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("tasknotes", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let in_progress = evaluate_tasks_query(&paths, "status.type is in_progress")
+            .expect("status query should succeed");
+        assert_eq!(task_texts(&in_progress), vec!["Write docs".to_string()]);
+
+        let recurring =
+            evaluate_tasks_query(&paths, "is recurring").expect("recurring query should succeed");
+        assert_eq!(task_texts(&recurring), vec!["Write docs".to_string()]);
+
+        let blocked =
+            evaluate_tasks_query(&paths, "is blocked").expect("blocked query should succeed");
+        assert!(task_texts(&blocked).is_empty());
+
+        let has_id = evaluate_tasks_query(&paths, "has id").expect("id query should succeed");
+        assert_eq!(
+            task_texts(&has_id),
+            vec!["Prep outline".to_string(), "Write docs".to_string()]
+        );
+    }
+
     fn task_texts(result: &TasksQueryResult) -> Vec<String> {
         result
             .tasks
             .iter()
             .map(|task| task["text"].as_str().unwrap_or_default().to_string())
             .collect()
+    }
+
+    fn copy_fixture_vault(name: &str, destination: &Path) {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/vaults")
+            .join(name);
+
+        copy_dir_recursive(&source, destination);
+    }
+
+    fn copy_dir_recursive(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("destination directory should be created");
+
+        for entry in fs::read_dir(source).expect("source directory should be readable") {
+            let entry = entry.expect("directory entry should be readable");
+            let file_type = entry.file_type().expect("file type should be readable");
+            let target = destination.join(entry.file_name());
+
+            if file_type.is_dir() {
+                copy_dir_recursive(&entry.path(), &target);
+            } else if file_type.is_file() {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).expect("parent directory should exist");
+                }
+                fs::copy(entry.path(), target).expect("file should be copied");
+            }
+        }
     }
 }

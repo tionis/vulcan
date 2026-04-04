@@ -2394,22 +2394,19 @@ fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, CliE
 
     let mut edges = tasks
         .iter()
-        .filter_map(|(key, task)| {
-            let blocker_id = task
-                .get("blocked-by")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|id| !id.is_empty())?;
-            let blocker = node_by_id.get(blocker_id);
-            Some(TaskDependencyEdge {
-                blocked_key: key.clone(),
-                blocker_id: blocker_id.to_string(),
-                resolved: blocker.is_some(),
-                blocker_key: blocker.map(|node| node.key.clone()),
-                blocker_path: blocker.map(|node| node.path.clone()),
-                blocker_line: blocker.map(|node| node.line),
-                blocker_text: blocker.map(|node| node.text.clone()),
-                blocker_completed: blocker.map(|node| node.completed),
+        .flat_map(|(key, task)| {
+            task_blocker_ids(task).into_iter().map(|blocker_id| {
+                let blocker = node_by_id.get(blocker_id.as_str());
+                TaskDependencyEdge {
+                    blocked_key: key.clone(),
+                    blocker_id,
+                    resolved: blocker.is_some(),
+                    blocker_key: blocker.map(|node| node.key.clone()),
+                    blocker_path: blocker.map(|node| node.path.clone()),
+                    blocker_line: blocker.map(|node| node.line),
+                    blocker_text: blocker.map(|node| node.text.clone()),
+                    blocker_completed: blocker.map(|node| node.completed),
+                }
             })
         })
         .collect::<Vec<_>>();
@@ -2541,6 +2538,36 @@ fn task_dependency_key(task: &Value) -> Option<String> {
             .filter(|id| !id.is_empty())
             .map_or_else(|| format!("{path}:{line}"), ToOwned::to_owned),
     )
+}
+
+fn task_blocker_ids(task: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    collect_task_blocker_ids(task.get("blocked-by").unwrap_or(&Value::Null), &mut ids);
+    ids
+}
+
+fn collect_task_blocker_ids(value: &Value, ids: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            let text = text.trim();
+            if !text.is_empty() {
+                ids.push(text.to_string());
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_task_blocker_ids(value, ids);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(uid) = object.get("uid").and_then(Value::as_str).map(str::trim) {
+                if !uid.is_empty() {
+                    ids.push(uid.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn task_sort_key(task: &Value) -> (String, i64) {

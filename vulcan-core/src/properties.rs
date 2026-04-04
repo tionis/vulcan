@@ -5,6 +5,7 @@ use crate::expression::parse::Parser;
 use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::synthetic_file_link;
 use crate::parser::{parse_document, types::InlineFieldKind};
+use crate::tasknotes::{extract_tasknote, tasknotes_priority_weight, tasknotes_status_state};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
 use regex::Regex;
 use rusqlite::params_from_iter;
@@ -1044,9 +1045,178 @@ fn hydrate_note_records(
         if let Some(expressions) = inline_expression_map.remove(doc_id.as_str()) {
             note.raw_inline_expressions = expressions;
         }
+        if let Some(tasknote) = extract_tasknote(
+            &note.document_path,
+            &note.file_name,
+            &note.properties,
+            &config.tasknotes,
+        ) {
+            note.tasks
+                .push(build_tasknote_task_record(note, config, &tasknote));
+            note.tasks
+                .sort_by_key(|task| (task.line_number, task.byte_offset));
+        }
     }
 
     Ok(())
+}
+
+fn build_tasknote_task_record(
+    note: &NoteRecord,
+    config: &VaultConfig,
+    tasknote: &crate::IndexedTaskNote,
+) -> NoteTaskRecord {
+    let status_state = tasknotes_status_state(&config.tasknotes, &tasknote.status);
+    let task_id = synthetic_file_link(&note.document_path, &note.file_ext);
+
+    NoteTaskRecord {
+        id: format!("tasknote:{}", note.document_id),
+        list_item_id: format!("tasknote:{}", note.document_id),
+        status_char: tasknote.status.clone(),
+        status_name: status_state.name,
+        status_type: status_state.status_type,
+        status_next_symbol: None,
+        checked: status_state.completed,
+        completed: status_state.completed,
+        text: tasknote.title.clone(),
+        byte_offset: 0,
+        parent_task_id: None,
+        section_heading: None,
+        line_number: 1,
+        properties: tasknote_properties(note, config, tasknote, &task_id),
+    }
+}
+
+fn tasknote_properties(
+    note: &NoteRecord,
+    config: &VaultConfig,
+    tasknote: &crate::IndexedTaskNote,
+    task_id: &str,
+) -> Map<String, Value> {
+    let mut properties = tasknote.custom_fields.clone();
+    properties.insert("id".to_string(), Value::String(task_id.to_string()));
+    properties.insert("title".to_string(), Value::String(tasknote.title.clone()));
+    properties.insert("status".to_string(), Value::String(tasknote.status.clone()));
+    properties.insert(
+        "priority".to_string(),
+        Value::String(tasknote.priority.clone()),
+    );
+    properties.insert("archived".to_string(), Value::Bool(tasknote.archived));
+    properties.insert(
+        "contexts".to_string(),
+        json_string_array(tasknote.contexts.clone()),
+    );
+    properties.insert(
+        "projects".to_string(),
+        json_string_array(tasknote.projects.clone()),
+    );
+    properties.insert("tags".to_string(), json_string_array(tasknote.tags.clone()));
+    properties.insert(
+        "blockedBy".to_string(),
+        Value::Array(tasknote.blocked_by.clone()),
+    );
+    properties.insert(
+        "blocked-by".to_string(),
+        json_string_array(tasknote_dependency_ids(tasknote)),
+    );
+    properties.insert(
+        "reminders".to_string(),
+        Value::Array(tasknote.reminders.clone()),
+    );
+    properties.insert(
+        "timeEntries".to_string(),
+        Value::Array(tasknote.time_entries.clone()),
+    );
+    properties.insert(
+        "complete_instances".to_string(),
+        json_string_array(tasknote.complete_instances.clone()),
+    );
+    properties.insert(
+        "skipped_instances".to_string(),
+        json_string_array(tasknote.skipped_instances.clone()),
+    );
+
+    if let Some(due) = &tasknote.due {
+        properties.insert("due".to_string(), Value::String(due.clone()));
+    }
+    if let Some(scheduled) = &tasknote.scheduled {
+        properties.insert("scheduled".to_string(), Value::String(scheduled.clone()));
+    }
+    if let Some(completed_date) = &tasknote.completed_date {
+        properties.insert(
+            "completedDate".to_string(),
+            Value::String(completed_date.clone()),
+        );
+        properties.insert("done".to_string(), Value::String(completed_date.clone()));
+    }
+    if let Some(date_created) = &tasknote.date_created {
+        properties.insert(
+            "dateCreated".to_string(),
+            Value::String(date_created.clone()),
+        );
+        properties.insert("created".to_string(), Value::String(date_created.clone()));
+    }
+    if let Some(date_modified) = &tasknote.date_modified {
+        properties.insert(
+            "dateModified".to_string(),
+            Value::String(date_modified.clone()),
+        );
+        properties.insert("modified".to_string(), Value::String(date_modified.clone()));
+    }
+    if let Some(time_estimate) = tasknote
+        .time_estimate
+        .and_then(serde_json::Number::from_f64)
+    {
+        properties.insert("timeEstimate".to_string(), Value::Number(time_estimate));
+    }
+    if let Some(recurrence) = &tasknote.recurrence {
+        properties.insert("recurrence".to_string(), Value::String(recurrence.clone()));
+    }
+    if let Some(recurrence_anchor) = &tasknote.recurrence_anchor {
+        properties.insert(
+            "recurrenceAnchor".to_string(),
+            Value::String(recurrence_anchor.clone()),
+        );
+    }
+    if let Some(priority_weight) = tasknotes_priority_weight(&config.tasknotes, &tasknote.priority)
+        .and_then(serde_json::Number::from_f64)
+    {
+        properties.insert("priorityWeight".to_string(), Value::Number(priority_weight));
+    }
+
+    if let Some(completion) = tasknote_completion_anchor(tasknote) {
+        properties.insert("completion".to_string(), Value::String(completion));
+    }
+
+    properties.insert(
+        "path".to_string(),
+        Value::String(note.document_path.clone()),
+    );
+
+    properties
+}
+
+fn tasknote_dependency_ids(tasknote: &crate::IndexedTaskNote) -> Vec<String> {
+    tasknote
+        .blocked_by
+        .iter()
+        .filter_map(|dependency| {
+            dependency
+                .as_object()
+                .and_then(|object| object.get("uid"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|uid| !uid.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .collect()
+}
+
+fn tasknote_completion_anchor(tasknote: &crate::IndexedTaskNote) -> Option<String> {
+    tasknote
+        .completed_date
+        .clone()
+        .or_else(|| tasknote.complete_instances.iter().max().cloned())
 }
 
 #[must_use]
@@ -1085,6 +1255,10 @@ fn parse_json_string_array(value: &str) -> Result<Vec<String>, rusqlite::Error> 
     serde_json::from_str(value).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(value.len(), SqlType::Text, Box::new(error))
     })
+}
+
+fn json_string_array(values: Vec<String>) -> Value {
+    Value::Array(values.into_iter().map(Value::String).collect())
 }
 
 fn typed_property_json_value(
@@ -3191,6 +3365,55 @@ completed = ["x", "v"]
         assert_eq!(
             task.properties.get("recurrenceAnchor"),
             Some(&Value::String("2026-03-27".to_string()))
+        );
+    }
+
+    #[test]
+    fn load_note_index_exposes_tasknotes_as_synthetic_file_tasks() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("tasknotes", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let note_index = load_note_index(&paths).expect("note index should load");
+        let note = note_index
+            .get("Write Docs")
+            .expect("tasknote should be indexed");
+        let tasks = FileMetadataResolver::field(note, "tasks");
+        let tasks = tasks.as_array().expect("tasks should be an array");
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["text"], Value::String("Write docs".to_string()));
+        assert_eq!(
+            tasks[0]["id"],
+            Value::String("[[TaskNotes/Tasks/Write Docs]]".to_string())
+        );
+        assert_eq!(tasks[0]["status"], Value::String("in-progress".to_string()));
+        assert_eq!(
+            tasks[0]["statusType"],
+            Value::String("IN_PROGRESS".to_string())
+        );
+        assert_eq!(
+            tasks[0]["priorityWeight"],
+            Value::Number(serde_json::Number::from_f64(3.0).expect("number"))
+        );
+        assert_eq!(
+            tasks[0]["blocked-by"],
+            serde_json::json!(["[[TaskNotes/Tasks/Prep Outline]]"])
+        );
+        assert_eq!(
+            tasks[0]["recurrenceAnchor"],
+            Value::String("2026-04-04".to_string())
+        );
+        assert_eq!(
+            tasks[0]["completion"],
+            Value::String("2026-04-04".to_string())
+        );
+        assert_eq!(
+            tasks[0]["path"],
+            Value::String("TaskNotes/Tasks/Write Docs.md".to_string())
         );
     }
 
