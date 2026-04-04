@@ -1,4 +1,4 @@
-Start with `vulcan init`, then index the vault with `vulcan scan`.
+Start with `vulcan index init`, then index the vault with `vulcan index scan`.
 
 Core workflows:
 

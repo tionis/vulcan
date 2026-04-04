@@ -15,8 +15,8 @@ Use this skill when a workflow needs JavaScript-oriented guidance rather than di
 ## Core patterns
 
 - Read `help js`, `help js.vault`, and `help sandbox` first.
-- Prefer stable CLI commands when the standalone `vulcan run` runtime has not landed yet.
-- Treat DataviewJS and Templater JS as the currently available runtime surfaces.
+- `vulcan run <file.js|script-name>` is available for read-oriented runtime workflows.
+- Prefer stable CLI commands for write operations that the JS runtime does not expose yet.
 
 ## Common mistakes
 

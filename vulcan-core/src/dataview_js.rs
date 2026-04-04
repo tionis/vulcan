@@ -160,12 +160,16 @@ mod runtime {
         parse_duration_string,
     };
     use crate::file_metadata::FileMetadataResolver;
+    use crate::graph::{
+        query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_path,
+    };
     use crate::periodic::{
         list_daily_note_events, list_events_between, load_events_for_periodic_note,
         resolve_periodic_note, today_utc_string,
     };
     use crate::properties::{load_note_index, NoteRecord};
     use crate::resolve_note_reference;
+    use crate::search::{search_vault, SearchQuery};
     use crate::VaultPaths;
     use serde_json::{Map, Value};
     use std::cmp::Ordering;
@@ -244,6 +248,10 @@ class DataArray {
   sortInPlace(key, dir = "asc") {
     this.values = this.sort(key, dir).values;
     return this;
+  }
+
+  sortBy(key, dir = "asc") {
+    return this.sort(key, dir);
   }
 
   groupBy(key) {
@@ -328,6 +336,10 @@ class DataArray {
 
   none(predicate) {
     return !this.some(predicate);
+  }
+
+  forEach(callback) {
+    this.values.forEach((value, index) => callback(value, index));
   }
 
   mutate(mutator) {
@@ -1681,6 +1693,32 @@ const dv = {
 
 dv.func = buildDvFunctions(dv);
 const vault = {
+  note(path) {
+    return dv.page(path);
+  },
+  notes(source) {
+    return dv.pages(source);
+  },
+  query(dql, opts = {}) {
+    return dv.tryQuery(dql, opts?.file ?? null, opts);
+  },
+  search(query, opts = {}) {
+    return JSON.parse(__vulcan_search_json(String(query), opts?.limit ?? null));
+  },
+  graph: {
+    shortestPath(from, to) {
+      return JSON.parse(__vulcan_graph_path_json(String(from), String(to)));
+    },
+    hubs(opts = {}) {
+      return JSON.parse(__vulcan_graph_hubs_json(opts?.limit ?? null));
+    },
+    components(opts = {}) {
+      return JSON.parse(__vulcan_graph_components_json(opts?.limit ?? null));
+    },
+    deadEnds(opts = {}) {
+      return JSON.parse(__vulcan_graph_dead_ends_json(opts?.limit ?? null));
+    },
+  },
   daily: {
     today() {
       return JSON.parse(__vulcan_vault_daily_json(__vulcan_today()));
@@ -1698,8 +1736,45 @@ const vault = {
     );
   },
 };
+
+const console = {
+  log(...args) {
+    __vulcan_emit(JSON.stringify({
+      kind: "paragraph",
+      text: args.map((value) => __vulcanRenderScalar(value)).join(" ")
+    }));
+  },
+};
+
+function help(obj) {
+  if (obj === vault.note) {
+    return "vault.note(path): note page object for one note.";
+  }
+  if (obj === vault.notes) {
+    return "vault.notes(source?): DataArray of note page objects.";
+  }
+  if (obj === vault.query) {
+    return "vault.query(dql, opts?): execute one DQL query.";
+  }
+  if (obj === vault.search) {
+    return "vault.search(query, opts?): run one indexed search query.";
+  }
+  if (obj === vault.graph.shortestPath) {
+    return "vault.graph.shortestPath(from, to): shortest resolved path between notes.";
+  }
+  if (obj === vault.daily.today) {
+    return "vault.daily.today(): today\\'s daily note object with parsed events.";
+  }
+  if (obj === vault.events) {
+    return "vault.events({ from, to }): DataArray of periodic events.";
+  }
+  return "No help available for this object.";
+}
+
 globalThis.dv = dv;
 globalThis.vault = vault;
+globalThis.console = console;
+globalThis.help = help;
 globalThis.this = dv.current();
 globalThis.eval = undefined;
 globalThis.Function = undefined;
@@ -1959,6 +2034,86 @@ globalThis.Function = undefined;
                             },
                         };
                     to_json_string(&ctx, response)
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let search_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_search_json",
+                Func::from(move |ctx: Ctx<'_>, query: String, limit: Option<usize>| {
+                    to_json_string(
+                        &ctx,
+                        search_vault(
+                            &search_state.paths,
+                            &SearchQuery {
+                                text: query,
+                                limit,
+                                ..SearchQuery::default()
+                            },
+                        )
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let graph_path_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_graph_path_json",
+                Func::from(move |ctx: Ctx<'_>, from: String, to: String| {
+                    to_json_string(
+                        &ctx,
+                        query_graph_path(&graph_path_state.paths, &from, &to)
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let graph_hubs_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_graph_hubs_json",
+                Func::from(move |ctx: Ctx<'_>, limit: Option<usize>| {
+                    let mut report = query_graph_hubs(&graph_hubs_state.paths)
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+                    if let Some(limit) = limit {
+                        report.notes.truncate(limit);
+                    }
+                    to_json_string(&ctx, report)
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let graph_components_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_graph_components_json",
+                Func::from(move |ctx: Ctx<'_>, limit: Option<usize>| {
+                    let mut report = query_graph_components(&graph_components_state.paths)
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+                    if let Some(limit) = limit {
+                        report.components.truncate(limit);
+                    }
+                    to_json_string(&ctx, report)
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let graph_dead_ends_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_graph_dead_ends_json",
+                Func::from(move |ctx: Ctx<'_>, limit: Option<usize>| {
+                    let mut report = query_graph_dead_ends(&graph_dead_ends_state.paths)
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+                    if let Some(limit) = limit {
+                        report.notes.truncate(limit);
+                    }
+                    to_json_string(&ctx, report)
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -2689,6 +2844,67 @@ globalThis.Function = undefined;
                     Value::String("Journal/Daily/2026-04-04.md".to_string()),
                 ]])
             );
+        }
+
+        #[test]
+        fn dataviewjs_exposes_vault_note_query_search_graph_and_help_helpers() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const note = vault.note("Projects/Alpha");
+                const notes = vault.notes('"Projects"').sortBy((row) => row.file.name);
+                const query = vault.query('TABLE status FROM "Projects" SORT file.name ASC');
+                const search = vault.search("Alpha", { limit: 1 });
+                const path = vault.graph.shortestPath("Dashboard", "Projects/Beta");
+                console.log(help(vault.search));
+                dv.table(
+                  ["note", "notes", "query", "search", "path"],
+                  [[
+                    note.file.name,
+                    notes.length,
+                    query.result_count,
+                    search.hits.length,
+                    path.path.length
+                  ]]
+                );
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            assert_eq!(
+                result.outputs[0],
+                DataviewJsOutput::Paragraph {
+                    text: "vault.search(query, opts?): run one indexed search query.".to_string(),
+                }
+            );
+            match &result.outputs[1] {
+                DataviewJsOutput::Table { headers, rows } => {
+                    assert_eq!(
+                        headers,
+                        &vec![
+                            "note".to_string(),
+                            "notes".to_string(),
+                            "query".to_string(),
+                            "search".to_string(),
+                            "path".to_string(),
+                        ]
+                    );
+                    assert_eq!(rows.len(), 1);
+                    assert_eq!(rows[0][0], Value::String("Alpha".to_string()));
+                    assert!(rows[0][1].as_i64().is_some_and(|value| value >= 2));
+                    assert!(rows[0][2].as_i64().is_some_and(|value| value >= 2));
+                    assert_eq!(rows[0][3], Value::from(1));
+                    assert_ne!(rows[0][4], Value::Null);
+                }
+                other => panic!("expected table output, got {other:?}"),
+            }
         }
 
         #[test]

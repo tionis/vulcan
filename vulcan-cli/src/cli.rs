@@ -4,18 +4,18 @@ use std::path::PathBuf;
 
 const ROOT_AFTER_HELP: &str = "\
 Command Groups:
-  Indexing: init, scan, rebuild, repair, watch, serve
-  Graph and Query: links, backlinks, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, suggest, diff
+  Indexing: index
+  Graph and Query: note, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, diff
   Journaling: daily, weekly, monthly, periodic, inbox, template
   Semantic: vectors, cluster, related
   Reports and Automation: saved, checkpoint, changes, batch, export, automation
-  Mutations: note, edit, update, unset, refactor
-  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, help, describe, completions
+  Mutations: edit, update, unset, refactor
+  Maintenance: doctor, cache, config, git, run, web, open, help, describe, completions
 
 Docs:
   User guide: docs/cli.md
   Interactive help: vulcan edit --help and vulcan browse --help
-  Query/filter reference: vulcan notes --help and vulcan search --help
+  Query/filter reference: vulcan query --help and vulcan search --help
   Machine-readable schema: vulcan describe
 
 Freshness:
@@ -818,6 +818,62 @@ pub enum RepairCommand {
     Fts {
         #[arg(long, help = "Report the repair scope without mutating the cache")]
         dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum IndexCommand {
+    #[command(about = "Initialize .vulcan/ state for a vault")]
+    Init(InitArgs),
+    #[command(about = "Scan the vault and update the cache")]
+    Scan {
+        #[arg(long, help = "Force a full scan instead of incremental reconciliation")]
+        full: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Rebuild the cache from disk")]
+    Rebuild {
+        #[arg(long, help = "Report rebuild scope without mutating the cache")]
+        dry_run: bool,
+    },
+    #[command(about = "Repair derived indexes and cache structures")]
+    Repair {
+        #[command(subcommand)]
+        command: RepairCommand,
+    },
+    #[command(about = "Watch the vault for filesystem changes and keep the cache fresh")]
+    Watch {
+        #[arg(
+            long,
+            default_value_t = 250,
+            help = "Event coalescing window in milliseconds"
+        )]
+        debounce_ms: u64,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Serve local cache-backed HTTP APIs for repeated queries")]
+    Serve {
+        #[arg(
+            long,
+            default_value = "127.0.0.1:3210",
+            help = "Bind address for the local HTTP server"
+        )]
+        bind: String,
+        #[arg(long, help = "Disable the background watcher refresh loop")]
+        no_watch: bool,
+        #[arg(
+            long,
+            default_value_t = 250,
+            help = "Watcher debounce window in milliseconds when serve watch mode is enabled"
+        )]
+        debounce_ms: u64,
+        #[arg(
+            long,
+            help = "Optional shared secret required in the X-Vulcan-Token header"
+        )]
+        auth_token: Option<String>,
     },
 }
 
@@ -1705,7 +1761,10 @@ pub enum RefactorCommand {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Suggest link and merge opportunities from indexed notes")]
+    #[command(
+        about = "Suggest link and merge opportunities from indexed notes",
+        hide = true
+    )]
     Suggest {
         #[command(subcommand)]
         command: SuggestCommand,
@@ -1911,6 +1970,36 @@ pub enum NoteCommand {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
+    #[command(about = "List outgoing links for one note")]
+    Links {
+        #[arg(
+            help = "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively"
+        )]
+        note: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "List inbound links pointing at one note")]
+    Backlinks {
+        #[arg(
+            help = "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively"
+        )]
+        note: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "Run doctor-style diagnostics against one note")]
+    Doctor {
+        #[arg(help = "Note path, filename, or alias to inspect")]
+        note: String,
+    },
+    #[command(about = "Show one note's changes since git HEAD, the last scan, or a checkpoint")]
+    Diff {
+        #[arg(help = "Note path, filename, or alias to inspect")]
+        note: String,
+        #[arg(long, help = "Named checkpoint to compare against instead of git HEAD")]
+        since: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1946,19 +2035,27 @@ pub struct TemplateRenderArgs {
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Command {
-    #[command(about = "Initialize .vulcan/ state for a vault")]
+    #[command(about = "Initialize, scan, rebuild, repair, watch, and serve index state")]
+    Index {
+        #[command(subcommand)]
+        command: IndexCommand,
+    },
+    #[command(about = "Initialize .vulcan/ state for a vault", hide = true)]
     Init(InitArgs),
-    #[command(about = "Rebuild the cache from disk")]
+    #[command(about = "Rebuild the cache from disk", hide = true)]
     Rebuild {
         #[arg(long, help = "Report rebuild scope without mutating the cache")]
         dry_run: bool,
     },
-    #[command(about = "Repair derived indexes and cache structures")]
+    #[command(about = "Repair derived indexes and cache structures", hide = true)]
     Repair {
         #[command(subcommand)]
         command: RepairCommand,
     },
-    #[command(about = "Watch the vault for filesystem changes and keep the cache fresh")]
+    #[command(
+        about = "Watch the vault for filesystem changes and keep the cache fresh",
+        hide = true
+    )]
     Watch {
         #[arg(
             long,
@@ -1969,7 +2066,10 @@ pub enum Command {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Serve local cache-backed HTTP APIs for repeated queries")]
+    #[command(
+        about = "Serve local cache-backed HTTP APIs for repeated queries",
+        hide = true
+    )]
     Serve {
         #[arg(
             long,
@@ -1991,14 +2091,14 @@ pub enum Command {
         )]
         auth_token: Option<String>,
     },
-    #[command(about = "Scan the vault and update the cache")]
+    #[command(about = "Scan the vault and update the cache", hide = true)]
     Scan {
         #[arg(long, help = "Force a full scan instead of incremental reconciliation")]
         full: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "List outgoing links for a note")]
+    #[command(about = "List outgoing links for a note", hide = true)]
     Links {
         #[arg(
             help = "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively"
@@ -2007,7 +2107,7 @@ pub enum Command {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "List inbound links pointing at a note")]
+    #[command(about = "List inbound links pointing at a note", hide = true)]
     Backlinks {
         #[arg(
             help = "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively"
@@ -2129,7 +2229,10 @@ pub enum Command {
         #[command(subcommand)]
         command: BasesCommand,
     },
-    #[command(about = "Suggest link and merge opportunities from indexed notes")]
+    #[command(
+        about = "Suggest link and merge opportunities from indexed notes",
+        hide = true
+    )]
     Suggest {
         #[command(subcommand)]
         command: SuggestCommand,
@@ -2172,6 +2275,16 @@ pub enum Command {
     Git {
         #[command(subcommand)]
         command: GitCommand,
+    },
+    #[command(about = "Execute JavaScript inside the Vulcan runtime sandbox")]
+    Run {
+        #[arg(help = "Script path or named script from .vulcan/scripts")]
+        script: Option<String>,
+        #[arg(
+            long = "script",
+            help = "Treat the positional argument as a script file path for shebang use"
+        )]
+        script_mode: bool,
     },
     #[command(
         about = "Fetch and search external web content",
@@ -2340,7 +2453,10 @@ pub enum Command {
         #[command(subcommand)]
         command: VectorsCommand,
     },
-    #[command(about = "Move a note or attachment and safely rewrite inbound links")]
+    #[command(
+        about = "Move a note or attachment and safely rewrite inbound links",
+        hide = true
+    )]
     Move {
         #[arg(help = "Existing source note or attachment path")]
         source: String,
@@ -2351,7 +2467,10 @@ pub enum Command {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Convert unambiguous plain-text note mentions into links")]
+    #[command(
+        about = "Convert unambiguous plain-text note mentions into links",
+        hide = true
+    )]
     LinkMentions {
         #[arg(help = "Optional note path, filename, or alias to update")]
         note: Option<String>,
@@ -2362,7 +2481,8 @@ pub enum Command {
     },
     #[command(
         about = "Apply a literal find/replace across notes selected by filters",
-        after_help = REWRITE_COMMAND_AFTER_HELP
+        after_help = REWRITE_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Rewrite {
         #[arg(
@@ -2447,7 +2567,7 @@ Examples:
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Rename a frontmatter property key across notes")]
+    #[command(about = "Rename a frontmatter property key across notes", hide = true)]
     RenameProperty {
         #[arg(help = "Existing property key")]
         old: String,
@@ -2458,7 +2578,10 @@ Examples:
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Merge one tag into another across frontmatter and note bodies")]
+    #[command(
+        about = "Merge one tag into another across frontmatter and note bodies",
+        hide = true
+    )]
     MergeTags {
         #[arg(help = "Source tag to replace")]
         source: String,
@@ -2469,7 +2592,7 @@ Examples:
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Rename an alias inside one note's frontmatter")]
+    #[command(about = "Rename an alias inside one note's frontmatter", hide = true)]
     RenameAlias {
         #[arg(help = "Note path, filename, or alias to update")]
         note: String,
@@ -2482,7 +2605,10 @@ Examples:
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Rename a heading and rewrite inbound heading links")]
+    #[command(
+        about = "Rename a heading and rewrite inbound heading links",
+        hide = true
+    )]
     RenameHeading {
         #[arg(help = "Note path, filename, or alias containing the heading")]
         note: String,
@@ -2495,7 +2621,10 @@ Examples:
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Rename a block reference and rewrite inbound block links")]
+    #[command(
+        about = "Rename a block reference and rewrite inbound block links",
+        hide = true
+    )]
     RenameBlockRef {
         #[arg(help = "Note path, filename, or alias containing the block reference")]
         note: String,

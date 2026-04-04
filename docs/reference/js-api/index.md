@@ -1,14 +1,21 @@
 The JS runtime surface builds on the DataviewJS-compatible sandbox already embedded in Vulcan.
 
-Important status note:
+Available today:
 
-- DataviewJS and Templater JavaScript are implemented today.
-- The broader `vulcan run` runtime is still being completed in Phase 9.18.5.
+- `vulcan run <file.js>` and `vulcan run <script-name>`
+- `vulcan run --script <file>` for shebang entrypoints
+- `vulcan run` as a simple line-oriented REPL
+- `help(obj)` and `console.log(...)` inside the runtime
 
-Planned top-level namespaces:
+Current top-level namespaces:
 
-- `vault` for note lookup, queries, graph access, periodic note helpers, and batched mutations.
-- `web` for explicit web search and fetch under a network-enabled sandbox tier.
-- `help(obj)` for runtime introspection once the general REPL lands.
+- `vault` for note lookup, queries, graph access, and periodic note helpers.
+- `help(obj)` for runtime introspection
+
+Still pending in 9.18.5:
+
+- sandbox selection flags
+- persistent REPL state, history, multiline input, and completion
+- write-capable `vault.*` APIs and network-gated `web.*`
 
 See also: `help js.vault`, `help js.vault.graph`, `help js.vault.note`.

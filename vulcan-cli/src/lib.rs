@@ -11,11 +11,12 @@ pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
     ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
     DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs, ExportCommand, ExportFormat,
-    GitCommand, GraphCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand,
-    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryFormatArg, RefactorCommand,
-    RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg, SuggestCommand,
-    TasksCommand, TasksListSourceArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg,
+    NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryFormatArg,
+    RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
+    SuggestCommand, TasksCommand, TasksListSourceArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand,
+    WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -39,7 +40,7 @@ use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::io;
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
@@ -1284,6 +1285,12 @@ struct NotePatchReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteDoctorReport {
+    path: String,
+    diagnostics: Vec<DoctorDiagnosticIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ConfigImportDiscoveryItem {
     plugin: String,
     display_name: String,
@@ -1548,6 +1555,13 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         Command::Template { command, .. } => {
             matches!(command, Some(TemplateSubcommand::Insert { .. }))
         }
+        Command::Note { command } => matches!(
+            command,
+            NoteCommand::Links { .. }
+                | NoteCommand::Backlinks { .. }
+                | NoteCommand::Doctor { .. }
+                | NoteCommand::Diff { .. }
+        ),
         _ => false,
     }
 }
@@ -2159,6 +2173,100 @@ fn run_dataview_query_js_command(
     file: Option<&str>,
 ) -> Result<DataviewJsResult, CliError> {
     evaluate_dataview_js_query(paths, js, file).map_err(CliError::operation)
+}
+
+fn strip_shebang_line(source: &str) -> &str {
+    if let Some(stripped) = source.strip_prefix("#!") {
+        stripped
+            .split_once('\n')
+            .map_or("", |(_, remainder)| remainder)
+    } else {
+        source
+    }
+}
+
+fn resolve_named_run_script_path(paths: &VaultPaths, script: &str) -> Option<PathBuf> {
+    let scripts_root = paths.vulcan_dir().join("scripts");
+    [PathBuf::from(script), PathBuf::from(format!("{script}.js"))]
+        .into_iter()
+        .map(|candidate| scripts_root.join(candidate))
+        .find(|candidate| candidate.is_file())
+}
+
+fn load_run_script_source(
+    paths: &VaultPaths,
+    script: Option<&str>,
+    script_mode: bool,
+) -> Result<String, CliError> {
+    if let Some(script) = script {
+        let direct = PathBuf::from(script);
+        let path = if script_mode || direct.is_file() {
+            direct
+        } else if let Some(named) = resolve_named_run_script_path(paths, script) {
+            named
+        } else {
+            return Err(CliError::operation(format!(
+                "script not found: {script}; expected a file path or .vulcan/scripts entry"
+            )));
+        };
+        return fs::read_to_string(path).map_err(CliError::operation);
+    }
+
+    if io::stdin().is_terminal() {
+        return Err(CliError::operation(
+            "`vulcan run` requires a script path, stdin, or an interactive terminal session",
+        ));
+    }
+
+    let mut buffer = String::new();
+    io::stdin()
+        .read_to_string(&mut buffer)
+        .map_err(CliError::operation)?;
+    Ok(buffer)
+}
+
+fn run_js_command(
+    paths: &VaultPaths,
+    script: Option<&str>,
+    script_mode: bool,
+) -> Result<DataviewJsResult, CliError> {
+    let source = load_run_script_source(paths, script, script_mode)?;
+    evaluate_dataview_js_query(paths, strip_shebang_line(&source), None)
+        .map_err(CliError::operation)
+}
+
+fn run_js_repl(paths: &VaultPaths, output: OutputFormat) -> Result<(), CliError> {
+    let mut line = String::new();
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+
+    loop {
+        print!("vulcan> ");
+        io::stdout().flush().map_err(CliError::operation)?;
+        line.clear();
+        let read = io::BufRead::read_line(&mut handle, &mut line).map_err(CliError::operation)?;
+        if read == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if matches!(trimmed, ".exit" | ".quit") {
+            break;
+        }
+
+        match evaluate_dataview_js_query(paths, trimmed, None).map_err(CliError::operation) {
+            Ok(result) => {
+                print_dataview_js_result(output, &result, false)?;
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn run_dataview_eval_command(
@@ -7617,6 +7725,15 @@ fn run_note_patch_command(
     })
 }
 
+fn run_note_doctor_command(paths: &VaultPaths, note: &str) -> Result<NoteDoctorReport, CliError> {
+    let (relative_path, source) = read_existing_note_source(paths, note)?;
+    let diagnostics = diagnose_note_contents(paths, &relative_path, &source)?;
+    Ok(NoteDoctorReport {
+        path: relative_path,
+        diagnostics,
+    })
+}
+
 fn read_existing_note_source(paths: &VaultPaths, note: &str) -> Result<(String, String), CliError> {
     let relative_path = resolve_existing_note_path(paths, note)?;
     let source =
@@ -8991,6 +9108,111 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let interactive_note_selection = interactive_note_selection_allowed(cli, stdout_is_tty);
 
     match cli.command {
+        Command::Index { ref command } => match command {
+            IndexCommand::Init(ref args) => {
+                let report = run_init_command(&paths, args)?;
+                print_init_summary(cli.output, &paths, &report)?;
+                Ok(())
+            }
+            IndexCommand::Scan { full, no_commit } => {
+                let auto_commit = AutoCommitPolicy::for_scan(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let mut progress = (cli.output == OutputFormat::Human)
+                    .then(|| ScanProgressReporter::new(use_stderr_color));
+                let summary = scan_vault_with_progress(
+                    &paths,
+                    if *full {
+                        ScanMode::Full
+                    } else {
+                        ScanMode::Incremental
+                    },
+                    |event| {
+                        if let Some(progress) = progress.as_mut() {
+                            progress.record(&event);
+                        }
+                    },
+                )
+                .map_err(CliError::operation)?;
+                if summary.added + summary.updated + summary.deleted > 0 {
+                    auto_commit
+                        .commit(&paths, "scan", &[])
+                        .map_err(CliError::operation)?;
+                }
+                print_scan_summary(cli.output, &summary, use_stdout_color);
+                Ok(())
+            }
+            IndexCommand::Rebuild { dry_run } => {
+                let mut progress = (cli.output == OutputFormat::Human)
+                    .then(|| ScanProgressReporter::new(use_stderr_color));
+                let report = rebuild_vault_with_progress(
+                    &paths,
+                    &RebuildQuery { dry_run: *dry_run },
+                    |event| {
+                        if let Some(progress) = progress.as_mut() {
+                            progress.record(&event);
+                        }
+                    },
+                )
+                .map_err(CliError::operation)?;
+                print_rebuild_report(cli.output, &report, use_stdout_color)
+            }
+            IndexCommand::Repair { command } => match command {
+                RepairCommand::Fts { dry_run } => {
+                    let report = repair_fts(&paths, &RepairFtsQuery { dry_run: *dry_run })
+                        .map_err(CliError::operation)?;
+                    print_repair_fts_report(cli.output, &report)
+                }
+            },
+            IndexCommand::Watch {
+                debounce_ms,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_scan(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                if cli.output == OutputFormat::Human && stdout_is_tty {
+                    println!(
+                        "Watching {} (debounce {}ms)",
+                        paths.vault_root().display(),
+                        debounce_ms
+                    );
+                }
+                watch_vault(
+                    &paths,
+                    &WatchOptions {
+                        debounce_ms: *debounce_ms,
+                    },
+                    |report| {
+                        print_watch_report(cli.output, &report)?;
+                        if !report.startup
+                            && report.summary.added
+                                + report.summary.updated
+                                + report.summary.deleted
+                                > 0
+                        {
+                            auto_commit
+                                .commit(&paths, "scan", &report.paths)
+                                .map_err(CliError::operation)?;
+                        }
+                        Ok::<(), CliError>(())
+                    },
+                )
+                .map_err(CliError::operation)
+            }
+            IndexCommand::Serve {
+                bind,
+                no_watch,
+                debounce_ms,
+                auth_token,
+            } => serve_forever(
+                &paths,
+                &ServeOptions {
+                    bind: bind.clone(),
+                    watch: !no_watch,
+                    debounce_ms: *debounce_ms,
+                    auth_token: auth_token.clone(),
+                },
+            ),
+        },
         Command::Backlinks {
             ref note,
             ref export,
@@ -9275,6 +9497,52 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         .map_err(CliError::operation)?;
                 }
                 print_note_patch_report(cli.output, &report)
+            }
+            NoteCommand::Links { note, export } => {
+                let note = resolve_note_argument(
+                    &paths,
+                    note.as_deref(),
+                    interactive_note_selection,
+                    "note",
+                )?;
+                let report = query_links(&paths, &note).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
+                print_links_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                    export.as_ref(),
+                )?;
+                Ok(())
+            }
+            NoteCommand::Backlinks { note, export } => {
+                let note = resolve_note_argument(
+                    &paths,
+                    note.as_deref(),
+                    interactive_note_selection,
+                    "note",
+                )?;
+                let report = query_backlinks(&paths, &note).map_err(CliError::operation)?;
+                let export = resolve_cli_export(export)?;
+                print_backlinks_report(
+                    cli.output,
+                    &report,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                    export.as_ref(),
+                )?;
+                Ok(())
+            }
+            NoteCommand::Doctor { note } => {
+                let report = run_note_doctor_command(&paths, note)?;
+                print_note_doctor_report(cli.output, &report)
+            }
+            NoteCommand::Diff { note, since } => {
+                let report = run_diff_command(&paths, Some(note), since.as_deref(), false)?;
+                print_diff_report(cli.output, &report)
             }
         },
         Command::Completions { shell } => {
@@ -10847,6 +11115,17 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 print_git_blame_report(cli.output, &report)
             }
         },
+        Command::Run {
+            ref script,
+            script_mode,
+        } => {
+            if script.is_none() && io::stdin().is_terminal() {
+                run_js_repl(&paths, cli.output)
+            } else {
+                let result = run_js_command(&paths, script.as_deref(), script_mode)?;
+                print_dataview_js_result(cli.output, &result, false)
+            }
+        }
         Command::Web { ref command } => match command {
             WebCommand::Search {
                 query,
@@ -13616,6 +13895,24 @@ fn print_doctor_report(
     }
 }
 
+fn print_note_doctor_report(
+    output: OutputFormat,
+    report: &NoteDoctorReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("Doctor summary for {}", report.path);
+            if report.diagnostics.is_empty() {
+                println!("No issues found.");
+            } else {
+                print_diagnostic_section("Diagnostics", &report.diagnostics);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_doctor_fix_report(
     output: OutputFormat,
     paths: &VaultPaths,
@@ -15639,7 +15936,11 @@ fn describe_cli() -> CliDescribeReport {
             .filter(|argument| argument.is_global_set())
             .map(describe_argument)
             .collect(),
-        commands: command.get_subcommands().map(describe_command).collect(),
+        commands: command
+            .get_subcommands()
+            .filter(|subcommand| !subcommand.is_hide_set())
+            .map(describe_command)
+            .collect(),
     }
 }
 
@@ -15927,7 +16228,10 @@ fn search_help_topics(keyword: &str) -> HelpSearchReport {
 
 fn collect_help_command_topics(command: &clap::Command) -> Vec<HelpTopicReport> {
     let mut topics = Vec::new();
-    for subcommand in command.get_subcommands() {
+    for subcommand in command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+    {
         collect_help_command_topics_inner(subcommand, Vec::new(), &mut topics);
     }
     topics
@@ -15940,7 +16244,10 @@ fn collect_help_command_topics_inner(
 ) {
     prefix.push(command.get_name().to_string());
     topics.push(help_topic_from_command(command, &prefix));
-    for subcommand in command.get_subcommands() {
+    for subcommand in command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+    {
         collect_help_command_topics_inner(subcommand, prefix.clone(), topics);
     }
 }
@@ -15959,6 +16266,7 @@ fn help_topic_from_command(command: &clap::Command, path: &[String]) -> HelpTopi
     }
     let subcommands = command
         .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
         .map(|subcommand| {
             format!(
                 "{} {}",
@@ -16034,7 +16342,10 @@ struct ToolCommandDescribe {
 
 fn collect_leaf_commands(command: &clap::Command) -> Vec<ToolCommandDescribe> {
     let mut tools = Vec::new();
-    for subcommand in command.get_subcommands() {
+    for subcommand in command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+    {
         collect_leaf_commands_inner(subcommand, Vec::new(), &mut tools);
     }
     tools
@@ -16046,7 +16357,10 @@ fn collect_leaf_commands_inner(
     tools: &mut Vec<ToolCommandDescribe>,
 ) {
     prefix.push(command.get_name().to_string());
-    let subcommands = command.get_subcommands().collect::<Vec<_>>();
+    let subcommands = command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .collect::<Vec<_>>();
     if subcommands.is_empty() {
         tools.push(ToolCommandDescribe {
             name: tool_name_from_path(&prefix),
@@ -16183,7 +16497,11 @@ fn describe_command(command: &clap::Command) -> CliCommandDescribe {
             .filter(|argument| !argument.is_global_set())
             .map(describe_argument)
             .collect(),
-        subcommands: command.get_subcommands().map(describe_command).collect(),
+        subcommands: command
+            .get_subcommands()
+            .filter(|subcommand| !subcommand.is_hide_set())
+            .map(describe_command)
+            .collect(),
     }
 }
 
@@ -20282,6 +20600,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_index_note_and_run_commands() {
+        let index = Cli::try_parse_from(["vulcan", "index", "scan", "--full"])
+            .expect("index scan should parse");
+        let note_links = Cli::try_parse_from(["vulcan", "note", "links", "Dashboard"])
+            .expect("note links should parse");
+        let run =
+            Cli::try_parse_from(["vulcan", "run", "demo", "--script"]).expect("run should parse");
+
+        assert_eq!(
+            index.command,
+            Command::Index {
+                command: IndexCommand::Scan {
+                    full: true,
+                    no_commit: false,
+                },
+            }
+        );
+        assert_eq!(
+            note_links.command,
+            Command::Note {
+                command: NoteCommand::Links {
+                    note: Some("Dashboard".to_string()),
+                    export: ExportArgs::default(),
+                },
+            }
+        );
+        assert_eq!(
+            run.command,
+            Command::Run {
+                script: Some("demo".to_string()),
+                script_mode: true,
+            }
+        );
+    }
+
+    #[test]
     fn resolves_relative_vault_path_against_current_directory() {
         let current_dir = std::env::current_dir().expect("cwd should be available");
         let resolved = resolve_vault_root(&PathBuf::from("tests/fixtures/vaults/basic"))
@@ -20295,14 +20649,14 @@ mod tests {
         let report = describe_cli();
 
         assert_eq!(report.name, "vulcan");
-        let rebuild = report
+        let index = report
             .commands
             .iter()
-            .find(|command| command.name == "rebuild")
-            .expect("rebuild command should be described");
+            .find(|command| command.name == "index")
+            .expect("index command should be described");
         assert_eq!(
-            rebuild.about.as_deref(),
-            Some("Rebuild the cache from disk")
+            index.about.as_deref(),
+            Some("Initialize, scan, rebuild, repair, watch, and serve index state")
         );
         let completions = report
             .commands
@@ -20317,15 +20671,8 @@ mod tests {
         assert!(report
             .commands
             .iter()
-            .any(|command| command.name == "repair"));
-        assert!(report
-            .commands
-            .iter()
-            .any(|command| command.name == "watch"));
-        assert!(report
-            .commands
-            .iter()
-            .any(|command| command.name == "serve"));
+            .any(|command| command.name == "index"));
+        assert!(report.commands.iter().any(|command| command.name == "note"));
         assert!(report
             .commands
             .iter()
@@ -20333,7 +20680,7 @@ mod tests {
         assert!(report
             .commands
             .iter()
-            .any(|command| command.name == "rename-property"));
+            .any(|command| command.name == "refactor"));
         assert!(report
             .commands
             .iter()
@@ -20359,18 +20706,15 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "saved"));
+        assert!(report.commands.iter().any(|command| command.name == "run"));
         assert!(report
             .commands
             .iter()
-            .any(|command| command.name == "suggest"));
+            .all(|command| command.name != "suggest"));
         assert!(report
             .commands
             .iter()
-            .any(|command| command.name == "link-mentions"));
-        assert!(report
-            .commands
-            .iter()
-            .any(|command| command.name == "rewrite"));
+            .all(|command| command.name != "rewrite"));
         assert!(report
             .commands
             .iter()

@@ -1,16 +1,4 @@
 {
-  "backlinks": [
-    {
-      "note_path": "Projects/Alpha.md",
-      "raw_text": "[[Projects/Alpha]]",
-      "source_path": "Home.md"
-    },
-    {
-      "note_path": "Projects/Alpha.md",
-      "raw_text": "[[Projects/Alpha#Status]]",
-      "source_path": "People/Bob.md"
-    }
-  ],
   "bases": {
     "diagnostics": [
       {
@@ -108,89 +96,103 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: init, scan, rebuild, repair, watch, serve\n  Graph and Query: links, backlinks, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, suggest, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: note, edit, update, unset, refactor\n  Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, help, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan notes --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Command Groups:\n  Indexing: index\n  Graph and Query: note, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, refactor\n  Maintenance: doctor, cache, config, git, run, web, open, help, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan query --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
-        "about": "Initialize .vulcan/ state for a vault",
-        "name": "init",
-        "options": [
-          {
-            "help": "Import all detected settings after initialization",
-            "id": "import",
-            "long": "import",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "IMPORT"
-            ]
-          },
-          {
-            "help": "Suppress import detection suggestions after initialization",
-            "id": "no_import",
-            "long": "no-import",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_IMPORT"
-            ]
-          },
-          {
-            "help": "Write AGENTS.md plus bundled AI skill markdown files into the vault",
-            "id": "agent_files",
-            "long": "agent-files",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "AGENT_FILES"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Rebuild the cache from disk",
-        "name": "rebuild",
-        "options": [
-          {
-            "help": "Report rebuild scope without mutating the cache",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Repair derived indexes and cache structures",
-        "name": "repair",
+        "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
+        "name": "index",
         "options": [],
         "subcommands": [
           {
-            "about": "Rebuild the full-text search index from cached chunks",
-            "name": "fts",
+            "about": "Initialize .vulcan/ state for a vault",
+            "name": "init",
             "options": [
               {
-                "help": "Report the repair scope without mutating the cache",
+                "help": "Import all detected settings after initialization",
+                "id": "import",
+                "long": "import",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "IMPORT"
+                ]
+              },
+              {
+                "help": "Suppress import detection suggestions after initialization",
+                "id": "no_import",
+                "long": "no-import",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_IMPORT"
+                ]
+              },
+              {
+                "help": "Write AGENTS.md plus bundled AI skill markdown files into the vault",
+                "id": "agent_files",
+                "long": "agent-files",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "AGENT_FILES"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Scan the vault and update the cache",
+            "name": "scan",
+            "options": [
+              {
+                "help": "Force a full scan instead of incremental reconciliation",
+                "id": "full",
+                "long": "full",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FULL"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Rebuild the cache from disk",
+            "name": "rebuild",
+            "options": [
+              {
+                "help": "Report rebuild scope without mutating the cache",
                 "id": "dry_run",
                 "long": "dry-run",
                 "possible_values": [
@@ -205,215 +207,122 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Repair derived indexes and cache structures",
+            "name": "repair",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Rebuild the full-text search index from cached chunks",
+                "name": "fts",
+                "options": [
+                  {
+                    "help": "Report the repair scope without mutating the cache",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
+            "about": "Watch the vault for filesystem changes and keep the cache fresh",
+            "name": "watch",
+            "options": [
+              {
+                "help": "Event coalescing window in milliseconds",
+                "id": "debounce_ms",
+                "long": "debounce-ms",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DEBOUNCE_MS"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Serve local cache-backed HTTP APIs for repeated queries",
+            "name": "serve",
+            "options": [
+              {
+                "help": "Bind address for the local HTTP server",
+                "id": "bind",
+                "long": "bind",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BIND"
+                ]
+              },
+              {
+                "help": "Disable the background watcher refresh loop",
+                "id": "no_watch",
+                "long": "no-watch",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_WATCH"
+                ]
+              },
+              {
+                "help": "Watcher debounce window in milliseconds when serve watch mode is enabled",
+                "id": "debounce_ms",
+                "long": "debounce-ms",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DEBOUNCE_MS"
+                ]
+              },
+              {
+                "help": "Optional shared secret required in the X-Vulcan-Token header",
+                "id": "auth_token",
+                "long": "auth-token",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "AUTH_TOKEN"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
-      },
-      {
-        "about": "Watch the vault for filesystem changes and keep the cache fresh",
-        "name": "watch",
-        "options": [
-          {
-            "help": "Event coalescing window in milliseconds",
-            "id": "debounce_ms",
-            "long": "debounce-ms",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DEBOUNCE_MS"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Serve local cache-backed HTTP APIs for repeated queries",
-        "name": "serve",
-        "options": [
-          {
-            "help": "Bind address for the local HTTP server",
-            "id": "bind",
-            "long": "bind",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "BIND"
-            ]
-          },
-          {
-            "help": "Disable the background watcher refresh loop",
-            "id": "no_watch",
-            "long": "no-watch",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_WATCH"
-            ]
-          },
-          {
-            "help": "Watcher debounce window in milliseconds when serve watch mode is enabled",
-            "id": "debounce_ms",
-            "long": "debounce-ms",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DEBOUNCE_MS"
-            ]
-          },
-          {
-            "help": "Optional shared secret required in the X-Vulcan-Token header",
-            "id": "auth_token",
-            "long": "auth-token",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "AUTH_TOKEN"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Scan the vault and update the cache",
-        "name": "scan",
-        "options": [
-          {
-            "help": "Force a full scan instead of incremental reconciliation",
-            "id": "full",
-            "long": "full",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "FULL"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "List outgoing links for a note",
-        "name": "links",
-        "options": [
-          {
-            "help": "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively",
-            "id": "note",
-            "long": null,
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NOTE"
-            ]
-          },
-          {
-            "help": "Write query rows to a CSV or JSONL file",
-            "id": "export",
-            "long": "export",
-            "possible_values": [
-              "csv",
-              "jsonl"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT"
-            ]
-          },
-          {
-            "help": "Destination file for CSV or JSONL exports",
-            "id": "export_path",
-            "long": "export-path",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT_PATH"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "List inbound links pointing at a note",
-        "name": "backlinks",
-        "options": [
-          {
-            "help": "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively",
-            "id": "note",
-            "long": null,
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NOTE"
-            ]
-          },
-          {
-            "help": "Write query rows to a CSV or JSONL file",
-            "id": "export",
-            "long": "export",
-            "possible_values": [
-              "csv",
-              "jsonl"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT"
-            ]
-          },
-          {
-            "help": "Destination file for CSV or JSONL exports",
-            "id": "export_path",
-            "long": "export-path",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT_PATH"
-            ]
-          }
-        ],
-        "subcommands": []
       },
       {
         "about": "Analyze the resolved note graph",
@@ -2687,88 +2596,6 @@
         ]
       },
       {
-        "about": "Suggest link and merge opportunities from indexed notes",
-        "name": "suggest",
-        "options": [],
-        "subcommands": [
-          {
-            "about": "Report plain-text note mentions that could become links",
-            "name": "mentions",
-            "options": [
-              {
-                "help": "Optional note path, filename, or alias to inspect",
-                "id": "note",
-                "long": null,
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "NOTE"
-                ]
-              },
-              {
-                "help": "Write query rows to a CSV or JSONL file",
-                "id": "export",
-                "long": "export",
-                "possible_values": [
-                  "csv",
-                  "jsonl"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT"
-                ]
-              },
-              {
-                "help": "Destination file for CSV or JSONL exports",
-                "id": "export_path",
-                "long": "export-path",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT_PATH"
-                ]
-              }
-            ],
-            "subcommands": []
-          },
-          {
-            "about": "Report duplicate titles, alias collisions, and merge candidates",
-            "name": "duplicates",
-            "options": [
-              {
-                "help": "Write query rows to a CSV or JSONL file",
-                "id": "export",
-                "long": "export",
-                "possible_values": [
-                  "csv",
-                  "jsonl"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT"
-                ]
-              },
-              {
-                "help": "Destination file for CSV or JSONL exports",
-                "id": "export_path",
-                "long": "export-path",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT_PATH"
-                ]
-              }
-            ],
-            "subcommands": []
-          }
-        ]
-      },
-      {
         "about": "Persist and run saved reports from .vulcan/reports",
         "name": "saved",
         "options": [],
@@ -3718,6 +3545,38 @@
             "subcommands": []
           }
         ]
+      },
+      {
+        "about": "Execute JavaScript inside the Vulcan runtime sandbox",
+        "name": "run",
+        "options": [
+          {
+            "help": "Script path or named script from .vulcan/scripts",
+            "id": "script",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SCRIPT"
+            ]
+          },
+          {
+            "help": "Treat the positional argument as a script file path for shebang use",
+            "id": "script_mode",
+            "long": "script",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SCRIPT_MODE"
+            ]
+          }
+        ],
+        "subcommands": []
       },
       {
         "about": "Fetch and search external web content",
@@ -5142,6 +5001,139 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "List outgoing links for one note",
+            "name": "links",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List inbound links pointing at one note",
+            "name": "backlinks",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Run doctor-style diagnostics against one note",
+            "name": "doctor",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to inspect",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Show one note's changes since git HEAD, the last scan, or a checkpoint",
+            "name": "diff",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to inspect",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Named checkpoint to compare against instead of git HEAD",
+                "id": "since",
+                "long": "since",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SINCE"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },
@@ -5506,178 +5498,6 @@
         ]
       },
       {
-        "about": "Move a note or attachment and safely rewrite inbound links",
-        "name": "move",
-        "options": [
-          {
-            "help": "Existing source note or attachment path",
-            "id": "source",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "SOURCE"
-            ]
-          },
-          {
-            "help": "Destination note or attachment path",
-            "id": "dest",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "DEST"
-            ]
-          },
-          {
-            "help": "Report rewrite changes without moving files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Convert unambiguous plain-text note mentions into links",
-        "name": "link-mentions",
-        "options": [
-          {
-            "help": "Optional note path, filename, or alias to update",
-            "id": "note",
-            "long": null,
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NOTE"
-            ]
-          },
-          {
-            "help": "Report planned rewrites without modifying files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Apply a literal find/replace across notes selected by filters",
-        "after_help": "Scope selection:\n  rewrite does a literal find/replace over notes selected by --where filters.\n  Repeat --where to combine filters with AND.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan rewrite --where 'status = draft' --find TODO --replace DONE --dry-run\n  vulcan rewrite --where 'file.path starts_with \"Projects/\"' --find alpha --replace beta",
-        "name": "rewrite",
-        "options": [
-          {
-            "help": "Typed property filter such as `status = done`; repeatable and combined with AND",
-            "id": "filters",
-            "long": "where",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "FILTERS"
-            ]
-          },
-          {
-            "help": "Literal text to find",
-            "id": "find",
-            "long": "find",
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "FIND"
-            ]
-          },
-          {
-            "help": "Replacement text",
-            "id": "replace",
-            "long": "replace",
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "REPLACE"
-            ]
-          },
-          {
-            "help": "Report planned rewrites without modifying files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
         "about": "Inspect the vault for broken or suspicious state",
         "name": "doctor",
         "options": [
@@ -5824,324 +5644,6 @@
           },
           {
             "help": "Report planned removals without modifying files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Rename a frontmatter property key across notes",
-        "name": "rename-property",
-        "options": [
-          {
-            "help": "Existing property key",
-            "id": "old",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "OLD"
-            ]
-          },
-          {
-            "help": "Replacement property key",
-            "id": "new",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "NEW"
-            ]
-          },
-          {
-            "help": "Report planned rewrites without modifying files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Merge one tag into another across frontmatter and note bodies",
-        "name": "merge-tags",
-        "options": [
-          {
-            "help": "Source tag to replace",
-            "id": "source",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "SOURCE"
-            ]
-          },
-          {
-            "help": "Destination tag to write",
-            "id": "dest",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "DEST"
-            ]
-          },
-          {
-            "help": "Report planned rewrites without modifying files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Rename an alias inside one note's frontmatter",
-        "name": "rename-alias",
-        "options": [
-          {
-            "help": "Note path, filename, or alias to update",
-            "id": "note",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "NOTE"
-            ]
-          },
-          {
-            "help": "Existing alias text",
-            "id": "old",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "OLD"
-            ]
-          },
-          {
-            "help": "Replacement alias text",
-            "id": "new",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "NEW"
-            ]
-          },
-          {
-            "help": "Report planned rewrites without modifying files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Rename a heading and rewrite inbound heading links",
-        "name": "rename-heading",
-        "options": [
-          {
-            "help": "Note path, filename, or alias containing the heading",
-            "id": "note",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "NOTE"
-            ]
-          },
-          {
-            "help": "Existing heading text",
-            "id": "old",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "OLD"
-            ]
-          },
-          {
-            "help": "Replacement heading text",
-            "id": "new",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "NEW"
-            ]
-          },
-          {
-            "help": "Report planned rewrites without modifying files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Rename a block reference and rewrite inbound block links",
-        "name": "rename-block-ref",
-        "options": [
-          {
-            "help": "Note path, filename, or alias containing the block reference",
-            "id": "note",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "NOTE"
-            ]
-          },
-          {
-            "help": "Existing block reference id without the ^ prefix",
-            "id": "old",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "OLD"
-            ]
-          },
-          {
-            "help": "Replacement block reference id without the ^ prefix",
-            "id": "new",
-            "long": null,
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "NEW"
-            ]
-          },
-          {
-            "help": "Report planned rewrites without modifying files",
             "id": "dry_run",
             "long": "dry-run",
             "possible_values": [
@@ -6898,88 +6400,6 @@
               }
             ],
             "subcommands": []
-          },
-          {
-            "about": "Suggest link and merge opportunities from indexed notes",
-            "name": "suggest",
-            "options": [],
-            "subcommands": [
-              {
-                "about": "Report plain-text note mentions that could become links",
-                "name": "mentions",
-                "options": [
-                  {
-                    "help": "Optional note path, filename, or alias to inspect",
-                    "id": "note",
-                    "long": null,
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "NOTE"
-                    ]
-                  },
-                  {
-                    "help": "Write query rows to a CSV or JSONL file",
-                    "id": "export",
-                    "long": "export",
-                    "possible_values": [
-                      "csv",
-                      "jsonl"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "EXPORT"
-                    ]
-                  },
-                  {
-                    "help": "Destination file for CSV or JSONL exports",
-                    "id": "export_path",
-                    "long": "export-path",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "EXPORT_PATH"
-                    ]
-                  }
-                ],
-                "subcommands": []
-              },
-              {
-                "about": "Report duplicate titles, alias collisions, and merge candidates",
-                "name": "duplicates",
-                "options": [
-                  {
-                    "help": "Write query rows to a CSV or JSONL file",
-                    "id": "export",
-                    "long": "export",
-                    "possible_values": [
-                      "csv",
-                      "jsonl"
-                    ],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "EXPORT"
-                    ]
-                  },
-                  {
-                    "help": "Destination file for CSV or JSONL exports",
-                    "id": "export_path",
-                    "long": "export-path",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "EXPORT_PATH"
-                    ]
-                  }
-                ],
-                "subcommands": []
-              }
-            ]
           }
         ]
       },
@@ -7197,14 +6617,89 @@
     "unresolved_links": [],
     "unsupported_syntax": []
   },
-  "init": {
+  "index_init": {
     "cache_path": "<vault>/.vulcan/cache.db",
     "config_path": "<vault>/.vulcan/config.toml",
     "created_cache": true,
     "created_config": true,
     "vault_root": "<vault>"
   },
-  "link_mentions": {
+  "index_rebuild": {
+    "discovered": 3,
+    "dry_run": true,
+    "existing_documents": 3,
+    "summary": null
+  },
+  "index_repair_fts": {
+    "dry_run": true,
+    "indexed_chunks": 4,
+    "indexed_documents": 3
+  },
+  "index_scan": {
+    "added": 3,
+    "deleted": 0,
+    "discovered": 3,
+    "mode": "full",
+    "unchanged": 0,
+    "updated": 0
+  },
+  "note_backlinks": [
+    {
+      "note_path": "Projects/Alpha.md",
+      "raw_text": "[[Projects/Alpha]]",
+      "source_path": "Home.md"
+    },
+    {
+      "note_path": "Projects/Alpha.md",
+      "raw_text": "[[Projects/Alpha#Status]]",
+      "source_path": "People/Bob.md"
+    }
+  ],
+  "note_links": [
+    {
+      "note_path": "Home.md",
+      "raw_text": "[[Projects/Alpha]]",
+      "resolution_status": "resolved",
+      "resolved_target_path": "Projects/Alpha.md"
+    },
+    {
+      "note_path": "Home.md",
+      "raw_text": "[[People/Bob|Bob]]",
+      "resolution_status": "resolved",
+      "resolved_target_path": "People/Bob.md"
+    }
+  ],
+  "notes": [
+    {
+      "document_path": "Done.md",
+      "properties": {
+        "due": "2026-03-01",
+        "empty_list": [],
+        "empty_text": "",
+        "estimate": 3,
+        "notes": null,
+        "related": [
+          "[[Backlog]]",
+          "sprint"
+        ],
+        "reviewed": true,
+        "status": "done"
+      }
+    },
+    {
+      "document_path": "Backlog.md",
+      "properties": {
+        "due": "2026-04-01",
+        "estimate": 8,
+        "related": [
+          "[[Done]]"
+        ],
+        "reviewed": false,
+        "status": "backlog"
+      }
+    }
+  ],
+  "refactor_link_mentions": {
     "action": "link_mentions",
     "dry_run": true,
     "files": [
@@ -7219,21 +6714,7 @@
       }
     ]
   },
-  "links": [
-    {
-      "note_path": "Home.md",
-      "raw_text": "[[Projects/Alpha]]",
-      "resolution_status": "resolved",
-      "resolved_target_path": "Projects/Alpha.md"
-    },
-    {
-      "note_path": "Home.md",
-      "raw_text": "[[People/Bob|Bob]]",
-      "resolution_status": "resolved",
-      "resolved_target_path": "People/Bob.md"
-    }
-  ],
-  "move": {
+  "refactor_move": {
     "destination_path": "Archive/Alpha.md",
     "dry_run": true,
     "rewritten_files": [
@@ -7286,48 +6767,7 @@
     ],
     "source_path": "Projects/Alpha.md"
   },
-  "notes": [
-    {
-      "document_path": "Done.md",
-      "properties": {
-        "due": "2026-03-01",
-        "empty_list": [],
-        "empty_text": "",
-        "estimate": 3,
-        "notes": null,
-        "related": [
-          "[[Backlog]]",
-          "sprint"
-        ],
-        "reviewed": true,
-        "status": "done"
-      }
-    },
-    {
-      "document_path": "Backlog.md",
-      "properties": {
-        "due": "2026-04-01",
-        "estimate": 8,
-        "related": [
-          "[[Done]]"
-        ],
-        "reviewed": false,
-        "status": "backlog"
-      }
-    }
-  ],
-  "rebuild": {
-    "discovered": 3,
-    "dry_run": true,
-    "existing_documents": 3,
-    "summary": null
-  },
-  "repair_fts": {
-    "dry_run": true,
-    "indexed_chunks": 4,
-    "indexed_documents": 3
-  },
-  "rewrite": {
+  "refactor_rewrite": {
     "action": "bulk_replace",
     "dry_run": true,
     "files": [
@@ -7368,25 +6808,7 @@
       }
     ]
   },
-  "scan": {
-    "added": 3,
-    "deleted": 0,
-    "discovered": 3,
-    "mode": "full",
-    "unchanged": 0,
-    "updated": 0
-  },
-  "search": [
-    {
-      "document_path": "Home.md",
-      "heading_path": [
-        "Home"
-      ],
-      "query": "dashboard",
-      "snippet": "Home\n\nHome links to Projects/Alpha and Bob.\n\nThe [dashboard] note uses the tag #index."
-    }
-  ],
-  "suggest_duplicates": [
+  "refactor_suggest_duplicates": [
     {
       "kind": "duplicate_title",
       "left_path": null,
@@ -7416,7 +6838,7 @@
       "value": null
     }
   ],
-  "suggest_mentions": [
+  "refactor_suggest_mentions": [
     {
       "candidate_count": 1,
       "matched_text": "Bob",
@@ -7444,6 +6866,16 @@
       "source_path": "Home.md",
       "status": "ambiguous",
       "target_path": null
+    }
+  ],
+  "search": [
+    {
+      "document_path": "Home.md",
+      "heading_path": [
+        "Home"
+      ],
+      "query": "dashboard",
+      "snippet": "Home\n\nHome links to Projects/Alpha and Bob.\n\nThe [dashboard] note uses the tag #index."
     }
   ],
   "vectors_duplicates": [
