@@ -2076,25 +2076,25 @@ This makes skill scripts runnable by external agent harnesses (Claude Code, Code
 
 QuickAdd's capture and template features use a format syntax for variable expansion. Support this syntax in `note append` and template contexts for vault compatibility:
 
-- [ ] QuickAdd format syntax support: `{{DATE}}`, `{{DATE:format}}`, `{{TIME}}`, `{{TIME:format}}`, `{{VDATE:format, offset}}` — reuse 9.7.1 Moment.js-compatible date formatting
-- [ ] `{{VALUE}}` — prompt for user input (CLI: read from stdin or `--var` flag; maps to existing `tp.system.prompt` infrastructure from 9.9.2)
-- [ ] `{{FILE_NAME}}`, `{{FILE_PATH}}`, `{{TITLE}}` — file context variables (already available in template engine)
-- [ ] `{{LINKCURRENT}}` — wikilink to the current file (when applicable)
-- [ ] Capture position support in `note append`: `--prepend` / `--append` / `--after-heading <heading>` (extends 9.18.2 `note append`)
-- [ ] Capture to daily/weekly/monthly note with auto-creation (delegates to 9.16 periodic note infrastructure)
+- [x] QuickAdd format syntax support: `{{DATE}}`, `{{DATE:format}}`, `{{TIME}}`, `{{TIME:format}}`, `{{VDATE:format, offset}}` — reuse 9.7.1 Moment.js-compatible date formatting
+- [x] `{{VALUE}}` — prompt for user input (CLI: read from stdin or `--var` flag; maps to existing `tp.system.prompt` infrastructure from 9.9.2)
+- [x] `{{FILE_NAME}}`, `{{FILE_PATH}}`, `{{TITLE}}` — file context variables (already available in template engine)
+- [x] `{{LINKCURRENT}}` — wikilink to the current file (when applicable)
+- [x] Capture position support in `note append`: `--prepend` / `--append` / `--after-heading <heading>` (extends 9.18.2 `note append`)
+- [x] Capture to daily/weekly/monthly note with auto-creation (delegates to 9.16 periodic note infrastructure)
 
 **Not in scope:** `{{MACRO:<name>}}` (use JS runtime), `{{SELECTED}}` (editor-only), `EditorCommand` (UI-only), `Wait` (use shell), `NestedChoice` (use JS runtime). These QuickAdd features are inherently UI-driven or map directly to existing Vulcan infrastructure.
 
 #### 9.13.2 Settings import
 
-- [ ] Read QuickAdd settings from `.obsidian/plugins/quickadd/data.json`:
+- [x] Read QuickAdd settings from `.obsidian/plugins/quickadd/data.json`:
   | Setting key | Vulcan mapping |
   |---|---|
   | `choices` | Array of choice definitions — import Template and Capture choices as note templates / capture configs; report Macro and Multi choices as requiring manual conversion to JS scripts |
   | `templateFolderPath` | Template discovery path (cross-reference with Templater settings) |
   | `globalVariables` | Global variable definitions for format syntax expansion |
   | `ai` | AI provider config (model, API key env, system prompt) — cross-reference with 9.12 assistant config |
-- [ ] `vulcan config import quickadd` — import QuickAdd settings, convert capture/template choices, report unmappable choices with migration guidance (implement as `PluginImporter` per 9.17.1)
+- [x] `vulcan config import quickadd` — import QuickAdd settings, convert capture/template choices, report unmappable choices with migration guidance (implement as `PluginImporter` per 9.17.1)
 
 ### 9.14 Plugin compatibility notes
 
