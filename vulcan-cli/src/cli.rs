@@ -490,6 +490,7 @@ Subcommands:
   import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml
   import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
   import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml
+  import quickadd import Obsidian QuickAdd plugin settings into .vulcan/config.toml
   import tasknotes import Obsidian TaskNotes plugin settings into .vulcan/config.toml
   import templater import Obsidian Templater plugin settings into .vulcan/config.toml
   import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml
@@ -508,6 +509,7 @@ Examples:
   vulcan config import --all --dry-run
   vulcan config import --list
   vulcan config import periodic-notes
+  vulcan config import quickadd
   vulcan config import tasknotes --dry-run
   vulcan config import tasks --dry-run
   vulcan config import templater --target local
@@ -1045,6 +1047,8 @@ pub enum ConfigImportCommand {
     Dataview,
     #[command(about = "Import Obsidian Templater plugin settings")]
     Templater,
+    #[command(about = "Import Obsidian QuickAdd plugin settings")]
+    Quickadd,
     #[command(about = "Import Obsidian Kanban plugin settings")]
     Kanban,
     #[command(about = "Import Obsidian Daily Notes and Periodic Notes settings")]

@@ -1002,6 +1002,51 @@ fn note_append_periodic_creates_note_and_renders_quickadd_tokens() {
 }
 
 #[test]
+fn note_append_uses_quickadd_global_variables_from_config() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[quickadd]
+global_variables = { agenda = "- {{VALUE:title|case:slug}} due {{VDATE:due,YYYY-MM-DD}}" }
+"#,
+    )
+    .expect("quickadd config should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "append",
+            "Dashboard",
+            "{{GLOBAL_VAR:AGENDA}}",
+            "--var",
+            "title=Release Planning",
+            "--var",
+            "due=tomorrow",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let rendered = fs::read_to_string(vault_root.join("Dashboard.md"))
+        .expect("Dashboard.md should be readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(json["path"], "Dashboard.md");
+    assert_eq!(json["mode"], "append");
+    assert!(rendered.contains("- release-planning due 2026-04-05\n"));
+}
+
+#[test]
 fn note_patch_enforces_match_safety_and_supports_regex_dry_runs() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

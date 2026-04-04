@@ -167,6 +167,23 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # folder_templates = [{ folder = "Daily", template = "Daily Template" }]
 # file_templates = [{ regex = "^Projects/.*\\.md$", template = "Project Template" }]
 
+# [quickadd]
+# template_folder = "QuickAdd/Templates"
+# global_variables = { project = "[[Projects/Alpha]]", agenda = "- {{VALUE:title}}" }
+#
+# [[quickadd.capture_choices]]
+# id = "daily-capture"
+# name = "Daily Capture"
+# capture_to = "Journal/Daily/{{DATE:YYYY-MM-DD}}"
+# format = "- {{VALUE:title|case:slug}}"
+# prepend = false
+#
+# [[quickadd.template_choices]]
+# id = "project-note"
+# name = "Project Note"
+# template_path = "Templates/Project Template.md"
+# file_name_format = "{{VALUE:title|case:slug}}"
+
 # [periodic.daily]
 # enabled = true
 # folder = "Journal/Daily"
@@ -458,6 +475,137 @@ impl Default for TemplatesConfig {
             intellisense_render: default_templater_intellisense_render(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuickAddCreateFileConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub create_with_template: bool,
+    #[serde(default)]
+    pub template: Option<String>,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuickAddInsertAfterConfig {
+    pub heading: String,
+    #[serde(default)]
+    pub insert_at_end: bool,
+    #[serde(default)]
+    pub consider_subsections: bool,
+    #[serde(default)]
+    pub create_if_not_found: bool,
+    #[serde(default)]
+    pub create_if_not_found_location: Option<String>,
+    #[serde(default)]
+    pub inline: bool,
+    #[serde(default)]
+    pub replace_existing: bool,
+    #[serde(default)]
+    pub blank_line_after_match_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuickAddTemplateFolderConfig {
+    #[serde(default)]
+    pub folders: Vec<PathBuf>,
+    #[serde(default)]
+    pub choose_when_creating_note: bool,
+    #[serde(default)]
+    pub create_in_same_folder_as_active_file: bool,
+    #[serde(default)]
+    pub choose_from_subfolders: bool,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuickAddCaptureChoiceConfig {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub capture_to: Option<String>,
+    #[serde(default)]
+    pub capture_to_active_file: bool,
+    #[serde(default)]
+    pub active_file_write_position: Option<String>,
+    #[serde(default)]
+    pub create_file_if_missing: QuickAddCreateFileConfig,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub use_selection_as_capture_value: Option<bool>,
+    #[serde(default)]
+    pub prepend: bool,
+    #[serde(default)]
+    pub task: bool,
+    #[serde(default)]
+    pub insert_after: Option<QuickAddInsertAfterConfig>,
+    #[serde(default)]
+    pub new_line_capture_direction: Option<String>,
+    #[serde(default)]
+    pub open_file: bool,
+    #[serde(default)]
+    pub templater_after_capture: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuickAddTemplateChoiceConfig {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub template_path: Option<PathBuf>,
+    #[serde(default)]
+    pub folder: QuickAddTemplateFolderConfig,
+    #[serde(default)]
+    pub file_name_format: Option<String>,
+    #[serde(default)]
+    pub open_file: bool,
+    #[serde(default)]
+    pub file_exists_behavior: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuickAddAiProviderConfig {
+    pub name: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub model_source: Option<String>,
+    #[serde(default)]
+    pub auto_sync_models: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuickAddAiConfig {
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub default_system_prompt: Option<String>,
+    #[serde(default)]
+    pub prompt_templates_folder: Option<PathBuf>,
+    #[serde(default)]
+    pub show_assistant: bool,
+    #[serde(default)]
+    pub providers: Vec<QuickAddAiProviderConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuickAddConfig {
+    #[serde(default)]
+    pub template_folder: Option<PathBuf>,
+    #[serde(default)]
+    pub global_variables: BTreeMap<String, String>,
+    #[serde(default)]
+    pub capture_choices: Vec<QuickAddCaptureChoiceConfig>,
+    #[serde(default)]
+    pub template_choices: Vec<QuickAddTemplateChoiceConfig>,
+    #[serde(default)]
+    pub ai: Option<QuickAddAiConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1378,6 +1526,7 @@ pub struct VaultConfig {
     pub kanban: KanbanConfig,
     pub dataview: DataviewConfig,
     pub templates: TemplatesConfig,
+    pub quickadd: QuickAddConfig,
     pub web: WebConfig,
     pub periodic: PeriodicConfig,
 }
@@ -1401,6 +1550,7 @@ impl Default for VaultConfig {
             kanban: KanbanConfig::default(),
             dataview: DataviewConfig::default(),
             templates: TemplatesConfig::default(),
+            quickadd: QuickAddConfig::default(),
             web: WebConfig::default(),
             periodic: PeriodicConfig::default(),
         }
@@ -1606,6 +1756,7 @@ struct PartialVulcanConfig {
     kanban: Option<PartialKanbanConfig>,
     dataview: Option<PartialDataviewConfig>,
     templates: Option<PartialTemplatesConfig>,
+    quickadd: Option<PartialQuickAddConfig>,
     web: Option<PartialWebConfig>,
     periodic: Option<PartialPeriodicConfig>,
 }
@@ -1670,6 +1821,24 @@ struct PartialTemplatesConfig {
     enabled_templates_hotkeys: Option<Vec<String>>,
     startup_templates: Option<Vec<String>>,
     intellisense_render: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialQuickAddConfig {
+    template_folder: Option<PathBuf>,
+    global_variables: Option<BTreeMap<String, String>>,
+    capture_choices: Option<Vec<QuickAddCaptureChoiceConfig>>,
+    template_choices: Option<Vec<QuickAddTemplateChoiceConfig>>,
+    ai: Option<PartialQuickAddAiConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialQuickAddAiConfig {
+    default_model: Option<String>,
+    default_system_prompt: Option<String>,
+    prompt_templates_folder: Option<PathBuf>,
+    show_assistant: Option<bool>,
+    providers: Option<Vec<QuickAddAiProviderConfig>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1920,6 +2089,148 @@ struct ObsidianTemplaterConfig {
 struct ObsidianTemplaterFolderTemplateConfig {
     folder: String,
     template: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddConfig {
+    #[serde(rename = "templateFolderPath")]
+    template_folder_path: Option<String>,
+    #[serde(rename = "globalVariables", default)]
+    global_variables: BTreeMap<String, String>,
+    #[serde(default)]
+    choices: Vec<ObsidianQuickAddChoice>,
+    ai: Option<ObsidianQuickAddAiConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddChoice {
+    id: Option<String>,
+    name: Option<String>,
+    #[serde(rename = "type")]
+    choice_type: Option<String>,
+    #[serde(rename = "captureTo")]
+    capture_to: Option<String>,
+    #[serde(rename = "captureToActiveFile")]
+    capture_to_active_file: Option<bool>,
+    #[serde(rename = "activeFileWritePosition")]
+    active_file_write_position: Option<String>,
+    #[serde(rename = "createFileIfItDoesntExist")]
+    create_file_if_it_doesnt_exist: Option<ObsidianQuickAddCreateFileConfig>,
+    format: Option<ObsidianQuickAddFormatConfig>,
+    #[serde(rename = "useSelectionAsCaptureValue")]
+    use_selection_as_capture_value: Option<bool>,
+    prepend: Option<bool>,
+    task: Option<bool>,
+    #[serde(rename = "insertAfter")]
+    insert_after: Option<ObsidianQuickAddInsertAfterConfig>,
+    #[serde(rename = "newLineCapture")]
+    new_line_capture: Option<ObsidianQuickAddNewLineCaptureConfig>,
+    #[serde(rename = "openFile")]
+    open_file: Option<bool>,
+    templater: Option<ObsidianQuickAddTemplaterChoiceConfig>,
+    #[serde(rename = "templatePath")]
+    template_path: Option<String>,
+    folder: Option<ObsidianQuickAddTemplateFolderConfig>,
+    #[serde(rename = "fileNameFormat")]
+    file_name_format: Option<ObsidianQuickAddFormatConfig>,
+    #[serde(rename = "fileExistsBehavior")]
+    file_exists_behavior: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddCreateFileConfig {
+    enabled: Option<bool>,
+    #[serde(rename = "createWithTemplate")]
+    create_with_template: Option<bool>,
+    template: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddFormatConfig {
+    enabled: Option<bool>,
+    format: Option<String>,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddInsertAfterConfig {
+    enabled: Option<bool>,
+    #[serde(rename = "after")]
+    heading: Option<String>,
+    #[serde(rename = "insertAtEnd")]
+    insert_at_end: Option<bool>,
+    #[serde(rename = "considerSubsections")]
+    consider_subsections: Option<bool>,
+    #[serde(rename = "createIfNotFound")]
+    create_if_not_found: Option<bool>,
+    #[serde(rename = "createIfNotFoundLocation")]
+    create_if_not_found_location: Option<String>,
+    inline: Option<bool>,
+    #[serde(rename = "replaceExisting")]
+    replace_existing: Option<bool>,
+    #[serde(rename = "blankLineAfterMatchMode")]
+    blank_line_after_match_mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddNewLineCaptureConfig {
+    enabled: Option<bool>,
+    direction: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddTemplaterChoiceConfig {
+    #[serde(rename = "afterCapture")]
+    after_capture: Option<String>,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddTemplateFolderConfig {
+    enabled: Option<bool>,
+    #[serde(default)]
+    folders: Vec<String>,
+    #[serde(rename = "chooseWhenCreatingNote")]
+    choose_when_creating_note: Option<bool>,
+    #[serde(rename = "createInSameFolderAsActiveFile")]
+    create_in_same_folder_as_active_file: Option<bool>,
+    #[serde(rename = "chooseFromSubfolders")]
+    choose_from_subfolders: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddAiConfig {
+    #[serde(rename = "defaultModel")]
+    default_model: Option<String>,
+    #[serde(rename = "defaultSystemPrompt")]
+    default_system_prompt: Option<String>,
+    #[serde(rename = "promptTemplatesFolderPath")]
+    prompt_templates_folder_path: Option<String>,
+    #[serde(rename = "showAssistant")]
+    show_assistant: Option<bool>,
+    #[serde(default)]
+    providers: Vec<ObsidianQuickAddAiProviderConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddAiProviderConfig {
+    name: Option<String>,
+    endpoint: Option<String>,
+    #[serde(rename = "apiKeyRef")]
+    api_key_ref: Option<String>,
+    #[serde(rename = "apiKey")]
+    api_key: Option<String>,
+    #[serde(default)]
+    models: Vec<ObsidianQuickAddAiModelConfig>,
+    #[serde(rename = "autoSyncModels")]
+    auto_sync_models: Option<bool>,
+    #[serde(rename = "modelSource")]
+    model_source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianQuickAddAiModelConfig {
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2420,6 +2731,9 @@ pub struct KanbanImporter;
 pub struct PeriodicNotesImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct QuickAddImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TaskNotesImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2435,6 +2749,7 @@ pub fn all_importers() -> Vec<Box<dyn PluginImporter>> {
         Box::new(DataviewImporter),
         Box::new(KanbanImporter),
         Box::new(PeriodicNotesImporter),
+        Box::new(QuickAddImporter),
         Box::new(TaskNotesImporter),
         Box::new(TasksImporter),
         Box::new(TemplaterImporter),
@@ -2451,6 +2766,12 @@ pub fn import_tasknotes_plugin_config(
     paths: &VaultPaths,
 ) -> Result<ConfigImportReport, ConfigImportError> {
     TaskNotesImporter.import(paths, ImportTarget::Shared)
+}
+
+pub fn import_quickadd_plugin_config(
+    paths: &VaultPaths,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    QuickAddImporter.import(paths, ImportTarget::Shared)
 }
 
 pub fn import_templater_plugin_config(
@@ -2799,6 +3120,57 @@ impl PluginImporter for TemplaterImporter {
             target,
             dry_run,
         )
+    }
+}
+
+impl PluginImporter for QuickAddImporter {
+    fn name(&self) -> &'static str {
+        "quickadd"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian QuickAdd plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/quickadd/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+
+        let source = fs::read_to_string(&source_path)?;
+        let raw = serde_json::from_str::<Value>(&source)?;
+        let obsidian = serde_json::from_value::<ObsidianQuickAddConfig>(raw.clone())?;
+        let imported_quickadd = imported_quickadd_config(obsidian);
+        let settings =
+            import_settings_from_mappings(quickadd_config_import_mappings(&imported_quickadd)?);
+        let mut report = apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
+            &settings,
+            target,
+            dry_run,
+        )?;
+        report.skipped = quickadd_skipped_settings(&raw);
+        Ok(report)
     }
 }
 
@@ -3192,6 +3564,10 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
         apply_obsidian_templater_defaults(&mut config, obsidian_templater);
     }
 
+    if let Some(obsidian_quickadd) = load_obsidian_quickadd_config(paths, &mut diagnostics) {
+        apply_obsidian_quickadd_defaults(&mut config, obsidian_quickadd);
+    }
+
     if let Some(obsidian_dataview) = load_obsidian_dataview_config(paths, &mut diagnostics) {
         apply_obsidian_dataview_defaults(&mut config, obsidian_dataview);
     }
@@ -3325,6 +3701,17 @@ fn load_obsidian_templater_config(
     load_json_file(&path, diagnostics)
 }
 
+fn load_obsidian_quickadd_config(
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<ObsidianQuickAddConfig> {
+    let path = paths
+        .vault_root()
+        .join(".obsidian/plugins/quickadd/data.json");
+
+    load_json_file(&path, diagnostics)
+}
+
 fn load_obsidian_dataview_config(
     paths: &VaultPaths,
     diagnostics: &mut Vec<ConfigDiagnostic>,
@@ -3379,6 +3766,12 @@ fn imported_templater_config(obsidian: ObsidianTemplaterConfig) -> TemplatesConf
     let mut config = VaultConfig::default();
     apply_obsidian_templater_defaults(&mut config, obsidian);
     config.templates
+}
+
+fn imported_quickadd_config(obsidian: ObsidianQuickAddConfig) -> QuickAddConfig {
+    let mut config = VaultConfig::default();
+    apply_obsidian_quickadd_defaults(&mut config, obsidian);
+    config.quickadd
 }
 
 fn imported_dataview_config(obsidian: ObsidianDataviewConfig) -> DataviewConfig {
@@ -3586,6 +3979,38 @@ fn templater_config_import_mappings(
     Ok(mappings)
 }
 
+fn quickadd_config_import_mappings(
+    config: &QuickAddConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let mut mappings = Vec::new();
+    push_config_import_mapping(
+        &mut mappings,
+        "templateFolderPath",
+        "quickadd.template_folder",
+        &config.template_folder,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "globalVariables",
+        "quickadd.global_variables",
+        &config.global_variables,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "choices[type=Capture]",
+        "quickadd.capture_choices",
+        &config.capture_choices,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "choices[type=Template]",
+        "quickadd.template_choices",
+        &config.template_choices,
+    )?;
+    push_config_import_mapping(&mut mappings, "ai", "quickadd.ai", &config.ai)?;
+    Ok(mappings)
+}
+
 fn dataview_config_import_mappings(
     config: &DataviewConfig,
 ) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
@@ -3681,6 +4106,78 @@ fn dataview_config_import_mappings(
         &config.group_column_name,
     )?;
     Ok(mappings)
+}
+
+fn quickadd_skipped_settings(raw: &Value) -> Vec<ImportSkippedSetting> {
+    let Some(settings) = raw.as_object() else {
+        return Vec::new();
+    };
+
+    let mut skipped = Vec::new();
+    if let Some(choices) = settings.get("choices").and_then(Value::as_array) {
+        for (index, choice) in choices.iter().enumerate() {
+            let choice_type = choice.get("type").and_then(Value::as_str).unwrap_or("");
+            let choice_name = choice
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| choice.get("id").and_then(Value::as_str))
+                .unwrap_or("unnamed-choice");
+            let source = format!("choices[{index}] ({choice_name})");
+            if choice_type.eq_ignore_ascii_case("Macro") {
+                skipped.push(ImportSkippedSetting {
+                    source,
+                    reason: "QuickAdd Macro choices are not imported; migrate them to `vulcan run --script` or shell automation".to_string(),
+                });
+            } else if choice_type.eq_ignore_ascii_case("Multi") {
+                skipped.push(ImportSkippedSetting {
+                    source,
+                    reason: "QuickAdd Multi choices are not imported; migrate them to a `vulcan run --script` orchestration flow".to_string(),
+                });
+            } else if !choice_type.is_empty()
+                && !choice_type.eq_ignore_ascii_case("Capture")
+                && !choice_type.eq_ignore_ascii_case("Template")
+            {
+                skipped.push(ImportSkippedSetting {
+                    source,
+                    reason: format!("QuickAdd choice type `{choice_type}` is not supported"),
+                });
+            }
+        }
+    }
+
+    if let Some(providers) = settings
+        .get("ai")
+        .and_then(Value::as_object)
+        .and_then(|ai| ai.get("providers"))
+        .and_then(Value::as_array)
+    {
+        for (index, provider) in providers.iter().enumerate() {
+            let api_key = provider.get("apiKey").and_then(Value::as_str).unwrap_or("");
+            if api_key.trim().is_empty() {
+                continue;
+            }
+            let provider_name = provider
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or("provider");
+            let env_name = quickadd_provider_api_key_env(
+                provider_name,
+                provider.get("apiKeyRef").and_then(Value::as_str),
+                Some(api_key),
+            )
+            .unwrap_or_else(|| "PROVIDER_API_KEY".to_string());
+            skipped.push(ImportSkippedSetting {
+                source: format!("ai.providers[{index}].apiKey"),
+                reason: format!(
+                    "stored API keys are not imported; set `{env_name}` in the environment instead"
+                ),
+            });
+        }
+    }
+
+    skipped
 }
 
 #[allow(clippy::too_many_lines)]
@@ -4921,6 +5418,144 @@ fn apply_obsidian_templater_defaults(config: &mut VaultConfig, obsidian: Obsidia
     }
 }
 
+fn apply_obsidian_quickadd_defaults(config: &mut VaultConfig, obsidian: ObsidianQuickAddConfig) {
+    if let Some(folder) = obsidian.template_folder_path {
+        config.quickadd.template_folder = normalize_template_path(Some(folder));
+    }
+    config.quickadd.global_variables =
+        normalize_quickadd_global_variables(obsidian.global_variables);
+    config.quickadd.capture_choices = obsidian
+        .choices
+        .iter()
+        .enumerate()
+        .filter_map(|(index, choice)| quickadd_capture_choice_from_obsidian(choice, index))
+        .collect();
+    config.quickadd.template_choices = obsidian
+        .choices
+        .iter()
+        .enumerate()
+        .filter_map(|(index, choice)| quickadd_template_choice_from_obsidian(choice, index))
+        .collect();
+    config.quickadd.ai = obsidian.ai.and_then(normalize_quickadd_ai_config);
+}
+
+fn quickadd_capture_choice_from_obsidian(
+    choice: &ObsidianQuickAddChoice,
+    ordinal: usize,
+) -> Option<QuickAddCaptureChoiceConfig> {
+    if !quickadd_choice_type(choice).eq_ignore_ascii_case("Capture") {
+        return None;
+    }
+    let (id, name) = quickadd_choice_identity(choice, ordinal, "capture");
+    let format = choice
+        .format
+        .as_ref()
+        .and_then(normalize_quickadd_format_value);
+    let insert_after = choice.insert_after.as_ref().and_then(|insert_after| {
+        let enabled = insert_after.enabled.unwrap_or(false);
+        let heading = normalize_optional_text(insert_after.heading.clone())?;
+        enabled.then_some(QuickAddInsertAfterConfig {
+            heading,
+            insert_at_end: insert_after.insert_at_end.unwrap_or(false),
+            consider_subsections: insert_after.consider_subsections.unwrap_or(false),
+            create_if_not_found: insert_after.create_if_not_found.unwrap_or(false),
+            create_if_not_found_location: normalize_optional_text(
+                insert_after.create_if_not_found_location.clone(),
+            ),
+            inline: insert_after.inline.unwrap_or(false),
+            replace_existing: insert_after.replace_existing.unwrap_or(false),
+            blank_line_after_match_mode: normalize_optional_text(
+                insert_after.blank_line_after_match_mode.clone(),
+            ),
+        })
+    });
+    let new_line_capture_direction = choice
+        .new_line_capture
+        .as_ref()
+        .and_then(|capture| capture.enabled.unwrap_or(false).then_some(capture))
+        .and_then(|capture| normalize_optional_text(capture.direction.clone()));
+
+    Some(QuickAddCaptureChoiceConfig {
+        id,
+        name,
+        capture_to: normalize_optional_text(choice.capture_to.clone()),
+        capture_to_active_file: choice.capture_to_active_file.unwrap_or(false),
+        active_file_write_position: normalize_optional_text(
+            choice.active_file_write_position.clone(),
+        ),
+        create_file_if_missing: QuickAddCreateFileConfig {
+            enabled: choice
+                .create_file_if_it_doesnt_exist
+                .as_ref()
+                .and_then(|create| create.enabled)
+                .unwrap_or(false),
+            create_with_template: choice
+                .create_file_if_it_doesnt_exist
+                .as_ref()
+                .and_then(|create| create.create_with_template)
+                .unwrap_or(false),
+            template: choice
+                .create_file_if_it_doesnt_exist
+                .as_ref()
+                .and_then(|create| normalize_optional_text(create.template.clone())),
+        },
+        format,
+        use_selection_as_capture_value: choice.use_selection_as_capture_value,
+        prepend: choice.prepend.unwrap_or(false),
+        task: choice.task.unwrap_or(false),
+        insert_after,
+        new_line_capture_direction,
+        open_file: choice.open_file.unwrap_or(false),
+        templater_after_capture: choice
+            .templater
+            .as_ref()
+            .and_then(|templater| normalize_optional_text(templater.after_capture.clone())),
+    })
+}
+
+fn quickadd_template_choice_from_obsidian(
+    choice: &ObsidianQuickAddChoice,
+    ordinal: usize,
+) -> Option<QuickAddTemplateChoiceConfig> {
+    if !quickadd_choice_type(choice).eq_ignore_ascii_case("Template") {
+        return None;
+    }
+    let (id, name) = quickadd_choice_identity(choice, ordinal, "template");
+    let folder =
+        choice
+            .folder
+            .as_ref()
+            .map_or_else(QuickAddTemplateFolderConfig::default, |folder| {
+                if folder.enabled.unwrap_or(false) {
+                    QuickAddTemplateFolderConfig {
+                        folders: normalize_quickadd_path_list(folder.folders.clone()),
+                        choose_when_creating_note: folder
+                            .choose_when_creating_note
+                            .unwrap_or(false),
+                        create_in_same_folder_as_active_file: folder
+                            .create_in_same_folder_as_active_file
+                            .unwrap_or(false),
+                        choose_from_subfolders: folder.choose_from_subfolders.unwrap_or(false),
+                    }
+                } else {
+                    QuickAddTemplateFolderConfig::default()
+                }
+            });
+
+    Some(QuickAddTemplateChoiceConfig {
+        id,
+        name,
+        template_path: normalize_template_path(choice.template_path.clone()),
+        folder,
+        file_name_format: choice
+            .file_name_format
+            .as_ref()
+            .and_then(normalize_quickadd_format_value),
+        open_file: choice.open_file.unwrap_or(false),
+        file_exists_behavior: normalize_optional_text(choice.file_exists_behavior.clone()),
+    })
+}
+
 fn apply_obsidian_dataview_defaults(config: &mut VaultConfig, obsidian: ObsidianDataviewConfig) {
     if let Some(prefix) = obsidian.inline_query_prefix {
         config.dataview.inline_query_prefix = prefix;
@@ -5735,6 +6370,44 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
     }
 
+    if let Some(quickadd) = overrides.quickadd {
+        if let Some(template_folder) = quickadd.template_folder {
+            config.quickadd.template_folder = normalize_template_pathbuf(&template_folder);
+        }
+        if let Some(global_variables) = quickadd.global_variables {
+            config.quickadd.global_variables =
+                normalize_quickadd_global_variables(global_variables);
+        }
+        if let Some(capture_choices) = quickadd.capture_choices {
+            config.quickadd.capture_choices = capture_choices;
+        }
+        if let Some(template_choices) = quickadd.template_choices {
+            config.quickadd.template_choices = template_choices;
+        }
+        if let Some(ai) = quickadd.ai {
+            let target = config
+                .quickadd
+                .ai
+                .get_or_insert_with(QuickAddAiConfig::default);
+            if let Some(default_model) = ai.default_model {
+                target.default_model = normalize_optional_text(Some(default_model));
+            }
+            if let Some(default_system_prompt) = ai.default_system_prompt {
+                target.default_system_prompt = normalize_optional_text(Some(default_system_prompt));
+            }
+            if let Some(prompt_templates_folder) = ai.prompt_templates_folder {
+                target.prompt_templates_folder =
+                    normalize_template_pathbuf(&prompt_templates_folder);
+            }
+            if let Some(show_assistant) = ai.show_assistant {
+                target.show_assistant = show_assistant;
+            }
+            if let Some(providers) = ai.providers {
+                target.providers = providers;
+            }
+        }
+    }
+
     if let Some(web) = overrides.web {
         if let Some(user_agent) = web.user_agent {
             config.web.user_agent = user_agent;
@@ -5849,6 +6522,162 @@ fn normalize_string_list(values: Vec<String>) -> Vec<String> {
 
 fn normalize_comma_separated_paths(value: &str) -> Vec<String> {
     normalize_string_list(value.split(',').map(ToOwned::to_owned).collect())
+}
+
+fn normalize_quickadd_format_value(config: &ObsidianQuickAddFormatConfig) -> Option<String> {
+    config
+        .enabled
+        .unwrap_or(false)
+        .then(|| normalize_optional_text(config.format.clone()))
+        .flatten()
+}
+
+fn normalize_quickadd_path_list(values: Vec<String>) -> Vec<PathBuf> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let Some(value) = normalize_template_path(Some(value)) else {
+            continue;
+        };
+        if !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    normalized
+}
+
+fn normalize_quickadd_global_variables(
+    values: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    values
+        .into_iter()
+        .filter_map(|(key, value)| normalize_optional_text(Some(key)).map(|key| (key, value)))
+        .collect()
+}
+
+fn normalize_quickadd_ai_config(config: ObsidianQuickAddAiConfig) -> Option<QuickAddAiConfig> {
+    let providers = config
+        .providers
+        .into_iter()
+        .filter_map(quickadd_provider_from_obsidian)
+        .collect::<Vec<_>>();
+    let default_model = normalize_optional_text(config.default_model)
+        .filter(|model| !model.eq_ignore_ascii_case("Ask me"));
+    let default_system_prompt = normalize_optional_text(config.default_system_prompt);
+    let prompt_templates_folder = normalize_template_path(config.prompt_templates_folder_path);
+    let show_assistant = config.show_assistant.unwrap_or(false);
+
+    if default_model.is_none()
+        && default_system_prompt.is_none()
+        && prompt_templates_folder.is_none()
+        && !show_assistant
+        && providers.is_empty()
+    {
+        None
+    } else {
+        Some(QuickAddAiConfig {
+            default_model,
+            default_system_prompt,
+            prompt_templates_folder,
+            show_assistant,
+            providers,
+        })
+    }
+}
+
+fn quickadd_provider_from_obsidian(
+    provider: ObsidianQuickAddAiProviderConfig,
+) -> Option<QuickAddAiProviderConfig> {
+    let name = normalize_optional_text(provider.name)?;
+    let endpoint = normalize_optional_text(provider.endpoint).unwrap_or_default();
+    let models = normalize_string_list(
+        provider
+            .models
+            .into_iter()
+            .filter_map(|model| normalize_optional_text(model.name))
+            .collect(),
+    );
+
+    Some(QuickAddAiProviderConfig {
+        api_key_env: quickadd_provider_api_key_env(
+            &name,
+            provider.api_key_ref.as_deref(),
+            provider.api_key.as_deref(),
+        ),
+        models,
+        model_source: normalize_optional_text(provider.model_source),
+        auto_sync_models: provider.auto_sync_models,
+        name,
+        endpoint,
+    })
+}
+
+fn quickadd_provider_api_key_env(
+    provider_name: &str,
+    api_key_ref: Option<&str>,
+    api_key: Option<&str>,
+) -> Option<String> {
+    let api_key_ref =
+        api_key_ref.and_then(|value| normalize_optional_text(Some(value.to_string())));
+    let has_plaintext_key = api_key.is_some_and(|value| !value.trim().is_empty());
+
+    api_key_ref
+        .and_then(|value| normalize_env_var_name(&value))
+        .or_else(|| {
+            has_plaintext_key
+                .then(|| normalize_env_var_name(&format!("{provider_name}_API_KEY")))
+                .flatten()
+        })
+}
+
+fn normalize_env_var_name(value: &str) -> Option<String> {
+    let mut normalized = String::new();
+    let mut last_was_separator = false;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_uppercase());
+            last_was_separator = false;
+        } else if !last_was_separator {
+            normalized.push('_');
+            last_was_separator = true;
+        }
+    }
+    let normalized = normalized.trim_matches('_').to_string();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn quickadd_choice_type(choice: &ObsidianQuickAddChoice) -> &str {
+    choice.choice_type.as_deref().unwrap_or("")
+}
+
+fn quickadd_choice_identity(
+    choice: &ObsidianQuickAddChoice,
+    ordinal: usize,
+    fallback_prefix: &str,
+) -> (String, String) {
+    let name = normalize_optional_text(choice.name.clone()).unwrap_or_else(|| {
+        normalize_optional_text(choice.id.clone())
+            .unwrap_or_else(|| format!("{fallback_prefix}-{ordinal}"))
+    });
+    let id = normalize_optional_text(choice.id.clone())
+        .or_else(|| quickadd_slugify(&name))
+        .unwrap_or_else(|| format!("{fallback_prefix}-{ordinal}"));
+    (id, name)
+}
+
+fn quickadd_slugify(value: &str) -> Option<String> {
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator {
+            slug.push('-');
+            last_was_separator = true;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    (!slug.is_empty()).then_some(slug)
 }
 
 fn apply_partial_tasknotes_field_mapping(
@@ -6381,6 +7210,13 @@ group_column_name = "Bucket"
 date_format = "DD/MM/YYYY"
 time_format = "HH:mm:ss"
 "###;
+    const QUICKADD_OVERRIDE_CONFIG_TOML: &str = r#"[quickadd]
+template_folder = "QuickAdd/Overrides"
+global_variables = { Project = "[[Projects/Beta]]" }
+
+[quickadd.ai]
+show_assistant = false
+"#;
     const TEMPLATER_PLUGIN_DEFAULTS_JSON: &str = r#"{
       "command_timeout": 9,
       "templates_folder": "Templater/Templates",
@@ -6409,6 +7245,82 @@ time_format = "HH:mm:ss"
       "startup_templates": ["Startup", ""],
       "intellisense_render": 3
     }"#;
+    const OBSIDIAN_QUICKADD_JSON: &str = r###"{
+      "templateFolderPath": "QuickAdd/Templates",
+      "globalVariables": {
+        "Project": "[[Projects/Alpha]]",
+        "agenda": "- {{VALUE:title}} due {{VDATE:due,YYYY-MM-DD}}"
+      },
+      "choices": [
+        {
+          "id": "capture-daily",
+          "name": "Daily Capture",
+          "type": "Capture",
+          "captureTo": "Journal/Daily/{{DATE:YYYY-MM-DD}}",
+          "captureToActiveFile": false,
+          "createFileIfItDoesntExist": {
+            "enabled": true,
+            "createWithTemplate": true,
+            "template": "Daily Template"
+          },
+          "format": {
+            "enabled": true,
+            "format": "- {{VALUE:title|case:slug}}"
+          },
+          "useSelectionAsCaptureValue": true,
+          "prepend": true,
+          "task": true,
+          "insertAfter": {
+            "enabled": true,
+            "after": "## Log",
+            "insertAtEnd": true,
+            "considerSubsections": true,
+            "createIfNotFound": true,
+            "createIfNotFoundLocation": "bottom"
+          },
+          "openFile": true,
+          "templater": {
+            "afterCapture": "wholeFile"
+          }
+        },
+        {
+          "id": "template-note",
+          "name": "Template Note",
+          "type": "Template",
+          "templatePath": "Templates/Project Template.md",
+          "folder": {
+            "enabled": true,
+            "folders": ["Projects", " Areas/Research/ "],
+            "chooseWhenCreatingNote": true,
+            "chooseFromSubfolders": true
+          },
+          "fileNameFormat": {
+            "enabled": true,
+            "format": "{{VALUE:title|case:slug}}"
+          },
+          "openFile": true,
+          "fileExistsBehavior": "increment"
+        }
+      ],
+      "ai": {
+        "defaultModel": "gpt-4o-mini",
+        "defaultSystemPrompt": "Summarize briefly.",
+        "promptTemplatesFolderPath": "QuickAdd/Prompts",
+        "showAssistant": true,
+        "providers": [
+          {
+            "name": "OpenAI",
+            "endpoint": "https://api.openai.com/v1",
+            "apiKeyRef": "OPENAI_API_KEY",
+            "apiKey": "",
+            "modelSource": "providerApi",
+            "models": [
+              { "name": "gpt-4o-mini", "maxTokens": 128000 }
+            ]
+          }
+        ]
+      }
+    }"###;
     const TEMPLATER_PRECEDENCE_PLUGIN_JSON: &str = r#"{
       "command_timeout": 5,
       "templates_folder": "Templater/Templates",
@@ -6492,6 +7404,10 @@ intellisense_render = 2
             OBSIDIAN_DATAVIEW_JSON,
         );
         write_test_file(
+            &vault_root.join(".obsidian/plugins/quickadd/data.json"),
+            OBSIDIAN_QUICKADD_JSON,
+        );
+        write_test_file(
             &vault_root.join(".obsidian/plugins/periodic-notes/data.json"),
             OBSIDIAN_PERIODIC_NOTES_JSON,
         );
@@ -6540,6 +7456,66 @@ intellisense_render = 2
         assert_eq!(config.dataview.max_recursive_render_depth, 7);
         assert_eq!(config.dataview.primary_column_name, "Document");
         assert_eq!(config.dataview.group_column_name, "Bucket");
+    }
+
+    fn assert_obsidian_seed_quickadd_defaults(config: &VaultConfig) {
+        assert_eq!(
+            config.quickadd.template_folder,
+            Some(PathBuf::from("QuickAdd/Templates"))
+        );
+        assert_eq!(
+            config.quickadd.global_variables.get("Project"),
+            Some(&"[[Projects/Alpha]]".to_string())
+        );
+        assert_eq!(config.quickadd.capture_choices.len(), 1);
+        assert_eq!(config.quickadd.capture_choices[0].id, "capture-daily");
+        assert_eq!(
+            config.quickadd.capture_choices[0].capture_to.as_deref(),
+            Some("Journal/Daily/{{DATE:YYYY-MM-DD}}")
+        );
+        assert_eq!(
+            config.quickadd.capture_choices[0].format.as_deref(),
+            Some("- {{VALUE:title|case:slug}}")
+        );
+        assert_eq!(
+            config.quickadd.capture_choices[0]
+                .insert_after
+                .as_ref()
+                .map(|insert_after| insert_after.heading.as_str()),
+            Some("## Log")
+        );
+        assert_eq!(config.quickadd.template_choices.len(), 1);
+        assert_eq!(config.quickadd.template_choices[0].id, "template-note");
+        assert_eq!(
+            config.quickadd.template_choices[0].template_path,
+            Some(PathBuf::from("Templates/Project Template.md"))
+        );
+        assert_eq!(
+            config.quickadd.template_choices[0].folder.folders,
+            vec![PathBuf::from("Projects"), PathBuf::from("Areas/Research")]
+        );
+        let ai = config
+            .quickadd
+            .ai
+            .as_ref()
+            .expect("quickadd ai config should be present");
+        assert_eq!(ai.default_model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(
+            ai.default_system_prompt.as_deref(),
+            Some("Summarize briefly.")
+        );
+        assert_eq!(
+            ai.prompt_templates_folder,
+            Some(PathBuf::from("QuickAdd/Prompts"))
+        );
+        assert!(ai.show_assistant);
+        assert_eq!(ai.providers.len(), 1);
+        assert_eq!(ai.providers[0].name, "OpenAI");
+        assert_eq!(
+            ai.providers[0].api_key_env.as_deref(),
+            Some("OPENAI_API_KEY")
+        );
+        assert_eq!(ai.providers[0].models, vec!["gpt-4o-mini".to_string()]);
     }
 
     fn assert_obsidian_seed_kanban_defaults(config: &VaultConfig) {
@@ -6905,6 +7881,7 @@ template = "Sprint"
         assert!(loaded.diagnostics.is_empty());
         assert_obsidian_seed_core_defaults(&loaded.config);
         assert_obsidian_seed_dataview_defaults(&loaded.config);
+        assert_obsidian_seed_quickadd_defaults(&loaded.config);
         assert_obsidian_seed_kanban_defaults(&loaded.config);
         assert_obsidian_seed_periodic_defaults(&loaded.config);
     }
@@ -6971,6 +7948,43 @@ template = "Sprint"
             vec!["Startup".to_string()]
         );
         assert_eq!(loaded.config.templates.intellisense_render, 3);
+    }
+
+    #[test]
+    fn quickadd_settings_follow_vulcan_partial_override_precedence() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        write_test_file(
+            &vault_root.join(".obsidian/plugins/quickadd/data.json"),
+            OBSIDIAN_QUICKADD_JSON,
+        );
+        write_test_file(
+            &vault_root.join(".vulcan/config.toml"),
+            QUICKADD_OVERRIDE_CONFIG_TOML,
+        );
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(
+            loaded.config.quickadd.template_folder,
+            Some(PathBuf::from("QuickAdd/Overrides"))
+        );
+        assert_eq!(
+            loaded.config.quickadd.global_variables.get("Project"),
+            Some(&"[[Projects/Beta]]".to_string())
+        );
+        assert_eq!(loaded.config.quickadd.capture_choices.len(), 1);
+        assert_eq!(loaded.config.quickadd.template_choices.len(), 1);
+        let ai = loaded
+            .config
+            .quickadd
+            .ai
+            .as_ref()
+            .expect("quickadd ai config should be present");
+        assert!(!ai.show_assistant);
+        assert_eq!(ai.providers.len(), 1);
+        assert_eq!(ai.default_model.as_deref(), Some("gpt-4o-mini"));
     }
 
     #[test]
@@ -7173,7 +8187,7 @@ time_format = "HH:mm:ss"
             .expect("tasks plugin dir should be created");
         fs::write(
             vault_root.join(".obsidian/plugins/obsidian-tasks-plugin/data.json"),
-            r##"{
+            r###"{
               "globalFilter": "#task",
               "globalQuery": "",
               "removeGlobalFilter": true,
@@ -7189,7 +8203,7 @@ time_format = "HH:mm:ss"
                   { "symbol": "~", "name": "Parked", "type": "NON_TASK" }
                 ]
               }
-            }"##,
+            }"###,
         )
         .expect("tasks config should be written");
 
@@ -7730,7 +8744,7 @@ default_mode = "off"
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
         fs::write(
             vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
-            r#"{
+            r##"{
               "command_timeout": 12,
               "templates_folder": "Templater/Templates",
               "templates_pairs": [["slugify", "bun run slugify"], ["", ""]],
@@ -7754,7 +8768,7 @@ default_mode = "off"
               "enabled_templates_hotkeys": ["Daily", ""],
               "startup_templates": ["Startup", ""],
               "intellisense_render": 4
-            }"#,
+            }"##,
         )
         .expect("templater config should be written");
         fs::write(
@@ -7813,6 +8827,162 @@ default_mode = "off"
         let paths = VaultPaths::new(temp_dir.path());
 
         let error = import_templater_plugin_config(&paths).expect_err("import should fail");
+        assert!(matches!(error, ConfigImportError::MissingSource(_)));
+    }
+
+    #[test]
+    fn import_quickadd_plugin_config_preserves_existing_sections_and_is_idempotent() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".obsidian/plugins/quickadd"))
+            .expect("quickadd plugin dir should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join(".obsidian/plugins/quickadd/data.json"),
+            r###"{
+              "templateFolderPath": "QuickAdd/Templates",
+              "globalVariables": {
+                "Project": "[[Projects/Alpha]]",
+                "agenda": "- {{VALUE:title}} due {{VDATE:due,YYYY-MM-DD}}"
+              },
+              "choices": [
+                {
+                  "id": "capture-daily",
+                  "name": "Daily Capture",
+                  "type": "Capture",
+                  "captureTo": "Journal/Daily/{{DATE:YYYY-MM-DD}}",
+                  "captureToActiveFile": false,
+                  "createFileIfItDoesntExist": {
+                    "enabled": true,
+                    "createWithTemplate": true,
+                    "template": "Daily Template"
+                  },
+                  "format": {
+                    "enabled": true,
+                    "format": "- {{VALUE:title|case:slug}}"
+                  },
+                  "prepend": true,
+                  "task": true,
+                  "insertAfter": {
+                    "enabled": true,
+                    "after": "## Log",
+                    "insertAtEnd": true,
+                    "considerSubsections": true,
+                    "createIfNotFound": true,
+                    "createIfNotFoundLocation": "bottom"
+                  },
+                  "templater": {
+                    "afterCapture": "wholeFile"
+                  }
+                },
+                {
+                  "id": "template-note",
+                  "name": "Template Note",
+                  "type": "Template",
+                  "templatePath": "Templates/Project Template.md",
+                  "folder": {
+                    "enabled": true,
+                    "folders": ["Projects", "Areas/Research"],
+                    "chooseWhenCreatingNote": true,
+                    "chooseFromSubfolders": true
+                  },
+                  "fileNameFormat": {
+                    "enabled": true,
+                    "format": "{{VALUE:title|case:slug}}"
+                  },
+                  "openFile": true,
+                  "fileExistsBehavior": "increment"
+                },
+                {
+                  "id": "macro-choice",
+                  "name": "Macro Choice",
+                  "type": "Macro"
+                },
+                {
+                  "id": "multi-choice",
+                  "name": "Multi Choice",
+                  "type": "Multi"
+                }
+              ],
+              "ai": {
+                "defaultModel": "gpt-4o-mini",
+                "defaultSystemPrompt": "Summarize briefly.",
+                "promptTemplatesFolderPath": "QuickAdd/Prompts",
+                "showAssistant": true,
+                "providers": [
+                  {
+                    "name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "apiKey": "secret-token",
+                    "modelSource": "providerApi",
+                    "models": [
+                      { "name": "gpt-4o-mini", "maxTokens": 128000 }
+                    ]
+                  }
+                ]
+              }
+            }"###,
+        )
+        .expect("quickadd config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .expect("existing config should be written");
+        let paths = VaultPaths::new(vault_root);
+
+        let report = import_quickadd_plugin_config(&paths).expect("import should succeed");
+
+        assert_eq!(report.plugin, "quickadd");
+        assert!(!report.created_config);
+        assert!(report.updated);
+        assert!(report
+            .mappings
+            .iter()
+            .any(|mapping| mapping.target == "quickadd.template_folder"
+                && mapping.value == Value::String("QuickAdd/Templates".to_string())));
+        assert!(report.skipped.iter().any(|item| {
+            item.source == "choices[2] (Macro Choice)"
+                && item.reason.contains("`vulcan run --script`")
+        }));
+        assert!(report.skipped.iter().any(|item| {
+            item.source == "choices[3] (Multi Choice)" && item.reason.contains("orchestration flow")
+        }));
+        assert!(report.skipped.iter().any(|item| {
+            item.source == "ai.providers[0].apiKey" && item.reason.contains("OPENAI_API_KEY")
+        }));
+
+        let rendered = fs::read_to_string(paths.config_file()).expect("config should exist");
+        assert!(rendered.contains("[git]"));
+        assert!(rendered.contains("auto_commit = true"));
+        assert!(rendered.contains("[quickadd]"));
+        assert!(rendered.contains("template_folder = \"QuickAdd/Templates\""));
+        assert!(rendered.contains("[quickadd.global_variables]"));
+        assert!(rendered.contains("Project = \"[[Projects/Alpha]]\""));
+        assert!(rendered.contains("[[quickadd.capture_choices]]"));
+        assert!(rendered.contains("id = \"capture-daily\""));
+        assert!(rendered.contains("capture_to = \"Journal/Daily/{{DATE:YYYY-MM-DD}}\""));
+        assert!(rendered.contains("format = \"- {{VALUE:title|case:slug}}\""));
+        assert!(rendered.contains("[quickadd.capture_choices.insert_after]"));
+        assert!(rendered.contains("heading = \"## Log\""));
+        assert!(rendered.contains("[[quickadd.template_choices]]"));
+        assert!(rendered.contains("template_path = \"Templates/Project Template.md\""));
+        assert!(rendered.contains("[quickadd.ai]"));
+        assert!(rendered.contains("default_model = \"gpt-4o-mini\""));
+        assert!(rendered.contains("[[quickadd.ai.providers]]"));
+        assert!(rendered.contains("api_key_env = \"OPENAI_API_KEY\""));
+
+        let second_report =
+            import_quickadd_plugin_config(&paths).expect("second import should succeed");
+        assert!(!second_report.updated);
+    }
+
+    #[test]
+    fn import_quickadd_plugin_config_errors_when_source_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let error = import_quickadd_plugin_config(&paths).expect_err("import should fail");
         assert!(matches!(error, ConfigImportError::MissingSource(_)));
     }
 
@@ -8391,6 +9561,7 @@ default_mode = "off"
                 "dataview",
                 "kanban",
                 "periodic-notes",
+                "quickadd",
                 "tasknotes",
                 "tasks",
                 "templater"

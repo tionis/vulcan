@@ -250,6 +250,9 @@ impl<'a> TemplateSession<'a> {
         if let Some(rest) = quickadd_strip_keyword(trimmed, "VDATE", &[':']) {
             return self.render_quickadd_vdate(rest);
         }
+        if let Some(rest) = quickadd_strip_keyword(trimmed, "GLOBAL_VAR", &[':']) {
+            return self.render_quickadd_global_var(rest, depth);
+        }
         if let Some(rest) = quickadd_strip_keyword(trimmed, "VALUE", &[':', '|']) {
             return self.render_quickadd_value(rest, "value");
         }
@@ -270,10 +273,7 @@ impl<'a> TemplateSession<'a> {
                 Ok(Some(current_file_wikilink(&self.target_path)))
             }
             value if value.eq_ignore_ascii_case("RANDOM") => Ok(None),
-            _ => {
-                let _ = depth;
-                Ok(None)
-            }
+            _ => Ok(None),
         }
     }
 
@@ -353,6 +353,25 @@ impl<'a> TemplateSession<'a> {
         ))
     }
 
+    fn render_quickadd_global_var(
+        &mut self,
+        rest: &str,
+        depth: usize,
+    ) -> Result<Option<String>, CliError> {
+        let Some(name) = rest.strip_prefix(':').map(str::trim) else {
+            return Ok(None);
+        };
+        if name.is_empty() {
+            return Ok(None);
+        }
+
+        let Some(value) = self.lookup_quickadd_global_var(name) else {
+            return Ok(Some(String::new()));
+        };
+        self.render_native_text_with_depth(&value, depth + 1)
+            .map(Some)
+    }
+
     fn render_quickadd_value(
         &mut self,
         rest: &str,
@@ -422,6 +441,28 @@ impl<'a> TemplateSession<'a> {
                 lookup_template_var(self.request.vars, &fallback, Some(default_prompt_name))
             }
         })
+    }
+
+    fn lookup_quickadd_global_var(&self, variable_name: &str) -> Option<String> {
+        let lookup = PromptLookupKey::named(variable_name);
+        self.request
+            .vault_config
+            .quickadd
+            .global_variables
+            .get(&lookup.raw)
+            .cloned()
+            .or_else(|| {
+                self.request
+                    .vault_config
+                    .quickadd
+                    .global_variables
+                    .iter()
+                    .find(|(key, _)| {
+                        key.eq_ignore_ascii_case(variable_name)
+                            || slugify_var_key(key) == lookup.slug
+                    })
+                    .map(|(_, value)| value.clone())
+            })
     }
 
     fn timestamp_with_day_offset(&self, offset_days: i64) -> TemplateTimestamp {
@@ -3443,6 +3484,52 @@ mod tests {
         assert_eq!(
             rendered,
             "release-planning / Release Planning / Anonymous / 2026-04-05 / Sunday"
+        );
+    }
+
+    #[test]
+    fn native_renderer_supports_quickadd_global_variables() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        let mut config = VaultConfig::default();
+        config.quickadd.global_variables = HashMap::from([
+            ("Project".to_string(), "[[Projects/Alpha]]".to_string()),
+            (
+                "agenda".to_string(),
+                "- {{VALUE:title|case:slug}} due {{VDATE:due,YYYY-MM-DD}}".to_string(),
+            ),
+        ])
+        .into_iter()
+        .collect();
+        let vars = HashMap::from([
+            ("title".to_string(), "Release Planning".to_string()),
+            ("due".to_string(), "tomorrow".to_string()),
+        ]);
+        let request = TemplateRenderRequest {
+            paths: &paths,
+            vault_config: &config,
+            templates: &[],
+            template_path: None,
+            template_text: "",
+            target_path: "Projects/Alpha.md",
+            target_contents: Some("Body\n"),
+            engine: TemplateEngineKind::Native,
+            vars: &vars,
+            allow_mutations: false,
+            run_mode: TemplateRunMode::Append,
+        };
+        let mut session = TemplateSession::new(request, TemplateEngineKind::Native);
+        session.timestamp = fixed_template_timestamp();
+
+        let rendered = session
+            .render_native_text(
+                "{{GLOBAL_VAR:project}} / {{GLOBAL_VAR:AGENDA}} / {{GLOBAL_VAR:missing}}",
+            )
+            .expect("quickadd global variables should render");
+
+        assert_eq!(
+            rendered,
+            "[[Projects/Alpha]] / - release-planning due 2026-04-05 / "
         );
     }
 
