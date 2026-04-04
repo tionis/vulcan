@@ -882,6 +882,25 @@ struct ResolvedInlineTask {
     text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedTaskConvertLine {
+    start_line: i64,
+    end_line: i64,
+    title_input: String,
+    details: String,
+    replacement_prefix: String,
+    completed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedConvertedTaskNote {
+    relative_path: String,
+    title: String,
+    frontmatter: YamlMapping,
+    body: String,
+    task_changes: Vec<RefactorChange>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct KanbanCardsReport {
     board_path: String,
@@ -2877,6 +2896,441 @@ fn prepare_existing_note_tasknote_frontmatter(
     changes
 }
 
+fn tasknote_link_target(path: &str) -> String {
+    path.strip_suffix(".md").unwrap_or(path).to_string()
+}
+
+fn extract_line_content_as_task_title(line: &str) -> String {
+    let mut cleaned = line.trim().to_string();
+    cleaned = Regex::new(r"^\s*(?:[-*+]|\d+[.)])\s*\[[^\]]\]\s*")
+        .expect("regex should compile")
+        .replace(&cleaned, "")
+        .into_owned();
+    cleaned = Regex::new(r"^\s*[-*+]\s+")
+        .expect("regex should compile")
+        .replace(&cleaned, "")
+        .into_owned();
+    cleaned = Regex::new(r"^\s*\d+[.)]\s+")
+        .expect("regex should compile")
+        .replace(&cleaned, "")
+        .into_owned();
+    let blockquote_prefix = Regex::new(r"^\s*>\s*").expect("regex should compile");
+    while cleaned.trim_start().starts_with('>') {
+        cleaned = blockquote_prefix.replace(&cleaned, "").into_owned();
+    }
+    cleaned = Regex::new(r"^\s*#{1,6}\s+")
+        .expect("regex should compile")
+        .replace(&cleaned, "")
+        .into_owned();
+    if Regex::new(r"^\s*(?:-{3,}|={3,})\s*$")
+        .expect("regex should compile")
+        .is_match(&cleaned)
+    {
+        return String::new();
+    }
+    cleaned.trim().to_string()
+}
+
+fn line_replacement_prefix(line: &str) -> String {
+    if let Some(captures) = Regex::new(r"^(\s*)((?:[-*+]|\d+[.)])\s+)\[[^\]]\]")
+        .expect("regex should compile")
+        .captures(line)
+    {
+        let indent = captures.get(1).map_or("", |capture| capture.as_str());
+        let prefix = captures.get(2).map_or("- ", |capture| capture.as_str());
+        return format!("{indent}{prefix}");
+    }
+    if let Some(captures) = Regex::new(r"^(\s*(?:[-*+]|\d+[.)])\s+)")
+        .expect("regex should compile")
+        .captures(line)
+    {
+        return captures
+            .get(1)
+            .map_or("- ".to_string(), |capture| capture.as_str().to_string());
+    }
+    if let Some(captures) = Regex::new(r"^(\s*(?:>\s*)+)")
+        .expect("regex should compile")
+        .captures(line)
+    {
+        return captures
+            .get(1)
+            .map_or("> ".to_string(), |capture| capture.as_str().to_string());
+    }
+    "- ".to_string()
+}
+
+fn resolve_task_convert_line(
+    source: &str,
+    line_number: i64,
+) -> Result<ResolvedTaskConvertLine, CliError> {
+    let lines = source.split('\n').collect::<Vec<_>>();
+    let index = usize::try_from(line_number.saturating_sub(1))
+        .map_err(|_| CliError::operation(format!("invalid line number: {line_number}")))?;
+    let line = lines
+        .get(index)
+        .copied()
+        .ok_or_else(|| CliError::operation(format!("line {line_number} not found")))?;
+    let heading = Regex::new(r"^\s*(#{1,6})\s+(.+?)\s*$").expect("regex should compile");
+    if let Some(captures) = heading.captures(line) {
+        let level = captures.get(1).map_or(0, |capture| capture.as_str().len());
+        let title_input = captures
+            .get(2)
+            .map_or(String::new(), |capture| capture.as_str().trim().to_string());
+        if title_input.is_empty() {
+            return Err(CliError::operation(format!(
+                "line {line_number} does not contain convertible heading text"
+            )));
+        }
+
+        let mut end_index = index;
+        for (candidate_index, candidate) in lines.iter().enumerate().skip(index + 1) {
+            if let Some(next_heading) = heading.captures(candidate) {
+                let next_level = next_heading
+                    .get(1)
+                    .map_or(0, |capture| capture.as_str().len());
+                if next_level <= level {
+                    break;
+                }
+            }
+            end_index = candidate_index;
+        }
+        let details = lines
+            .get(index + 1..=end_index)
+            .map_or_else(String::new, |selected| selected.join("\n"));
+        return Ok(ResolvedTaskConvertLine {
+            start_line: line_number,
+            end_line: i64::try_from(end_index + 1)
+                .map_err(|_| CliError::operation("heading range exceeds supported size"))?,
+            title_input,
+            details,
+            replacement_prefix: "- ".to_string(),
+            completed: false,
+        });
+    }
+
+    let title_input = extract_line_content_as_task_title(line);
+    if title_input.is_empty() {
+        return Err(CliError::operation(format!(
+            "line {line_number} does not contain convertible task text"
+        )));
+    }
+
+    let completed = Regex::new(r"^\s*(?:[-*+]|\d+[.)])\s*\[[xX]\]")
+        .expect("regex should compile")
+        .is_match(line);
+    Ok(ResolvedTaskConvertLine {
+        start_line: line_number,
+        end_line: line_number,
+        title_input,
+        details: String::new(),
+        replacement_prefix: line_replacement_prefix(line),
+        completed,
+    })
+}
+
+fn replace_task_convert_line_range(
+    source: &str,
+    selection: &ResolvedTaskConvertLine,
+    replacement_line: &str,
+) -> Result<(String, RefactorChange), CliError> {
+    let mut lines = source
+        .split('\n')
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let start_index = usize::try_from(selection.start_line.saturating_sub(1))
+        .map_err(|_| CliError::operation("invalid conversion start line"))?;
+    let end_index = usize::try_from(selection.end_line.saturating_sub(1))
+        .map_err(|_| CliError::operation("invalid conversion end line"))?;
+    if start_index >= lines.len() || end_index >= lines.len() || start_index > end_index {
+        return Err(CliError::operation(
+            "conversion line range is out of bounds",
+        ));
+    }
+
+    let before = lines[start_index..=end_index].join("\n");
+    lines.splice(start_index..=end_index, [replacement_line.to_string()]);
+    Ok((
+        lines.join("\n"),
+        RefactorChange {
+            before,
+            after: replacement_line.to_string(),
+        },
+    ))
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_converted_tasknote(
+    paths: &VaultPaths,
+    config: &vulcan_core::VaultConfig,
+    title_input: &str,
+    details: &str,
+    completed: bool,
+) -> Result<PlannedConvertedTaskNote, CliError> {
+    let reference_ms = tasknote_reference_ms();
+    let raw_title = title_input.trim();
+    if raw_title.is_empty() {
+        return Err(CliError::operation("task text cannot be empty"));
+    }
+
+    let parsed_input = config
+        .tasknotes
+        .enable_natural_language_input
+        .then(|| parse_tasknote_natural_language(raw_title, &config.tasknotes, reference_ms));
+    let title = parsed_input
+        .as_ref()
+        .map(|parsed| parsed.title.as_str())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or(raw_title)
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return Err(CliError::operation("task title cannot be empty"));
+    }
+
+    let status = if completed {
+        first_completed_tasknote_status(config)
+    } else {
+        parsed_input
+            .as_ref()
+            .and_then(|parsed| parsed.status.clone())
+            .unwrap_or_else(|| config.tasknotes.default_status.clone())
+    };
+    let priority = parsed_input
+        .as_ref()
+        .and_then(|parsed| parsed.priority.clone())
+        .unwrap_or_else(|| config.tasknotes.default_priority.clone());
+    let due = parsed_input
+        .as_ref()
+        .and_then(|parsed| parsed.due.clone())
+        .or_else(|| {
+            tasknotes_default_date_value(
+                config.tasknotes.task_creation_defaults.default_due_date,
+                reference_ms,
+            )
+        });
+    let scheduled = parsed_input
+        .as_ref()
+        .and_then(|parsed| parsed.scheduled.clone())
+        .or_else(|| {
+            tasknotes_default_date_value(
+                config
+                    .tasknotes
+                    .task_creation_defaults
+                    .default_scheduled_date,
+                reference_ms,
+            )
+        });
+    let contexts = dedup_tasknote_values(
+        config
+            .tasknotes
+            .task_creation_defaults
+            .default_contexts
+            .iter()
+            .cloned()
+            .chain(
+                parsed_input
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|parsed| parsed.contexts.iter().cloned()),
+            )
+            .collect::<Vec<_>>(),
+        normalize_tasknote_context,
+    );
+    let projects = dedup_tasknote_values(
+        config
+            .tasknotes
+            .task_creation_defaults
+            .default_projects
+            .iter()
+            .cloned()
+            .chain(
+                parsed_input
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|parsed| parsed.projects.iter().cloned()),
+            )
+            .collect::<Vec<_>>(),
+        normalize_tasknote_project,
+    );
+    let mut tags = dedup_tasknote_values(
+        config
+            .tasknotes
+            .task_creation_defaults
+            .default_tags
+            .iter()
+            .cloned()
+            .chain(
+                parsed_input
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|parsed| parsed.tags.iter().cloned()),
+            )
+            .collect::<Vec<_>>(),
+        normalize_tasknote_tag,
+    );
+    if config.tasknotes.identification_method == vulcan_core::TaskNotesIdentificationMethod::Tag {
+        if let Some(task_tag) = normalize_tasknote_tag(&config.tasknotes.task_tag) {
+            if !tags
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&task_tag))
+            {
+                tags.insert(0, task_tag);
+            }
+        }
+    }
+    let time_estimate = parsed_input
+        .as_ref()
+        .and_then(|parsed| parsed.time_estimate)
+        .or(config
+            .tasknotes
+            .task_creation_defaults
+            .default_time_estimate);
+    let recurrence = parsed_input
+        .as_ref()
+        .and_then(|parsed| parsed.recurrence.clone())
+        .or_else(|| {
+            tasknotes_default_recurrence_rule(
+                config.tasknotes.task_creation_defaults.default_recurrence,
+            )
+        });
+
+    let relative_path = format!(
+        "{}/{}.md",
+        config.tasknotes.tasks_folder.trim_end_matches('/'),
+        sanitize_tasknote_filename(&title)
+    );
+    if paths.vault_root().join(&relative_path).exists() {
+        return Err(CliError::operation(format!(
+            "destination task already exists: {relative_path}"
+        )));
+    }
+
+    let mapping = &config.tasknotes.field_mapping;
+    let timestamp = current_utc_timestamp_string();
+    let mut frontmatter = YamlMapping::new();
+    let mut task_changes = Vec::new();
+    for (key, value) in [
+        (
+            mapping.title.as_str(),
+            Some(YamlValue::String(title.clone())),
+        ),
+        (mapping.status.as_str(), Some(YamlValue::String(status))),
+        (mapping.priority.as_str(), Some(YamlValue::String(priority))),
+        (
+            mapping.date_created.as_str(),
+            Some(YamlValue::String(timestamp.clone())),
+        ),
+        (
+            mapping.date_modified.as_str(),
+            Some(YamlValue::String(timestamp)),
+        ),
+    ] {
+        if let Some(change) = set_tasknote_frontmatter_value(&mut frontmatter, key, value) {
+            task_changes.push(change);
+        }
+    }
+    if let Some(due) = due {
+        if let Some(change) = set_tasknote_frontmatter_value(
+            &mut frontmatter,
+            &mapping.due,
+            Some(YamlValue::String(due)),
+        ) {
+            task_changes.push(change);
+        }
+    }
+    if let Some(scheduled) = scheduled {
+        if let Some(change) = set_tasknote_frontmatter_value(
+            &mut frontmatter,
+            &mapping.scheduled,
+            Some(YamlValue::String(scheduled)),
+        ) {
+            task_changes.push(change);
+        }
+    }
+    if !contexts.is_empty() {
+        if let Some(change) = set_tasknote_frontmatter_value(
+            &mut frontmatter,
+            &mapping.contexts,
+            Some(yaml_string_sequence(&contexts)),
+        ) {
+            task_changes.push(change);
+        }
+    }
+    if !projects.is_empty() {
+        if let Some(change) = set_tasknote_frontmatter_value(
+            &mut frontmatter,
+            &mapping.projects,
+            Some(yaml_string_sequence(&projects)),
+        ) {
+            task_changes.push(change);
+        }
+    }
+    if !tags.is_empty() {
+        if let Some(change) = set_tasknote_frontmatter_value(
+            &mut frontmatter,
+            "tags",
+            Some(yaml_string_sequence(&tags)),
+        ) {
+            task_changes.push(change);
+        }
+    }
+    if let Some(time_estimate) = time_estimate {
+        if let Some(change) = set_tasknote_frontmatter_value(
+            &mut frontmatter,
+            &mapping.time_estimate,
+            Some(YamlValue::Number(serde_yaml::Number::from(
+                time_estimate as u64,
+            ))),
+        ) {
+            task_changes.push(change);
+        }
+    }
+    if let Some(recurrence) = recurrence {
+        if let Some(change) = set_tasknote_frontmatter_value(
+            &mut frontmatter,
+            &mapping.recurrence,
+            Some(YamlValue::String(recurrence)),
+        ) {
+            task_changes.push(change);
+        }
+    }
+    if completed {
+        if let Some(change) = set_tasknote_frontmatter_value(
+            &mut frontmatter,
+            &mapping.completed_date,
+            Some(YamlValue::String(current_utc_date_string())),
+        ) {
+            task_changes.push(change);
+        }
+    }
+    if config.tasknotes.identification_method
+        == vulcan_core::TaskNotesIdentificationMethod::Property
+    {
+        if let Some(property_name) = config.tasknotes.task_property_name.as_ref() {
+            let value = config
+                .tasknotes
+                .task_property_value
+                .as_ref()
+                .map_or(YamlValue::Bool(true), |value| {
+                    YamlValue::String(value.clone())
+                });
+            if let Some(change) =
+                set_tasknote_frontmatter_value(&mut frontmatter, property_name, Some(value))
+            {
+                task_changes.push(change);
+            }
+        }
+    }
+
+    Ok(PlannedConvertedTaskNote {
+        relative_path,
+        title,
+        frontmatter,
+        body: normalize_tasknote_body(details),
+        task_changes,
+    })
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_tasks_add_command(
     paths: &VaultPaths,
@@ -3188,9 +3642,14 @@ fn run_tasks_convert_command(
     use_stderr_color: bool,
 ) -> Result<TaskConvertReport, CliError> {
     if let Some(line_number) = line {
-        return Err(CliError::operation(format!(
-            "line conversion is not implemented yet for line {line_number}"
-        )));
+        return run_tasks_convert_line_command(
+            paths,
+            file,
+            line_number,
+            dry_run,
+            output,
+            use_stderr_color,
+        );
     }
 
     let config = load_vault_config(paths).config;
@@ -3250,6 +3709,68 @@ fn run_tasks_convert_command(
         task_changes,
         frontmatter: frontmatter_json,
         body,
+        changed_paths,
+    })
+}
+
+fn run_tasks_convert_line_command(
+    paths: &VaultPaths,
+    file: &str,
+    line_number: i64,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskConvertReport, CliError> {
+    let config = load_vault_config(paths).config;
+    let (source_path, source) = read_existing_note_source(paths, file)?;
+    let selection = resolve_task_convert_line(&source, line_number)?;
+    let planned = build_converted_tasknote(
+        paths,
+        &config,
+        &selection.title_input,
+        &selection.details,
+        selection.completed,
+    )?;
+    let replacement_line = format!(
+        "{}[[{}]]",
+        selection.replacement_prefix,
+        tasknote_link_target(&planned.relative_path)
+    );
+    let (updated_source, source_change) =
+        replace_task_convert_line_range(&source, &selection, &replacement_line)?;
+    let rendered_task = render_note_from_parts(Some(&planned.frontmatter), &planned.body)
+        .map_err(CliError::operation)?;
+    let frontmatter_json = tasknote_frontmatter_json(&planned.frontmatter);
+    let changed_paths = if dry_run {
+        Vec::new()
+    } else {
+        vec![source_path.clone(), planned.relative_path.clone()]
+    };
+
+    if !dry_run {
+        let task_path = paths.vault_root().join(&planned.relative_path);
+        if let Some(parent) = task_path.parent() {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
+        }
+        fs::write(&task_path, rendered_task).map_err(CliError::operation)?;
+        fs::write(paths.vault_root().join(&source_path), updated_source)
+            .map_err(CliError::operation)?;
+        run_incremental_scan(paths, output, use_stderr_color)?;
+    }
+
+    Ok(TaskConvertReport {
+        action: "convert".to_string(),
+        dry_run,
+        mode: "line".to_string(),
+        source_path,
+        target_path: planned.relative_path,
+        line_number: Some(line_number),
+        title: planned.title,
+        created: true,
+        source_changes: vec![source_change],
+        task_changes: planned.task_changes,
+        frontmatter: frontmatter_json,
+        body: planned.body,
         changed_paths,
     })
 }
