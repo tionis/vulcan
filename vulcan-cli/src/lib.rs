@@ -79,30 +79,31 @@ use vulcan_core::{
     repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note, save_saved_report,
     scan_vault_with_progress, search_vault, shape_tasks_query_result, step_period_start,
     task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
-    tasknotes_reminder_notify_at, tasknotes_status_state, verify_cache, watch_vault, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator,
-    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter,
-    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
-    PluginImporter, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
-    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
-    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
-    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_state,
+    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
+    BasesEvalReport, BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport,
+    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
+    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
+    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
+    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
+    KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
+    PeriodicNotesImporter, PluginImporter, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
+    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 
 #[derive(Debug)]
@@ -3579,6 +3580,21 @@ fn tasknote_time_entry_yaml_value(
     YamlValue::Mapping(mapping)
 }
 
+fn default_tasknote_reminders_yaml_value(
+    config: &vulcan_core::VaultConfig,
+) -> Result<Option<YamlValue>, CliError> {
+    let reminders = tasknotes_default_reminder_values(
+        &config.tasknotes.task_creation_defaults.default_reminders,
+    );
+    if reminders.is_empty() {
+        return Ok(None);
+    }
+
+    serde_yaml::to_value(reminders)
+        .map(Some)
+        .map_err(CliError::operation)
+}
+
 fn resolve_task_track_summary_window(
     config: &vulcan_core::VaultConfig,
     period: TasksTrackSummaryPeriodArg,
@@ -3630,6 +3646,7 @@ fn tasknote_frontmatter_key(config: &vulcan_core::VaultConfig, property: &str) -
         "completeInstances" | "complete_instances" => mapping.complete_instances.clone(),
         "skippedInstances" | "skipped_instances" => mapping.skipped_instances.clone(),
         "blockedBy" | "blocked_by" | "blocked-by" => mapping.blocked_by.clone(),
+        "pomodoros" => mapping.pomodoros.clone(),
         "reminders" => mapping.reminders.clone(),
         other => other.to_string(),
     }
@@ -4542,6 +4559,13 @@ fn build_converted_tasknote(
             task_changes.push(change);
         }
     }
+    if let Some(reminders) = default_tasknote_reminders_yaml_value(config)? {
+        if let Some(change) =
+            set_tasknote_frontmatter_value(&mut frontmatter, &mapping.reminders, Some(reminders))
+        {
+            task_changes.push(change);
+        }
+    }
     if completed {
         if let Some(change) = set_tasknote_frontmatter_value(
             &mut frontmatter,
@@ -4817,6 +4841,9 @@ fn run_tasks_add_command(
             YamlValue::String(mapping.recurrence.clone()),
             YamlValue::String(recurrence.clone()),
         );
+    }
+    if let Some(reminders) = default_tasknote_reminders_yaml_value(&config)? {
+        frontmatter.insert(YamlValue::String(mapping.reminders.clone()), reminders);
     }
     if config.tasknotes.identification_method
         == vulcan_core::TaskNotesIdentificationMethod::Property
