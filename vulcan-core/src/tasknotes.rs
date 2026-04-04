@@ -94,7 +94,7 @@ pub fn parse_tasknote_natural_language(
         return ParsedTaskNoteInput::default();
     }
 
-    let mut remaining = original.to_string();
+    let mut remaining = normalize_nlp_input_for_language(original, &config.nlp_language);
     let mut parsed = ParsedTaskNoteInput {
         contexts: extract_prefixed_values(&mut remaining, nlp_trigger(config, "contexts"), true),
         tags: extract_prefixed_values(&mut remaining, nlp_trigger(config, "tags"), false),
@@ -226,10 +226,7 @@ pub fn is_tasknote_document(
 #[must_use]
 pub fn tasknotes_status_state(config: &TaskNotesConfig, status: &str) -> TaskNotesStatusState {
     let normalized = status.trim().to_ascii_lowercase();
-    let definition = config
-        .statuses
-        .iter()
-        .find(|candidate| candidate.value.trim().eq_ignore_ascii_case(status))
+    let definition = tasknotes_status_definition(config, status)
         .cloned()
         .unwrap_or_else(|| fallback_status_definition(config, &normalized));
     let status_type = if definition.is_completed {
@@ -250,6 +247,17 @@ pub fn tasknotes_status_state(config: &TaskNotesConfig, status: &str) -> TaskNot
         status_type: status_type.to_string(),
         completed: definition.is_completed,
     }
+}
+
+#[must_use]
+pub fn tasknotes_status_definition<'a>(
+    config: &'a TaskNotesConfig,
+    status: &str,
+) -> Option<&'a TaskNotesStatusConfig> {
+    config
+        .statuses
+        .iter()
+        .find(|candidate| candidate.value.trim().eq_ignore_ascii_case(status))
 }
 
 #[must_use]
@@ -387,6 +395,120 @@ fn nlp_trigger<'a>(config: &'a TaskNotesConfig, property_id: &str) -> Option<&'a
         .map(|trigger| trigger.trigger.as_str())
 }
 
+fn normalize_nlp_input_for_language(text: &str, language: &str) -> String {
+    let normalized_language = language.trim().to_ascii_lowercase();
+    match normalized_language.as_str() {
+        "de" | "de-de" | "de-at" | "de-ch" => normalize_german_nlp_input(text),
+        "fr" | "fr-fr" | "fr-ca" | "fr-be" | "fr-ch" => normalize_french_nlp_input(text),
+        "es" | "es-es" | "es-mx" | "es-ar" => normalize_spanish_nlp_input(text),
+        _ => text.to_string(),
+    }
+}
+
+fn normalize_german_nlp_input(text: &str) -> String {
+    apply_nlp_replacements(
+        &replace_case_insensitive_regex(text, r"\bin\s+(\d+)\s+tagen?\b", "in $1 days"),
+        &[
+            (r"\bnächste\s+woche\b", "next week"),
+            (r"\bnaechste\s+woche\b", "next week"),
+            (r"\bheute\b", "today"),
+            (r"\bmorgen\b", "tomorrow"),
+            (r"\bnächsten\s+montag\b", "next monday"),
+            (r"\bnaechsten\s+montag\b", "next monday"),
+            (r"\bnächsten\s+dienstag\b", "next tuesday"),
+            (r"\bnaechsten\s+dienstag\b", "next tuesday"),
+            (r"\bnächsten\s+mittwoch\b", "next wednesday"),
+            (r"\bnaechsten\s+mittwoch\b", "next wednesday"),
+            (r"\bnächsten\s+donnerstag\b", "next thursday"),
+            (r"\bnaechsten\s+donnerstag\b", "next thursday"),
+            (r"\bnächsten\s+freitag\b", "next friday"),
+            (r"\bnaechsten\s+freitag\b", "next friday"),
+            (r"\bnächsten\s+samstag\b", "next saturday"),
+            (r"\bnaechsten\s+samstag\b", "next saturday"),
+            (r"\bnächsten\s+sonntag\b", "next sunday"),
+            (r"\bnaechsten\s+sonntag\b", "next sunday"),
+            (r"\bmontag\b", "monday"),
+            (r"\bdienstag\b", "tuesday"),
+            (r"\bmittwoch\b", "wednesday"),
+            (r"\bdonnerstag\b", "thursday"),
+            (r"\bfreitag\b", "friday"),
+            (r"\bsamstag\b", "saturday"),
+            (r"\bsonntag\b", "sunday"),
+            (r"\bdringend\b", "urgent"),
+            (r"\beilig\b", "urgent"),
+            (r"\bkritisch\b", "urgent"),
+            (r"\bsofort\b", "urgent"),
+        ],
+    )
+}
+
+fn normalize_french_nlp_input(text: &str) -> String {
+    apply_nlp_replacements(
+        &replace_case_insensitive_regex(text, r"\bdans\s+(\d+)\s+jours?\b", "in $1 days"),
+        &[
+            (r"\bsemaine\s+prochaine\b", "next week"),
+            (r"\baujourd['’]hui\b", "today"),
+            (r"\bdemain\b", "tomorrow"),
+            (r"\blundi\s+prochain\b", "next monday"),
+            (r"\bmardi\s+prochain\b", "next tuesday"),
+            (r"\bmercredi\s+prochain\b", "next wednesday"),
+            (r"\bjeudi\s+prochain\b", "next thursday"),
+            (r"\bvendredi\s+prochain\b", "next friday"),
+            (r"\bsamedi\s+prochain\b", "next saturday"),
+            (r"\bdimanche\s+prochain\b", "next sunday"),
+            (r"\blundi\b", "monday"),
+            (r"\bmardi\b", "tuesday"),
+            (r"\bmercredi\b", "wednesday"),
+            (r"\bjeudi\b", "thursday"),
+            (r"\bvendredi\b", "friday"),
+            (r"\bsamedi\b", "saturday"),
+            (r"\bdimanche\b", "sunday"),
+            (r"\burgent\b", "urgent"),
+            (r"\burgente\b", "urgent"),
+            (r"\bcritique\b", "urgent"),
+            (r"\bprioritaire\b", "urgent"),
+        ],
+    )
+}
+
+fn normalize_spanish_nlp_input(text: &str) -> String {
+    apply_nlp_replacements(
+        &replace_case_insensitive_regex(text, r"\ben\s+(\d+)\s+d[ií]as?\b", "in $1 days"),
+        &[
+            (r"\bpr[oó]xima\s+semana\b", "next week"),
+            (r"\bhoy\b", "today"),
+            (r"\bma[nñ]ana\b", "tomorrow"),
+            (r"\bpr[oó]ximo\s+lunes\b", "next monday"),
+            (r"\bpr[oó]ximo\s+martes\b", "next tuesday"),
+            (r"\bpr[oó]ximo\s+mi[eé]rcoles\b", "next wednesday"),
+            (r"\bpr[oó]ximo\s+jueves\b", "next thursday"),
+            (r"\bpr[oó]ximo\s+viernes\b", "next friday"),
+            (r"\bpr[oó]ximo\s+s[aá]bado\b", "next saturday"),
+            (r"\bpr[oó]ximo\s+domingo\b", "next sunday"),
+            (r"\blunes\b", "monday"),
+            (r"\bmartes\b", "tuesday"),
+            (r"\bmi[eé]rcoles\b", "wednesday"),
+            (r"\bjueves\b", "thursday"),
+            (r"\bviernes\b", "friday"),
+            (r"\bs[aá]bado\b", "saturday"),
+            (r"\bdomingo\b", "sunday"),
+            (r"\burgente\b", "urgent"),
+            (r"\bcr[ií]tico\b", "urgent"),
+            (r"\bcr[ií]tica\b", "urgent"),
+            (r"\bprioritario\b", "urgent"),
+            (r"\bprioritaria\b", "urgent"),
+        ],
+    )
+}
+
+fn apply_nlp_replacements(text: &str, replacements: &[(&str, &str)]) -> String {
+    replacements
+        .iter()
+        .fold(text.to_string(), |normalized, (pattern, replacement)| {
+            replace_case_insensitive_regex(&normalized, pattern, replacement)
+        })
+}
+
 fn tasknotes_default_reminder_value(config: &TaskNotesDefaultReminderConfig) -> Option<Value> {
     let id = config.id.trim();
     if id.is_empty() {
@@ -462,6 +584,13 @@ fn iso8601_duration_from_default(
         TaskNotesReminderDirection::Before => format!("-{duration}"),
         TaskNotesReminderDirection::After => duration,
     })
+}
+
+fn replace_case_insensitive_regex(text: &str, pattern: &str, replacement: &str) -> String {
+    Regex::new(&format!("(?i){pattern}"))
+        .expect("language normalization regex should compile")
+        .replace_all(text, replacement)
+        .into_owned()
 }
 
 fn extract_prefixed_values(
@@ -1339,6 +1468,47 @@ mod tests {
         assert_eq!(parsed.title, "Plan sprint");
         assert_eq!(parsed.due, None);
         assert_eq!(parsed.scheduled.as_deref(), Some("2026-04-06"));
+    }
+
+    #[test]
+    fn parses_german_natural_language_dates_and_priority_keywords() {
+        let mut config = TaskNotesConfig::default();
+        config.nlp_language = "de".to_string();
+
+        let parsed = parse_tasknote_natural_language(
+            "Bericht morgen @arbeit #wichtig dringend",
+            &config,
+            parse_date_like_string("2026-04-04").expect("reference date should parse"),
+        );
+
+        assert_eq!(parsed.title, "Bericht");
+        assert_eq!(parsed.priority.as_deref(), Some("high"));
+        assert_eq!(parsed.due.as_deref(), Some("2026-04-05"));
+        assert_eq!(parsed.contexts, vec!["@arbeit".to_string()]);
+        assert_eq!(parsed.tags, vec!["wichtig".to_string()]);
+    }
+
+    #[test]
+    fn parses_french_and_spanish_natural_language_dates() {
+        let reference_ms =
+            parse_date_like_string("2026-04-04").expect("reference date should parse");
+
+        let mut french = TaskNotesConfig::default();
+        french.nlp_language = "fr".to_string();
+        let french_parsed =
+            parse_tasknote_natural_language("Planifier revue demain", &french, reference_ms);
+        assert_eq!(french_parsed.title, "Planifier revue");
+        assert_eq!(french_parsed.due.as_deref(), Some("2026-04-05"));
+
+        let mut spanish = TaskNotesConfig::default();
+        spanish.nlp_language = "es".to_string();
+        let spanish_parsed = parse_tasknote_natural_language(
+            "Planificar entrega proximo lunes",
+            &spanish,
+            reference_ms,
+        );
+        assert_eq!(spanish_parsed.title, "Planificar entrega");
+        assert_eq!(spanish_parsed.due.as_deref(), Some("2026-04-06"));
     }
 
     #[test]

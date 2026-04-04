@@ -2152,15 +2152,15 @@ Notes on other common Obsidian plugins and their relationship to Vulcan:
 
 Reuses the status type registry from 9.10.4 (which defines `TODO`, `DONE`, `IN_PROGRESS`, `CANCELLED`, `NON_TASK` categories for inline checkbox tasks). TaskNotes extends this with richer status metadata and adds priority definitions. Both Obsidian Tasks and TaskNotes status systems coexist — the status registry maps between checkbox characters (Tasks plugin) and frontmatter strings (TaskNotes) so queries work across both task types.
 
-- [ ] Custom status definitions: each status has `id`, `value` (frontmatter string), `label` (display name), `color`, `isCompleted` (boolean), `autoArchive` (delay config)
+- [x] Custom status definitions: each status has `id`, `value` (frontmatter string), `label` (display name), `color`, `isCompleted` (boolean), `autoArchive` (delay config)
   - Default statuses: `todo`, `in-progress`, `done`, `cancelled`
   - Users can add unlimited custom statuses with configurable completion semantics
   - Map TaskNotes statuses to 9.10.4 status type categories (`isCompleted: true` → `DONE`, etc.) so unified queries work
-- [ ] Custom priority definitions: each priority has `id`, `value`, `label`, `color`, `weight` (numeric for sorting/scoring)
+- [x] Custom priority definitions: each priority has `id`, `value`, `label`, `color`, `weight` (numeric for sorting/scoring)
   - Default priorities: `highest`, `high`, `medium`, `low`, `lowest`
   - Map to Tasks plugin emoji priorities (⏫/🔺/🔼/🔽/⏬) for cross-format queries
-- [ ] Status and priority are first-class query dimensions: filterable, sortable, groupable in DQL, Tasks DSL, and Bases views
-- [ ] Auto-archive: when a task enters a completed status, optionally archive after a configurable delay
+- [x] Status and priority are first-class query dimensions: filterable, sortable, groupable in DQL, Tasks DSL, and Bases views
+- [x] Auto-archive: when a task enters a completed status, optionally archive after a configurable delay
 
 #### 9.15.3 Natural language task creation
 
@@ -2177,7 +2177,7 @@ Reuses the status type registry from 9.10.4 (which defines `TODO`, `DONE`, `IN_P
 - [x] Priority extraction: "high priority", "urgent", "low priority" — configurable keyword mapping
 - [x] `vulcan tasks add "natural language input"` — create task file from NLP-parsed input
 - [x] `--no-nlp` flag to create task with raw title (skip NLP parsing)
-- [ ] Configurable NLP language (default: English, supports multiple languages)
+- [x] Configurable NLP language (default: English, supports multiple languages)
 
 #### 9.15.4 Recurring tasks (RRULE)
 
