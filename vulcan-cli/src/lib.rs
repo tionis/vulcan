@@ -846,6 +846,25 @@ struct TaskAddReport {
     changed_paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TaskConvertReport {
+    action: String,
+    dry_run: bool,
+    mode: String,
+    source_path: String,
+    target_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_number: Option<i64>,
+    title: String,
+    created: bool,
+    source_changes: Vec<RefactorChange>,
+    task_changes: Vec<RefactorChange>,
+    frontmatter: Value,
+    body: String,
+    #[serde(skip)]
+    changed_paths: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 struct LoadedTaskNote {
     path: String,
@@ -2739,6 +2758,125 @@ fn load_tasknote_template(
     Ok((frontmatter, normalize_tasknote_body(&body)))
 }
 
+fn tasknote_title_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.trim().is_empty())
+        .unwrap_or("Untitled Task")
+        .to_string()
+}
+
+fn prepare_existing_note_tasknote_frontmatter(
+    frontmatter: &mut YamlMapping,
+    title_hint: &str,
+    config: &vulcan_core::VaultConfig,
+) -> Vec<RefactorChange> {
+    let mapping = &config.tasknotes.field_mapping;
+    let mut changes = Vec::new();
+
+    let title_key = YamlValue::String(mapping.title.clone());
+    let title = frontmatter
+        .get(&title_key)
+        .and_then(yaml_string)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| title_hint.to_string());
+    if let Some(change) =
+        set_tasknote_frontmatter_value(frontmatter, &mapping.title, Some(YamlValue::String(title)))
+    {
+        changes.push(change);
+    }
+
+    let status_key = YamlValue::String(mapping.status.clone());
+    let status = frontmatter
+        .get(&status_key)
+        .and_then(yaml_string)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| config.tasknotes.default_status.clone());
+    if let Some(change) = set_tasknote_frontmatter_value(
+        frontmatter,
+        &mapping.status,
+        Some(YamlValue::String(status)),
+    ) {
+        changes.push(change);
+    }
+
+    let priority_key = YamlValue::String(mapping.priority.clone());
+    let priority = frontmatter
+        .get(&priority_key)
+        .and_then(yaml_string)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| config.tasknotes.default_priority.clone());
+    if let Some(change) = set_tasknote_frontmatter_value(
+        frontmatter,
+        &mapping.priority,
+        Some(YamlValue::String(priority)),
+    ) {
+        changes.push(change);
+    }
+
+    let created_key = YamlValue::String(mapping.date_created.clone());
+    let date_created = frontmatter
+        .get(&created_key)
+        .and_then(yaml_string)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(current_utc_timestamp_string);
+    if let Some(change) = set_tasknote_frontmatter_value(
+        frontmatter,
+        &mapping.date_created,
+        Some(YamlValue::String(date_created)),
+    ) {
+        changes.push(change);
+    }
+
+    if let Some(change) = set_tasknote_frontmatter_value(
+        frontmatter,
+        &mapping.date_modified,
+        Some(YamlValue::String(current_utc_timestamp_string())),
+    ) {
+        changes.push(change);
+    }
+
+    if config.tasknotes.identification_method == vulcan_core::TaskNotesIdentificationMethod::Tag {
+        let tags_key = YamlValue::String("tags".to_string());
+        let mut tags = yaml_string_list(frontmatter.get(&tags_key));
+        if let Some(task_tag) = normalize_tasknote_tag(&config.tasknotes.task_tag) {
+            if !tags
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&task_tag))
+            {
+                tags.insert(0, task_tag);
+                if let Some(change) = set_tasknote_frontmatter_value(
+                    frontmatter,
+                    "tags",
+                    Some(yaml_string_sequence(&tags)),
+                ) {
+                    changes.push(change);
+                }
+            }
+        }
+    } else if let Some(property_name) = config.tasknotes.task_property_name.as_ref() {
+        let value = config
+            .tasknotes
+            .task_property_value
+            .as_ref()
+            .map_or(YamlValue::Bool(true), |value| {
+                YamlValue::String(value.clone())
+            });
+        if let Some(change) =
+            set_tasknote_frontmatter_value(frontmatter, property_name, Some(value))
+        {
+            changes.push(change);
+        }
+    }
+
+    changes
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_tasks_add_command(
     paths: &VaultPaths,
@@ -3038,6 +3176,81 @@ fn run_tasks_add_command(
         } else {
             vec![relative_path]
         },
+    })
+}
+
+fn run_tasks_convert_command(
+    paths: &VaultPaths,
+    file: &str,
+    line: Option<i64>,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskConvertReport, CliError> {
+    if let Some(line_number) = line {
+        return Err(CliError::operation(format!(
+            "line conversion is not implemented yet for line {line_number}"
+        )));
+    }
+
+    let config = load_vault_config(paths).config;
+    let (relative_path, source) = read_existing_note_source(paths, file)?;
+    let (frontmatter, body) =
+        parse_frontmatter_document(&source, false).map_err(CliError::operation)?;
+    let mut frontmatter = frontmatter.unwrap_or_default();
+    let title_hint = tasknote_title_from_path(&relative_path);
+    let frontmatter_json = tasknote_frontmatter_json(&frontmatter);
+    if extract_tasknote(
+        &relative_path,
+        &title_hint,
+        &frontmatter_json,
+        &config.tasknotes,
+    )
+    .is_some()
+    {
+        return Err(CliError::operation(format!(
+            "note is already a TaskNotes task: {relative_path}"
+        )));
+    }
+
+    let task_changes =
+        prepare_existing_note_tasknote_frontmatter(&mut frontmatter, &title_hint, &config);
+    let frontmatter_json = tasknote_frontmatter_json(&frontmatter);
+    let indexed = extract_tasknote(
+        &relative_path,
+        &title_hint,
+        &frontmatter_json,
+        &config.tasknotes,
+    )
+    .ok_or_else(|| CliError::operation("failed to convert note into a TaskNotes task"))?;
+    let rendered =
+        render_note_from_parts(Some(&frontmatter), &body).map_err(CliError::operation)?;
+    let changed_paths = if dry_run || task_changes.is_empty() {
+        Vec::new()
+    } else {
+        vec![relative_path.clone()]
+    };
+
+    if !dry_run && !task_changes.is_empty() {
+        fs::write(paths.vault_root().join(&relative_path), rendered)
+            .map_err(CliError::operation)?;
+        run_incremental_scan(paths, output, use_stderr_color)?;
+    }
+
+    Ok(TaskConvertReport {
+        action: "convert".to_string(),
+        dry_run,
+        mode: "note".to_string(),
+        source_path: relative_path.clone(),
+        target_path: relative_path,
+        line_number: None,
+        title: indexed.title,
+        created: false,
+        source_changes: Vec::new(),
+        task_changes,
+        frontmatter: frontmatter_json,
+        body,
+        changed_paths,
     })
 }
 
@@ -8709,6 +8922,29 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
                 print_task_mutation_report(cli.output, &report)
             }
+            TasksCommand::Convert {
+                file,
+                line,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_tasks_convert_command(
+                    &paths,
+                    file,
+                    *line,
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "tasks convert", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                print_task_convert_report(cli.output, &report)
+            }
             TasksCommand::Query { query } => {
                 let result = run_tasks_query_command(&paths, query)?;
                 print_tasks_query_result(cli.output, &result)
@@ -12858,6 +13094,39 @@ fn print_task_add_report(output: OutputFormat, report: &TaskAddReport) -> Result
     }
 }
 
+fn print_task_convert_report(
+    output: OutputFormat,
+    report: &TaskConvertReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            let suffix = if report.dry_run { " (dry-run)" } else { "" };
+            if report.source_path == report.target_path {
+                println!("{}{}", report.target_path, suffix);
+            } else {
+                println!("{} -> {}{}", report.source_path, report.target_path, suffix);
+            }
+            println!("Mode: {}", report.mode);
+            println!("Title: {}", report.title);
+            if let Some(line_number) = report.line_number {
+                println!("Line: {line_number}");
+            }
+            if report.source_changes.is_empty() && report.task_changes.is_empty() {
+                println!("No changes.");
+            } else {
+                for change in &report.source_changes {
+                    println!("- {} -> {}", change.before, change.after);
+                }
+                for change in &report.task_changes {
+                    println!("- {} -> {}", change.before, change.after);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_task_mutation_report(
     output: OutputFormat,
     report: &TaskMutationReport,
@@ -16146,6 +16415,33 @@ mod tests {
             Command::Tasks {
                 command: TasksCommand::Archive {
                     task: "Prep Outline".to_string(),
+                    dry_run: true,
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_convert_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "convert",
+            "Notes/Idea.md",
+            "--line",
+            "12",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Convert {
+                    file: "Notes/Idea.md".to_string(),
+                    line: Some(12),
                     dry_run: true,
                     no_commit: true,
                 },
