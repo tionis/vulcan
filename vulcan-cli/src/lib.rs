@@ -46,7 +46,9 @@ use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use vulcan_core::config::QuickAddImporter;
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
-use vulcan_core::expression::functions::{date_components, parse_date_like_string};
+use vulcan_core::expression::functions::{
+    date_components, parse_date_like_string, parse_duration_string,
+};
 use vulcan_core::expression::parse_expression;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
@@ -54,30 +56,31 @@ use vulcan_core::{
     add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bases_view_add,
     bases_view_delete, bases_view_edit, bases_view_rename, bulk_replace, bulk_set_property,
     cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault, drop_vector_model,
-    evaluate_base_file, evaluate_dataview_js_query, evaluate_dql, evaluate_note_inline_expressions,
-    evaluate_tasks_query, execute_query_report, expected_periodic_note_path,
-    export_daily_events_to_ics, export_static_search_index, extract_tasknote, git_blame,
-    git_commit, git_diff, git_recent_log, git_status, index_vectors_with_progress,
-    initialize_vault, inspect_base_file, inspect_cache, inspect_vector_queue, link_mentions,
-    list_checkpoints, list_daily_note_events, list_kanban_boards, list_saved_reports,
-    list_vector_models, load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
-    load_saved_report, load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card,
-    move_note, parse_dql_with_diagnostics, parse_tasknote_natural_language, parse_tasks_query,
-    period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
-    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
-    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
-    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
-    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, repair_vectors_with_progress, resolve_link, resolve_note_reference,
-    resolve_periodic_note, save_saved_report, scan_vault_with_progress, search_vault,
-    shape_tasks_query_result, step_period_start, suggest_duplicates, suggest_mentions,
-    task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
-    tasknotes_status_state, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec,
-    BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
-    ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsOutput, DataviewJsResult,
+    evaluate_base_file, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
+    evaluate_dql, evaluate_note_inline_expressions, evaluate_tasks_query, execute_query_report,
+    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index,
+    extract_tasknote, git_blame, git_commit, git_diff, git_recent_log, git_status,
+    index_vectors_with_progress, initialize_vault, inspect_base_file, inspect_cache,
+    inspect_vector_queue, link_mentions, list_checkpoints, list_daily_note_events,
+    list_kanban_boards, list_saved_reports, list_vector_models, load_dataview_blocks,
+    load_events_for_periodic_note, load_kanban_board, load_saved_report, load_tasks_blocks,
+    load_vault_config, merge_tags, move_kanban_card, move_note, parse_dql_with_diagnostics,
+    parse_tasknote_natural_language, parse_tasks_query, period_range_for_date,
+    plan_base_note_create, query_backlinks, query_change_report, query_graph_analytics,
+    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
+    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
+    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
+    repair_vectors_with_progress, resolve_link, resolve_note_reference, resolve_periodic_note,
+    save_saved_report, scan_vault_with_progress, search_vault, shape_tasks_query_result,
+    step_period_start, suggest_duplicates, suggest_mentions, task_upcoming_occurrences,
+    tasknotes_default_date_value, tasknotes_default_recurrence_rule, tasknotes_status_state,
+    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
+    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesCreateContext, BasesEvalReport,
+    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, ConfigImportReport, CoreImporter,
+    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DataviewJsSession,
     DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
     DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
     GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
@@ -2225,17 +2228,47 @@ fn load_run_script_source(
     Ok(buffer)
 }
 
+fn parse_run_timeout(timeout: Option<&str>) -> Result<Option<Duration>, CliError> {
+    let Some(timeout) = timeout else {
+        return Ok(None);
+    };
+
+    let millis = parse_duration_string(timeout).ok_or_else(|| {
+        CliError::operation(format!(
+            "invalid timeout duration `{timeout}`; expected values like 500ms, 30s, or 2m"
+        ))
+    })?;
+    if millis <= 0 {
+        return Err(CliError::operation("run timeout must be greater than 0ms"));
+    }
+    let millis = u64::try_from(millis)
+        .map_err(|_| CliError::operation("run timeout must be greater than 0ms"))?;
+    Ok(Some(Duration::from_millis(millis)))
+}
+
 fn run_js_command(
     paths: &VaultPaths,
     script: Option<&str>,
     script_mode: bool,
+    timeout: Option<Duration>,
 ) -> Result<DataviewJsResult, CliError> {
     let source = load_run_script_source(paths, script, script_mode)?;
-    evaluate_dataview_js_query(paths, strip_shebang_line(&source), None)
-        .map_err(CliError::operation)
+    evaluate_dataview_js_with_options(
+        paths,
+        strip_shebang_line(&source),
+        None,
+        DataviewJsEvalOptions { timeout },
+    )
+    .map_err(CliError::operation)
 }
 
-fn run_js_repl(paths: &VaultPaths, output: OutputFormat) -> Result<(), CliError> {
+fn run_js_repl(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    timeout: Option<Duration>,
+) -> Result<(), CliError> {
+    let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout })
+        .map_err(CliError::operation)?;
     let mut line = String::new();
     let stdin = io::stdin();
     let mut handle = stdin.lock();
@@ -2256,7 +2289,7 @@ fn run_js_repl(paths: &VaultPaths, output: OutputFormat) -> Result<(), CliError>
             break;
         }
 
-        match evaluate_dataview_js_query(paths, trimmed, None).map_err(CliError::operation) {
+        match session.evaluate(trimmed).map_err(CliError::operation) {
             Ok(result) => {
                 print_dataview_js_result(output, &result, false)?;
             }
@@ -11118,11 +11151,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Run {
             ref script,
             script_mode,
+            ref timeout,
         } => {
+            let timeout = parse_run_timeout(timeout.as_deref())?;
             if script.is_none() && io::stdin().is_terminal() {
-                run_js_repl(&paths, cli.output)
+                run_js_repl(&paths, cli.output, timeout)
             } else {
-                let result = run_js_command(&paths, script.as_deref(), script_mode)?;
+                let result = run_js_command(&paths, script.as_deref(), script_mode, timeout)?;
                 print_dataview_js_result(cli.output, &result, false)
             }
         }
@@ -20605,8 +20640,8 @@ mod tests {
             .expect("index scan should parse");
         let note_links = Cli::try_parse_from(["vulcan", "note", "links", "Dashboard"])
             .expect("note links should parse");
-        let run =
-            Cli::try_parse_from(["vulcan", "run", "demo", "--script"]).expect("run should parse");
+        let run = Cli::try_parse_from(["vulcan", "run", "demo", "--script", "--timeout", "45s"])
+            .expect("run should parse");
 
         assert_eq!(
             index.command,
@@ -20631,6 +20666,7 @@ mod tests {
             Command::Run {
                 script: Some("demo".to_string()),
                 script_mode: true,
+                timeout: Some("45s".to_string()),
             }
         );
     }

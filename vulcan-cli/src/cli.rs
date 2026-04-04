@@ -2285,6 +2285,12 @@ pub enum Command {
             help = "Treat the positional argument as a script file path for shebang use"
         )]
         script_mode: bool,
+        #[arg(
+            long,
+            value_name = "DURATION",
+            help = "Override the JS execution timeout (for example 500ms, 30s, or 2m)"
+        )]
+        timeout: Option<String>,
     },
     #[command(
         about = "Fetch and search external web content",

@@ -2767,7 +2767,7 @@ Move existing mutation commands under `refactor` namespace. No behavioral change
   - `fs`: adds write access to vault (note CRUD, frontmatter mutations, refactors)
   - `net`: adds network access (`web.search()`, `web.fetch()`)
   - `none`: drops resource limits (CPU/memory), retains all API access
-- [ ] `--timeout <duration>` — execution timeout (default: 30s), enforced via `Runtime::set_interrupt_handler()`
+- [x] `--timeout <duration>` — execution timeout (default: 30s), enforced via `Runtime::set_interrupt_handler()`
 - [x] `console.log()` output to stdout at all sandbox levels
 - [x] Script exit code: 0 on success, non-zero on error
 - [x] `--output json` wraps script output in structured JSON
@@ -2775,7 +2775,7 @@ Move existing mutation commands under `refactor` namespace. No behavioral change
 **REPL**
 
 - [x] `vulcan run` (no arguments) — drops into interactive JS REPL
-- [ ] Persistent `Context` across evaluations (variables survive between prompts)
+- [x] Persistent `Context` across evaluations (variables survive between prompts)
 - [ ] Multi-line input: detect incomplete expressions (unmatched `{`, `(`, template literals)
 - [ ] Tab completion for `vault.`, `vault.graph.`, `note.` and other API namespaces
 - [ ] Pretty-printed results: colored JSON for objects, formatted tables for note collections

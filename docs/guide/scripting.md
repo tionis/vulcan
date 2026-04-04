@@ -18,11 +18,13 @@ Current `vulcan run` highlights:
 - `vulcan run <name>` resolves `.vulcan/scripts/<name>` or `.vulcan/scripts/<name>.js`.
 - `vulcan run --script <file>` is the shebang-friendly form for executable script files.
 - `vulcan run` opens the current line-oriented REPL.
+- `--timeout <duration>` overrides the JS execution limit for one script run or REPL session.
 - `console.log(...)` and `help(obj)` are available inside the runtime.
+- REPL variables persist across prompts within the same session.
 
 Current limitations:
 
-- The REPL does not yet preserve JS variables between prompts.
+- The REPL is still line-oriented and does not yet support history, multiline input, or completion.
 - Runtime sandbox selection flags and write-capable JS APIs are not available yet.
 
 See also: `help sandbox`, `help js`, `help describe`.

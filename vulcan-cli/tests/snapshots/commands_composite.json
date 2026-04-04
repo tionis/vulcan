@@ -3574,6 +3574,17 @@
             "value_names": [
               "SCRIPT_MODE"
             ]
+          },
+          {
+            "help": "Override the JS execution timeout (for example 500ms, 30s, or 2m)",
+            "id": "timeout",
+            "long": "timeout",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DURATION"
+            ]
           }
         ],
         "subcommands": []

@@ -8414,6 +8414,43 @@ fn run_json_output_executes_script_files_and_named_scripts() {
 }
 
 #[test]
+fn run_json_output_reports_timeout_failures() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let script_path = vault_root.join("runtime-timeout.js");
+    fs::write(&script_path, "while (true) {}\n").expect("timeout script should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "run",
+            script_path
+                .to_str()
+                .expect("script path should be valid utf-8"),
+            "--timeout",
+            "200ms",
+        ])
+        .assert()
+        .failure();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["code"], "operation_failed");
+    assert!(json["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("timed out after 200 ms"));
+}
+
+#[test]
 fn describe_openai_and_mcp_formats_export_tool_definitions() {
     let openai_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
