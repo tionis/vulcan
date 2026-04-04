@@ -54,45 +54,45 @@ use vulcan_core::{
     cache_vacuum, cluster_vectors, create_checkpoint, doctor_fix, doctor_vault, drop_vector_model,
     evaluate_base_file, evaluate_dataview_js_query, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, expected_periodic_note_path,
-    export_daily_events_to_ics, export_static_search_index, git_blame, git_commit, git_diff,
-    git_recent_log, git_status, index_vectors_with_progress, initialize_vault, inspect_base_file,
-    inspect_cache, inspect_vector_queue, link_mentions, list_checkpoints, list_daily_note_events,
-    list_kanban_boards, list_saved_reports, list_vector_models, load_dataview_blocks,
-    load_events_for_periodic_note, load_kanban_board, load_saved_report, load_tasks_blocks,
-    load_vault_config, merge_tags, move_kanban_card, move_note, parse_dql_with_diagnostics,
-    parse_tasks_query, period_range_for_date, plan_base_note_create, query_backlinks,
-    query_change_report, query_graph_analytics, query_graph_components, query_graph_dead_ends,
-    query_graph_hubs, query_graph_moc_candidates, query_graph_path, query_graph_trends,
-    query_links, query_notes, query_related_notes, query_vector_neighbors,
-    rebuild_vault_with_progress, rebuild_vectors_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, repair_vectors_with_progress, resolve_link,
-    resolve_note_reference, resolve_periodic_note, save_saved_report, scan_vault_with_progress,
-    search_vault, step_period_start, suggest_duplicates, suggest_mentions,
-    task_upcoming_occurrences, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec,
-    BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
-    ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsOutput, DataviewJsResult,
-    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
-    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter, PluginImporter, QueryAst,
-    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
-    RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, TasksImporter, TasksQueryResult, TemplaterImporter,
-    TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexQuery,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery, VectorNeighborsReport,
-    VectorQueueReport, VectorRebuildQuery, VectorRepairQuery, VectorRepairReport, WatchOptions,
-    WatchReport,
+    export_daily_events_to_ics, export_static_search_index, extract_tasknote, git_blame,
+    git_commit, git_diff, git_recent_log, git_status, index_vectors_with_progress,
+    initialize_vault, inspect_base_file, inspect_cache, inspect_vector_queue, link_mentions,
+    list_checkpoints, list_daily_note_events, list_kanban_boards, list_saved_reports,
+    list_vector_models, load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
+    load_saved_report, load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card,
+    move_note, parse_dql_with_diagnostics, parse_tasks_query, period_range_for_date,
+    plan_base_note_create, query_backlinks, query_change_report, query_graph_analytics,
+    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
+    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
+    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
+    repair_vectors_with_progress, resolve_link, resolve_note_reference, resolve_periodic_note,
+    save_saved_report, scan_vault_with_progress, search_vault, step_period_start,
+    suggest_duplicates, suggest_mentions, task_upcoming_occurrences, tasknotes_status_state,
+    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
+    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesCreateContext, BasesEvalReport,
+    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterQuery, ClusterReport, ConfigImportReport, CoreImporter,
+    DataviewImporter, DataviewJsOutput, DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    EvaluatedInlineExpression, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
+    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
+    KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
+    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
+    PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
+    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksImporter,
+    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
+    VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery, VectorRepairQuery,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -775,6 +775,57 @@ struct TasksBlockedItem {
 struct TasksGraphReport {
     nodes: Vec<TaskDependencyNode>,
     edges: Vec<TaskDependencyEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TaskShowReport {
+    path: String,
+    title: String,
+    status: String,
+    status_type: String,
+    completed: bool,
+    archived: bool,
+    priority: String,
+    due: Option<String>,
+    scheduled: Option<String>,
+    completed_date: Option<String>,
+    date_created: Option<String>,
+    date_modified: Option<String>,
+    contexts: Vec<String>,
+    projects: Vec<String>,
+    tags: Vec<String>,
+    recurrence: Option<String>,
+    recurrence_anchor: Option<String>,
+    complete_instances: Vec<String>,
+    skipped_instances: Vec<String>,
+    blocked_by: Vec<Value>,
+    reminders: Vec<Value>,
+    time_entries: Vec<Value>,
+    custom_fields: Value,
+    frontmatter: Value,
+    body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TaskMutationReport {
+    action: String,
+    dry_run: bool,
+    path: String,
+    moved_from: Option<String>,
+    moved_to: Option<String>,
+    changes: Vec<RefactorChange>,
+    #[serde(skip)]
+    changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedTaskNote {
+    path: String,
+    body: String,
+    frontmatter: YamlMapping,
+    frontmatter_json: Value,
+    indexed: vulcan_core::IndexedTaskNote,
+    config: vulcan_core::VaultConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2252,6 +2303,536 @@ fn tasknotes_view_file_aliases(file_stem: &str) -> Vec<String> {
         aliases.push(alias.to_string());
     }
     aliases
+}
+
+#[derive(Debug)]
+struct TaskMutationPlan {
+    changes: Vec<RefactorChange>,
+    moved_to: Option<String>,
+}
+
+fn current_utc_timestamp_string() -> String {
+    TemplateTimestamp::current().default_strings().datetime
+}
+
+fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, CliError> {
+    let path = resolve_existing_note_path(paths, task)?;
+    let source = fs::read_to_string(paths.vault_root().join(&path)).map_err(CliError::operation)?;
+    let config = load_vault_config(paths).config;
+    let parsed = vulcan_core::parse_document(&source, &config);
+    let indexed_properties = extract_indexed_properties(&parsed, &config)
+        .map_err(CliError::operation)?
+        .map(|properties| serde_json::from_str::<Value>(&properties.canonical_json))
+        .transpose()
+        .map_err(CliError::operation)?;
+    let (frontmatter, body) =
+        parse_frontmatter_document(&source, false).map_err(CliError::operation)?;
+    let frontmatter = frontmatter.unwrap_or_default();
+    let frontmatter_json = load_note_index(paths)
+        .ok()
+        .and_then(|index| {
+            index
+                .into_values()
+                .find(|note| note.document_path == path)
+                .map(|note| note.properties)
+        })
+        .or(indexed_properties)
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let title = Path::new(&path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    let indexed =
+        extract_tasknote(&path, title, &frontmatter_json, &config.tasknotes).or_else(|| {
+            let mut permissive = config.tasknotes.clone();
+            permissive.excluded_folders.clear();
+            extract_tasknote(&path, title, &frontmatter_json, &permissive)
+        });
+    let indexed = indexed
+        .ok_or_else(|| CliError::operation(format!("note is not a TaskNotes task: {task}")))?;
+
+    Ok(LoadedTaskNote {
+        path,
+        body: normalize_tasknote_body(&body),
+        frontmatter,
+        frontmatter_json,
+        indexed,
+        config,
+    })
+}
+
+fn normalize_tasknote_body(body: &str) -> String {
+    let body = body.trim_start_matches('\n').trim_end_matches('\n');
+    if body.is_empty() {
+        String::new()
+    } else {
+        format!("{body}\n")
+    }
+}
+
+fn tasknote_frontmatter_key(config: &vulcan_core::VaultConfig, property: &str) -> String {
+    let property = property.trim();
+    let mapping = &config.tasknotes.field_mapping;
+    match property {
+        "title" => mapping.title.clone(),
+        "status" => mapping.status.clone(),
+        "priority" => mapping.priority.clone(),
+        "due" => mapping.due.clone(),
+        "scheduled" => mapping.scheduled.clone(),
+        "contexts" => mapping.contexts.clone(),
+        "projects" => mapping.projects.clone(),
+        "timeEstimate" | "time_estimate" => mapping.time_estimate.clone(),
+        "completedDate" | "completed_date" => mapping.completed_date.clone(),
+        "dateCreated" | "date_created" => mapping.date_created.clone(),
+        "dateModified" | "date_modified" => mapping.date_modified.clone(),
+        "recurrence" => mapping.recurrence.clone(),
+        "recurrenceAnchor" | "recurrence_anchor" => mapping.recurrence_anchor.clone(),
+        "timeEntries" | "time_entries" => mapping.time_entries.clone(),
+        "completeInstances" | "complete_instances" => mapping.complete_instances.clone(),
+        "skippedInstances" | "skipped_instances" => mapping.skipped_instances.clone(),
+        "blockedBy" | "blocked_by" | "blocked-by" => mapping.blocked_by.clone(),
+        "reminders" => mapping.reminders.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn parse_tasknote_cli_value(value: &str) -> YamlValue {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return YamlValue::String(String::new());
+    }
+    match serde_yaml::from_str::<YamlValue>(trimmed) {
+        Ok(parsed) => parsed,
+        Err(_) => YamlValue::String(value.to_string()),
+    }
+}
+
+fn tasknote_change_summary(value: Option<&YamlValue>) -> String {
+    match value {
+        None => "<missing>".to_string(),
+        Some(YamlValue::String(text)) => text.clone(),
+        Some(value) => serde_json::to_string(&serde_json::to_value(value).unwrap_or(Value::Null))
+            .unwrap_or_else(|_| "<unserializable>".to_string()),
+    }
+}
+
+fn set_tasknote_frontmatter_value(
+    frontmatter: &mut YamlMapping,
+    key: &str,
+    value: Option<YamlValue>,
+) -> Option<RefactorChange> {
+    let yaml_key = YamlValue::String(key.to_string());
+    let before = frontmatter.get(&yaml_key).cloned();
+
+    if let Some(value) = value {
+        if before.as_ref() == Some(&value) {
+            return None;
+        }
+        frontmatter.insert(yaml_key, value.clone());
+        Some(RefactorChange {
+            before: format!("{key}: {}", tasknote_change_summary(before.as_ref())),
+            after: format!("{key}: {}", tasknote_change_summary(Some(&value))),
+        })
+    } else {
+        before.as_ref()?;
+        frontmatter.remove(&yaml_key);
+        Some(RefactorChange {
+            before: format!("{key}: {}", tasknote_change_summary(before.as_ref())),
+            after: format!("{key}: <removed>"),
+        })
+    }
+}
+
+fn yaml_string_list(value: Option<&YamlValue>) -> Vec<String> {
+    match value {
+        Some(YamlValue::String(text)) => vec![text.clone()],
+        Some(YamlValue::Sequence(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn yaml_string(value: &YamlValue) -> Option<String> {
+    match value {
+        YamlValue::Bool(flag) => Some(flag.to_string()),
+        YamlValue::Number(number) => Some(number.to_string()),
+        YamlValue::String(text) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+fn first_completed_tasknote_status(config: &vulcan_core::VaultConfig) -> String {
+    config
+        .tasknotes
+        .statuses
+        .iter()
+        .find(|status| status.is_completed)
+        .map_or_else(|| "done".to_string(), |status| status.value.clone())
+}
+
+fn apply_tasknote_mutation<F>(
+    paths: &VaultPaths,
+    task: &str,
+    action: &str,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+    mutate: F,
+) -> Result<TaskMutationReport, CliError>
+where
+    F: FnOnce(&mut YamlMapping, &LoadedTaskNote) -> Result<TaskMutationPlan, CliError>,
+{
+    let loaded = load_tasknote_note(paths, task)?;
+    let mut frontmatter = loaded.frontmatter.clone();
+    let TaskMutationPlan {
+        mut changes,
+        moved_to,
+    } = mutate(&mut frontmatter, &loaded)?;
+    let moved_to = moved_to.filter(|path| path != &loaded.path);
+    let rendered =
+        render_note_from_parts(Some(&frontmatter), &loaded.body).map_err(CliError::operation)?;
+
+    let mut changed_paths = Vec::new();
+    if !changes.is_empty() || moved_to.is_some() {
+        changed_paths.push(loaded.path.clone());
+        if let Some(path) = moved_to.as_ref() {
+            changed_paths.push(path.clone());
+        }
+    }
+    changed_paths.sort();
+    changed_paths.dedup();
+
+    if !dry_run && !changed_paths.is_empty() {
+        let source_path = paths.vault_root().join(&loaded.path);
+        if let Some(destination) = moved_to.as_ref() {
+            let destination_path = paths.vault_root().join(destination);
+            if destination_path.exists() {
+                return Err(CliError::operation(format!(
+                    "destination task already exists: {destination}"
+                )));
+            }
+        }
+        fs::write(&source_path, rendered).map_err(CliError::operation)?;
+
+        if let Some(destination) = moved_to.as_ref() {
+            let destination_path = paths.vault_root().join(destination);
+            if let Some(parent) = destination_path.parent() {
+                fs::create_dir_all(parent).map_err(CliError::operation)?;
+            }
+            fs::rename(&source_path, &destination_path).map_err(CliError::operation)?;
+        }
+
+        run_incremental_scan(paths, output, use_stderr_color)?;
+    }
+
+    if changes.is_empty() && moved_to.is_some() {
+        changes.push(RefactorChange {
+            before: loaded.path.clone(),
+            after: moved_to.clone().unwrap_or_else(|| loaded.path.clone()),
+        });
+    }
+
+    Ok(TaskMutationReport {
+        action: action.to_string(),
+        dry_run,
+        path: moved_to.clone().unwrap_or_else(|| loaded.path.clone()),
+        moved_from: moved_to.as_ref().map(|_| loaded.path.clone()),
+        moved_to,
+        changes,
+        changed_paths,
+    })
+}
+
+fn run_tasks_show_command(paths: &VaultPaths, task: &str) -> Result<TaskShowReport, CliError> {
+    let loaded = load_tasknote_note(paths, task)?;
+    let status_state = tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
+
+    Ok(TaskShowReport {
+        path: loaded.path,
+        title: loaded.indexed.title,
+        status: loaded.indexed.status,
+        status_type: status_state.status_type,
+        completed: status_state.completed,
+        archived: loaded.indexed.archived,
+        priority: loaded.indexed.priority,
+        due: loaded.indexed.due,
+        scheduled: loaded.indexed.scheduled,
+        completed_date: loaded.indexed.completed_date,
+        date_created: loaded.indexed.date_created,
+        date_modified: loaded.indexed.date_modified,
+        contexts: loaded.indexed.contexts,
+        projects: loaded.indexed.projects,
+        tags: loaded.indexed.tags,
+        recurrence: loaded.indexed.recurrence,
+        recurrence_anchor: loaded.indexed.recurrence_anchor,
+        complete_instances: loaded.indexed.complete_instances,
+        skipped_instances: loaded.indexed.skipped_instances,
+        blocked_by: loaded.indexed.blocked_by,
+        reminders: loaded.indexed.reminders,
+        time_entries: loaded.indexed.time_entries,
+        custom_fields: Value::Object(loaded.indexed.custom_fields),
+        frontmatter: loaded.frontmatter_json,
+        body: loaded.body,
+    })
+}
+
+fn run_tasks_edit_command(
+    paths: &VaultPaths,
+    task: &str,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<EditReport, CliError> {
+    let loaded = load_tasknote_note(paths, task)?;
+    let absolute_path = paths.vault_root().join(&loaded.path);
+    open_in_editor(&absolute_path).map_err(CliError::operation)?;
+    run_incremental_scan(paths, output, use_stderr_color)?;
+
+    Ok(EditReport {
+        path: loaded.path,
+        created: false,
+        rescanned: true,
+    })
+}
+
+fn run_tasks_set_command(
+    paths: &VaultPaths,
+    task: &str,
+    property: &str,
+    value: &str,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskMutationReport, CliError> {
+    apply_tasknote_mutation(
+        paths,
+        task,
+        "set",
+        dry_run,
+        output,
+        use_stderr_color,
+        |frontmatter, loaded| {
+            let key = tasknote_frontmatter_key(&loaded.config, property);
+            let parsed = parse_tasknote_cli_value(value);
+            let mut changes = Vec::new();
+            let value = (!matches!(parsed, YamlValue::Null)).then_some(parsed.clone());
+            if let Some(change) = set_tasknote_frontmatter_value(frontmatter, &key, value.clone()) {
+                changes.push(change);
+            }
+
+            if key == loaded.config.tasknotes.field_mapping.status
+                && loaded.indexed.recurrence.is_none()
+            {
+                let next_status = value.as_ref().and_then(yaml_string).unwrap_or_default();
+                let completed_key = &loaded.config.tasknotes.field_mapping.completed_date;
+                let completed_value =
+                    if tasknotes_status_state(&loaded.config.tasknotes, &next_status).completed {
+                        Some(YamlValue::String(current_utc_date_string()))
+                    } else {
+                        None
+                    };
+                if let Some(change) =
+                    set_tasknote_frontmatter_value(frontmatter, completed_key, completed_value)
+                {
+                    changes.push(change);
+                }
+            }
+
+            let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
+            if let Some(change) = set_tasknote_frontmatter_value(
+                frontmatter,
+                modified_key,
+                Some(YamlValue::String(current_utc_timestamp_string())),
+            ) {
+                changes.push(change);
+            }
+
+            Ok(TaskMutationPlan {
+                changes,
+                moved_to: None,
+            })
+        },
+    )
+}
+
+fn run_tasks_complete_command(
+    paths: &VaultPaths,
+    task: &str,
+    date: Option<&str>,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskMutationReport, CliError> {
+    apply_tasknote_mutation(
+        paths,
+        task,
+        "complete",
+        dry_run,
+        output,
+        use_stderr_color,
+        |frontmatter, loaded| {
+            let mut changes = Vec::new();
+            if loaded.indexed.recurrence.is_some() {
+                let target_date = match date {
+                    Some(value) => normalize_date_argument(Some(value))?,
+                    None => loaded
+                        .indexed
+                        .scheduled
+                        .as_deref()
+                        .or(loaded.indexed.due.as_deref())
+                        .map(|value| normalize_date_argument(Some(value)))
+                        .transpose()?
+                        .unwrap_or_else(current_utc_date_string),
+                };
+
+                let complete_key = &loaded.config.tasknotes.field_mapping.complete_instances;
+                let skipped_key = &loaded.config.tasknotes.field_mapping.skipped_instances;
+                let complete_yaml_key = YamlValue::String(complete_key.clone());
+                let mut complete_instances = yaml_string_list(frontmatter.get(&complete_yaml_key));
+                if !complete_instances.iter().any(|entry| entry == &target_date) {
+                    complete_instances.push(target_date.clone());
+                    complete_instances.sort();
+                }
+                if let Some(change) = set_tasknote_frontmatter_value(
+                    frontmatter,
+                    complete_key,
+                    Some(YamlValue::Sequence(
+                        complete_instances
+                            .iter()
+                            .cloned()
+                            .map(YamlValue::String)
+                            .collect(),
+                    )),
+                ) {
+                    changes.push(change);
+                }
+
+                let skipped_yaml_key = YamlValue::String(skipped_key.clone());
+                let skipped_instances = yaml_string_list(frontmatter.get(&skipped_yaml_key))
+                    .into_iter()
+                    .filter(|entry| entry != &target_date)
+                    .collect::<Vec<_>>();
+                let skipped_value = if skipped_instances.is_empty() {
+                    None
+                } else {
+                    Some(YamlValue::Sequence(
+                        skipped_instances
+                            .into_iter()
+                            .map(YamlValue::String)
+                            .collect(),
+                    ))
+                };
+                if let Some(change) =
+                    set_tasknote_frontmatter_value(frontmatter, skipped_key, skipped_value)
+                {
+                    changes.push(change);
+                }
+            } else {
+                let status_key = &loaded.config.tasknotes.field_mapping.status;
+                if let Some(change) = set_tasknote_frontmatter_value(
+                    frontmatter,
+                    status_key,
+                    Some(YamlValue::String(first_completed_tasknote_status(
+                        &loaded.config,
+                    ))),
+                ) {
+                    changes.push(change);
+                }
+                let completed_key = &loaded.config.tasknotes.field_mapping.completed_date;
+                if let Some(change) = set_tasknote_frontmatter_value(
+                    frontmatter,
+                    completed_key,
+                    Some(YamlValue::String(current_utc_date_string())),
+                ) {
+                    changes.push(change);
+                }
+            }
+
+            let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
+            if let Some(change) = set_tasknote_frontmatter_value(
+                frontmatter,
+                modified_key,
+                Some(YamlValue::String(current_utc_timestamp_string())),
+            ) {
+                changes.push(change);
+            }
+
+            Ok(TaskMutationPlan {
+                changes,
+                moved_to: None,
+            })
+        },
+    )
+}
+
+fn run_tasks_archive_command(
+    paths: &VaultPaths,
+    task: &str,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskMutationReport, CliError> {
+    apply_tasknote_mutation(
+        paths,
+        task,
+        "archive",
+        dry_run,
+        output,
+        use_stderr_color,
+        |frontmatter, loaded| {
+            let status_state =
+                tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
+            if !loaded.indexed.archived && !status_state.completed {
+                return Err(CliError::operation(format!(
+                    "task must be completed before archiving: {}",
+                    loaded.path
+                )));
+            }
+
+            let mut changes = Vec::new();
+            let archive_tag = &loaded.config.tasknotes.field_mapping.archive_tag;
+            let tags_key = YamlValue::String("tags".to_string());
+            let mut tags = yaml_string_list(frontmatter.get(&tags_key));
+            if !tags.iter().any(|tag| tag.eq_ignore_ascii_case(archive_tag)) {
+                tags.push(archive_tag.clone());
+                tags.sort();
+                if let Some(change) = set_tasknote_frontmatter_value(
+                    frontmatter,
+                    "tags",
+                    Some(YamlValue::Sequence(
+                        tags.iter().cloned().map(YamlValue::String).collect(),
+                    )),
+                ) {
+                    changes.push(change);
+                }
+            }
+
+            let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
+            if let Some(change) = set_tasknote_frontmatter_value(
+                frontmatter,
+                modified_key,
+                Some(YamlValue::String(current_utc_timestamp_string())),
+            ) {
+                changes.push(change);
+            }
+
+            let moved_to = Path::new(&loaded.path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| {
+                    let archive_folder = loaded
+                        .config
+                        .tasknotes
+                        .archive_folder
+                        .trim()
+                        .trim_matches('/');
+                    (!archive_folder.is_empty()).then(|| format!("{archive_folder}/{name}"))
+                });
+
+            Ok(TaskMutationPlan { changes, moved_to })
+        },
+    )
 }
 
 fn run_tasks_eval_command(
@@ -6474,7 +7055,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     cli.output,
                     use_stderr_color,
                 )?;
-                if !dry_run {
+                if !*dry_run {
                     auto_commit
                         .commit(&paths, "note-patch", std::slice::from_ref(&report.path))
                         .map_err(CliError::operation)?;
@@ -6511,7 +7092,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 warn_auto_commit_if_needed(&auto_commit);
                 let report =
                     create_note_from_bases_view(&paths, file, 0, title.as_deref(), *dry_run)?;
-                if !dry_run {
+                if !*dry_run {
                     run_incremental_scan(&paths, cli.output, use_stderr_color)?;
                     auto_commit
                         .commit(&paths, "bases-create", std::slice::from_ref(&report.path))
@@ -6562,7 +7143,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 };
                 let report =
                     bases_view_add(&paths, file, spec, *dry_run).map_err(CliError::operation)?;
-                if !dry_run {
+                if !*dry_run {
                     auto_commit
                         .commit(&paths, "bases-view-add", std::slice::from_ref(file))
                         .map_err(CliError::operation)?;
@@ -7159,6 +7740,89 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
         },
         Command::Tasks { ref command } => match command {
+            TasksCommand::Show { task } => {
+                let report = run_tasks_show_command(&paths, task)?;
+                print_task_show_report(cli.output, &report)
+            }
+            TasksCommand::Edit { task, no_commit } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_tasks_edit_command(&paths, task, cli.output, use_stderr_color)?;
+                auto_commit
+                    .commit(&paths, "tasks edit", std::slice::from_ref(&report.path))
+                    .map_err(CliError::operation)?;
+                print_edit_report(cli.output, &report);
+                Ok(())
+            }
+            TasksCommand::Set {
+                task,
+                property,
+                value,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_tasks_set_command(
+                    &paths,
+                    task,
+                    property,
+                    value,
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "tasks set", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                print_task_mutation_report(cli.output, &report)
+            }
+            TasksCommand::Complete {
+                task,
+                date,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_tasks_complete_command(
+                    &paths,
+                    task,
+                    date.as_deref(),
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "tasks complete", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                print_task_mutation_report(cli.output, &report)
+            }
+            TasksCommand::Archive {
+                task,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_tasks_archive_command(
+                    &paths,
+                    task,
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "tasks archive", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                print_task_mutation_report(cli.output, &report)
+            }
             TasksCommand::Query { query } => {
                 let result = run_tasks_query_command(&paths, query)?;
                 print_tasks_query_result(cli.output, &result)
@@ -11206,6 +11870,70 @@ fn print_tasks_query_result(
     }
 }
 
+fn print_task_show_report(output: OutputFormat, report: &TaskShowReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("{}", report.path);
+            println!("Title: {}", report.title);
+            println!(
+                "Status: {} ({}){}",
+                report.status,
+                report.status_type,
+                if report.archived { ", archived" } else { "" }
+            );
+            println!("Priority: {}", report.priority);
+            if let Some(due) = &report.due {
+                println!("Due: {due}");
+            }
+            if let Some(scheduled) = &report.scheduled {
+                println!("Scheduled: {scheduled}");
+            }
+            if let Some(completed_date) = &report.completed_date {
+                println!("Completed: {completed_date}");
+            }
+            if !report.contexts.is_empty() {
+                println!("Contexts: {}", report.contexts.join(", "));
+            }
+            if !report.projects.is_empty() {
+                println!("Projects: {}", report.projects.join(", "));
+            }
+            if !report.tags.is_empty() {
+                println!("Tags: {}", report.tags.join(", "));
+            }
+            if !report.body.trim().is_empty() {
+                println!();
+                println!("{}", report.body.trim_end());
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_task_mutation_report(
+    output: OutputFormat,
+    report: &TaskMutationReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            let suffix = if report.dry_run { " (dry-run)" } else { "" };
+            println!("{}{}", report.path, suffix);
+            if let (Some(from), Some(to)) = (&report.moved_from, &report.moved_to) {
+                println!("Moved: {from} -> {to}");
+            }
+            if report.changes.is_empty() {
+                println!("No changes.");
+            } else {
+                for change in &report.changes {
+                    println!("- {} -> {}", change.before, change.after);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_tasknotes_view_list_report(
     output: OutputFormat,
     report: &TaskNotesViewListReport,
@@ -14313,6 +15041,116 @@ mod tests {
             Command::Tasks {
                 command: TasksCommand::Query {
                     query: "not done".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_show_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "show", "Write Docs"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Show {
+                    task: "Write Docs".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_edit_command() {
+        let cli = Cli::try_parse_from(["vulcan", "tasks", "edit", "Write Docs", "--no-commit"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Edit {
+                    task: "Write Docs".to_string(),
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_set_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "set",
+            "Write Docs",
+            "due",
+            "2026-04-12",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Set {
+                    task: "Write Docs".to_string(),
+                    property: "due".to_string(),
+                    value: "2026-04-12".to_string(),
+                    dry_run: true,
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_complete_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "complete",
+            "Write Docs",
+            "--date",
+            "2026-04-10",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Complete {
+                    task: "Write Docs".to_string(),
+                    date: Some("2026-04-10".to_string()),
+                    dry_run: true,
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_archive_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "archive",
+            "Prep Outline",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Archive {
+                    task: "Prep Outline".to_string(),
+                    dry_run: true,
+                    no_commit: true,
                 },
             }
         );

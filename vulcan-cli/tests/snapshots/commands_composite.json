@@ -1031,6 +1031,227 @@
         "options": [],
         "subcommands": [
           {
+            "about": "Display one TaskNotes task with its structured properties",
+            "name": "show",
+            "options": [
+              {
+                "help": "Task path, filename, alias, or title",
+                "id": "task",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TASK"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Open one TaskNotes task file in $EDITOR",
+            "name": "edit",
+            "options": [
+              {
+                "help": "Task path, filename, alias, or title",
+                "id": "task",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TASK"
+                ]
+              },
+              {
+                "help": "Skip auto-commit even when enabled in config",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Update one TaskNotes task property",
+            "name": "set",
+            "options": [
+              {
+                "help": "Task path, filename, alias, or title",
+                "id": "task",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TASK"
+                ]
+              },
+              {
+                "help": "Logical TaskNotes field name or raw frontmatter property",
+                "id": "property",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PROPERTY"
+                ]
+              },
+              {
+                "help": "New YAML value; use `null` to remove the property",
+                "id": "value",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "VALUE"
+                ]
+              },
+              {
+                "help": "Report the planned change without writing the task file",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Skip auto-commit even when enabled in config",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Mark one task as completed",
+            "name": "complete",
+            "options": [
+              {
+                "help": "Task path, filename, alias, or title",
+                "id": "task",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TASK"
+                ]
+              },
+              {
+                "help": "Recurring instance date to complete (YYYY-MM-DD); defaults to the scheduled/due date or today",
+                "id": "date",
+                "long": "date",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              },
+              {
+                "help": "Report the planned change without writing the task file",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Skip auto-commit even when enabled in config",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Archive one completed TaskNotes task",
+            "name": "archive",
+            "options": [
+              {
+                "help": "Task path, filename, alias, or title",
+                "id": "task",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TASK"
+                ]
+              },
+              {
+                "help": "Report the planned change without writing the task file",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Skip auto-commit even when enabled in config",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Evaluate a Tasks plugin query string",
             "name": "query",
             "options": [
