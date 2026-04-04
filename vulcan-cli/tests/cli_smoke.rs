@@ -3010,6 +3010,80 @@ fn tasks_complete_json_output_records_recurring_instance_completion() {
 }
 
 #[test]
+fn tasks_complete_json_output_marks_inline_tasks_done() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::write(
+        vault_root.join("Inbox.md"),
+        "- [ ] Ship docs #ops\n- [ ] Follow up later\n",
+    )
+    .expect("inline task fixture should be written");
+    run_scan(&vault_root);
+
+    let complete_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "complete",
+            "Ship docs #ops",
+            "--date",
+            "2026-04-09",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let complete_json = parse_stdout_json(&complete_assert);
+
+    assert_eq!(complete_json["action"], "complete");
+    assert_eq!(complete_json["path"], "Inbox.md");
+    assert_eq!(
+        complete_json["changes"][0]["before"],
+        Value::String("- [ ] Ship docs #ops".to_string())
+    );
+    assert_eq!(
+        complete_json["changes"][0]["after"],
+        Value::String("- [x] Ship docs #ops ✅ 2026-04-09".to_string())
+    );
+
+    let updated = fs::read_to_string(vault_root.join("Inbox.md"))
+        .expect("updated inline task note should be readable");
+    assert!(updated.contains("- [x] Ship docs #ops ✅ 2026-04-09"));
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--source",
+            "inline",
+            "--filter",
+            "status is done and description includes \"Ship docs\"",
+        ])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list_assert);
+
+    assert_eq!(list_json["result_count"], Value::Number(1.into()));
+    assert_eq!(
+        list_json["tasks"][0]["text"],
+        Value::String("Ship docs #ops ✅ 2026-04-09".to_string())
+    );
+}
+
+#[test]
 fn tasks_archive_json_output_moves_completed_task_into_archive_folder() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -2268,7 +2268,7 @@ The `vulcan tasks` command group is the unified interface for all task operation
 - [x] `vulcan tasks show <task>` — display task details (all properties, time entries, dependencies)
 - [x] `vulcan tasks edit <task>` — open task file in `$EDITOR`
 - [x] `vulcan tasks set <task> <property> <value>` — update a task property
-- [ ] `vulcan tasks complete <task>` — mark task as completed (set status to done, record `completedDate`); works for both file-based and inline tasks
+- [x] `vulcan tasks complete <task>` — mark task as completed (set status to done, record `completedDate`); works for both file-based and inline tasks
 - [x] `vulcan tasks archive <task>` — archive a completed task (TaskNotes only)
 - [ ] `vulcan tasks convert <file> [--line <n>]` — convert a line, checkbox, or heading in an existing note into a TaskNotes task file
 
