@@ -60,15 +60,16 @@ use vulcan_core::{
     list_checkpoints, list_daily_note_events, list_kanban_boards, list_saved_reports,
     list_vector_models, load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
     load_saved_report, load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card,
-    move_note, parse_dql_with_diagnostics, parse_tasks_query, period_range_for_date,
-    plan_base_note_create, query_backlinks, query_change_report, query_graph_analytics,
-    query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_moc_candidates,
-    query_graph_path, query_graph_trends, query_links, query_notes, query_related_notes,
-    query_vector_neighbors, rebuild_vault_with_progress, rebuild_vectors_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
-    repair_vectors_with_progress, resolve_link, resolve_note_reference, resolve_periodic_note,
-    save_saved_report, scan_vault_with_progress, search_vault, step_period_start,
-    suggest_duplicates, suggest_mentions, task_upcoming_occurrences, tasknotes_status_state,
+    move_note, parse_dql_with_diagnostics, parse_tasknote_natural_language, parse_tasks_query,
+    period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
+    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
+    query_graph_moc_candidates, query_graph_path, query_graph_trends, query_links, query_notes,
+    query_related_notes, query_vector_neighbors, rebuild_vault_with_progress,
+    rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    repair_fts, repair_vectors_with_progress, resolve_link, resolve_note_reference,
+    resolve_periodic_note, save_saved_report, scan_vault_with_progress, search_vault,
+    step_period_start, suggest_duplicates, suggest_mentions, task_upcoming_occurrences,
+    tasknotes_default_date_value, tasknotes_default_recurrence_rule, tasknotes_status_state,
     vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
     BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesCreateContext, BasesEvalReport,
     BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
@@ -82,12 +83,12 @@ use vulcan_core::{
     KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
     KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
     MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
-    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
-    PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
-    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksImporter,
+    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
+    PeriodicNotesImporter, PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksImporter,
     TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
     VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
     VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
@@ -814,6 +815,32 @@ struct TaskMutationReport {
     moved_from: Option<String>,
     moved_to: Option<String>,
     changes: Vec<RefactorChange>,
+    #[serde(skip)]
+    changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TaskAddReport {
+    action: String,
+    dry_run: bool,
+    created: bool,
+    used_nlp: bool,
+    path: String,
+    title: String,
+    status: String,
+    priority: String,
+    due: Option<String>,
+    scheduled: Option<String>,
+    contexts: Vec<String>,
+    projects: Vec<String>,
+    tags: Vec<String>,
+    time_estimate: Option<usize>,
+    recurrence: Option<String>,
+    template: Option<String>,
+    frontmatter: Value,
+    body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parsed_input: Option<ParsedTaskNoteInput>,
     #[serde(skip)]
     changed_paths: Vec<String>,
 }
@@ -2470,6 +2497,450 @@ fn first_completed_tasknote_status(config: &vulcan_core::VaultConfig) -> String 
         .iter()
         .find(|status| status.is_completed)
         .map_or_else(|| "done".to_string(), |status| status.value.clone())
+}
+
+fn tasknote_reference_ms() -> i64 {
+    parse_date_like_string(&TemplateTimestamp::current().default_date_string()).unwrap_or_default()
+}
+
+fn resolve_tasknote_date_input(
+    config: &vulcan_core::VaultConfig,
+    value: &str,
+    scheduled: bool,
+) -> Result<String, CliError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::operation("date value cannot be empty"));
+    }
+    if parse_date_like_string(trimmed).is_some() {
+        return Ok(trimmed.to_string());
+    }
+
+    let prefix = if scheduled { "scheduled" } else { "due" };
+    let parsed = parse_tasknote_natural_language(
+        &format!("placeholder {prefix} {trimmed}"),
+        &config.tasknotes,
+        tasknote_reference_ms(),
+    );
+    let resolved = if scheduled {
+        parsed.scheduled
+    } else {
+        parsed.due
+    };
+    resolved.ok_or_else(|| CliError::operation(format!("failed to parse date value: {value}")))
+}
+
+fn normalize_tasknote_context(context: &str) -> Option<String> {
+    let trimmed = context.trim().trim_matches('"').trim();
+    if trimmed.is_empty() {
+        None
+    } else if trimmed.starts_with('@') {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("@{trimmed}"))
+    }
+}
+
+fn normalize_tasknote_tag(tag: &str) -> Option<String> {
+    let trimmed = tag.trim().trim_matches('"').trim().trim_start_matches('#');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn normalize_tasknote_project(project: &str) -> Option<String> {
+    let trimmed = project.trim().trim_matches('"').trim();
+    if trimmed.is_empty() {
+        None
+    } else if trimmed.starts_with("[[") && trimmed.ends_with("]]") {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("[[{trimmed}]]"))
+    }
+}
+
+fn dedup_tasknote_values<I, F>(values: I, normalize: F) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+    F: Fn(&str) -> Option<String>,
+{
+    let mut deduped = Vec::new();
+    for value in values {
+        let Some(normalized) = normalize(&value) else {
+            continue;
+        };
+        if !deduped
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&normalized))
+        {
+            deduped.push(normalized);
+        }
+    }
+    deduped
+}
+
+fn yaml_string_sequence(values: &[String]) -> YamlValue {
+    YamlValue::Sequence(
+        values
+            .iter()
+            .cloned()
+            .map(YamlValue::String)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn tasknote_frontmatter_json(frontmatter: &YamlMapping) -> Value {
+    serde_json::to_value(YamlValue::Mapping(frontmatter.clone())).unwrap_or(Value::Null)
+}
+
+fn sanitize_tasknote_filename(title: &str) -> String {
+    let mut sanitized = title
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => ' ',
+            _ => character,
+        })
+        .collect::<String>();
+    sanitized = sanitized.split_whitespace().collect::<Vec<_>>().join(" ");
+    sanitized = sanitized.trim_matches(['.', ' ']).to_string();
+    if sanitized.is_empty() {
+        "Untitled Task".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn load_tasknote_template(
+    paths: &VaultPaths,
+    config: &vulcan_core::VaultConfig,
+    template_name: &str,
+    target_path: &str,
+) -> Result<(Option<YamlMapping>, String), CliError> {
+    let templates = discover_templates(
+        paths,
+        config.templates.obsidian_folder.as_deref(),
+        config.templates.templater_folder.as_deref(),
+    )?;
+    let template_file = resolve_template_file(paths, &templates.templates, template_name)?;
+    let template_source =
+        fs::read_to_string(&template_file.absolute_path).map_err(CliError::operation)?;
+    let vars = HashMap::new();
+    let rendered = render_template_request(TemplateRenderRequest {
+        paths,
+        vault_config: config,
+        templates: &templates.templates,
+        template_path: Some(&template_file.absolute_path),
+        template_text: &template_source,
+        target_path,
+        target_contents: None,
+        engine: TemplateEngineKind::Auto,
+        vars: &vars,
+        allow_mutations: true,
+        run_mode: TemplateRunMode::Create,
+    })?;
+    let (frontmatter, body) =
+        parse_frontmatter_document(&rendered.content, true).map_err(CliError::operation)?;
+    Ok((frontmatter, normalize_tasknote_body(&body)))
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn run_tasks_add_command(
+    paths: &VaultPaths,
+    text: &str,
+    no_nlp: bool,
+    status: Option<&str>,
+    priority: Option<&str>,
+    due: Option<&str>,
+    scheduled: Option<&str>,
+    contexts: &[String],
+    projects: &[String],
+    tags: &[String],
+    template: Option<&str>,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskAddReport, CliError> {
+    let config = load_vault_config(paths).config;
+    let reference_ms = tasknote_reference_ms();
+    let raw_title = text.trim();
+    if raw_title.is_empty() {
+        return Err(CliError::operation("task text cannot be empty"));
+    }
+
+    let used_nlp = config.tasknotes.enable_natural_language_input && !no_nlp;
+    let parsed_input = used_nlp
+        .then(|| parse_tasknote_natural_language(raw_title, &config.tasknotes, reference_ms));
+    let title = parsed_input
+        .as_ref()
+        .map(|parsed| parsed.title.as_str())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or(raw_title)
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return Err(CliError::operation("task title cannot be empty"));
+    }
+
+    let status = status
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            parsed_input
+                .as_ref()
+                .and_then(|parsed| parsed.status.clone())
+        })
+        .unwrap_or_else(|| config.tasknotes.default_status.clone());
+    let priority = priority
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            parsed_input
+                .as_ref()
+                .and_then(|parsed| parsed.priority.clone())
+        })
+        .unwrap_or_else(|| config.tasknotes.default_priority.clone());
+    let due = match due {
+        Some(value) => Some(resolve_tasknote_date_input(&config, value, false)?),
+        None => parsed_input
+            .as_ref()
+            .and_then(|parsed| parsed.due.clone())
+            .or_else(|| {
+                tasknotes_default_date_value(
+                    config.tasknotes.task_creation_defaults.default_due_date,
+                    reference_ms,
+                )
+            }),
+    };
+    let scheduled = match scheduled {
+        Some(value) => Some(resolve_tasknote_date_input(&config, value, true)?),
+        None => parsed_input
+            .as_ref()
+            .and_then(|parsed| parsed.scheduled.clone())
+            .or_else(|| {
+                tasknotes_default_date_value(
+                    config
+                        .tasknotes
+                        .task_creation_defaults
+                        .default_scheduled_date,
+                    reference_ms,
+                )
+            }),
+    };
+    let contexts = dedup_tasknote_values(
+        config
+            .tasknotes
+            .task_creation_defaults
+            .default_contexts
+            .iter()
+            .cloned()
+            .chain(
+                parsed_input
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|parsed| parsed.contexts.iter().cloned()),
+            )
+            .chain(contexts.iter().cloned())
+            .collect::<Vec<_>>(),
+        normalize_tasknote_context,
+    );
+    let projects = dedup_tasknote_values(
+        config
+            .tasknotes
+            .task_creation_defaults
+            .default_projects
+            .iter()
+            .cloned()
+            .chain(
+                parsed_input
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|parsed| parsed.projects.iter().cloned()),
+            )
+            .chain(projects.iter().cloned())
+            .collect::<Vec<_>>(),
+        normalize_tasknote_project,
+    );
+    let mut tags = dedup_tasknote_values(
+        config
+            .tasknotes
+            .task_creation_defaults
+            .default_tags
+            .iter()
+            .cloned()
+            .chain(
+                parsed_input
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|parsed| parsed.tags.iter().cloned()),
+            )
+            .chain(tags.iter().cloned())
+            .collect::<Vec<_>>(),
+        normalize_tasknote_tag,
+    );
+    if config.tasknotes.identification_method == vulcan_core::TaskNotesIdentificationMethod::Tag {
+        if let Some(task_tag) = normalize_tasknote_tag(&config.tasknotes.task_tag) {
+            if !tags
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&task_tag))
+            {
+                tags.insert(0, task_tag);
+            }
+        }
+    }
+    let time_estimate = parsed_input
+        .as_ref()
+        .and_then(|parsed| parsed.time_estimate)
+        .or(config
+            .tasknotes
+            .task_creation_defaults
+            .default_time_estimate);
+    let recurrence = parsed_input
+        .as_ref()
+        .and_then(|parsed| parsed.recurrence.clone())
+        .or_else(|| {
+            tasknotes_default_recurrence_rule(
+                config.tasknotes.task_creation_defaults.default_recurrence,
+            )
+        });
+
+    let relative_path = format!(
+        "{}/{}.md",
+        config.tasknotes.tasks_folder.trim_end_matches('/'),
+        sanitize_tasknote_filename(&title)
+    );
+    let absolute_path = paths.vault_root().join(&relative_path);
+    if absolute_path.exists() {
+        return Err(CliError::operation(format!(
+            "destination task already exists: {relative_path}"
+        )));
+    }
+
+    let timestamp = current_utc_timestamp_string();
+    let mapping = &config.tasknotes.field_mapping;
+    let mut frontmatter = YamlMapping::new();
+    frontmatter.insert(
+        YamlValue::String(mapping.title.clone()),
+        YamlValue::String(title.clone()),
+    );
+    frontmatter.insert(
+        YamlValue::String(mapping.status.clone()),
+        YamlValue::String(status.clone()),
+    );
+    frontmatter.insert(
+        YamlValue::String(mapping.priority.clone()),
+        YamlValue::String(priority.clone()),
+    );
+    frontmatter.insert(
+        YamlValue::String(mapping.date_created.clone()),
+        YamlValue::String(timestamp.clone()),
+    );
+    frontmatter.insert(
+        YamlValue::String(mapping.date_modified.clone()),
+        YamlValue::String(timestamp),
+    );
+    if let Some(due) = due.as_ref() {
+        frontmatter.insert(
+            YamlValue::String(mapping.due.clone()),
+            YamlValue::String(due.clone()),
+        );
+    }
+    if let Some(scheduled) = scheduled.as_ref() {
+        frontmatter.insert(
+            YamlValue::String(mapping.scheduled.clone()),
+            YamlValue::String(scheduled.clone()),
+        );
+    }
+    if !contexts.is_empty() {
+        frontmatter.insert(
+            YamlValue::String(mapping.contexts.clone()),
+            yaml_string_sequence(&contexts),
+        );
+    }
+    if !projects.is_empty() {
+        frontmatter.insert(
+            YamlValue::String(mapping.projects.clone()),
+            yaml_string_sequence(&projects),
+        );
+    }
+    if !tags.is_empty() {
+        frontmatter.insert(
+            YamlValue::String("tags".to_string()),
+            yaml_string_sequence(&tags),
+        );
+    }
+    if let Some(time_estimate) = time_estimate {
+        frontmatter.insert(
+            YamlValue::String(mapping.time_estimate.clone()),
+            YamlValue::Number(serde_yaml::Number::from(time_estimate as u64)),
+        );
+    }
+    if let Some(recurrence) = recurrence.as_ref() {
+        frontmatter.insert(
+            YamlValue::String(mapping.recurrence.clone()),
+            YamlValue::String(recurrence.clone()),
+        );
+    }
+    if config.tasknotes.identification_method
+        == vulcan_core::TaskNotesIdentificationMethod::Property
+    {
+        if let Some(property_name) = config.tasknotes.task_property_name.as_ref() {
+            let value = config
+                .tasknotes
+                .task_property_value
+                .as_ref()
+                .map_or(YamlValue::Bool(true), |value| {
+                    YamlValue::String(value.clone())
+                });
+            frontmatter.insert(YamlValue::String(property_name.clone()), value);
+        }
+    }
+
+    let (template_frontmatter, template_body) = match template {
+        Some(template_name) => {
+            load_tasknote_template(paths, &config, template_name, &relative_path)?
+        }
+        None => (None, String::new()),
+    };
+    let merged_frontmatter =
+        merge_template_frontmatter(Some(frontmatter), template_frontmatter).unwrap_or_default();
+    let rendered = render_note_from_parts(Some(&merged_frontmatter), &template_body)
+        .map_err(CliError::operation)?;
+    let frontmatter_json = tasknote_frontmatter_json(&merged_frontmatter);
+
+    if !dry_run {
+        if let Some(parent) = absolute_path.parent() {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
+        }
+        fs::write(&absolute_path, rendered).map_err(CliError::operation)?;
+        run_incremental_scan(paths, output, use_stderr_color)?;
+    }
+
+    Ok(TaskAddReport {
+        action: "add".to_string(),
+        dry_run,
+        created: !dry_run,
+        used_nlp,
+        path: relative_path.clone(),
+        title,
+        status,
+        priority,
+        due,
+        scheduled,
+        contexts,
+        projects,
+        tags,
+        time_estimate,
+        recurrence,
+        template: template.map(ToOwned::to_owned),
+        frontmatter: frontmatter_json,
+        body: template_body,
+        parsed_input,
+        changed_paths: if dry_run {
+            Vec::new()
+        } else {
+            vec![relative_path]
+        },
+    })
 }
 
 fn apply_tasknote_mutation<F>(
@@ -7740,6 +8211,45 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
         },
         Command::Tasks { ref command } => match command {
+            TasksCommand::Add {
+                text,
+                no_nlp,
+                status,
+                priority,
+                due,
+                scheduled,
+                contexts,
+                projects,
+                tags,
+                template,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_tasks_add_command(
+                    &paths,
+                    text,
+                    *no_nlp,
+                    status.as_deref(),
+                    priority.as_deref(),
+                    due.as_deref(),
+                    scheduled.as_deref(),
+                    contexts,
+                    projects,
+                    tags,
+                    template.as_deref(),
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "tasks add", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                print_task_add_report(cli.output, &report)
+            }
             TasksCommand::Show { task } => {
                 let report = run_tasks_show_command(&paths, task)?;
                 print_task_show_report(cli.output, &report)
@@ -11910,6 +12420,41 @@ fn print_task_show_report(output: OutputFormat, report: &TaskShowReport) -> Resu
     }
 }
 
+fn print_task_add_report(output: OutputFormat, report: &TaskAddReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            let suffix = if report.dry_run { " (dry-run)" } else { "" };
+            println!("{}{}", report.path, suffix);
+            println!("Title: {}", report.title);
+            println!("Status: {}", report.status);
+            println!("Priority: {}", report.priority);
+            if let Some(due) = &report.due {
+                println!("Due: {due}");
+            }
+            if let Some(scheduled) = &report.scheduled {
+                println!("Scheduled: {scheduled}");
+            }
+            if !report.contexts.is_empty() {
+                println!("Contexts: {}", report.contexts.join(", "));
+            }
+            if !report.projects.is_empty() {
+                println!("Projects: {}", report.projects.join(", "));
+            }
+            if !report.tags.is_empty() {
+                println!("Tags: {}", report.tags.join(", "));
+            }
+            if let Some(time_estimate) = report.time_estimate {
+                println!("Estimate: {time_estimate}m");
+            }
+            if let Some(recurrence) = &report.recurrence {
+                println!("Recurrence: {recurrence}");
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_task_mutation_report(
     output: OutputFormat,
     report: &TaskMutationReport,
@@ -15041,6 +15586,55 @@ mod tests {
             Command::Tasks {
                 command: TasksCommand::Query {
                     query: "not done".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_add_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "add",
+            "Buy groceries tomorrow @home",
+            "--status",
+            "open",
+            "--priority",
+            "high",
+            "--due",
+            "2026-04-10",
+            "--scheduled",
+            "2026-04-09",
+            "--context",
+            "@errands",
+            "--project",
+            "Website",
+            "--tag",
+            "shopping",
+            "--template",
+            "task",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Add {
+                    text: "Buy groceries tomorrow @home".to_string(),
+                    no_nlp: false,
+                    status: Some("open".to_string()),
+                    priority: Some("high".to_string()),
+                    due: Some("2026-04-10".to_string()),
+                    scheduled: Some("2026-04-09".to_string()),
+                    contexts: vec!["@errands".to_string()],
+                    projects: vec!["Website".to_string()],
+                    tags: vec!["shopping".to_string()],
+                    template: Some("task".to_string()),
+                    dry_run: true,
+                    no_commit: true,
                 },
             }
         );

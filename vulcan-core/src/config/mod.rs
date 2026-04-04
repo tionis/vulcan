@@ -762,6 +762,68 @@ pub struct TaskNotesUserFieldConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesNlpTriggerConfig {
+    #[serde(alias = "propertyId")]
+    pub property_id: String,
+    pub trigger: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskNotesDateDefault {
+    #[default]
+    None,
+    Today,
+    Tomorrow,
+    NextWeek,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskNotesRecurrenceDefault {
+    #[default]
+    None,
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskNotesTaskCreationDefaults {
+    #[serde(default)]
+    pub default_contexts: Vec<String>,
+    #[serde(default)]
+    pub default_tags: Vec<String>,
+    #[serde(default)]
+    pub default_projects: Vec<String>,
+    #[serde(default)]
+    pub default_time_estimate: Option<usize>,
+    #[serde(default)]
+    pub default_due_date: TaskNotesDateDefault,
+    #[serde(default)]
+    pub default_scheduled_date: TaskNotesDateDefault,
+    #[serde(default)]
+    pub default_recurrence: TaskNotesRecurrenceDefault,
+}
+
+impl Default for TaskNotesTaskCreationDefaults {
+    fn default() -> Self {
+        Self {
+            default_contexts: Vec::new(),
+            default_tags: Vec::new(),
+            default_projects: Vec::new(),
+            default_time_estimate: None,
+            default_due_date: TaskNotesDateDefault::None,
+            default_scheduled_date: TaskNotesDateDefault::None,
+            default_recurrence: TaskNotesRecurrenceDefault::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskNotesConfig {
     pub tasks_folder: String,
     pub archive_folder: String,
@@ -781,6 +843,16 @@ pub struct TaskNotesConfig {
     pub priorities: Vec<TaskNotesPriorityConfig>,
     #[serde(default)]
     pub user_fields: Vec<TaskNotesUserFieldConfig>,
+    #[serde(default = "default_true")]
+    pub enable_natural_language_input: bool,
+    #[serde(default)]
+    pub nlp_default_to_scheduled: bool,
+    #[serde(default = "default_tasknotes_nlp_language")]
+    pub nlp_language: String,
+    #[serde(default = "default_tasknotes_nlp_triggers")]
+    pub nlp_triggers: Vec<TaskNotesNlpTriggerConfig>,
+    #[serde(default)]
+    pub task_creation_defaults: TaskNotesTaskCreationDefaults,
 }
 
 impl Default for TaskNotesConfig {
@@ -799,6 +871,11 @@ impl Default for TaskNotesConfig {
             statuses: default_tasknotes_statuses(),
             priorities: default_tasknotes_priorities(),
             user_fields: Vec::new(),
+            enable_natural_language_input: true,
+            nlp_default_to_scheduled: false,
+            nlp_language: default_tasknotes_nlp_language(),
+            nlp_triggers: default_tasknotes_nlp_triggers(),
+            task_creation_defaults: TaskNotesTaskCreationDefaults::default(),
         }
     }
 }
@@ -1622,6 +1699,11 @@ struct PartialTaskNotesConfig {
     statuses: Option<Vec<TaskNotesStatusConfig>>,
     priorities: Option<Vec<TaskNotesPriorityConfig>>,
     user_fields: Option<Vec<TaskNotesUserFieldConfig>>,
+    enable_natural_language_input: Option<bool>,
+    nlp_default_to_scheduled: Option<bool>,
+    nlp_language: Option<String>,
+    nlp_triggers: Option<Vec<TaskNotesNlpTriggerConfig>>,
+    task_creation_defaults: Option<TaskNotesTaskCreationDefaults>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1898,6 +1980,16 @@ struct ObsidianTaskNotesConfig {
     custom_priorities: Vec<TaskNotesPriorityConfig>,
     #[serde(rename = "userFields", default)]
     user_fields: Vec<TaskNotesUserFieldConfig>,
+    #[serde(rename = "enableNaturalLanguageInput")]
+    enable_natural_language_input: Option<bool>,
+    #[serde(rename = "nlpDefaultToScheduled")]
+    nlp_default_to_scheduled: Option<bool>,
+    #[serde(rename = "nlpLanguage")]
+    nlp_language: Option<String>,
+    #[serde(rename = "nlpTriggers")]
+    nlp_triggers: Option<ObsidianTaskNotesNlpTriggersConfig>,
+    #[serde(rename = "taskCreationDefaults")]
+    task_creation_defaults: Option<ObsidianTaskNotesCreationDefaults>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1931,6 +2023,31 @@ struct ObsidianTaskNotesFieldMapping {
     #[serde(rename = "blockedBy")]
     blocked_by: Option<String>,
     reminders: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianTaskNotesNlpTriggersConfig {
+    #[serde(default)]
+    triggers: Vec<TaskNotesNlpTriggerConfig>,
+}
+
+#[allow(clippy::struct_field_names)]
+#[derive(Debug, Deserialize, Default)]
+struct ObsidianTaskNotesCreationDefaults {
+    #[serde(rename = "defaultContexts")]
+    default_contexts: Option<String>,
+    #[serde(rename = "defaultTags")]
+    default_tags: Option<String>,
+    #[serde(rename = "defaultProjects")]
+    default_projects: Option<String>,
+    #[serde(rename = "defaultTimeEstimate")]
+    default_time_estimate: Option<usize>,
+    #[serde(rename = "defaultDueDate")]
+    default_due_date: Option<TaskNotesDateDefault>,
+    #[serde(rename = "defaultScheduledDate")]
+    default_scheduled_date: Option<TaskNotesDateDefault>,
+    #[serde(rename = "defaultRecurrence")]
+    default_recurrence: Option<TaskNotesRecurrenceDefault>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2135,12 +2252,50 @@ fn default_tasknotes_priorities() -> Vec<TaskNotesPriorityConfig> {
     ]
 }
 
+fn default_tasknotes_nlp_language() -> String {
+    "en".to_string()
+}
+
+fn default_tasknotes_nlp_triggers() -> Vec<TaskNotesNlpTriggerConfig> {
+    vec![
+        TaskNotesNlpTriggerConfig {
+            property_id: "contexts".to_string(),
+            trigger: "@".to_string(),
+            enabled: true,
+        },
+        TaskNotesNlpTriggerConfig {
+            property_id: "tags".to_string(),
+            trigger: "#".to_string(),
+            enabled: true,
+        },
+        TaskNotesNlpTriggerConfig {
+            property_id: "projects".to_string(),
+            trigger: "+".to_string(),
+            enabled: true,
+        },
+        TaskNotesNlpTriggerConfig {
+            property_id: "status".to_string(),
+            trigger: "*".to_string(),
+            enabled: true,
+        },
+        TaskNotesNlpTriggerConfig {
+            property_id: "priority".to_string(),
+            trigger: "!".to_string(),
+            enabled: false,
+        },
+    ]
+}
+
 fn default_dataview_inline_query_prefix() -> String {
     "=".to_string()
 }
 
 fn default_dataview_inline_js_query_prefix() -> String {
     "$=".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_dataview_enable_dataview_js() -> bool {
@@ -4076,6 +4231,26 @@ fn apply_obsidian_tasknotes_defaults(config: &mut VaultConfig, obsidian: Obsidia
     if !obsidian.user_fields.is_empty() {
         config.tasknotes.user_fields = obsidian.user_fields;
     }
+    if let Some(enabled) = obsidian.enable_natural_language_input {
+        config.tasknotes.enable_natural_language_input = enabled;
+    }
+    if let Some(default_to_scheduled) = obsidian.nlp_default_to_scheduled {
+        config.tasknotes.nlp_default_to_scheduled = default_to_scheduled;
+    }
+    if let Some(language) = normalize_optional_text(obsidian.nlp_language) {
+        config.tasknotes.nlp_language = language;
+    }
+    if let Some(nlp_triggers) = obsidian.nlp_triggers {
+        if !nlp_triggers.triggers.is_empty() {
+            config.tasknotes.nlp_triggers = nlp_triggers.triggers;
+        }
+    }
+    if let Some(defaults) = obsidian.task_creation_defaults {
+        apply_obsidian_tasknotes_creation_defaults(
+            &mut config.tasknotes.task_creation_defaults,
+            defaults,
+        );
+    }
 }
 
 fn apply_obsidian_tasknotes_field_mapping(
@@ -4138,6 +4313,36 @@ fn apply_obsidian_tasknotes_field_mapping(
     }
     if let Some(reminders) = obsidian.reminders {
         mapping.reminders = reminders;
+    }
+}
+
+fn apply_obsidian_tasknotes_creation_defaults(
+    defaults: &mut TaskNotesTaskCreationDefaults,
+    obsidian: ObsidianTaskNotesCreationDefaults,
+) {
+    if let Some(default_contexts) = obsidian.default_contexts {
+        defaults.default_contexts =
+            normalize_string_list(default_contexts.split(',').map(ToOwned::to_owned).collect());
+    }
+    if let Some(default_tags) = obsidian.default_tags {
+        defaults.default_tags =
+            normalize_string_list(default_tags.split(',').map(ToOwned::to_owned).collect());
+    }
+    if let Some(default_projects) = obsidian.default_projects {
+        defaults.default_projects =
+            normalize_string_list(default_projects.split(',').map(ToOwned::to_owned).collect());
+    }
+    if let Some(default_time_estimate) = obsidian.default_time_estimate {
+        defaults.default_time_estimate = Some(default_time_estimate);
+    }
+    if let Some(default_due_date) = obsidian.default_due_date {
+        defaults.default_due_date = default_due_date;
+    }
+    if let Some(default_scheduled_date) = obsidian.default_scheduled_date {
+        defaults.default_scheduled_date = default_scheduled_date;
+    }
+    if let Some(default_recurrence) = obsidian.default_recurrence {
+        defaults.default_recurrence = default_recurrence;
     }
 }
 
@@ -4440,6 +4645,23 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(user_fields) = tasknotes.user_fields {
             config.tasknotes.user_fields = user_fields;
+        }
+        if let Some(enable_natural_language_input) = tasknotes.enable_natural_language_input {
+            config.tasknotes.enable_natural_language_input = enable_natural_language_input;
+        }
+        if let Some(nlp_default_to_scheduled) = tasknotes.nlp_default_to_scheduled {
+            config.tasknotes.nlp_default_to_scheduled = nlp_default_to_scheduled;
+        }
+        if let Some(nlp_language) = tasknotes.nlp_language {
+            if let Some(language) = normalize_optional_text(Some(nlp_language)) {
+                config.tasknotes.nlp_language = language;
+            }
+        }
+        if let Some(nlp_triggers) = tasknotes.nlp_triggers {
+            config.tasknotes.nlp_triggers = nlp_triggers;
+        }
+        if let Some(task_creation_defaults) = tasknotes.task_creation_defaults {
+            config.tasknotes.task_creation_defaults = task_creation_defaults;
         }
     }
 
@@ -6252,7 +6474,25 @@ time_format = "HH:mm:ss"
                   "key": "effort",
                   "type": "number"
                 }
-              ]
+              ],
+              "enableNaturalLanguageInput": false,
+              "nlpDefaultToScheduled": true,
+              "nlpLanguage": "de",
+              "nlpTriggers": {
+                "triggers": [
+                  { "propertyId": "contexts", "trigger": "context:", "enabled": true },
+                  { "propertyId": "tags", "trigger": "#", "enabled": true }
+                ]
+              },
+              "taskCreationDefaults": {
+                "defaultContexts": "@office, @home",
+                "defaultTags": "work, urgent",
+                "defaultProjects": "[[Projects/Alpha]], [[Projects/Beta]]",
+                "defaultTimeEstimate": 45,
+                "defaultDueDate": "tomorrow",
+                "defaultScheduledDate": "today",
+                "defaultRecurrence": "weekly"
+              }
             }"##,
         )
         .expect("tasknotes config should be written");
@@ -6296,6 +6536,70 @@ time_format = "HH:mm:ss"
         assert_eq!(loaded.config.tasknotes.priorities[0].value, "urgent");
         assert_eq!(loaded.config.tasknotes.user_fields.len(), 1);
         assert_eq!(loaded.config.tasknotes.user_fields[0].key, "effort");
+        assert!(!loaded.config.tasknotes.enable_natural_language_input);
+        assert!(loaded.config.tasknotes.nlp_default_to_scheduled);
+        assert_eq!(loaded.config.tasknotes.nlp_language, "de");
+        assert_eq!(loaded.config.tasknotes.nlp_triggers.len(), 2);
+        assert_eq!(
+            loaded.config.tasknotes.nlp_triggers[0].property_id,
+            "contexts"
+        );
+        assert_eq!(loaded.config.tasknotes.nlp_triggers[0].trigger, "context:");
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_contexts,
+            vec!["@office".to_string(), "@home".to_string()]
+        );
+        assert_eq!(
+            loaded.config.tasknotes.task_creation_defaults.default_tags,
+            vec!["work".to_string(), "urgent".to_string()]
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_projects,
+            vec![
+                "[[Projects/Alpha]]".to_string(),
+                "[[Projects/Beta]]".to_string()
+            ]
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_time_estimate,
+            Some(45)
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_due_date,
+            TaskNotesDateDefault::Tomorrow
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_scheduled_date,
+            TaskNotesDateDefault::Today
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_recurrence,
+            TaskNotesRecurrenceDefault::Weekly
+        );
     }
 
     #[test]
@@ -6315,6 +6619,9 @@ task_property_value = "task"
 excluded_folders = ["Work/Archive"]
 default_status = "blocked"
 default_priority = "urgent"
+enable_natural_language_input = false
+nlp_default_to_scheduled = true
+nlp_language = "fr"
 
 [tasknotes.field_mapping]
 due = "deadline"
@@ -6342,6 +6649,20 @@ id = "effort"
 displayName = "Effort"
 key = "effort"
 type = "number"
+
+[[tasknotes.nlp_triggers]]
+property_id = "contexts"
+trigger = "context:"
+enabled = true
+
+[tasknotes.task_creation_defaults]
+default_contexts = ["@office"]
+default_tags = ["work"]
+default_projects = ["[[Projects/Alpha]]"]
+default_time_estimate = 30
+default_due_date = "today"
+default_scheduled_date = "next-week"
+default_recurrence = "monthly"
 "##,
         )
         .expect("config should be written");
@@ -6378,6 +6699,63 @@ type = "number"
         assert_eq!(loaded.config.tasknotes.statuses[0].auto_archive_delay, 30);
         assert_eq!(loaded.config.tasknotes.priorities[0].weight, 9);
         assert_eq!(loaded.config.tasknotes.user_fields[0].key, "effort");
+        assert!(!loaded.config.tasknotes.enable_natural_language_input);
+        assert!(loaded.config.tasknotes.nlp_default_to_scheduled);
+        assert_eq!(loaded.config.tasknotes.nlp_language, "fr");
+        assert_eq!(loaded.config.tasknotes.nlp_triggers.len(), 1);
+        assert_eq!(loaded.config.tasknotes.nlp_triggers[0].trigger, "context:");
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_contexts,
+            vec!["@office".to_string()]
+        );
+        assert_eq!(
+            loaded.config.tasknotes.task_creation_defaults.default_tags,
+            vec!["work".to_string()]
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_projects,
+            vec!["[[Projects/Alpha]]".to_string()]
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_time_estimate,
+            Some(30)
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_due_date,
+            TaskNotesDateDefault::Today
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_scheduled_date,
+            TaskNotesDateDefault::NextWeek
+        );
+        assert_eq!(
+            loaded
+                .config
+                .tasknotes
+                .task_creation_defaults
+                .default_recurrence,
+            TaskNotesRecurrenceDefault::Monthly
+        );
     }
 
     #[test]

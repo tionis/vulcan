@@ -1300,6 +1300,39 @@ pub enum DataviewCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum TasksCommand {
+    #[command(about = "Create one TaskNotes task file")]
+    Add {
+        #[arg(help = "Task title or natural-language task input")]
+        text: String,
+        #[arg(
+            long,
+            help = "Skip natural-language parsing and use the raw text as the title"
+        )]
+        no_nlp: bool,
+        #[arg(long, help = "Explicit task status")]
+        status: Option<String>,
+        #[arg(long, help = "Explicit task priority")]
+        priority: Option<String>,
+        #[arg(long, help = "Explicit due date or natural-language date phrase")]
+        due: Option<String>,
+        #[arg(long, help = "Explicit scheduled date or natural-language date phrase")]
+        scheduled: Option<String>,
+        #[arg(long = "context", help = "Context to add; repeat for multiple values")]
+        contexts: Vec<String>,
+        #[arg(
+            long = "project",
+            help = "Project note link or name; repeat for multiple values"
+        )]
+        projects: Vec<String>,
+        #[arg(long = "tag", help = "Tag to add; repeat for multiple values")]
+        tags: Vec<String>,
+        #[arg(long, help = "Optional note template name")]
+        template: Option<String>,
+        #[arg(long, help = "Report the planned task file without writing it")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
     #[command(about = "Display one TaskNotes task with its structured properties")]
     Show {
         #[arg(help = "Task path, filename, alias, or title")]

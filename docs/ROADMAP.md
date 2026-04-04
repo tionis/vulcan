@@ -2164,19 +2164,19 @@ Reuses the status type registry from 9.10.4 (which defines `TODO`, `DONE`, `IN_P
 
 #### 9.15.3 Natural language task creation
 
-- [ ] NLP parser for task input strings: extract structured properties from natural language
+- [x] NLP parser for task input strings: extract structured properties from natural language
   - Example: `"Buy groceries tomorrow at 3pm @home #errands high priority"` → `{ title: "Buy groceries", due: "2026-03-28T15:00", contexts: ["@home"], tags: ["errands"], priority: "high" }`
-- [ ] Configurable NLP trigger characters:
+- [x] Configurable NLP trigger characters:
   | Trigger | Default | Extracts |
   |---|---|---|
   | `@` | contexts | `@home`, `@office` |
   | `#` | tags | `#errands`, `#work` |
   | `+` | projects | `+[[Project Name]]` |
   | `*` | status | `*done`, `*in-progress` |
-- [ ] Date extraction: "tomorrow", "next Monday", "in 3 days", "January 15th" — reuse chrono-like date parsing
-- [ ] Priority extraction: "high priority", "urgent", "low priority" — configurable keyword mapping
-- [ ] `vulcan tasks add "natural language input"` — create task file from NLP-parsed input
-- [ ] `--no-nlp` flag to create task with raw title (skip NLP parsing)
+- [x] Date extraction: "tomorrow", "next Monday", "in 3 days", "January 15th" — reuse chrono-like date parsing
+- [x] Priority extraction: "high priority", "urgent", "low priority" — configurable keyword mapping
+- [x] `vulcan tasks add "natural language input"` — create task file from NLP-parsed input
+- [x] `--no-nlp` flag to create task with raw title (skip NLP parsing)
 - [ ] Configurable NLP language (default: English, supports multiple languages)
 
 #### 9.15.4 Recurring tasks (RRULE)
@@ -2262,9 +2262,9 @@ The `vulcan tasks` command group is the unified interface for all task operation
 
 **Task file management (TaskNotes):**
 
-- [ ] `vulcan tasks add <title-or-nlp-string>` — create a new TaskNotes task file
-  - [ ] `--status`, `--priority`, `--due`, `--scheduled`, `--context`, `--project`, `--tag` flags for explicit property setting
-  - [ ] `--template <name>` — create from a task template
+- [x] `vulcan tasks add <title-or-nlp-string>` — create a new TaskNotes task file
+  - [x] `--status`, `--priority`, `--due`, `--scheduled`, `--context`, `--project`, `--tag` flags for explicit property setting
+  - [x] `--template <name>` — create from a task template
 - [x] `vulcan tasks show <task>` — display task details (all properties, time entries, dependencies)
 - [x] `vulcan tasks edit <task>` — open task file in `$EDITOR`
 - [x] `vulcan tasks set <task> <property> <value>` — update a task property

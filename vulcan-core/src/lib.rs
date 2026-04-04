@@ -50,11 +50,12 @@ pub use config::{
     EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, ImportConflict, ImportTarget,
     InboxConfig, KanbanConfig, KanbanImporter, LinkResolutionMode, LinkStylePreference,
     PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter,
-    PeriodicStartOfWeek, PluginImporter, ScanConfig, TaskNotesConfig, TaskNotesFieldMapping,
-    TaskNotesIdentificationMethod, TaskNotesPriorityConfig, TaskNotesStatusConfig,
-    TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig,
-    TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplaterImporter, TemplatesConfig,
-    VaultConfig,
+    PeriodicStartOfWeek, PluginImporter, ScanConfig, TaskNotesConfig, TaskNotesDateDefault,
+    TaskNotesFieldMapping, TaskNotesIdentificationMethod, TaskNotesNlpTriggerConfig,
+    TaskNotesPriorityConfig, TaskNotesRecurrenceDefault, TaskNotesStatusConfig,
+    TaskNotesTaskCreationDefaults, TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter,
+    TemplaterCommandPairConfig, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
+    TemplaterImporter, TemplatesConfig, VaultConfig,
 };
 pub use dataview_js::{
     evaluate_dataview_js, evaluate_dataview_js_query, DataviewJsError, DataviewJsOutput,
@@ -154,8 +155,9 @@ pub use suggestions::{
     SuggestionError,
 };
 pub use tasknotes::{
-    extract_tasknote, is_tasknote_document, tasknotes_priority_weight, tasknotes_status_state,
-    IndexedTaskNote, TaskNotesStatusState,
+    extract_tasknote, is_tasknote_document, parse_tasknote_natural_language,
+    tasknotes_default_date_value, tasknotes_default_recurrence_rule, tasknotes_priority_weight,
+    tasknotes_status_state, IndexedTaskNote, ParsedTaskNoteInput, TaskNotesStatusState,
 };
 pub use tasks::{
     evaluate_parsed_tasks_query, evaluate_tasks_query, load_tasks_blocks, parse_recurrence_text,
