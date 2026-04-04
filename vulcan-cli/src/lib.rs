@@ -856,6 +856,13 @@ struct LoadedTaskNote {
     config: vulcan_core::VaultConfig,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedInlineTask {
+    path: String,
+    line_number: i64,
+    text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct KanbanCardsReport {
     board_path: String,
@@ -2389,6 +2396,96 @@ fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, 
     })
 }
 
+fn resolve_inline_task(paths: &VaultPaths, task: &str) -> Result<ResolvedInlineTask, CliError> {
+    let note_index = load_note_index(paths).map_err(CliError::operation)?;
+
+    if let Some((note_ref, line_number)) = parse_task_line_reference(task) {
+        let path = resolve_existing_note_path(paths, note_ref)?;
+        if let Some(task) = find_inline_task_in_path(&note_index, &path, line_number) {
+            return Ok(task);
+        }
+        return Err(CliError::operation(format!(
+            "no inline task at {path}:{line_number}"
+        )));
+    }
+
+    if let Ok(path) = resolve_existing_note_path(paths, task) {
+        let mut tasks = inline_tasks_for_path(&note_index, &path);
+        return match tasks.len() {
+            0 => Err(CliError::operation(format!(
+                "note has no inline tasks: {path}"
+            ))),
+            1 => Ok(tasks.remove(0)),
+            _ => Err(CliError::operation(format!(
+                "multiple inline tasks found in {path}; use <note>:<line> or exact task text"
+            ))),
+        };
+    }
+
+    let mut matches = note_index
+        .values()
+        .flat_map(inline_tasks_for_note)
+        .filter(|candidate| {
+            candidate.text == task || candidate.text.eq_ignore_ascii_case(task.trim())
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.line_number.cmp(&right.line_number))
+    });
+    matches
+        .dedup_by(|left, right| left.path == right.path && left.line_number == right.line_number);
+
+    match matches.len() {
+        0 => Err(CliError::operation(format!(
+            "inline task not found: {task}"
+        ))),
+        1 => Ok(matches.remove(0)),
+        _ => Err(CliError::operation(format!(
+            "multiple inline tasks match '{task}'; use <note>:<line> to disambiguate"
+        ))),
+    }
+}
+
+fn parse_task_line_reference(task: &str) -> Option<(&str, i64)> {
+    let (note, line_number) = task.rsplit_once(':')?;
+    let line_number = line_number.trim().parse::<i64>().ok()?;
+    (line_number > 0).then_some((note.trim(), line_number))
+}
+
+fn inline_tasks_for_path(
+    note_index: &HashMap<String, NoteRecord>,
+    path: &str,
+) -> Vec<ResolvedInlineTask> {
+    note_index
+        .values()
+        .find(|note| note.document_path == path)
+        .map_or_else(Vec::new, inline_tasks_for_note)
+}
+
+fn find_inline_task_in_path(
+    note_index: &HashMap<String, NoteRecord>,
+    path: &str,
+    line_number: i64,
+) -> Option<ResolvedInlineTask> {
+    inline_tasks_for_path(note_index, path)
+        .into_iter()
+        .find(|candidate| candidate.line_number == line_number)
+}
+
+fn inline_tasks_for_note(note: &NoteRecord) -> Vec<ResolvedInlineTask> {
+    note.tasks
+        .iter()
+        .filter(|task| task.properties.get("taskSource").and_then(Value::as_str) != Some("file"))
+        .map(|task| ResolvedInlineTask {
+            path: note.document_path.clone(),
+            line_number: task.line_number,
+            text: task.text.clone(),
+        })
+        .collect()
+}
+
 fn normalize_tasknote_body(body: &str) -> String {
     let body = body.trim_start_matches('\n').trim_end_matches('\n');
     if body.is_empty() {
@@ -2957,11 +3054,34 @@ where
     F: FnOnce(&mut YamlMapping, &LoadedTaskNote) -> Result<TaskMutationPlan, CliError>,
 {
     let loaded = load_tasknote_note(paths, task)?;
+    apply_loaded_tasknote_mutation(
+        paths,
+        &loaded,
+        action,
+        dry_run,
+        output,
+        use_stderr_color,
+        mutate,
+    )
+}
+
+fn apply_loaded_tasknote_mutation<F>(
+    paths: &VaultPaths,
+    loaded: &LoadedTaskNote,
+    action: &str,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+    mutate: F,
+) -> Result<TaskMutationReport, CliError>
+where
+    F: FnOnce(&mut YamlMapping, &LoadedTaskNote) -> Result<TaskMutationPlan, CliError>,
+{
     let mut frontmatter = loaded.frontmatter.clone();
     let TaskMutationPlan {
         mut changes,
         moved_to,
-    } = mutate(&mut frontmatter, &loaded)?;
+    } = mutate(&mut frontmatter, loaded)?;
     let moved_to = moved_to.filter(|path| path != &loaded.path);
     let rendered =
         render_note_from_parts(Some(&frontmatter), &loaded.body).map_err(CliError::operation)?;
@@ -3136,106 +3256,229 @@ fn run_tasks_complete_command(
     output: OutputFormat,
     use_stderr_color: bool,
 ) -> Result<TaskMutationReport, CliError> {
-    apply_tasknote_mutation(
-        paths,
-        task,
-        "complete",
-        dry_run,
-        output,
-        use_stderr_color,
-        |frontmatter, loaded| {
-            let mut changes = Vec::new();
-            if loaded.indexed.recurrence.is_some() {
-                let target_date = match date {
-                    Some(value) => normalize_date_argument(Some(value))?,
-                    None => loaded
-                        .indexed
-                        .scheduled
-                        .as_deref()
-                        .or(loaded.indexed.due.as_deref())
-                        .map(|value| normalize_date_argument(Some(value)))
-                        .transpose()?
-                        .unwrap_or_else(current_utc_date_string),
-                };
+    if let Ok(loaded) = load_tasknote_note(paths, task) {
+        return apply_loaded_tasknote_mutation(
+            paths,
+            &loaded,
+            "complete",
+            dry_run,
+            output,
+            use_stderr_color,
+            |frontmatter, loaded| {
+                let mut changes = Vec::new();
+                if loaded.indexed.recurrence.is_some() {
+                    let target_date = match date {
+                        Some(value) => normalize_date_argument(Some(value))?,
+                        None => loaded
+                            .indexed
+                            .scheduled
+                            .as_deref()
+                            .or(loaded.indexed.due.as_deref())
+                            .map(|value| normalize_date_argument(Some(value)))
+                            .transpose()?
+                            .unwrap_or_else(current_utc_date_string),
+                    };
 
-                let complete_key = &loaded.config.tasknotes.field_mapping.complete_instances;
-                let skipped_key = &loaded.config.tasknotes.field_mapping.skipped_instances;
-                let complete_yaml_key = YamlValue::String(complete_key.clone());
-                let mut complete_instances = yaml_string_list(frontmatter.get(&complete_yaml_key));
-                if !complete_instances.iter().any(|entry| entry == &target_date) {
-                    complete_instances.push(target_date.clone());
-                    complete_instances.sort();
-                }
-                if let Some(change) = set_tasknote_frontmatter_value(
-                    frontmatter,
-                    complete_key,
-                    Some(YamlValue::Sequence(
-                        complete_instances
-                            .iter()
-                            .cloned()
-                            .map(YamlValue::String)
-                            .collect(),
-                    )),
-                ) {
-                    changes.push(change);
-                }
+                    let complete_key = &loaded.config.tasknotes.field_mapping.complete_instances;
+                    let skipped_key = &loaded.config.tasknotes.field_mapping.skipped_instances;
+                    let complete_yaml_key = YamlValue::String(complete_key.clone());
+                    let mut complete_instances =
+                        yaml_string_list(frontmatter.get(&complete_yaml_key));
+                    if !complete_instances.iter().any(|entry| entry == &target_date) {
+                        complete_instances.push(target_date.clone());
+                        complete_instances.sort();
+                    }
+                    if let Some(change) = set_tasknote_frontmatter_value(
+                        frontmatter,
+                        complete_key,
+                        Some(YamlValue::Sequence(
+                            complete_instances
+                                .iter()
+                                .cloned()
+                                .map(YamlValue::String)
+                                .collect(),
+                        )),
+                    ) {
+                        changes.push(change);
+                    }
 
-                let skipped_yaml_key = YamlValue::String(skipped_key.clone());
-                let skipped_instances = yaml_string_list(frontmatter.get(&skipped_yaml_key))
-                    .into_iter()
-                    .filter(|entry| entry != &target_date)
-                    .collect::<Vec<_>>();
-                let skipped_value = if skipped_instances.is_empty() {
-                    None
+                    let skipped_yaml_key = YamlValue::String(skipped_key.clone());
+                    let skipped_instances = yaml_string_list(frontmatter.get(&skipped_yaml_key))
+                        .into_iter()
+                        .filter(|entry| entry != &target_date)
+                        .collect::<Vec<_>>();
+                    let skipped_value = if skipped_instances.is_empty() {
+                        None
+                    } else {
+                        Some(YamlValue::Sequence(
+                            skipped_instances
+                                .into_iter()
+                                .map(YamlValue::String)
+                                .collect(),
+                        ))
+                    };
+                    if let Some(change) =
+                        set_tasknote_frontmatter_value(frontmatter, skipped_key, skipped_value)
+                    {
+                        changes.push(change);
+                    }
                 } else {
-                    Some(YamlValue::Sequence(
-                        skipped_instances
-                            .into_iter()
-                            .map(YamlValue::String)
-                            .collect(),
-                    ))
-                };
-                if let Some(change) =
-                    set_tasknote_frontmatter_value(frontmatter, skipped_key, skipped_value)
-                {
-                    changes.push(change);
+                    let status_key = &loaded.config.tasknotes.field_mapping.status;
+                    if let Some(change) = set_tasknote_frontmatter_value(
+                        frontmatter,
+                        status_key,
+                        Some(YamlValue::String(first_completed_tasknote_status(
+                            &loaded.config,
+                        ))),
+                    ) {
+                        changes.push(change);
+                    }
+                    let completed_key = &loaded.config.tasknotes.field_mapping.completed_date;
+                    if let Some(change) = set_tasknote_frontmatter_value(
+                        frontmatter,
+                        completed_key,
+                        Some(YamlValue::String(current_utc_date_string())),
+                    ) {
+                        changes.push(change);
+                    }
                 }
-            } else {
-                let status_key = &loaded.config.tasknotes.field_mapping.status;
+
+                let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
                 if let Some(change) = set_tasknote_frontmatter_value(
                     frontmatter,
-                    status_key,
-                    Some(YamlValue::String(first_completed_tasknote_status(
-                        &loaded.config,
-                    ))),
+                    modified_key,
+                    Some(YamlValue::String(current_utc_timestamp_string())),
                 ) {
                     changes.push(change);
                 }
-                let completed_key = &loaded.config.tasknotes.field_mapping.completed_date;
-                if let Some(change) = set_tasknote_frontmatter_value(
-                    frontmatter,
-                    completed_key,
-                    Some(YamlValue::String(current_utc_date_string())),
-                ) {
-                    changes.push(change);
-                }
-            }
 
-            let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
-            if let Some(change) = set_tasknote_frontmatter_value(
-                frontmatter,
-                modified_key,
-                Some(YamlValue::String(current_utc_timestamp_string())),
-            ) {
-                changes.push(change);
-            }
+                Ok(TaskMutationPlan {
+                    changes,
+                    moved_to: None,
+                })
+            },
+        );
+    }
 
-            Ok(TaskMutationPlan {
-                changes,
-                moved_to: None,
-            })
-        },
-    )
+    run_inline_task_complete_command(paths, task, date, dry_run, output, use_stderr_color)
+}
+
+fn run_inline_task_complete_command(
+    paths: &VaultPaths,
+    task: &str,
+    date: Option<&str>,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskMutationReport, CliError> {
+    let resolved = resolve_inline_task(paths, task)?;
+    let config = load_vault_config(paths).config;
+    let completed_symbol = first_completed_inline_status_symbol(&config);
+    let completed_date = normalize_date_argument(date)?;
+    let absolute_path = paths.vault_root().join(&resolved.path);
+    let source = fs::read_to_string(&absolute_path).map_err(CliError::operation)?;
+    let (rendered, change) = complete_inline_task_source(
+        &source,
+        resolved.line_number,
+        &completed_symbol,
+        &completed_date,
+    )?;
+    let changes = change.into_iter().collect::<Vec<_>>();
+    let changed_paths = if dry_run || changes.is_empty() {
+        Vec::new()
+    } else {
+        vec![resolved.path.clone()]
+    };
+
+    if !dry_run && !changes.is_empty() {
+        fs::write(&absolute_path, rendered).map_err(CliError::operation)?;
+        run_incremental_scan(paths, output, use_stderr_color)?;
+    }
+
+    Ok(TaskMutationReport {
+        action: "complete".to_string(),
+        dry_run,
+        path: resolved.path,
+        moved_from: None,
+        moved_to: None,
+        changes,
+        changed_paths,
+    })
+}
+
+fn first_completed_inline_status_symbol(config: &vulcan_core::VaultConfig) -> String {
+    config
+        .tasks
+        .statuses
+        .completed
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "x".to_string())
+}
+
+fn complete_inline_task_source(
+    source: &str,
+    line_number: i64,
+    completed_symbol: &str,
+    completed_date: &str,
+) -> Result<(String, Option<RefactorChange>), CliError> {
+    let mut lines = source
+        .split('\n')
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let index = usize::try_from(line_number.saturating_sub(1))
+        .map_err(|_| CliError::operation(format!("invalid task line number: {line_number}")))?;
+    let current = lines
+        .get(index)
+        .cloned()
+        .ok_or_else(|| CliError::operation(format!("task line {line_number} not found")))?;
+    let updated = update_inline_task_line(&current, completed_symbol, completed_date)?;
+    let change = (updated != current).then(|| RefactorChange {
+        before: current.clone(),
+        after: updated.clone(),
+    });
+    lines[index] = updated;
+    Ok((lines.join("\n"), change))
+}
+
+fn update_inline_task_line(
+    line: &str,
+    completed_symbol: &str,
+    completed_date: &str,
+) -> Result<String, CliError> {
+    let completed_char = completed_symbol
+        .chars()
+        .next()
+        .ok_or_else(|| CliError::operation("completed task status cannot be empty"))?;
+    let checkbox =
+        Regex::new(r"^(\s*(?:[-*+]|\d+[.)])\s+\[)(.)(\])").expect("regex should compile");
+    let captures = checkbox.captures(line).ok_or_else(|| {
+        CliError::operation(format!(
+            "line is not an inline task and cannot be completed: {line}"
+        ))
+    })?;
+    let full = captures
+        .get(0)
+        .ok_or_else(|| CliError::operation("failed to locate task checkbox"))?;
+    let prefix = captures.get(1).map_or("", |capture| capture.as_str());
+    let suffix = captures.get(3).map_or("", |capture| capture.as_str());
+    let replaced = format!(
+        "{}{}{}{}{}",
+        &line[..full.start()],
+        prefix,
+        completed_char,
+        suffix,
+        &line[full.end()..]
+    );
+    let completion_marker = Regex::new(r"✅\s+\S+").expect("regex should compile");
+    let replaced = if completion_marker.is_match(&replaced) {
+        completion_marker
+            .replace(&replaced, format!("✅ {completed_date}"))
+            .into_owned()
+    } else {
+        format!("{} ✅ {completed_date}", replaced.trim_end())
+    };
+    Ok(replaced)
 }
 
 fn run_tasks_archive_command(
