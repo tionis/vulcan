@@ -4663,7 +4663,7 @@
       },
       {
         "about": "Read and mutate one note with selector-aware CRUD commands",
-        "after_help": "Subcommands:\n  get         read one note, optionally with heading, block, line, or regex selectors\n  set         replace one note's contents from stdin or --file\n  create      create a new note, optionally from a template and extra frontmatter\n  append      append text to the end of a note or under a heading\n  patch       perform a guarded single-note find/replace\n\nNotes:\n  `--check` runs non-blocking doctor-like diagnostics for the resulting note.\n  Mutating note commands support --no-commit; `patch` also supports --dry-run.\n  `note get --output json` returns content, parsed frontmatter, and selection metadata.\n\nExamples:\n  vulcan note get Projects/Alpha --heading Status\n  vulcan note set Projects/Alpha --no-frontmatter < body.md\n  vulcan note create Inbox/Idea --template daily --frontmatter status=idea\n  vulcan note append Projects/Alpha \"Shipped\" --heading \"## Log\"\n  vulcan note patch Projects/Alpha --find TODO --replace DONE",
+        "after_help": "Subcommands:\n  get         read one note, optionally with heading, block, line, or regex selectors\n  set         replace one note's contents from stdin or --file\n  create      create a new note, optionally from a template and extra frontmatter\n  append      append text to the end of a note, at the top, or under a heading\n  patch       perform a guarded single-note find/replace\n\nNotes:\n  `--check` runs non-blocking doctor-like diagnostics for the resulting note.\n  Mutating note commands support --no-commit; `patch` also supports --dry-run.\n  `note get --output json` returns content, parsed frontmatter, and selection metadata.\n  `note append --periodic <daily|weekly|monthly>` creates the target periodic note first when missing.\n  Repeat `--var key=value` to satisfy QuickAdd-style `{{VALUE}}` / `{{VDATE:...}}` prompts in automation.\n\nExamples:\n  vulcan note get Projects/Alpha --heading Status\n  vulcan note set Projects/Alpha --no-frontmatter < body.md\n  vulcan note create Inbox/Idea --template daily --frontmatter status=idea\n  vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"\n  vulcan note append Projects/Alpha \"Pinned\" --prepend\n  vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"\n  vulcan note patch Projects/Alpha --find TODO --replace DONE",
         "name": "note",
         "options": [],
         "subcommands": [
@@ -4913,14 +4913,14 @@
             "name": "append",
             "options": [
               {
-                "help": "Note path, filename, or alias to update",
-                "id": "note",
+                "help": "Note path, filename, or alias to update; or the text itself when --periodic is set",
+                "id": "note_or_text",
                 "long": null,
                 "possible_values": [],
                 "required": true,
                 "short": null,
                 "value_names": [
-                  "NOTE"
+                  "NOTE_OR_TEXT"
                 ]
               },
               {
@@ -4928,7 +4928,7 @@
                 "id": "text",
                 "long": null,
                 "possible_values": [],
-                "required": true,
+                "required": false,
                 "short": null,
                 "value_names": [
                   "TEXT"
@@ -4937,12 +4937,77 @@
               {
                 "help": "Append under this exact heading, creating it if needed",
                 "id": "heading",
-                "long": "heading",
+                "long": "after-heading",
                 "possible_values": [],
                 "required": false,
                 "short": null,
                 "value_names": [
                   "HEADING"
+                ]
+              },
+              {
+                "help": "Insert after frontmatter instead of appending at the end",
+                "id": "prepend",
+                "long": "prepend",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PREPEND"
+                ]
+              },
+              {
+                "help": "Append to the end of the note (default)",
+                "id": "append",
+                "long": "append",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "APPEND"
+                ]
+              },
+              {
+                "help": "Target a periodic note type instead of a named note",
+                "id": "periodic",
+                "long": "periodic",
+                "possible_values": [
+                  "daily",
+                  "weekly",
+                  "monthly"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PERIODIC"
+                ]
+              },
+              {
+                "help": "Reference date for --periodic",
+                "id": "date",
+                "long": "date",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              },
+              {
+                "help": "Bind QuickAdd-style prompt variables using key=value syntax",
+                "id": "vars",
+                "long": "var",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "VARS"
                 ]
               },
               {

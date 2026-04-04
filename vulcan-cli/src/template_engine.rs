@@ -1,8 +1,9 @@
 use super::{
-    parse_frontmatter_document, render_template_contents, resolve_template_file,
+    parse_frontmatter_document, render_template_variable, resolve_template_file,
     template_variables_for_path, CliError, TemplateCandidate, TemplateTimestamp, YamlMapping,
     YamlValue,
 };
+use regex::Regex;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -18,7 +19,9 @@ use vulcan_core::parser::parse_document;
 use vulcan_core::{resolve_note_reference, VaultConfig, VaultPaths};
 
 const MAX_TEMPLATE_INCLUDE_DEPTH: usize = 10;
+const MAX_QUICKADD_EXPANSION_DEPTH: usize = 10;
 const DEFAULT_FILE_DATE_FORMAT: &str = "YYYY-MM-DD HH:mm";
+const DAY_MS: i64 = 86_400_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TemplateEngineKind {
@@ -147,6 +150,8 @@ struct TemplateSession<'a> {
     pending_frontmatter: Option<YamlMapping>,
     prompt_count: usize,
     suggester_count: usize,
+    quickadd_value_vars: HashMap<String, String>,
+    quickadd_date_vars: HashMap<String, i64>,
     #[cfg(feature = "js_runtime")]
     js_runtime: Option<JsTemplateRuntime>,
 }
@@ -164,6 +169,8 @@ impl<'a> TemplateSession<'a> {
             pending_frontmatter: None,
             prompt_count: 0,
             suggester_count: 0,
+            quickadd_value_vars: HashMap::new(),
+            quickadd_date_vars: HashMap::new(),
             #[cfg(feature = "js_runtime")]
             js_runtime: None,
         }
@@ -181,6 +188,246 @@ impl<'a> TemplateSession<'a> {
         self.builtins_for_path(&self.target_path)
     }
 
+    fn render_native_text(&mut self, template: &str) -> Result<String, CliError> {
+        self.render_native_text_with_depth(template, 0)
+    }
+
+    fn render_native_text_with_depth(
+        &mut self,
+        template: &str,
+        depth: usize,
+    ) -> Result<String, CliError> {
+        if depth > MAX_QUICKADD_EXPANSION_DEPTH {
+            return Err(CliError::operation(format!(
+                "Reached QuickAdd expansion depth limit (max = {MAX_QUICKADD_EXPANSION_DEPTH})"
+            )));
+        }
+
+        let mut rendered = String::with_capacity(template.len());
+        let mut remaining = template;
+
+        while let Some(start) = remaining.find("{{") {
+            rendered.push_str(&remaining[..start]);
+            let rest = &remaining[start + 2..];
+            let Some(end) = rest.find("}}") else {
+                rendered.push_str(&remaining[start..]);
+                return Ok(rendered);
+            };
+
+            let expression = rest[..end].trim();
+            let original = &remaining[start..start + end + 4];
+            let replacement = self
+                .render_quickadd_variable(expression, depth)?
+                .or_else(|| {
+                    render_template_variable(
+                        expression,
+                        &self.current_builtins(),
+                        self.templates_config(),
+                    )
+                })
+                .unwrap_or_else(|| original.to_string());
+            rendered.push_str(&replacement);
+            remaining = &rest[end + 2..];
+        }
+
+        rendered.push_str(remaining);
+        Ok(rendered)
+    }
+
+    fn render_quickadd_variable(
+        &mut self,
+        expression: &str,
+        depth: usize,
+    ) -> Result<Option<String>, CliError> {
+        let trimmed = expression.trim();
+
+        if let Some(rest) = quickadd_strip_keyword(trimmed, "DATE", &[':', '+']) {
+            return Ok(Some(self.render_quickadd_date(rest)));
+        }
+        if let Some(rest) = quickadd_strip_keyword(trimmed, "TIME", &[':']) {
+            return Ok(Some(self.render_quickadd_time(rest)));
+        }
+        if let Some(rest) = quickadd_strip_keyword(trimmed, "VDATE", &[':']) {
+            return self.render_quickadd_vdate(rest);
+        }
+        if let Some(rest) = quickadd_strip_keyword(trimmed, "VALUE", &[':', '|']) {
+            return self.render_quickadd_value(rest, "value");
+        }
+        if let Some(rest) = quickadd_strip_keyword(trimmed, "NAME", &[':', '|']) {
+            return self.render_quickadd_value(rest, "name");
+        }
+
+        match trimmed {
+            value if value.eq_ignore_ascii_case("TITLE") => Ok(Some(self.current_builtins().title)),
+            value
+                if value.eq_ignore_ascii_case("FILE_NAME")
+                    || value.eq_ignore_ascii_case("FILENAMECURRENT") =>
+            {
+                Ok(Some(current_file_stem(&self.target_path)))
+            }
+            value if value.eq_ignore_ascii_case("FILE_PATH") => Ok(Some(self.target_path.clone())),
+            value if value.eq_ignore_ascii_case("LINKCURRENT") => {
+                Ok(Some(current_file_wikilink(&self.target_path)))
+            }
+            value if value.eq_ignore_ascii_case("RANDOM") => Ok(None),
+            _ => {
+                let _ = depth;
+                Ok(None)
+            }
+        }
+    }
+
+    fn render_quickadd_date(&self, rest: &str) -> String {
+        let (format, offset_days) = parse_quickadd_format_and_offset(rest, "YYYY-MM-DD");
+        self.timestamp_with_day_offset(offset_days)
+            .format_obsidian(&format)
+    }
+
+    fn render_quickadd_time(&self, rest: &str) -> String {
+        let format = rest
+            .strip_prefix(':')
+            .map(str::trim)
+            .filter(|format| !format.is_empty())
+            .unwrap_or("HH:mm");
+        self.timestamp.format_obsidian(format)
+    }
+
+    fn render_quickadd_vdate(&mut self, rest: &str) -> Result<Option<String>, CliError> {
+        let Some(body) = rest.strip_prefix(':') else {
+            return Ok(None);
+        };
+        let Some((name_part, format_part)) = split_once_unescaped(body, ',') else {
+            return Ok(None);
+        };
+        let variable_name = name_part.trim();
+        if variable_name.is_empty() {
+            return Ok(None);
+        }
+
+        let (format_part, default_value) = split_once_unescaped(format_part, '|')
+            .map_or((format_part, None), |(format, default)| {
+                (format, Some(default.trim()))
+            });
+        let format = format_part.trim();
+        if format.is_empty() {
+            return Ok(None);
+        }
+
+        let key = quickadd_storage_key(variable_name, "date");
+        let millis = if let Some(millis) = self.quickadd_date_vars.get(&key) {
+            *millis
+        } else {
+            let supplied = lookup_template_var(
+                self.request.vars,
+                &PromptLookupKey::named(variable_name),
+                Some(variable_name),
+            )
+            .or_else(|| default_value.map(ToOwned::to_owned));
+
+            let value = match supplied {
+                Some(value) => value,
+                None if io::stdin().is_terminal() => {
+                    read_prompt_value(variable_name, default_value)
+                        .map_err(CliError::operation)?
+                        .unwrap_or_default()
+                }
+                None => {
+                    return Err(CliError::operation(format!(
+                        "{{{{VDATE:{variable_name},{format}}}}} needs --var {}=<date> in non-interactive mode",
+                        slugify_var_key(variable_name)
+                    )));
+                }
+            };
+            let millis = quickadd_parse_date_input(&value, self.current_timestamp_millis())
+                .ok_or_else(|| {
+                    CliError::operation(format!(
+                        "failed to parse QuickAdd date input `{value}` for `{variable_name}`"
+                    ))
+                })?;
+            self.quickadd_date_vars.insert(key.clone(), millis);
+            millis
+        };
+
+        Ok(Some(
+            TemplateTimestamp::from_millis(millis).format_obsidian(format),
+        ))
+    }
+
+    fn render_quickadd_value(
+        &mut self,
+        rest: &str,
+        default_prompt_name: &str,
+    ) -> Result<Option<String>, CliError> {
+        let spec = parse_quickadd_value_spec(rest);
+        let variable_name = spec
+            .variable_name
+            .as_deref()
+            .unwrap_or(default_prompt_name)
+            .trim();
+        let key = quickadd_storage_key(variable_name, default_prompt_name);
+
+        let mut raw_value = if let Some(value) = self.quickadd_value_vars.get(&key) {
+            value.clone()
+        } else if let Some(value) =
+            self.lookup_quickadd_value_var(variable_name, default_prompt_name)
+        {
+            value
+        } else if io::stdin().is_terminal() {
+            let prompt = spec
+                .label
+                .as_deref()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or(variable_name);
+            read_prompt_value(prompt, spec.default_value.as_deref())
+                .map_err(CliError::operation)?
+                .unwrap_or_default()
+        } else if let Some(default_value) = &spec.default_value {
+            default_value.clone()
+        } else if let Some(first_option) = spec.choices.first() {
+            first_option.clone()
+        } else {
+            return Err(CliError::operation(format!(
+                "{{{{VALUE:{variable_name}}}}} needs --var {}=<value> in non-interactive mode",
+                slugify_var_key(variable_name)
+            )));
+        };
+
+        if raw_value.is_empty() {
+            if let Some(default_value) = &spec.default_value {
+                raw_value.clone_from(default_value);
+            }
+        }
+
+        self.quickadd_value_vars.insert(key, raw_value.clone());
+        let rendered = spec
+            .case_style
+            .as_deref()
+            .map_or(raw_value.clone(), |case_style| {
+                apply_quickadd_case_style(&raw_value, case_style)
+            });
+        Ok(Some(rendered))
+    }
+
+    fn lookup_quickadd_value_var(
+        &self,
+        variable_name: &str,
+        default_prompt_name: &str,
+    ) -> Option<String> {
+        let lookup = PromptLookupKey::named(variable_name);
+        lookup_template_var(self.request.vars, &lookup, Some(variable_name)).or_else(|| {
+            if variable_name.eq_ignore_ascii_case(default_prompt_name) {
+                None
+            } else {
+                let fallback = PromptLookupKey::named(default_prompt_name);
+                lookup_template_var(self.request.vars, &fallback, Some(default_prompt_name))
+            }
+        })
+    }
+
+    fn timestamp_with_day_offset(&self, offset_days: i64) -> TemplateTimestamp {
+        TemplateTimestamp::from_millis(self.current_timestamp_millis() + offset_days * DAY_MS)
+    }
+
     fn render_source(
         &mut self,
         template: &str,
@@ -194,11 +441,7 @@ impl<'a> TemplateSession<'a> {
         }
 
         if engine == TemplateEngineKind::Native {
-            return Ok(render_template_contents(
-                template,
-                &self.current_builtins(),
-                self.templates_config(),
-            ));
+            return self.render_native_text(template);
         }
 
         let mut output = String::with_capacity(template.len());
@@ -206,11 +449,7 @@ impl<'a> TemplateSession<'a> {
         while let Some(start) = template[cursor..].find("<%") {
             let absolute_start = cursor + start;
             let text_segment = &template[cursor..absolute_start];
-            output.push_str(&render_template_contents(
-                text_segment,
-                &self.current_builtins(),
-                self.templates_config(),
-            ));
+            output.push_str(&self.render_native_text(text_segment)?);
             let (tag, next_cursor) = parse_templater_tag(template, absolute_start)
                 .ok_or_else(|| CliError::operation("unterminated templater tag"))?;
             apply_left_trim(&mut output, tag.left_trim);
@@ -220,11 +459,7 @@ impl<'a> TemplateSession<'a> {
         }
 
         let tail = &template[cursor..];
-        output.push_str(&render_template_contents(
-            tail,
-            &self.current_builtins(),
-            self.templates_config(),
-        ));
+        output.push_str(&self.render_native_text(tail)?);
         Ok(output)
     }
 
@@ -2227,6 +2462,15 @@ struct PromptLookupKey {
     slug: String,
 }
 
+impl PromptLookupKey {
+    fn named(name: &str) -> Self {
+        Self {
+            raw: name.trim().to_string(),
+            slug: quickadd_storage_key(name, "value"),
+        }
+    }
+}
+
 fn lookup_template_var(
     vars: &HashMap<String, String>,
     key: &PromptLookupKey,
@@ -2251,6 +2495,391 @@ fn slugify_var_key(value: &str) -> String {
         }
     }
     slug.trim_matches('_').to_string()
+}
+
+fn quickadd_strip_keyword<'a>(
+    input: &'a str,
+    keyword: &str,
+    allowed_next: &[char],
+) -> Option<&'a str> {
+    if input.len() < keyword.len() || !input[..keyword.len()].eq_ignore_ascii_case(keyword) {
+        return None;
+    }
+    let rest = &input[keyword.len()..];
+    if rest.is_empty()
+        || rest
+            .chars()
+            .next()
+            .is_some_and(|character| allowed_next.contains(&character))
+    {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
+fn parse_quickadd_format_and_offset(rest: &str, default_format: &str) -> (String, i64) {
+    if rest.is_empty() {
+        return (default_format.to_string(), 0);
+    }
+    if let Some(offset) = rest.strip_prefix('+').and_then(parse_quickadd_offset_days) {
+        return (default_format.to_string(), offset);
+    }
+    if let Some(format_and_offset) = rest.strip_prefix(':') {
+        let (format, offset) =
+            if let Some((format, offset_text)) = format_and_offset.rsplit_once('+') {
+                if let Some(offset) = parse_quickadd_offset_days(offset_text) {
+                    (format, offset)
+                } else {
+                    (format_and_offset, 0)
+                }
+            } else {
+                (format_and_offset, 0)
+            };
+        return (
+            unescape_quickadd_text(format.trim()).if_empty(default_format),
+            offset,
+        );
+    }
+    (default_format.to_string(), 0)
+}
+
+fn parse_quickadd_offset_days(text: &str) -> Option<i64> {
+    text.trim().parse::<i64>().ok()
+}
+
+fn split_once_unescaped(input: &str, needle: char) -> Option<(&str, &str)> {
+    let mut escaped = false;
+    for (index, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == needle {
+            return Some((&input[..index], &input[index + ch.len_utf8()..]));
+        }
+    }
+    None
+}
+
+fn split_unescaped(input: &str, needle: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+    for (index, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == needle {
+            parts.push(&input[start..index]);
+            start = index + ch.len_utf8();
+        }
+    }
+    parts.push(&input[start..]);
+    parts
+}
+
+fn unescape_quickadd_text(value: &str) -> String {
+    value
+        .replace("\\|", "|")
+        .replace("\\,", ",")
+        .replace("\\\\", "\\")
+}
+
+fn quickadd_storage_key(value: &str, fallback: &str) -> String {
+    let slug = slugify_var_key(value);
+    if slug.is_empty() {
+        fallback.to_string()
+    } else {
+        slug
+    }
+}
+
+fn current_file_stem(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Untitled")
+        .to_string()
+}
+
+fn current_file_wikilink(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let link_target = trimmed
+        .strip_suffix(".md")
+        .or_else(|| trimmed.strip_suffix(".canvas"))
+        .unwrap_or(trimmed);
+    format!("[[{link_target}]]")
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct QuickAddValueSpec {
+    variable_name: Option<String>,
+    default_value: Option<String>,
+    label: Option<String>,
+    case_style: Option<String>,
+    choices: Vec<String>,
+}
+
+fn parse_quickadd_value_spec(rest: &str) -> QuickAddValueSpec {
+    let mut spec = QuickAddValueSpec::default();
+    if rest.is_empty() {
+        return spec;
+    }
+
+    let (head, option_suffix) = if let Some(body) = rest.strip_prefix(':') {
+        split_once_unescaped(body, '|').map_or((body, None), |(head, tail)| (head, Some(tail)))
+    } else if let Some(body) = rest.strip_prefix('|') {
+        ("", Some(body))
+    } else {
+        ("", None)
+    };
+
+    let head = head.trim();
+    if !head.is_empty() {
+        let choices = split_unescaped(head, ',')
+            .into_iter()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(unescape_quickadd_text)
+            .collect::<Vec<_>>();
+        if head.contains(',') {
+            spec.choices = choices;
+        } else {
+            spec.variable_name = Some(unescape_quickadd_text(head));
+        }
+    }
+
+    if let Some(option_suffix) = option_suffix {
+        for option in split_unescaped(option_suffix, '|') {
+            let option = option.trim();
+            if option.is_empty() {
+                continue;
+            }
+            if let Some(value) = option.strip_prefix("default:") {
+                spec.default_value = Some(unescape_quickadd_text(value.trim()));
+            } else if let Some(value) = option.strip_prefix("label:") {
+                spec.label = Some(unescape_quickadd_text(value.trim()));
+            } else if let Some(value) = option.strip_prefix("case:") {
+                spec.case_style = Some(value.trim().to_ascii_lowercase());
+            } else if option.contains(':')
+                || matches!(option, "custom")
+                || option.starts_with("type:")
+                || option.starts_with("text:")
+            {
+            } else if spec.default_value.is_none() {
+                spec.default_value = Some(unescape_quickadd_text(option));
+            }
+        }
+    }
+
+    spec
+}
+
+fn apply_quickadd_case_style(value: &str, style: &str) -> String {
+    let words = quickadd_words(value);
+    match style.trim().to_ascii_lowercase().as_str() {
+        "kebab" | "slug" => words.join("-").to_ascii_lowercase(),
+        "snake" => words.join("_").to_ascii_lowercase(),
+        "camel" => {
+            let mut iter = words.into_iter();
+            let Some(first) = iter.next() else {
+                return String::new();
+            };
+            let mut rendered = first.to_ascii_lowercase();
+            for word in iter {
+                rendered.push_str(&capitalize_ascii(&word.to_ascii_lowercase()));
+            }
+            rendered
+        }
+        "pascal" => words
+            .into_iter()
+            .map(|word| capitalize_ascii(&word.to_ascii_lowercase()))
+            .collect::<String>(),
+        "title" => words
+            .into_iter()
+            .map(|word| capitalize_ascii(&word.to_ascii_lowercase()))
+            .collect::<Vec<_>>()
+            .join(" "),
+        "lower" => value.to_ascii_lowercase(),
+        "upper" => value.to_ascii_uppercase(),
+        _ => value.to_string(),
+    }
+}
+
+fn quickadd_words(value: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+fn capitalize_ascii(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut rendered = String::new();
+    rendered.push(first.to_ascii_uppercase());
+    rendered.push_str(chars.as_str());
+    rendered
+}
+
+trait QuickAddEmptyExt {
+    fn if_empty(self, fallback: &str) -> String;
+}
+
+impl QuickAddEmptyExt for String {
+    fn if_empty(self, fallback: &str) -> String {
+        if self.trim().is_empty() {
+            fallback.to_string()
+        } else {
+            self
+        }
+    }
+}
+
+fn quickadd_parse_date_input(text: &str, reference_ms: i64) -> Option<i64> {
+    let normalized = text.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let lower = normalized.to_ascii_lowercase();
+    let day_ms = match lower.as_str() {
+        "t" | "today" => quickadd_day_start(reference_ms),
+        "tm" | "tomorrow" => quickadd_day_start(reference_ms) + DAY_MS,
+        "yd" | "yesterday" => quickadd_day_start(reference_ms) - DAY_MS,
+        "next week" => quickadd_day_start(reference_ms) + (7 * DAY_MS),
+        _ => {
+            if let Some(days) = parse_relative_day_phrase(&lower) {
+                quickadd_day_start(reference_ms) + days * DAY_MS
+            } else if let Some(weekday) = quickadd_weekday_name_to_index(&lower) {
+                quickadd_next_weekday(reference_ms, weekday, false)
+            } else if let Some(weekday) = lower
+                .strip_prefix("next ")
+                .and_then(quickadd_weekday_name_to_index)
+            {
+                quickadd_next_weekday(reference_ms, weekday, true)
+            } else if let Some(parsed) = quickadd_parse_month_day_phrase(&lower, reference_ms) {
+                parsed
+            } else {
+                parse_date_like_string(normalized).map(quickadd_day_start)?
+            }
+        }
+    };
+
+    Some(day_ms)
+}
+
+fn parse_relative_day_phrase(text: &str) -> Option<i64> {
+    if let Some(days) = text
+        .strip_prefix("in ")
+        .and_then(|value| value.strip_suffix(" days"))
+        .or_else(|| {
+            text.strip_prefix("in ")
+                .and_then(|value| value.strip_suffix(" day"))
+        })
+    {
+        return days.trim().parse::<i64>().ok();
+    }
+    if let Some(days) = text
+        .strip_suffix(" days")
+        .or_else(|| text.strip_suffix(" day"))
+        .and_then(|value| value.trim().parse::<i64>().ok())
+    {
+        return Some(days);
+    }
+    text.parse::<i64>().ok()
+}
+
+fn quickadd_parse_month_day_phrase(text: &str, reference_ms: i64) -> Option<i64> {
+    let regex = Regex::new(
+        r"(?i)^(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?(?:,\s*(?P<year>\d{4}))?$",
+    )
+    .ok()?;
+    let capture = regex.captures(text)?;
+    let month = quickadd_month_name_to_number(capture.name("month")?.as_str())?;
+    let day = capture.name("day")?.as_str().parse::<i64>().ok()?;
+    let (reference_year, _, _, _, _, _, _) =
+        vulcan_core::expression::functions::date_components(quickadd_day_start(reference_ms));
+    let year = capture
+        .name("year")
+        .and_then(|value| value.as_str().parse::<i64>().ok())
+        .unwrap_or(reference_year);
+    let base = parse_date_like_string(&format!("{year:04}-{month:02}-{day:02}"))?;
+    let candidate = if capture.name("year").is_none() && base < quickadd_day_start(reference_ms) {
+        parse_date_like_string(&format!("{:04}-{month:02}-{day:02}", year + 1))?
+    } else {
+        base
+    };
+    Some(quickadd_day_start(candidate))
+}
+
+fn quickadd_weekday_name_to_index(text: &str) -> Option<i64> {
+    match text {
+        "monday" => Some(1),
+        "tuesday" => Some(2),
+        "wednesday" => Some(3),
+        "thursday" => Some(4),
+        "friday" => Some(5),
+        "saturday" => Some(6),
+        "sunday" => Some(7),
+        _ => None,
+    }
+}
+
+fn quickadd_month_name_to_number(text: &str) -> Option<i64> {
+    match text {
+        "jan" | "january" => Some(1),
+        "feb" | "february" => Some(2),
+        "mar" | "march" => Some(3),
+        "apr" | "april" => Some(4),
+        "may" => Some(5),
+        "jun" | "june" => Some(6),
+        "jul" | "july" => Some(7),
+        "aug" | "august" => Some(8),
+        "sep" | "sept" | "september" => Some(9),
+        "oct" | "october" => Some(10),
+        "nov" | "november" => Some(11),
+        "dec" | "december" => Some(12),
+        _ => None,
+    }
+}
+
+fn quickadd_next_weekday(reference_ms: i64, target: i64, force_next_week: bool) -> i64 {
+    let current_day = quickadd_day_start(reference_ms);
+    let current_weekday = ((current_day.div_euclid(DAY_MS) + 3).rem_euclid(7)) + 1;
+    let mut delta = (target - current_weekday).rem_euclid(7);
+    if force_next_week || delta == 0 {
+        delta += 7;
+    }
+    current_day + delta * DAY_MS
+}
+
+fn quickadd_day_start(ms: i64) -> i64 {
+    ms.div_euclid(DAY_MS) * DAY_MS
 }
 
 fn read_prompt_value(prompt: &str, default: Option<&str>) -> Result<Option<String>, String> {
@@ -2623,7 +3252,7 @@ mod tests {
         apply_right_trim, parse_native_expression, parse_template_var_bindings,
         parse_templater_tag, random_picture_markdown, render_template_request,
         template_value_to_string, TemplateEngineKind, TemplateRenderRequest, TemplateRunMode,
-        TemplateValue, TrimMode,
+        TemplateSession, TemplateTimestamp, TemplateValue, TrimMode,
     };
     #[cfg(feature = "js_runtime")]
     use crate::TemplateCandidate;
@@ -2638,6 +3267,13 @@ mod tests {
     use std::path::Path;
     use tempfile::tempdir;
     use vulcan_core::{VaultConfig, VaultPaths};
+
+    fn fixed_template_timestamp() -> TemplateTimestamp {
+        TemplateTimestamp::from_millis(
+            vulcan_core::expression::functions::parse_date_like_string("2026-04-04T09:30:00Z")
+                .expect("fixed timestamp should parse"),
+        )
+    }
 
     #[test]
     fn parses_template_var_bindings() {
@@ -2737,6 +3373,77 @@ mod tests {
         .expect("template should render");
 
         assert_eq!(rendered.content, "Title Alpha\nStatus active\n");
+    }
+
+    #[test]
+    fn native_renderer_supports_quickadd_date_and_file_tokens() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        let config = VaultConfig::default();
+        let vars = HashMap::new();
+        let request = TemplateRenderRequest {
+            paths: &paths,
+            vault_config: &config,
+            templates: &[],
+            template_path: None,
+            template_text: "",
+            target_path: "Projects/Alpha.md",
+            target_contents: Some("Body\n"),
+            engine: TemplateEngineKind::Native,
+            vars: &vars,
+            allow_mutations: false,
+            run_mode: TemplateRunMode::Append,
+        };
+        let mut session = TemplateSession::new(request, TemplateEngineKind::Native);
+        session.timestamp = fixed_template_timestamp();
+
+        let rendered = session
+            .render_native_text(
+                "{{DATE}} {{DATE:YYYY/MM/DD+3}} {{TIME}} {{TITLE}} {{FILE_NAME}} {{FILE_PATH}} {{LINKCURRENT}}",
+            )
+            .expect("native quickadd text should render");
+
+        assert_eq!(
+            rendered,
+            "2026-04-04 2026/04/07 09:30 Alpha Alpha Projects/Alpha.md [[Projects/Alpha]]"
+        );
+    }
+
+    #[test]
+    fn native_renderer_supports_quickadd_value_and_vdate_tokens() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        let config = VaultConfig::default();
+        let vars = HashMap::from([
+            ("title".to_string(), "Release Planning".to_string()),
+            ("due".to_string(), "tomorrow".to_string()),
+        ]);
+        let request = TemplateRenderRequest {
+            paths: &paths,
+            vault_config: &config,
+            templates: &[],
+            template_path: None,
+            template_text: "",
+            target_path: "Projects/Alpha.md",
+            target_contents: Some("Body\n"),
+            engine: TemplateEngineKind::Native,
+            vars: &vars,
+            allow_mutations: false,
+            run_mode: TemplateRunMode::Append,
+        };
+        let mut session = TemplateSession::new(request, TemplateEngineKind::Native);
+        session.timestamp = fixed_template_timestamp();
+
+        let rendered = session
+            .render_native_text(
+                "{{VALUE:title|case:slug}} / {{VALUE:title|case:title}} / {{VALUE:owner|Anonymous}} / {{VDATE:due,YYYY-MM-DD}} / {{VDATE:due,dddd}}",
+            )
+            .expect("quickadd value tokens should render");
+
+        assert_eq!(
+            rendered,
+            "release-planning / Release Planning / Anonymous / 2026-04-05 / Sunday"
+        );
     }
 
     #[cfg(feature = "js_runtime")]

@@ -228,19 +228,23 @@ Subcommands:
   get         read one note, optionally with heading, block, line, or regex selectors
   set         replace one note's contents from stdin or --file
   create      create a new note, optionally from a template and extra frontmatter
-  append      append text to the end of a note or under a heading
+  append      append text to the end of a note, at the top, or under a heading
   patch       perform a guarded single-note find/replace
 
 Notes:
   `--check` runs non-blocking doctor-like diagnostics for the resulting note.
   Mutating note commands support --no-commit; `patch` also supports --dry-run.
   `note get --output json` returns content, parsed frontmatter, and selection metadata.
+  `note append --periodic <daily|weekly|monthly>` creates the target periodic note first when missing.
+  Repeat `--var key=value` to satisfy QuickAdd-style `{{VALUE}}` / `{{VDATE:...}}` prompts in automation.
 
 Examples:
   vulcan note get Projects/Alpha --heading Status
   vulcan note set Projects/Alpha --no-frontmatter < body.md
   vulcan note create Inbox/Idea --template daily --frontmatter status=idea
-  vulcan note append Projects/Alpha \"Shipped\" --heading \"## Log\"
+  vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"
+  vulcan note append Projects/Alpha \"Pinned\" --prepend
+  vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"
   vulcan note patch Projects/Alpha --find TODO --replace DONE";
 
 const QUERY_COMMAND_AFTER_HELP: &str = "\
@@ -1836,12 +1840,51 @@ pub enum NoteCommand {
     },
     #[command(about = "Append text to a note or under a heading")]
     Append {
-        #[arg(help = "Note path, filename, or alias to update")]
-        note: String,
-        #[arg(help = "Text to append, or `-` to read from stdin")]
-        text: String,
-        #[arg(long, help = "Append under this exact heading, creating it if needed")]
+        #[arg(
+            allow_hyphen_values = true,
+            value_name = "NOTE_OR_TEXT",
+            help = "Note path, filename, or alias to update; or the text itself when --periodic is set"
+        )]
+        note_or_text: String,
+        #[arg(
+            allow_hyphen_values = true,
+            value_name = "TEXT",
+            help = "Text to append, or `-` to read from stdin"
+        )]
+        text: Option<String>,
+        #[arg(
+            long = "after-heading",
+            visible_alias = "heading",
+            conflicts_with_all = ["prepend", "append"],
+            help = "Append under this exact heading, creating it if needed"
+        )]
         heading: Option<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["heading", "append"],
+            help = "Insert after frontmatter instead of appending at the end"
+        )]
+        prepend: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["heading", "prepend"],
+            help = "Append to the end of the note (default)"
+        )]
+        append: bool,
+        #[arg(
+            long,
+            value_enum,
+            help = "Target a periodic note type instead of a named note"
+        )]
+        periodic: Option<NoteAppendPeriodicArg>,
+        #[arg(long, requires = "periodic", help = "Reference date for --periodic")]
+        date: Option<String>,
+        #[arg(
+            long = "var",
+            action = ArgAction::Append,
+            help = "Bind QuickAdd-style prompt variables using key=value syntax"
+        )]
+        vars: Vec<String>,
         #[arg(long, help = "Run non-blocking doctor-like diagnostics after append")]
         check: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
@@ -1871,6 +1914,13 @@ pub enum TemplateEngineArg {
     Native,
     Templater,
     Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum NoteAppendPeriodicArg {
+    Daily,
+    Weekly,
+    Monthly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
