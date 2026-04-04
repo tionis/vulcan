@@ -1,6 +1,6 @@
 ---
 name: js-api-guide
-description: Orient an external harness around Vulcan's JS runtime and current sandbox boundaries.
+description: Orient an external harness around Vulcan's JS runtime and sandbox boundaries.
 tools:
   - help
   - describe
@@ -15,10 +15,11 @@ Use this skill when a workflow needs JavaScript-oriented guidance rather than di
 ## Core patterns
 
 - Read `help js`, `help js.vault`, and `help sandbox` first.
-- `vulcan run <file.js|script-name>` is available for read-oriented runtime workflows.
-- Prefer stable CLI commands for write operations that the JS runtime does not expose yet.
+- Start from `vulcan run --sandbox strict` for read-only scripts.
+- Escalate to `--sandbox fs` for vault writes and `--sandbox net` for web helpers.
+- Prefer `vault.transaction()` when several writes must succeed or roll back together.
 
 ## Common mistakes
 
-- Assuming the full `vault.transaction()` and write API already exists everywhere.
+- Assuming write helpers work without `--sandbox fs` or higher.
 - Assuming unrestricted network or shell access from the JS sandbox.

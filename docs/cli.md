@@ -221,15 +221,16 @@ Behavior:
 - `vulcan run <script.js>`: execute a JavaScript file through the Vulcan runtime, stripping a leading shebang line when present.
 - `vulcan run <script-name>`: resolve `.vulcan/scripts/<name>` or `.vulcan/scripts/<name>.js`.
 - `vulcan run --script <file>`: shebang-friendly entrypoint for `#!/usr/bin/env -S vulcan run --script`.
-- `vulcan run`: open the current line-oriented REPL.
+- `vulcan run`: open the interactive JS REPL with persistent context.
 
 Behavior:
 
 - `console.log(...)` emits paragraph output before the final return value.
 - `--output json` returns both `outputs` and the final `value`.
 - `--timeout <duration>` overrides the JS execution limit for one script run or REPL session.
-- The current REPL executes one line at a time and preserves JS variables between prompts.
-- The current runtime exposes read-oriented helpers such as `vault.note()`, `vault.notes()`, `vault.query()`, `vault.search()`, `vault.graph.*`, `vault.daily.*`, `vault.events()`, and `help(obj)`.
+- `--sandbox strict|fs|net|none` selects the runtime capability tier for one script run or REPL session.
+- The REPL supports multiline input, tab completion, history in `.vulcan/repl_history`, pretty-printed objects, and preserved JS variables between prompts.
+- The runtime exposes `vault.note()`, `vault.notes()`, `vault.query()`, `vault.search()`, `vault.graph.*`, `vault.daily.*`, `vault.events()`, `vault.set/create/append/patch/update/unset`, `vault.transaction()`, `vault.refactor.*`, `web.search()`, `web.fetch()`, and `help(obj)`.
 
 ### Web commands
 
@@ -814,20 +815,21 @@ vulcan assistant platforms                   # list configured platforms
 vulcan assistant memory <platform> <user-id> # show user memory
 ```
 
-### Runtime Gaps (Roadmap 9.18.5 follow-up)
-
-The grouped command hierarchy has landed. The main remaining JS-runtime work is deeper runtime ergonomics and sandbox tiers rather than basic command availability.
+### Runtime Status
 
 ```
-vulcan run <script.js|script-name>  # current script execution surface
-vulcan run --script <file>          # current shebang entry point
-vulcan run                          # current line-oriented REPL
+vulcan run <script.js|script-name>       # current script execution surface
+vulcan run --script <file>               # current shebang entry point
+vulcan run --sandbox fs runtime.js       # enable vault writes
+vulcan run --sandbox net fetch.js        # enable web helpers
+vulcan run                               # interactive REPL
 ```
 
-**Main remaining runtime work:**
-- sandbox selection flags such as `--sandbox strict|fs|net|none`
-- REPL history, multiline input, completion, and richer pretty-printing
-- write-capable JS APIs such as `vault.transaction()` and network-gated `web.*`
+Current runtime capabilities:
+- sandbox selection with `strict`, `fs`, `net`, and `none`
+- multiline REPL editing, completion, history, and persistent context
+- write-capable vault APIs such as `vault.transaction()` and `vault.refactor.*`
+- network-gated helpers through `web.search()` and `web.fetch()`
 
 ### `canvas` (Roadmap Phase 18)
 
