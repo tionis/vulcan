@@ -2119,9 +2119,9 @@ Notes on other common Obsidian plugins and their relationship to Vulcan:
 
 #### 9.15.1 Task file format and parsing
 
-- [ ] Detect TaskNotes task files: configurable identification method — by tag (default: `task` tag in frontmatter) or by property presence (e.g., `status` + `priority` fields)
-- [ ] Configurable tasks folder: default `TaskNotes/Tasks/`, configurable via settings import
-- [ ] Parse task frontmatter properties:
+- [x] Detect TaskNotes task files: configurable identification method — by tag (default: `task` tag in frontmatter) or by property presence (e.g., `status` + `priority` fields)
+- [x] Configurable tasks folder: default `TaskNotes/Tasks/`, configurable via settings import
+- [x] Parse task frontmatter properties:
   | Property | Type | Description |
   |---|---|---|
   | `title` | string | Task title |
@@ -2143,10 +2143,10 @@ Notes on other common Obsidian plugins and their relationship to Vulcan:
   | `blockedBy` | list | Task dependency objects (uid, reltype, gap) |
   | `reminders` | list | Reminder objects (id, type, relatedTo, offset, description) |
   | `timeEntries` | list | Time tracking session objects (startTime, endTime, description) |
-- [ ] Field mapping support: TaskNotes allows users to remap internal field names to custom frontmatter keys — honor `fieldMapping` configuration
-- [ ] Custom user-defined fields: arbitrary additional frontmatter properties with typed schemas (text, number, date, boolean, list)
-- [ ] Store parsed task data in cache: extend `documents` metadata or add `tasknotes_tasks` table with indexed columns for status, priority, due, scheduled, project, context
-- [ ] Excluded folders: respect `excludedFolders` setting to skip non-task files in task folders
+- [x] Field mapping support: TaskNotes allows users to remap internal field names to custom frontmatter keys — honor `fieldMapping` configuration
+- [x] Custom user-defined fields: arbitrary additional frontmatter properties with typed schemas (text, number, date, boolean, list)
+- [x] Store parsed task data in cache: extend `documents` metadata or add `tasknotes_tasks` table with indexed columns for status, priority, due, scheduled, project, context
+- [x] Excluded folders: respect `excludedFolders` setting to skip non-task files in task folders
 
 #### 9.15.2 Custom statuses and priorities
 
@@ -2183,17 +2183,17 @@ Reuses the status type registry from 9.10.4 (which defines `TODO`, `DONE`, `IN_P
 
 Reuses the RRULE parsing and recurrence expansion infrastructure from 9.10.2. TaskNotes adds per-instance completion/skipping semantics on top.
 
-- [ ] Parse `recurrence` field as RFC 5545 RRULE string (e.g., `FREQ=WEEKLY;BYDAY=MO,WE,FR`) — reuse 9.10.2 RRULE parser
-- [ ] Recurrence expansion: compute next N occurrences for query and calendar display — reuse 9.10.2 expansion engine
+- [x] Parse `recurrence` field as RFC 5545 RRULE string (e.g., `FREQ=WEEKLY;BYDAY=MO,WE,FR`) — reuse 9.10.2 RRULE parser
+- [x] Recurrence expansion: compute next N occurrences for query and calendar display — reuse 9.10.2 expansion engine
 - [ ] Per-instance completion: `complete_instances` tracks which occurrences are done without completing the entire recurring task (TaskNotes-specific)
 - [ ] Per-instance skipping: `skipped_instances` marks occurrences as intentionally skipped (TaskNotes-specific)
-- [ ] Flexible vs fixed scheduling: next instance calculated from completion date (flexible) or from original schedule (fixed) — configurable via `recurrenceAnchor`
+- [x] Flexible vs fixed scheduling: next instance calculated from completion date (flexible) or from original schedule (fixed) — configurable via `recurrenceAnchor`
 
 #### 9.15.5 Task dependencies
 
 Reuses the dependency graph infrastructure from 9.10.3 (which handles inline emoji dependencies: `🆔`/`⛔`). TaskNotes extends the graph with richer RFC 9253 relation types and duration gaps. Both dependency formats feed into the same graph — `vulcan tasks blocked` and `vulcan tasks graph` show a unified view across inline and file-based tasks.
 
-- [ ] Parse `blockedBy` array: each entry has `uid` (wikilink to blocking task), `reltype`, and optional `gap` (ISO 8601 duration)
+- [x] Parse `blockedBy` array: each entry has `uid` (wikilink to blocking task), `reltype`, and optional `gap` (ISO 8601 duration)
 - [ ] Dependency relation types (RFC 9253) — extends 9.10.3's simple blocked-by with:
   | Type | Meaning |
   |---|---|
@@ -2202,7 +2202,7 @@ Reuses the dependency graph infrastructure from 9.10.3 (which handles inline emo
   | `STARTTOSTART` | Blocked task can start after blocker starts |
   | `STARTTOFINISH` | Blocked task can finish after blocker starts |
 - [ ] Duration gaps: `gap: P1D` means "1 day after the blocker completes"
-- [ ] Feed TaskNotes dependencies into the shared dependency graph (9.10.3) so both emoji-based and frontmatter-based dependencies are queryable together
+- [x] Feed TaskNotes dependencies into the shared dependency graph (9.10.3) so both emoji-based and frontmatter-based dependencies are queryable together
 
 #### 9.15.6 Time tracking and pomodoro
 
@@ -2303,13 +2303,13 @@ Deferred to post-Phase 9 enhancements. Calendar integration needs deeper researc
 
 #### 9.15.11 Settings import
 
-- [ ] Read TaskNotes settings from `.obsidian/plugins/tasknotes/data.json` — import settings for implemented features:
+- [~] Read TaskNotes settings from `.obsidian/plugins/tasknotes/data.json` — import settings for implemented features:
   | Setting category | Key settings |
   |---|---|
-  | **Core** | `tasksFolder`, `taskTag`, `taskIdentificationMethod`, `excludedFolders`, `defaultTaskPriority`, `defaultTaskStatus` |
-  | **Field mapping** | `fieldMapping` — full property name remapping table (22 fields) |
+  | **Core** | `tasksFolder`, `archiveFolder`, `taskTag`, `taskIdentificationMethod`, `taskPropertyName`, `taskPropertyValue`, `excludedFolders`, `defaultTaskPriority`, `defaultTaskStatus` |
+  | **Field mapping** | `fieldMapping` — implemented property remapping surface for indexed task fields |
   | **Custom types** | `customStatuses` (id, value, label, color, isCompleted, autoArchive), `customPriorities` (id, value, label, color, weight) |
-  | **User fields** | `userFields` — custom field definitions (id, displayName, key, type, defaultValue, autosuggestFilter) |
+  | **User fields** | `userFields` — custom field definitions (id, displayName, key, type) |
   | **NLP** | `enableNaturalLanguageInput`, `nlpLanguage`, `nlpDefaultToScheduled`, `nlpTriggers` (trigger chars → property mapping) |
   | **Pomodoro** | `pomodoroWorkDuration`, `pomodoroShortBreakDuration`, `pomodoroLongBreakDuration`, `pomodoroLongBreakInterval`, `pomodoroStorageLocation` |
   | **Bases** | `enableBases`, `autoCreateDefaultBasesFiles`, `commandFileMapping` |
@@ -2412,7 +2412,7 @@ schedule_heading = "Schedule"   # heading to parse events from (optional)
 - [x] `vulcan daily list` aggregates events across daily notes in a date range
 - [x] JS runtime: `vault.daily.today().events`, `vault.events({ from, to })` (see 9.18.5)
 - [x] One-way `.ics` export for daily-note events
-- [ ] Calendar UI rendering moved to 9.18.1 / Phase 13 as a presentation concern rather than periodic-note data infrastructure
+- [-] Calendar UI rendering moved to 9.18.1 / Phase 13 as a presentation concern rather than periodic-note data infrastructure
 
 #### 9.16.4 CLI surface
 

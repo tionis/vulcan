@@ -438,7 +438,16 @@ fn task_recurrence_source(task: &Map<String, Value>) -> Option<&str> {
 }
 
 fn task_recurrence_anchor_ms(task: &Map<String, Value>) -> Option<i64> {
-    for field in ["scheduled", "start", "due", "created", "done", "completion"] {
+    let anchor_fields = match task
+        .get("recurrenceAnchor")
+        .and_then(Value::as_str)
+        .map(str::trim)
+    {
+        Some("completion") => ["completion", "done", "scheduled", "start", "due", "created"],
+        _ => ["scheduled", "start", "due", "created", "done", "completion"],
+    };
+
+    for field in anchor_fields {
         if let Some(value) = task
             .get(field)
             .and_then(Value::as_str)
@@ -731,6 +740,32 @@ mod tests {
         assert_eq!(
             properties.get("recurrenceAnchor"),
             Some(&Value::String("2026-03-27".to_string()))
+        );
+    }
+
+    #[test]
+    fn completion_anchor_overrides_scheduled_date_for_tasknotes_tasks() {
+        let recurring_task = task(&[
+            ("scheduled", Value::String("2026-04-08".to_string())),
+            (
+                "recurrence",
+                Value::String("RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=FR".to_string()),
+            ),
+            ("recurrenceAnchor", Value::String("completion".to_string())),
+            ("completion", Value::String("2026-04-04".to_string())),
+        ]);
+
+        assert_eq!(
+            task_recurrence_anchor(&recurring_task),
+            Some("2026-04-04".to_string())
+        );
+        assert_eq!(
+            task_upcoming_occurrences(&recurring_task, ms("2026-04-04"), 3),
+            vec![
+                "2026-04-10".to_string(),
+                "2026-04-17".to_string(),
+                "2026-04-24".to_string()
+            ]
         );
     }
 }

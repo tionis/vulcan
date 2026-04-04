@@ -2397,6 +2397,103 @@ fn tasks_graph_json_output_lists_nodes_and_edges() {
 }
 
 #[test]
+fn tasks_list_json_output_includes_tasknotes_file_tasks() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--filter",
+            "status.type is in_progress",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["result_count"], Value::Number(1.into()));
+    assert_eq!(
+        json["tasks"][0]["text"],
+        Value::String("Write docs".to_string())
+    );
+    assert_eq!(
+        json["tasks"][0]["id"],
+        Value::String("[[TaskNotes/Tasks/Write Docs]]".to_string())
+    );
+}
+
+#[test]
+fn tasks_next_and_graph_json_output_support_tasknotes_recurrence_and_dependencies() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    run_scan(&vault_root);
+
+    let next_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "next",
+            "2",
+            "--from",
+            "2026-04-04",
+        ])
+        .assert()
+        .success();
+    let next_json = parse_stdout_json(&next_assert);
+
+    assert_eq!(next_json["result_count"], Value::Number(2.into()));
+    assert_eq!(
+        next_json["occurrences"][0]["date"],
+        Value::String("2026-04-10".to_string())
+    );
+    assert_eq!(
+        next_json["occurrences"][0]["task"]["id"],
+        Value::String("[[TaskNotes/Tasks/Write Docs]]".to_string())
+    );
+
+    let graph_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "graph",
+        ])
+        .assert()
+        .success();
+    let graph_json = parse_stdout_json(&graph_assert);
+
+    assert_eq!(graph_json["nodes"].as_array().map(Vec::len), Some(2));
+    assert_eq!(graph_json["edges"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        graph_json["edges"][0]["blocker_id"],
+        Value::String("[[TaskNotes/Tasks/Prep Outline]]".to_string())
+    );
+    assert_eq!(graph_json["edges"][0]["resolved"], Value::Bool(true));
+}
+
+#[test]
 fn kanban_list_json_output_lists_indexed_boards() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

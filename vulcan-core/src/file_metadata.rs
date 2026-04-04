@@ -212,6 +212,38 @@ fn task_object(
         }
     }
 
+    object.insert("text".to_string(), Value::String(task.text.clone()));
+    object.insert("line".to_string(), Value::Number(task.line_number.into()));
+    object.insert(
+        "path".to_string(),
+        Value::String(note.document_path.clone()),
+    );
+    object
+        .entry("lineCount".to_string())
+        .or_insert_with(|| Value::Number(1.into()));
+    object.entry("section".to_string()).or_insert_with(|| {
+        section_link(&note.document_path, task.section_heading.as_deref())
+            .map_or(Value::Null, Value::String)
+    });
+    object.entry("link".to_string()).or_insert_with(|| {
+        Value::String(
+            section_link(&note.document_path, task.section_heading.as_deref())
+                .unwrap_or_else(|| synthetic_file_link(&note.document_path, &note.file_ext)),
+        )
+    });
+    object
+        .entry("tags".to_string())
+        .or_insert_with(|| json_string_array(note.tags.clone()));
+    object
+        .entry("outlinks".to_string())
+        .or_insert_with(|| json_string_array(note.links.clone()));
+    object.entry("parent".to_string()).or_insert(Value::Null);
+    object.insert("task".to_string(), Value::Bool(true));
+    object
+        .entry("annotated".to_string())
+        .or_insert(Value::Bool(false));
+    object.entry("blockId".to_string()).or_insert(Value::Null);
+
     let status = task.status_char.clone();
     object.insert("status".to_string(), Value::String(status.clone()));
     object.insert(
