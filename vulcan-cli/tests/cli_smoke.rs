@@ -2002,13 +2002,70 @@ fn write_tasks_import_fixture(vault_root: &Path) {
 fn write_tasknotes_import_fixture(vault_root: &Path) {
     fs::create_dir_all(vault_root.join(".obsidian/plugins/tasknotes"))
         .expect("tasknotes plugin dir should exist");
+    fs::create_dir_all(vault_root.join("Views Source"))
+        .expect("tasknotes view source dir should exist");
+    fs::write(
+        vault_root.join("Views Source/tasks-custom.base"),
+        concat!(
+            "# All Tasks\n\n",
+            "views:\n",
+            "  - type: tasknotesTaskList\n",
+            "    name: \"All Tasks\"\n",
+            "    order:\n",
+            "      - note.status\n",
+            "      - note.priority\n",
+            "      - note.due\n",
+        ),
+    )
+    .expect("task list base should be written");
+    fs::write(
+        vault_root.join("Views Source/kanban-custom.base"),
+        concat!(
+            "# Kanban\n\n",
+            "views:\n",
+            "  - type: tasknotesKanban\n",
+            "    name: \"Kanban\"\n",
+            "    order:\n",
+            "      - note.status\n",
+            "      - note.priority\n",
+            "    groupBy:\n",
+            "      property: note.status\n",
+            "      direction: ASC\n",
+        ),
+    )
+    .expect("kanban base should be written");
+    fs::write(
+        vault_root.join("Views Source/relationships-custom.base"),
+        concat!(
+            "# Relationships\n\n",
+            "views:\n",
+            "  - type: tasknotesTaskList\n",
+            "    name: \"Projects\"\n",
+            "    filters:\n",
+            "      and:\n",
+            "        - list(this.projects).contains(file.asLink())\n",
+            "    order:\n",
+            "      - note.projects\n",
+        ),
+    )
+    .expect("relationships base should be written");
+    fs::write(
+        vault_root.join("Views Source/agenda-custom.base"),
+        concat!(
+            "# Agenda\n\n",
+            "views:\n",
+            "  - type: tasknotesCalendar\n",
+            "    name: \"Agenda\"\n",
+        ),
+    )
+    .expect("agenda base should be written");
     fs::write(
         vault_root.join(".obsidian/plugins/tasknotes/data.json"),
         r##"{
           "tasksFolder": "Tasks",
           "archiveFolder": "Archive",
-          "taskTag": "todo",
-          "taskIdentificationMethod": "property",
+          "taskTag": "task",
+          "taskIdentificationMethod": "tag",
           "taskPropertyName": "isTask",
           "taskPropertyValue": "yes",
           "excludedFolders": "Archive, Someday",
@@ -2076,7 +2133,12 @@ fn write_tasknotes_import_fixture(vault_root: &Path) {
           "enableAPI": true,
           "webhooks": [{ "url": "https://example.test/hook" }],
           "enableBases": true,
-          "commandFileMapping": { "open-tasks-view": "TaskNotes/Views/tasks.base" },
+          "commandFileMapping": {
+            "open-tasks-view": "Views Source/tasks-custom.base",
+            "open-kanban-view": "Views Source/kanban-custom.base",
+            "relationships": "Views Source/relationships-custom.base",
+            "open-agenda-view": "Views Source/agenda-custom.base"
+          },
           "enableGoogleCalendar": true,
           "googleOAuthClientId": "google-client",
           "enableMicrosoftCalendar": true,
@@ -2402,7 +2464,7 @@ fn config_import_tasks_json_output_writes_config_and_reports_mapping() {
 fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
-    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    copy_fixture_vault("tasknotes", &vault_root);
     write_tasknotes_import_fixture(&vault_root);
 
     let assert = Command::cargo_bin("vulcan")
@@ -2448,13 +2510,42 @@ fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
             item["source"] == "taskCreationDefaults.defaultReminders"
                 && item["reason"] == "default reminder settings are not yet supported"
         })));
+    assert!(json["migrated_files"]
+        .as_array()
+        .is_some_and(|files| files.iter().any(|item| {
+            item["source"] == "Views Source/tasks-custom.base"
+                && item["target"] == "TaskNotes/Views/tasks-default.base"
+                && item["action"] == "copy"
+        })));
+    assert!(json["migrated_files"]
+        .as_array()
+        .is_some_and(|files| files.iter().any(|item| {
+            item["source"] == "Views Source/kanban-custom.base"
+                && item["target"] == "TaskNotes/Views/kanban-default.base"
+                && item["action"] == "copy"
+        })));
+    assert!(json["migrated_files"]
+        .as_array()
+        .is_some_and(|files| files.iter().any(|item| {
+            item["source"] == "Views Source/relationships-custom.base"
+                && item["target"] == "TaskNotes/Views/relationships.base"
+                && item["action"] == "copy"
+        })));
+    assert!(json["skipped"]
+        .as_array()
+        .is_some_and(|skipped| skipped.iter().any(|item| {
+            item["source"] == "commandFileMapping.open-agenda-view"
+                && item["reason"].as_str().is_some_and(|reason| {
+                    reason.contains("unsupported view types: tasknotesCalendar")
+                })
+        })));
 
     let rendered =
         fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
     assert!(rendered.contains("[tasknotes]"));
     assert!(rendered.contains("tasks_folder = \"Tasks\""));
     assert!(rendered.contains("archive_folder = \"Archive\""));
-    assert!(rendered.contains("task_tag = \"todo\""));
+    assert!(rendered.contains("task_tag = \"task\""));
     assert!(rendered.contains("task_property_name = \"isTask\""));
     assert!(rendered.contains("[tasknotes.field_mapping]"));
     assert!(rendered.contains("due = \"deadline\""));
@@ -2466,6 +2557,38 @@ fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
     assert!(rendered.contains("displayName = \"Effort\""));
     assert!(rendered.contains("[tasknotes.task_creation_defaults]"));
     assert!(rendered.contains("default_due_date = \"tomorrow\""));
+    let migrated_tasks = fs::read_to_string(vault_root.join("TaskNotes/Views/tasks-default.base"))
+        .expect("migrated task list base should exist");
+    assert!(migrated_tasks.starts_with("source: tasknotes\n\n# All Tasks\n"));
+    assert!(!vault_root
+        .join("TaskNotes/Views/agenda-default.base")
+        .exists());
+
+    run_scan(&vault_root);
+    let view_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "view",
+            "show",
+            "tasks-default",
+        ])
+        .assert()
+        .success();
+    let view_json = parse_stdout_json(&view_assert);
+    assert_eq!(view_json["file"], "TaskNotes/Views/tasks-default.base");
+    assert_eq!(view_json["views"][0]["view_type"], "tasknotesTaskList");
+    assert!(view_json["views"][0]["rows"]
+        .as_array()
+        .is_some_and(|rows| rows
+            .iter()
+            .any(|row| row["document_path"] == "TaskNotes/Tasks/Write Docs.md")));
 }
 
 #[test]
