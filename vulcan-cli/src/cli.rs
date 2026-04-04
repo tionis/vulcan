@@ -445,6 +445,14 @@ Examples:
 
 const TASKS_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  add         create one TaskNotes task file
+  show        display one TaskNotes task with structured properties
+  edit        open one TaskNotes task in $EDITOR
+  set         update one TaskNotes task property
+  complete    mark one task as completed
+  archive     archive one completed TaskNotes task
+  convert     convert a note, line, or heading into a TaskNotes task
+  create      append one inline task to a note
   query       evaluate a Tasks plugin query string directly
   eval        evaluate indexed ```tasks``` blocks from one note
   list        list indexed tasks, optionally filtered
@@ -459,6 +467,8 @@ Notes:
   Vault task defaults under [tasks] in .vulcan/config.toml apply to Tasks queries.
 
 Examples:
+  vulcan tasks add \"Buy groceries tomorrow @home\"
+  vulcan tasks create \"Call Alice tomorrow\" --in Inbox
   vulcan tasks query 'not done'
   vulcan tasks eval Dashboard --block 0
   vulcan tasks list
@@ -1393,6 +1403,24 @@ pub enum TasksCommand {
         )]
         line: Option<i64>,
         #[arg(long, help = "Report the planned change without writing the task file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Append one inline task to a note")]
+    Create {
+        #[arg(help = "Task title or natural-language task input")]
+        text: String,
+        #[arg(
+            long = "in",
+            help = "Target note path, filename, or alias; defaults to the configured inbox note"
+        )]
+        note: Option<String>,
+        #[arg(long, help = "Explicit due date or natural-language date phrase")]
+        due: Option<String>,
+        #[arg(long, help = "Explicit priority name")]
+        priority: Option<String>,
+        #[arg(long, help = "Report the planned change without writing the note")]
         dry_run: bool,
         #[arg(long, help = "Skip auto-commit even when enabled in config")]
         no_commit: bool,

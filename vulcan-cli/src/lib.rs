@@ -847,6 +847,28 @@ struct TaskAddReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+struct TaskCreateReport {
+    action: String,
+    dry_run: bool,
+    path: String,
+    task: String,
+    created_note: bool,
+    line_number: i64,
+    used_nlp: bool,
+    line: String,
+    due: Option<String>,
+    scheduled: Option<String>,
+    priority: Option<String>,
+    recurrence: Option<String>,
+    contexts: Vec<String>,
+    projects: Vec<String>,
+    tags: Vec<String>,
+    changes: Vec<RefactorChange>,
+    #[serde(skip)]
+    changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct TaskConvertReport {
     action: String,
     dry_run: bool,
@@ -899,6 +921,26 @@ struct PlannedConvertedTaskNote {
     frontmatter: YamlMapping,
     body: String,
     task_changes: Vec<RefactorChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedInlineTaskCreate {
+    used_nlp: bool,
+    line: String,
+    due: Option<String>,
+    scheduled: Option<String>,
+    priority: Option<String>,
+    recurrence: Option<String>,
+    contexts: Vec<String>,
+    projects: Vec<String>,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NoteEntryInsertion {
+    updated: String,
+    line_number: i64,
+    change: RefactorChange,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2713,6 +2755,178 @@ where
     deduped
 }
 
+fn resolve_tasks_create_target(
+    paths: &VaultPaths,
+    note: Option<&str>,
+) -> Result<(String, Option<String>), CliError> {
+    if let Some(note) = note {
+        return match resolve_note_reference(paths, note) {
+            Ok(resolved) => Ok((resolved.path, None)),
+            Err(GraphQueryError::AmbiguousIdentifier { .. }) => Err(CliError::operation(format!(
+                "note identifier '{note}' is ambiguous"
+            ))),
+            Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. }) => {
+                Ok((normalize_note_path(note)?, None))
+            }
+            Err(error) => Err(CliError::operation(error)),
+        };
+    }
+
+    let config = load_vault_config(paths).config;
+    Ok((
+        normalize_note_path(&config.inbox.path)?,
+        config.inbox.heading,
+    ))
+}
+
+fn task_text_contains_tag(text: &str, tag: &str) -> bool {
+    let normalized = normalize_tag_name(tag);
+    text.split_whitespace()
+        .any(|token| normalize_tag_name(token) == normalized)
+}
+
+fn inline_task_priority_marker(
+    config: &vulcan_core::VaultConfig,
+    priority: &str,
+) -> Option<&'static str> {
+    let normalized = priority.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "none" => None,
+        "highest" => Some("⏫"),
+        "high" | "urgent" => Some("🔺"),
+        "medium" | "normal" => Some("🔼"),
+        "low" => Some("🔽"),
+        "lowest" => Some("⏬"),
+        _ => config
+            .tasknotes
+            .priorities
+            .iter()
+            .find(|candidate| candidate.value.eq_ignore_ascii_case(priority))
+            .and_then(|candidate| match candidate.weight {
+                i32::MIN..=0 => None,
+                1 => Some("🔽"),
+                2 => Some("🔼"),
+                3 => Some("🔺"),
+                _ => Some("⏫"),
+            }),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_inline_task_create_plan(
+    config: &vulcan_core::VaultConfig,
+    text: &str,
+    due: Option<&str>,
+    priority: Option<&str>,
+) -> Result<PlannedInlineTaskCreate, CliError> {
+    let reference_ms = tasknote_reference_ms();
+    let raw_text = text.trim();
+    if raw_text.is_empty() {
+        return Err(CliError::operation("task text cannot be empty"));
+    }
+
+    let used_nlp = config.tasknotes.enable_natural_language_input;
+    let parsed_input = used_nlp
+        .then(|| parse_tasknote_natural_language(raw_text, &config.tasknotes, reference_ms));
+    let title = parsed_input
+        .as_ref()
+        .map(|parsed| parsed.title.as_str())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or(raw_text)
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return Err(CliError::operation("task title cannot be empty"));
+    }
+
+    let due = match due {
+        Some(value) => Some(resolve_tasknote_date_input(config, value, false)?),
+        None => parsed_input.as_ref().and_then(|parsed| parsed.due.clone()),
+    };
+    let scheduled = parsed_input
+        .as_ref()
+        .and_then(|parsed| parsed.scheduled.clone());
+    let priority = priority
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            parsed_input
+                .as_ref()
+                .and_then(|parsed| parsed.priority.clone())
+        });
+    if let Some(priority) = priority.as_deref() {
+        if inline_task_priority_marker(config, priority).is_none() {
+            return Err(CliError::operation(format!(
+                "unsupported inline task priority: {priority}"
+            )));
+        }
+    }
+
+    let contexts = parsed_input
+        .as_ref()
+        .map_or_else(Vec::new, |parsed| parsed.contexts.clone());
+    let projects = parsed_input
+        .as_ref()
+        .map_or_else(Vec::new, |parsed| parsed.projects.clone());
+    let mut tags = parsed_input
+        .as_ref()
+        .map_or_else(Vec::new, |parsed| parsed.tags.clone());
+    if let Some(global_filter) = config
+        .tasks
+        .global_filter
+        .as_deref()
+        .and_then(normalize_tasknote_tag)
+    {
+        if !tags
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&global_filter))
+            && !task_text_contains_tag(&title, &global_filter)
+        {
+            tags.push(global_filter);
+        }
+    }
+    tags = dedup_tasknote_values(tags, normalize_tasknote_tag);
+    let recurrence = parsed_input
+        .as_ref()
+        .and_then(|parsed| parsed.recurrence.clone());
+
+    let mut tokens = vec![title.clone()];
+    tokens.extend(contexts.iter().cloned());
+    tokens.extend(tags.iter().map(|tag| format!("#{tag}")));
+    tokens.extend(projects.iter().cloned());
+    if let Some(due) = due.as_ref() {
+        tokens.push(format!("🗓️ {due}"));
+    }
+    if let Some(scheduled) = scheduled.as_ref() {
+        tokens.push(format!("⏳ {scheduled}"));
+    }
+    if config.tasks.set_created_date {
+        tokens.push(format!("➕ {}", current_utc_date_string()));
+    }
+    if let Some(priority) = priority
+        .as_deref()
+        .and_then(|value| inline_task_priority_marker(config, value))
+    {
+        tokens.push(priority.to_string());
+    }
+    if let Some(recurrence) = recurrence.as_ref() {
+        tokens.push(format!("🔁 {recurrence}"));
+    }
+
+    Ok(PlannedInlineTaskCreate {
+        used_nlp,
+        line: format!("- [ ] {}", tokens.join(" ")),
+        due,
+        scheduled,
+        priority,
+        recurrence,
+        contexts,
+        projects,
+        tags,
+    })
+}
+
 fn yaml_string_sequence(values: &[String]) -> YamlValue {
     YamlValue::Sequence(
         values
@@ -3630,6 +3844,77 @@ fn run_tasks_add_command(
         } else {
             vec![relative_path]
         },
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TasksCreateOptions<'a> {
+    text: &'a str,
+    note: Option<&'a str>,
+    due: Option<&'a str>,
+    priority: Option<&'a str>,
+    dry_run: bool,
+}
+
+fn run_tasks_create_command(
+    paths: &VaultPaths,
+    options: TasksCreateOptions<'_>,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<TaskCreateReport, CliError> {
+    let TasksCreateOptions {
+        text,
+        note,
+        due,
+        priority,
+        dry_run,
+    } = options;
+    let config = load_vault_config(paths).config;
+    let (relative_path, heading) = resolve_tasks_create_target(paths, note)?;
+    let absolute_path = paths.vault_root().join(&relative_path);
+    if absolute_path.exists() && !absolute_path.is_file() {
+        return Err(CliError::operation(format!(
+            "target note is not a file: {relative_path}"
+        )));
+    }
+
+    let existing = fs::read_to_string(&absolute_path).unwrap_or_default();
+    let created_note = !absolute_path.exists();
+    let planned = build_inline_task_create_plan(&config, text, due, priority)?;
+    let insertion = append_entry_to_note(&existing, &planned.line, heading.as_deref());
+    let task = format!("{}:{}", relative_path, insertion.line_number);
+    let changed_paths = if dry_run {
+        Vec::new()
+    } else {
+        vec![relative_path.clone()]
+    };
+
+    if !dry_run {
+        if let Some(parent) = absolute_path.parent() {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
+        }
+        fs::write(&absolute_path, insertion.updated).map_err(CliError::operation)?;
+        run_incremental_scan(paths, output, use_stderr_color)?;
+    }
+
+    Ok(TaskCreateReport {
+        action: "create".to_string(),
+        dry_run,
+        path: relative_path,
+        task,
+        created_note,
+        line_number: insertion.line_number,
+        used_nlp: planned.used_nlp,
+        line: planned.line,
+        due: planned.due,
+        scheduled: planned.scheduled,
+        priority: planned.priority,
+        recurrence: planned.recurrence,
+        contexts: planned.contexts,
+        projects: planned.projects,
+        tags: planned.tags,
+        changes: vec![insertion.change],
+        changed_paths,
     })
 }
 
@@ -6640,19 +6925,46 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 }
 
 fn append_at_end(contents: &str, entry: &str) -> String {
-    let mut rendered = contents.trim_end_matches('\n').to_string();
-    if !rendered.is_empty() {
-        rendered.push_str("\n\n");
-    }
-    rendered.push_str(entry.trim_end());
-    rendered.push('\n');
-    rendered
+    append_entry_at_end(contents, entry).updated
 }
 
 fn append_under_heading(contents: &str, heading: &str, entry: &str) -> String {
+    append_entry_under_heading(contents, heading, entry).updated
+}
+
+fn append_entry_to_note(contents: &str, entry: &str, heading: Option<&str>) -> NoteEntryInsertion {
+    if let Some(heading) = heading {
+        append_entry_under_heading(contents, heading, entry)
+    } else {
+        append_entry_at_end(contents, entry)
+    }
+}
+
+fn append_entry_at_end(contents: &str, entry: &str) -> NoteEntryInsertion {
+    let mut prefix = contents.trim_end_matches('\n').to_string();
+    if !prefix.is_empty() {
+        prefix.push_str("\n\n");
+    }
+    let line_number = i64::try_from(prefix.lines().count().saturating_add(1))
+        .expect("line count should fit in i64");
+    let mut updated = prefix;
+    updated.push_str(entry.trim_end());
+    updated.push('\n');
+
+    NoteEntryInsertion {
+        updated,
+        line_number,
+        change: RefactorChange {
+            before: String::new(),
+            after: entry.trim_end().to_string(),
+        },
+    }
+}
+
+fn append_entry_under_heading(contents: &str, heading: &str, entry: &str) -> NoteEntryInsertion {
     let heading = heading.trim();
     if heading.is_empty() {
-        return append_at_end(contents, entry);
+        return append_entry_at_end(contents, entry);
     }
 
     let heading_level = markdown_heading_level(heading);
@@ -6672,31 +6984,51 @@ fn append_under_heading(contents: &str, heading: &str, entry: &str) -> String {
     }
 
     if let Some(insert_at) = insert_at {
-        let mut rendered = String::new();
-        rendered.push_str(&contents[..insert_at]);
-        if !rendered.ends_with('\n') {
-            rendered.push('\n');
+        let mut prefix = String::new();
+        prefix.push_str(&contents[..insert_at]);
+        if !prefix.ends_with('\n') {
+            prefix.push('\n');
         }
-        if !rendered.ends_with("\n\n") {
-            rendered.push('\n');
+        if !prefix.ends_with("\n\n") {
+            prefix.push('\n');
         }
-        rendered.push_str(entry.trim_end());
-        rendered.push('\n');
+        let line_number = i64::try_from(prefix.lines().count().saturating_add(1))
+            .expect("line count should fit in i64");
+        let mut updated = prefix;
+        updated.push_str(entry.trim_end());
+        updated.push('\n');
         if insert_at < contents.len() && !contents[insert_at..].starts_with('\n') {
-            rendered.push('\n');
+            updated.push('\n');
         }
-        rendered.push_str(&contents[insert_at..]);
-        rendered
+        updated.push_str(&contents[insert_at..]);
+        NoteEntryInsertion {
+            updated,
+            line_number,
+            change: RefactorChange {
+                before: String::new(),
+                after: entry.trim_end().to_string(),
+            },
+        }
     } else {
-        let mut rendered = contents.trim_end_matches('\n').to_string();
-        if !rendered.is_empty() {
-            rendered.push_str("\n\n");
+        let mut prefix = contents.trim_end_matches('\n').to_string();
+        if !prefix.is_empty() {
+            prefix.push_str("\n\n");
         }
-        rendered.push_str(heading);
-        rendered.push_str("\n\n");
-        rendered.push_str(entry.trim_end());
-        rendered.push('\n');
-        rendered
+        prefix.push_str(heading);
+        prefix.push_str("\n\n");
+        let line_number = i64::try_from(prefix.lines().count().saturating_add(1))
+            .expect("line count should fit in i64");
+        let mut updated = prefix;
+        updated.push_str(entry.trim_end());
+        updated.push('\n');
+        NoteEntryInsertion {
+            updated,
+            line_number,
+            change: RefactorChange {
+                before: String::new(),
+                after: entry.trim_end().to_string(),
+            },
+        }
     }
 }
 
@@ -9465,6 +9797,35 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         .map_err(CliError::operation)?;
                 }
                 print_task_convert_report(cli.output, &report)
+            }
+            TasksCommand::Create {
+                text,
+                note,
+                due,
+                priority,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(&paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = run_tasks_create_command(
+                    &paths,
+                    TasksCreateOptions {
+                        text,
+                        note: note.as_deref(),
+                        due: due.as_deref(),
+                        priority: priority.as_deref(),
+                        dry_run: *dry_run,
+                    },
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !dry_run {
+                    auto_commit
+                        .commit(&paths, "tasks create", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                print_task_create_report(cli.output, &report)
             }
             TasksCommand::Query { query } => {
                 let result = run_tasks_query_command(&paths, query)?;
@@ -13615,6 +13976,24 @@ fn print_task_add_report(output: OutputFormat, report: &TaskAddReport) -> Result
     }
 }
 
+fn print_task_create_report(
+    output: OutputFormat,
+    report: &TaskCreateReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            let suffix = if report.dry_run { " (dry-run)" } else { "" };
+            println!("{}{}", report.task, suffix);
+            if report.created_note {
+                println!("Created note: {}", report.path);
+            }
+            println!("{}", report.line);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_task_convert_report(
     output: OutputFormat,
     report: &TaskConvertReport,
@@ -16963,6 +17342,39 @@ mod tests {
                 command: TasksCommand::Convert {
                     file: "Notes/Idea.md".to_string(),
                     line: Some(12),
+                    dry_run: true,
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tasks_create_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "create",
+            "Call Alice tomorrow @desk",
+            "--in",
+            "Inbox",
+            "--due",
+            "2026-04-12",
+            "--priority",
+            "high",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tasks {
+                command: TasksCommand::Create {
+                    text: "Call Alice tomorrow @desk".to_string(),
+                    note: Some("Inbox".to_string()),
+                    due: Some("2026-04-12".to_string()),
+                    priority: Some("high".to_string()),
                     dry_run: true,
                     no_commit: true,
                 },

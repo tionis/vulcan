@@ -3356,6 +3356,151 @@ fn tasks_convert_json_output_converts_heading_section_into_task_file() {
 }
 
 #[test]
+fn tasks_create_json_output_appends_inline_task_to_default_inbox_note() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        concat!(
+            "[tasks]\n",
+            "global_filter = \"#task\"\n",
+            "remove_global_filter = true\n",
+            "set_created_date = true\n",
+        ),
+    )
+    .expect("config should be written");
+
+    let create_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "create",
+            "Review release tomorrow @desk #ops high priority",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let create_json = parse_stdout_json(&create_assert);
+
+    assert_eq!(create_json["action"], "create");
+    assert_eq!(create_json["path"], "Inbox.md");
+    assert_eq!(create_json["task"], "Inbox.md:1");
+    assert_eq!(create_json["created_note"], true);
+    assert_eq!(create_json["used_nlp"], true);
+    assert_eq!(create_json["due"], "2026-04-05");
+    assert_eq!(create_json["priority"], "high");
+    assert_eq!(create_json["contexts"], serde_json::json!(["@desk"]));
+    assert_eq!(create_json["tags"], serde_json::json!(["ops", "task"]));
+
+    let updated = fs::read_to_string(vault_root.join("Inbox.md")).expect("inbox note should exist");
+    assert_eq!(
+        updated,
+        "- [ ] Review release @desk #ops #task 🗓️ 2026-04-05 ➕ 2026-04-04 🔺\n"
+    );
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--source",
+            "inline",
+        ])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list_assert);
+    assert_eq!(list_json["result_count"], Value::Number(1.into()));
+    assert_eq!(list_json["tasks"][0]["path"], "Inbox.md");
+    assert_eq!(
+        list_json["tasks"][0]["text"],
+        "Review release @desk #ops 🗓️ 2026-04-05 ➕ 2026-04-04 🔺"
+    );
+}
+
+#[test]
+fn tasks_create_json_output_honors_explicit_target_and_flags() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    run_scan(&vault_root);
+
+    let create_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "create",
+            "Ship checklist",
+            "--in",
+            "Website",
+            "--due",
+            "2026-04-12",
+            "--priority",
+            "low",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let create_json = parse_stdout_json(&create_assert);
+
+    assert_eq!(create_json["path"], "Projects/Website.md");
+    assert_eq!(create_json["task"], "Projects/Website.md:3");
+    assert_eq!(create_json["created_note"], false);
+    assert_eq!(create_json["due"], "2026-04-12");
+    assert_eq!(create_json["priority"], "low");
+    assert_eq!(create_json["line"], "- [ ] Ship checklist 🗓️ 2026-04-12 🔽");
+
+    let updated = fs::read_to_string(vault_root.join("Projects/Website.md"))
+        .expect("project note should exist");
+    assert_eq!(
+        updated,
+        "# Website\n\n- [ ] Ship checklist 🗓️ 2026-04-12 🔽\n"
+    );
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--source",
+            "inline",
+            "--filter",
+            "path includes Website",
+        ])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list_assert);
+    assert_eq!(list_json["result_count"], Value::Number(1.into()));
+    assert_eq!(list_json["tasks"][0]["due"], "2026-04-12");
+    assert_eq!(list_json["tasks"][0]["priority"], "low");
+}
+
+#[test]
 fn tasks_archive_json_output_moves_completed_task_into_archive_folder() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
