@@ -182,6 +182,7 @@ Browse modes:
   Ctrl-F       indexed full-text search with snippet preview
   Ctrl-T       tag filter mode
   Ctrl-P       property filter mode
+  Ctrl-Y       periodic daily-note calendar mode
   /            return to fuzzy mode
 
 Keys:
@@ -200,6 +201,7 @@ Notes:
   Printable characters always extend the active query or prompt; browse actions use Enter or Ctrl shortcuts.
   Ctrl-E edits from fuzzy/tag/property modes; in Ctrl-F mode it toggles the explain pane.
   In Ctrl-F mode, Ctrl-S cycles result sort order and Alt-C toggles global match-case.
+  In Ctrl-Y mode, arrows move by day, PageUp/PageDown change month, and typing YYYY-MM or YYYY-MM-DD jumps directly.
   In fuzzy/tag/property modes, `o` opens a selected Kanban board when the query is empty.
   After edits, creates, and moves, Vulcan rescans affected files and refreshes the browser.
   In backlinks/outgoing-link views, `o` opens the selected .base file in the Bases TUI.
