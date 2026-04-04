@@ -2494,6 +2494,92 @@ fn tasks_next_and_graph_json_output_support_tasknotes_recurrence_and_dependencie
 }
 
 #[test]
+fn tasks_view_list_json_output_reports_available_tasknotes_views() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    write_tasknotes_views_fixture(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "view",
+            "list",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    let views = json["views"].as_array().expect("views should be an array");
+    assert!(views.iter().any(|view| {
+        view["file"] == "TaskNotes/Views/tasks-default.base"
+            && view["view_name"] == "Tasks"
+            && view["view_type"] == "tasknotesTaskList"
+            && view["supported"] == true
+    }));
+    assert!(views.iter().any(|view| {
+        view["file"] == "TaskNotes/Views/kanban-default.base"
+            && view["view_name"] == "Kanban Board"
+            && view["view_type"] == "tasknotesKanban"
+            && view["supported"] == true
+    }));
+}
+
+#[test]
+fn tasks_view_json_output_evaluates_named_tasknotes_views() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    write_tasknotes_views_fixture(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "view",
+            "show",
+            "Tasks",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(
+        json["file"],
+        Value::String("TaskNotes/Views/tasks-default.base".to_string())
+    );
+    assert_eq!(json["views"].as_array().map(Vec::len), Some(1));
+    assert_eq!(json["views"][0]["name"], Value::String("Tasks".to_string()));
+    assert_eq!(
+        json["views"][0]["view_type"],
+        Value::String("tasknotesTaskList".to_string())
+    );
+    assert_eq!(json["views"][0]["rows"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        json["views"][0]["rows"][0]["document_path"],
+        Value::String("TaskNotes/Tasks/Prep Outline.md".to_string())
+    );
+    assert_eq!(
+        json["views"][0]["rows"][1]["cells"]["efficiencyRatio"],
+        Value::Number(67.into())
+    );
+}
+
+#[test]
 fn kanban_list_json_output_lists_indexed_boards() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -8051,6 +8137,53 @@ fn copy_dir_recursive(source: &Path, destination: &Path) {
             fs::copy(entry.path(), target).expect("file should be copied");
         }
     }
+}
+
+fn write_tasknotes_views_fixture(vault_root: &Path) {
+    fs::create_dir_all(vault_root.join("TaskNotes/Views"))
+        .expect("tasknotes views directory should be created");
+    fs::write(
+        vault_root.join("TaskNotes/Views/tasks-default.base"),
+        concat!(
+            "source:\n",
+            "  type: tasknotes\n",
+            "  config:\n",
+            "    type: tasknotesTaskList\n",
+            "    includeArchived: false\n",
+            "views:\n",
+            "  - type: tasknotesTaskList\n",
+            "    name: Tasks\n",
+            "    order:\n",
+            "      - file.name\n",
+            "      - priorityWeight\n",
+            "      - efficiencyRatio\n",
+            "      - urgencyScore\n",
+            "    sort:\n",
+            "      - column: file.name\n",
+            "        direction: ASC\n",
+        ),
+    )
+    .expect("tasks default base should be written");
+    fs::write(
+        vault_root.join("TaskNotes/Views/kanban-default.base"),
+        concat!(
+            "source:\n",
+            "  type: tasknotes\n",
+            "  config:\n",
+            "    type: tasknotesKanban\n",
+            "    includeArchived: false\n",
+            "views:\n",
+            "  - type: tasknotesKanban\n",
+            "    name: Kanban Board\n",
+            "    order:\n",
+            "      - file.name\n",
+            "      - status\n",
+            "    groupBy:\n",
+            "      property: status\n",
+            "      direction: ASC\n",
+        ),
+    )
+    .expect("kanban default base should be written");
 }
 
 fn write_embedding_config(vault_root: &Path, base_url: &str) {

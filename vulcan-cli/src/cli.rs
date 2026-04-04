@@ -1331,6 +1331,24 @@ pub enum TasksCommand {
     Blocked,
     #[command(about = "Show the task dependency graph")]
     Graph,
+    #[command(about = "Inspect TaskNotes Bases views")]
+    View {
+        #[command(subcommand)]
+        command: TasksViewCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum TasksViewCommand {
+    #[command(about = "Evaluate one TaskNotes Bases view or .base file")]
+    Show {
+        #[arg(help = "View name, file stem, or vault-relative .base path")]
+        name: String,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "List available TaskNotes Bases views")]
+    List,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

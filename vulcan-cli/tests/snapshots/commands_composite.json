@@ -1135,6 +1135,62 @@
             "name": "graph",
             "options": [],
             "subcommands": []
+          },
+          {
+            "about": "Inspect TaskNotes Bases views",
+            "name": "view",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Evaluate one TaskNotes Bases view or .base file",
+                "name": "show",
+                "options": [
+                  {
+                    "help": "View name, file stem, or vault-relative .base path",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Write query rows to a CSV or JSONL file",
+                    "id": "export",
+                    "long": "export",
+                    "possible_values": [
+                      "csv",
+                      "jsonl"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT"
+                    ]
+                  },
+                  {
+                    "help": "Destination file for CSV or JSONL exports",
+                    "id": "export_path",
+                    "long": "export-path",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT_PATH"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "List available TaskNotes Bases views",
+                "name": "list",
+                "options": [],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },
