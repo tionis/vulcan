@@ -1,9 +1,13 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::config::{
-    TaskNotesConfig, TaskNotesIdentificationMethod, TaskNotesStatusConfig, TaskNotesUserFieldType,
+    TaskNotesConfig, TaskNotesDateDefault, TaskNotesIdentificationMethod,
+    TaskNotesRecurrenceDefault, TaskNotesStatusConfig, TaskNotesUserFieldType,
 };
+use crate::expression::functions::{date_components, parse_date_like_string};
+use crate::tasks::parse_recurrence_text;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexedTaskNote {
@@ -42,6 +46,79 @@ pub struct TaskNotesStatusState {
     pub name: String,
     pub status_type: String,
     pub completed: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParsedTaskNoteInput {
+    pub title: String,
+    pub status: Option<String>,
+    pub priority: Option<String>,
+    pub due: Option<String>,
+    pub scheduled: Option<String>,
+    pub contexts: Vec<String>,
+    pub projects: Vec<String>,
+    pub tags: Vec<String>,
+    pub time_estimate: Option<usize>,
+    pub recurrence: Option<String>,
+}
+
+#[must_use]
+pub fn parse_tasknote_natural_language(
+    text: &str,
+    config: &TaskNotesConfig,
+    reference_ms: i64,
+) -> ParsedTaskNoteInput {
+    let original = text.trim();
+    if original.is_empty() {
+        return ParsedTaskNoteInput::default();
+    }
+
+    let mut remaining = original.to_string();
+    let mut parsed = ParsedTaskNoteInput {
+        contexts: extract_prefixed_values(&mut remaining, nlp_trigger(config, "contexts"), true),
+        tags: extract_prefixed_values(&mut remaining, nlp_trigger(config, "tags"), false),
+        projects: extract_project_values(&mut remaining, nlp_trigger(config, "projects")),
+        status: extract_choice_value(
+            &mut remaining,
+            nlp_trigger(config, "status"),
+            &config
+                .statuses
+                .iter()
+                .map(|status| status.value.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        priority: extract_priority_value(&mut remaining, config),
+        time_estimate: extract_time_estimate(&mut remaining),
+        recurrence: extract_recurrence(&mut remaining),
+        ..Default::default()
+    };
+
+    let mut due = extract_date_value(&mut remaining, "due", reference_ms);
+    let mut scheduled = extract_date_value(&mut remaining, "scheduled", reference_ms)
+        .or_else(|| extract_date_value(&mut remaining, "schedule", reference_ms));
+    if due.is_none() && scheduled.is_none() {
+        let default_field = if config.nlp_default_to_scheduled {
+            "scheduled"
+        } else {
+            "due"
+        };
+        if let Some(value) = extract_ambiguous_date_value(&mut remaining, reference_ms) {
+            match default_field {
+                "scheduled" => scheduled = Some(value),
+                _ => due = Some(value),
+            }
+        }
+    }
+    parsed.due = due;
+    parsed.scheduled = scheduled;
+
+    let normalized_title = normalize_nlp_title(&remaining);
+    parsed.title = if normalized_title.is_empty() {
+        original.to_string()
+    } else {
+        normalized_title
+    };
+    parsed
 }
 
 #[must_use]
@@ -162,6 +239,420 @@ pub fn tasknotes_priority_weight(config: &TaskNotesConfig, priority: &str) -> Op
         .find(|candidate| candidate.value.eq_ignore_ascii_case(priority))
         .map(|candidate| f64::from(candidate.weight))
 }
+
+#[must_use]
+pub fn tasknotes_default_date_value(
+    default: TaskNotesDateDefault,
+    reference_ms: i64,
+) -> Option<String> {
+    let day_ms = day_start(reference_ms);
+    let resolved = match default {
+        TaskNotesDateDefault::None => return None,
+        TaskNotesDateDefault::Today => day_ms,
+        TaskNotesDateDefault::Tomorrow => day_ms + DAY_MS,
+        TaskNotesDateDefault::NextWeek => day_ms + (7 * DAY_MS),
+    };
+    Some(format_day_ms(resolved))
+}
+
+#[must_use]
+pub fn tasknotes_default_recurrence_rule(default: TaskNotesRecurrenceDefault) -> Option<String> {
+    match default {
+        TaskNotesRecurrenceDefault::None => None,
+        TaskNotesRecurrenceDefault::Daily => Some("FREQ=DAILY;INTERVAL=1".to_string()),
+        TaskNotesRecurrenceDefault::Weekly => Some("FREQ=WEEKLY;INTERVAL=1".to_string()),
+        TaskNotesRecurrenceDefault::Monthly => Some("FREQ=MONTHLY;INTERVAL=1".to_string()),
+        TaskNotesRecurrenceDefault::Yearly => Some("FREQ=YEARLY;INTERVAL=1".to_string()),
+    }
+}
+
+fn nlp_trigger<'a>(config: &'a TaskNotesConfig, property_id: &str) -> Option<&'a str> {
+    config
+        .nlp_triggers
+        .iter()
+        .find(|trigger| trigger.enabled && trigger.property_id.eq_ignore_ascii_case(property_id))
+        .map(|trigger| trigger.trigger.as_str())
+}
+
+fn extract_prefixed_values(
+    text: &mut String,
+    trigger: Option<&str>,
+    keep_prefix: bool,
+) -> Vec<String> {
+    let Some(trigger) = trigger.filter(|trigger| !trigger.is_empty()) else {
+        return Vec::new();
+    };
+    let regex = Regex::new(&format!(
+        r#"(?P<prefix>^|\s){}(?P<value>"[^"]+"|[^\s]+)"#,
+        regex::escape(trigger)
+    ))
+    .expect("valid NLP prefix regex");
+    let values = regex
+        .captures_iter(text)
+        .filter_map(|capture| {
+            let value = capture.name("value")?.as_str().trim_matches('"').trim();
+            if value.is_empty() {
+                None
+            } else if keep_prefix && !value.starts_with('@') {
+                Some(format!("@{value}"))
+            } else {
+                Some(value.to_string())
+            }
+        })
+        .collect::<Vec<_>>();
+    *text = regex.replace_all(text, "$prefix").into_owned();
+    dedup_preserve_order(values)
+}
+
+fn extract_project_values(text: &mut String, trigger: Option<&str>) -> Vec<String> {
+    let Some(trigger) = trigger.filter(|trigger| !trigger.is_empty()) else {
+        return Vec::new();
+    };
+    let regex = Regex::new(&format!(
+        r#"(?P<prefix>^|\s){}(?P<value>\[\[[^\]]+\]\]|"[^"]+"|[^\s]+)"#,
+        regex::escape(trigger)
+    ))
+    .expect("valid NLP project regex");
+    let values = regex
+        .captures_iter(text)
+        .filter_map(|capture| {
+            let raw = capture.name("value")?.as_str().trim_matches('"').trim();
+            if raw.is_empty() {
+                None
+            } else if raw.starts_with("[[") && raw.ends_with("]]") {
+                Some(raw.to_string())
+            } else {
+                Some(format!("[[{raw}]]"))
+            }
+        })
+        .collect::<Vec<_>>();
+    *text = regex.replace_all(text, "$prefix").into_owned();
+    dedup_preserve_order(values)
+}
+
+fn extract_choice_value(
+    text: &mut String,
+    trigger: Option<&str>,
+    choices: &[&str],
+) -> Option<String> {
+    let trigger = trigger.filter(|trigger| !trigger.is_empty())?;
+    let regex = Regex::new(&format!(
+        r#"(?P<prefix>^|\s){}(?P<value>"[^"]+"|[^\s]+)"#,
+        regex::escape(trigger)
+    ))
+    .expect("valid NLP choice regex");
+    let capture = regex.captures(text)?;
+    let raw = capture
+        .name("value")
+        .map(|value| value.as_str().trim_matches('"').trim().to_string())?;
+    *text = regex.replace(text, "$prefix").into_owned();
+    choices
+        .iter()
+        .find(|choice| choice.eq_ignore_ascii_case(&raw))
+        .map(|choice| (*choice).to_string())
+        .or(Some(raw))
+}
+
+fn extract_priority_value(text: &mut String, config: &TaskNotesConfig) -> Option<String> {
+    if let Some(priority) = extract_choice_value(
+        text,
+        nlp_trigger(config, "priority"),
+        &config
+            .priorities
+            .iter()
+            .map(|priority| priority.value.as_str())
+            .collect::<Vec<_>>(),
+    ) {
+        return Some(priority);
+    }
+
+    for priority in &config.priorities {
+        let phrases = [
+            format!("{} priority", priority.value),
+            format!("{} priority", priority.label.to_ascii_lowercase()),
+        ];
+        for phrase in phrases {
+            if remove_phrase_case_insensitive(text, &phrase).is_some() {
+                return Some(priority.value.clone());
+            }
+        }
+    }
+
+    if remove_phrase_case_insensitive(text, "urgent").is_some() {
+        if let Some(priority) = config
+            .priorities
+            .iter()
+            .find(|priority| priority.value.eq_ignore_ascii_case("urgent"))
+        {
+            return Some(priority.value.clone());
+        }
+        if let Some(priority) = config
+            .priorities
+            .iter()
+            .find(|priority| priority.value.eq_ignore_ascii_case("high"))
+        {
+            return Some(priority.value.clone());
+        }
+    }
+
+    None
+}
+
+fn extract_time_estimate(text: &mut String) -> Option<usize> {
+    let compact = Regex::new(r"(?i)(?P<prefix>^|\s)~?(?P<hours>\d+)h(?P<minutes>\d+)m\b")
+        .expect("valid compact estimate regex");
+    if let Some(capture) = compact.captures(text) {
+        let hours = capture
+            .name("hours")
+            .and_then(|value| value.as_str().parse::<usize>().ok())
+            .unwrap_or_default();
+        let minutes = capture
+            .name("minutes")
+            .and_then(|value| value.as_str().parse::<usize>().ok())
+            .unwrap_or_default();
+        *text = compact.replace(text, "$prefix").into_owned();
+        return Some((hours * 60) + minutes);
+    }
+
+    let simple = Regex::new(
+        r"(?i)(?P<prefix>^|\s)~?(?P<amount>\d+)\s*(?P<unit>h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b",
+    )
+    .expect("valid estimate regex");
+    let capture = simple.captures(text)?;
+    let amount = capture
+        .name("amount")
+        .and_then(|value| value.as_str().parse::<usize>().ok())?;
+    let unit = capture.name("unit")?.as_str().to_ascii_lowercase();
+    *text = simple.replace(text, "$prefix").into_owned();
+    Some(if unit.starts_with('h') {
+        amount * 60
+    } else {
+        amount
+    })
+}
+
+fn extract_recurrence(text: &mut String) -> Option<String> {
+    let regex = Regex::new(
+        r"(?i)(?P<prefix>^|\s)(?P<phrase>every weekday|every day|every week|every month|every year|every monday|every tuesday|every wednesday|every thursday|every friday|every saturday|every sunday|daily|weekly|monthly|yearly)\b",
+    )
+    .expect("valid recurrence regex");
+    let capture = regex.captures(text)?;
+    let phrase = capture.name("phrase")?.as_str().to_string();
+    *text = regex.replace(text, "$prefix").into_owned();
+    parse_recurrence_text(&phrase).map(|recurrence| recurrence.rule)
+}
+
+fn extract_date_value(text: &mut String, keyword: &str, reference_ms: i64) -> Option<String> {
+    let regex = Regex::new(&format!(
+        r"(?i)(?P<prefix>^|\s){}(?P<separator>\s+)(?P<phrase>today|tomorrow|next week|in \d+ days?|next monday|next tuesday|next wednesday|next thursday|next friday|next saturday|next sunday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,\s*\d{{4}})?)(?:\s+at\s+(?P<time>\d{{1,2}}(?::\d{{2}})?\s*(?:am|pm)?))?",
+        regex::escape(keyword)
+    ))
+    .expect("valid explicit date regex");
+    let capture = regex.captures(text)?;
+    let phrase = capture.name("phrase")?.as_str();
+    let time = capture.name("time").map(|value| value.as_str());
+    let value = parse_nlp_date_phrase(phrase, time, reference_ms)?;
+    *text = regex.replace(text, "$prefix").into_owned();
+    Some(value)
+}
+
+fn extract_ambiguous_date_value(text: &mut String, reference_ms: i64) -> Option<String> {
+    let regex = Regex::new(
+        r"(?i)(?P<prefix>^|\s)(?P<phrase>today|tomorrow|next week|in \d+ days?|next monday|next tuesday|next wednesday|next thursday|next friday|next saturday|next sunday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|[0-9]{4}-[0-9]{2}-[0-9]{2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)(?:\s+at\s+(?P<time>\d{1,2}(?::\d{2})?\s*(?:am|pm)?))?",
+    )
+    .expect("valid ambiguous date regex");
+    let capture = regex.captures(text)?;
+    let phrase = capture.name("phrase")?.as_str();
+    let time = capture.name("time").map(|value| value.as_str());
+    let value = parse_nlp_date_phrase(phrase, time, reference_ms)?;
+    *text = regex.replace(text, "$prefix").into_owned();
+    Some(value)
+}
+
+fn parse_nlp_date_phrase(phrase: &str, time: Option<&str>, reference_ms: i64) -> Option<String> {
+    let normalized = phrase.trim().to_ascii_lowercase();
+    let day_ms = if normalized == "today" {
+        day_start(reference_ms)
+    } else if normalized == "tomorrow" {
+        day_start(reference_ms) + DAY_MS
+    } else if normalized == "next week" {
+        day_start(reference_ms) + (7 * DAY_MS)
+    } else if let Some(days) = normalized
+        .strip_prefix("in ")
+        .and_then(|value| value.strip_suffix(" days"))
+        .or_else(|| {
+            normalized
+                .strip_prefix("in ")
+                .and_then(|value| value.strip_suffix(" day"))
+        })
+        .and_then(|value| value.parse::<i64>().ok())
+    {
+        day_start(reference_ms) + (days * DAY_MS)
+    } else if let Some(target_weekday) = weekday_name_to_index(&normalized) {
+        next_weekday(reference_ms, target_weekday, false)
+    } else if let Some(target_weekday) = normalized
+        .strip_prefix("next ")
+        .and_then(weekday_name_to_index)
+    {
+        next_weekday(reference_ms, target_weekday, false)
+    } else if let Some(parsed) = parse_month_day_phrase(&normalized, reference_ms) {
+        parsed
+    } else {
+        parse_date_like_string(phrase).map(day_start)?
+    };
+
+    if let Some(time_text) = time {
+        let (hour, minute) = parse_clock_time(time_text)?;
+        return Some(format!(
+            "{}T{:02}:{:02}:00",
+            format_day_ms(day_ms),
+            hour,
+            minute
+        ));
+    }
+
+    Some(format_day_ms(day_ms))
+}
+
+fn parse_month_day_phrase(phrase: &str, reference_ms: i64) -> Option<i64> {
+    let regex = Regex::new(
+        r"(?i)^(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?(?:,\s*(?P<year>\d{4}))?$",
+    )
+    .expect("valid month-day regex");
+    let capture = regex.captures(phrase)?;
+    let month = month_name_to_number(capture.name("month")?.as_str())?;
+    let day = capture
+        .name("day")
+        .and_then(|value| value.as_str().parse::<i64>().ok())?;
+    let reference_day = day_start(reference_ms);
+    let (reference_year, _, _, _, _, _, _) = date_components(reference_day);
+    let year = capture
+        .name("year")
+        .and_then(|value| value.as_str().parse::<i64>().ok())
+        .unwrap_or(reference_year);
+    let base = parse_date_like_string(&format!("{year:04}-{month:02}-{day:02}"))?;
+    let candidate = if capture.name("year").is_none() && base < reference_day {
+        parse_date_like_string(&format!("{:04}-{month:02}-{day:02}", year + 1))?
+    } else {
+        base
+    };
+    Some(day_start(candidate))
+}
+
+fn parse_clock_time(text: &str) -> Option<(i64, i64)> {
+    let regex =
+        Regex::new(r"(?i)^(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)?$").ok()?;
+    let capture = regex.captures(text.trim())?;
+    let mut hour = capture
+        .name("hour")
+        .and_then(|value| value.as_str().parse::<i64>().ok())?;
+    let minute = capture
+        .name("minute")
+        .and_then(|value| value.as_str().parse::<i64>().ok())
+        .unwrap_or(0);
+    if let Some(ampm) = capture
+        .name("ampm")
+        .map(|value| value.as_str().to_ascii_lowercase())
+    {
+        if hour == 12 {
+            hour = 0;
+        }
+        if ampm == "pm" {
+            hour += 12;
+        }
+    }
+    (hour < 24 && minute < 60).then_some((hour, minute))
+}
+
+fn normalize_nlp_title(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|character: char| matches!(character, ',' | ';' | ':' | '-' | '(' | ')'))
+        .trim()
+        .to_string()
+}
+
+fn dedup_preserve_order(values: Vec<String>) -> Vec<String> {
+    let mut deduped: Vec<String> = Vec::new();
+    for value in values {
+        if !deduped
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&value))
+        {
+            deduped.push(value);
+        }
+    }
+    deduped
+}
+
+fn remove_phrase_case_insensitive(text: &mut String, phrase: &str) -> Option<String> {
+    let regex = Regex::new(&format!(
+        r"(?i)(?P<prefix>^|\s)(?P<phrase>{})\b",
+        regex::escape(phrase)
+    ))
+    .expect("valid phrase regex");
+    let capture = regex.captures(text)?;
+    let value = capture.name("phrase")?.as_str().to_ascii_lowercase();
+    *text = regex.replace(text, "$prefix").into_owned();
+    Some(value)
+}
+
+fn weekday_name_to_index(text: &str) -> Option<i64> {
+    match text {
+        "monday" => Some(1),
+        "tuesday" => Some(2),
+        "wednesday" => Some(3),
+        "thursday" => Some(4),
+        "friday" => Some(5),
+        "saturday" => Some(6),
+        "sunday" => Some(7),
+        _ => None,
+    }
+}
+
+fn month_name_to_number(text: &str) -> Option<i64> {
+    match text {
+        "jan" | "january" => Some(1),
+        "feb" | "february" => Some(2),
+        "mar" | "march" => Some(3),
+        "apr" | "april" => Some(4),
+        "may" => Some(5),
+        "jun" | "june" => Some(6),
+        "jul" | "july" => Some(7),
+        "aug" | "august" => Some(8),
+        "sep" | "sept" | "september" => Some(9),
+        "oct" | "october" => Some(10),
+        "nov" | "november" => Some(11),
+        "dec" | "december" => Some(12),
+        _ => None,
+    }
+}
+
+fn next_weekday(reference_ms: i64, target: i64, force_next_week: bool) -> i64 {
+    let current_day = day_start(reference_ms);
+    let current_weekday = weekday_number(current_day);
+    let mut delta = (target - current_weekday).rem_euclid(7);
+    if force_next_week || delta == 0 {
+        delta += 7;
+    }
+    current_day + (delta * DAY_MS)
+}
+
+fn weekday_number(ms: i64) -> i64 {
+    ((ms.div_euclid(DAY_MS) + 3).rem_euclid(7)) + 1
+}
+
+fn day_start(ms: i64) -> i64 {
+    ms.div_euclid(DAY_MS) * DAY_MS
+}
+
+fn format_day_ms(ms: i64) -> String {
+    let (year, month, day, _, _, _, _) = date_components(ms);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+const DAY_MS: i64 = 86_400_000;
 
 fn custom_fields(properties: &Map<String, Value>, config: &TaskNotesConfig) -> Map<String, Value> {
     let reserved = config.field_mapping.reserved_property_names();
@@ -380,8 +871,8 @@ mod tests {
     use serde_json::json;
 
     use crate::config::{
-        TaskNotesConfig, TaskNotesIdentificationMethod, TaskNotesUserFieldConfig,
-        TaskNotesUserFieldType,
+        TaskNotesConfig, TaskNotesDateDefault, TaskNotesIdentificationMethod,
+        TaskNotesRecurrenceDefault, TaskNotesUserFieldConfig, TaskNotesUserFieldType,
     };
 
     use super::*;
@@ -516,5 +1007,76 @@ mod tests {
             "IN_PROGRESS"
         );
         assert_eq!(tasknotes_status_state(&config, "open").status_type, "TODO");
+    }
+
+    #[test]
+    fn parses_natural_language_task_with_tags_contexts_dates_and_priority() {
+        let config = TaskNotesConfig::default();
+
+        let parsed = parse_tasknote_natural_language(
+            "Buy groceries tomorrow at 3pm @home #errands high priority",
+            &config,
+            parse_date_like_string("2026-04-04").expect("reference date should parse"),
+        );
+
+        assert_eq!(parsed.title, "Buy groceries");
+        assert_eq!(parsed.priority.as_deref(), Some("high"));
+        assert_eq!(parsed.due.as_deref(), Some("2026-04-05T15:00:00"));
+        assert_eq!(parsed.contexts, vec!["@home".to_string()]);
+        assert_eq!(parsed.tags, vec!["errands".to_string()]);
+    }
+
+    #[test]
+    fn parses_natural_language_projects_estimates_and_recurrence() {
+        let config = TaskNotesConfig::default();
+
+        let parsed = parse_tasknote_natural_language(
+            "Water plants every monday +[[Projects/Home Ops]] ~30m",
+            &config,
+            parse_date_like_string("2026-04-04").expect("reference date should parse"),
+        );
+
+        assert_eq!(parsed.title, "Water plants");
+        assert_eq!(parsed.projects, vec!["[[Projects/Home Ops]]".to_string()]);
+        assert_eq!(parsed.time_estimate, Some(30));
+        assert_eq!(
+            parsed.recurrence.as_deref(),
+            Some("FREQ=WEEKLY;INTERVAL=1;BYDAY=MO")
+        );
+    }
+
+    #[test]
+    fn honors_nlp_default_to_scheduled_for_ambiguous_dates() {
+        let mut config = TaskNotesConfig::default();
+        config.nlp_default_to_scheduled = true;
+
+        let parsed = parse_tasknote_natural_language(
+            "Plan sprint next monday",
+            &config,
+            parse_date_like_string("2026-04-04").expect("reference date should parse"),
+        );
+
+        assert_eq!(parsed.title, "Plan sprint");
+        assert_eq!(parsed.due, None);
+        assert_eq!(parsed.scheduled.as_deref(), Some("2026-04-06"));
+    }
+
+    #[test]
+    fn tasknotes_creation_defaults_expand_dates_and_recurrence() {
+        let reference_ms =
+            parse_date_like_string("2026-04-04").expect("reference date should parse");
+
+        assert_eq!(
+            tasknotes_default_date_value(TaskNotesDateDefault::Today, reference_ms).as_deref(),
+            Some("2026-04-04")
+        );
+        assert_eq!(
+            tasknotes_default_date_value(TaskNotesDateDefault::NextWeek, reference_ms).as_deref(),
+            Some("2026-04-11")
+        );
+        assert_eq!(
+            tasknotes_default_recurrence_rule(TaskNotesRecurrenceDefault::Monthly).as_deref(),
+            Some("FREQ=MONTHLY;INTERVAL=1")
+        );
     }
 }

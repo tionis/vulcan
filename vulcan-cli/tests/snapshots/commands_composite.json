@@ -1031,6 +1031,154 @@
         "options": [],
         "subcommands": [
           {
+            "about": "Create one TaskNotes task file",
+            "name": "add",
+            "options": [
+              {
+                "help": "Task title or natural-language task input",
+                "id": "text",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TEXT"
+                ]
+              },
+              {
+                "help": "Skip natural-language parsing and use the raw text as the title",
+                "id": "no_nlp",
+                "long": "no-nlp",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_NLP"
+                ]
+              },
+              {
+                "help": "Explicit task status",
+                "id": "status",
+                "long": "status",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "STATUS"
+                ]
+              },
+              {
+                "help": "Explicit task priority",
+                "id": "priority",
+                "long": "priority",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PRIORITY"
+                ]
+              },
+              {
+                "help": "Explicit due date or natural-language date phrase",
+                "id": "due",
+                "long": "due",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DUE"
+                ]
+              },
+              {
+                "help": "Explicit scheduled date or natural-language date phrase",
+                "id": "scheduled",
+                "long": "scheduled",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SCHEDULED"
+                ]
+              },
+              {
+                "help": "Context to add; repeat for multiple values",
+                "id": "contexts",
+                "long": "context",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CONTEXTS"
+                ]
+              },
+              {
+                "help": "Project note link or name; repeat for multiple values",
+                "id": "projects",
+                "long": "project",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROJECTS"
+                ]
+              },
+              {
+                "help": "Tag to add; repeat for multiple values",
+                "id": "tags",
+                "long": "tag",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TAGS"
+                ]
+              },
+              {
+                "help": "Optional note template name",
+                "id": "template",
+                "long": "template",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TEMPLATE"
+                ]
+              },
+              {
+                "help": "Report the planned task file without writing it",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Skip auto-commit even when enabled in config",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Display one TaskNotes task with its structured properties",
             "name": "show",
             "options": [

@@ -2937,6 +2937,194 @@ fn tasks_edit_json_output_opens_editor_and_rescans_tasknote() {
 }
 
 #[test]
+fn tasks_add_json_output_creates_tasknote_from_natural_language() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+
+    let add_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "add",
+            "Buy groceries 2026-04-10 at 3pm @home #errands high priority",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let add_json = parse_stdout_json(&add_assert);
+
+    assert_eq!(add_json["action"], "add");
+    assert_eq!(add_json["used_nlp"], true);
+    assert_eq!(add_json["path"], "TaskNotes/Tasks/Buy groceries.md");
+    assert_eq!(add_json["title"], "Buy groceries");
+    assert_eq!(add_json["priority"], "high");
+    assert_eq!(add_json["due"], "2026-04-10T15:00:00");
+    assert_eq!(add_json["contexts"], serde_json::json!(["@home"]));
+    assert_eq!(add_json["tags"], serde_json::json!(["task", "errands"]));
+    assert!(vault_root.join("TaskNotes/Tasks/Buy groceries.md").exists());
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "show",
+            "TaskNotes/Tasks/Buy groceries.md",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["title"], "Buy groceries");
+    assert_eq!(show_json["due"], "2026-04-10T15:00:00");
+    assert_eq!(show_json["contexts"], serde_json::json!(["@home"]));
+    assert!(show_json["tags"]
+        .as_array()
+        .is_some_and(|tags| tags.iter().any(|tag| tag == "errands")));
+}
+
+#[test]
+fn tasks_add_json_output_honors_explicit_flags_and_no_nlp() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+
+    let add_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "add",
+            "Literal @home #tag",
+            "--no-nlp",
+            "--status",
+            "in-progress",
+            "--priority",
+            "high",
+            "--due",
+            "2026-04-12",
+            "--scheduled",
+            "2026-04-11",
+            "--context",
+            "@desk",
+            "--project",
+            "Projects/Website",
+            "--tag",
+            "docs",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let add_json = parse_stdout_json(&add_assert);
+
+    assert_eq!(add_json["used_nlp"], false);
+    assert_eq!(add_json["title"], "Literal @home #tag");
+    assert_eq!(add_json["status"], "in-progress");
+    assert_eq!(add_json["priority"], "high");
+    assert_eq!(add_json["due"], "2026-04-12");
+    assert_eq!(add_json["scheduled"], "2026-04-11");
+    assert_eq!(add_json["contexts"], serde_json::json!(["@desk"]));
+    assert_eq!(
+        add_json["projects"],
+        serde_json::json!(["[[Projects/Website]]"])
+    );
+    assert_eq!(add_json["tags"], serde_json::json!(["task", "docs"]));
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "show",
+            "TaskNotes/Tasks/Literal @home #tag.md",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["title"], "Literal @home #tag");
+    assert_eq!(show_json["status"], "in-progress");
+    assert_eq!(show_json["due"], "2026-04-12");
+    assert_eq!(show_json["contexts"], serde_json::json!(["@desk"]));
+}
+
+#[test]
+fn tasks_add_json_output_applies_template_frontmatter_and_body() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[templates]\nobsidian_folder = \"Templates\"\n",
+    )
+    .expect("template config should be written");
+    fs::create_dir_all(vault_root.join("Templates")).expect("templates dir should exist");
+    fs::write(
+        vault_root.join("Templates/Task.md"),
+        concat!(
+            "---\n",
+            "owner: ops\n",
+            "tags: [templated]\n",
+            "---\n",
+            "\n",
+            "Template body.\n",
+        ),
+    )
+    .expect("task template should be written");
+
+    let add_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "add",
+            "Template demo",
+            "--template",
+            "Task",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let add_json = parse_stdout_json(&add_assert);
+
+    assert_eq!(add_json["template"], "Task");
+    assert_eq!(add_json["frontmatter"]["owner"], "ops");
+    assert_eq!(add_json["body"], "Template body.\n");
+    assert_eq!(add_json["tags"], serde_json::json!(["task"]));
+
+    let source = fs::read_to_string(vault_root.join("TaskNotes/Tasks/Template demo.md"))
+        .expect("created task should exist");
+    assert!(source.contains("owner: ops"));
+    assert!(source.contains("Template body."));
+}
+
+#[test]
 fn kanban_list_json_output_lists_indexed_boards() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
