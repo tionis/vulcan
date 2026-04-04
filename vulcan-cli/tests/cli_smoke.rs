@@ -4502,6 +4502,82 @@ fn tasks_archive_json_output_moves_completed_task_into_archive_folder() {
 }
 
 #[test]
+fn task_commands_process_due_tasknotes_auto_archive() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        concat!(
+            "[tasknotes]\n",
+            "archive_folder = \"TaskNotes/Archive\"\n",
+            "\n",
+            "[[tasknotes.statuses]]\n",
+            "id = \"open\"\n",
+            "value = \"open\"\n",
+            "label = \"Open\"\n",
+            "color = \"#808080\"\n",
+            "isCompleted = false\n",
+            "order = 1\n",
+            "autoArchive = false\n",
+            "autoArchiveDelay = 5\n",
+            "\n",
+            "[[tasknotes.statuses]]\n",
+            "id = \"done\"\n",
+            "value = \"done\"\n",
+            "label = \"Done\"\n",
+            "color = \"#00aa00\"\n",
+            "isCompleted = true\n",
+            "order = 2\n",
+            "autoArchive = true\n",
+            "autoArchiveDelay = 5\n",
+        ),
+    )
+    .expect("tasknotes config should be written");
+    fs::write(
+        vault_root.join("TaskNotes/Tasks/Old Done.md"),
+        concat!(
+            "---\n",
+            "title: Old Done\n",
+            "status: done\n",
+            "priority: normal\n",
+            "completedDate: 2026-04-03T09:00:00Z\n",
+            "tags:\n",
+            "  - task\n",
+            "---\n",
+            "\n",
+            "Archived soon.\n",
+        ),
+    )
+    .expect("completed task should be written");
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--source",
+            "file",
+        ])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list_assert);
+
+    assert!(!vault_root.join("TaskNotes/Tasks/Old Done.md").exists());
+    assert!(vault_root.join("TaskNotes/Archive/Old Done.md").exists());
+    assert!(list_json["tasks"].as_array().is_some_and(|tasks| tasks
+        .iter()
+        .all(|task| task["path"] != "TaskNotes/Tasks/Old Done.md")));
+}
+
+#[test]
 fn tasks_edit_json_output_opens_editor_and_rescans_tasknote() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -4823,6 +4899,42 @@ fn tasks_add_json_output_applies_default_reminders_from_config() {
     let show_json = parse_stdout_json(&show_assert);
     assert_eq!(show_json["reminders"][0]["relatedTo"], "due");
     assert_eq!(show_json["reminders"][0]["offset"], "-PT15M");
+}
+
+#[test]
+fn tasks_add_json_output_respects_configured_nlp_language() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[tasknotes]\nnlp_language = \"de\"\n",
+    )
+    .expect("tasknotes config should be written");
+
+    let add_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "add",
+            "Bericht morgen @arbeit dringend",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let add_json = parse_stdout_json(&add_assert);
+
+    assert_eq!(add_json["title"], "Bericht");
+    assert_eq!(add_json["due"], "2026-04-05");
+    assert_eq!(add_json["priority"], "high");
+    assert_eq!(add_json["contexts"], serde_json::json!(["@arbeit"]));
 }
 
 #[test]

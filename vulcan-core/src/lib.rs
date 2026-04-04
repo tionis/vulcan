@@ -163,8 +163,9 @@ pub use tasknotes::{
     parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
     tasknotes_default_date_value, tasknotes_default_recurrence_rule,
     tasknotes_default_reminder_values, tasknotes_priority_weight, tasknotes_reminder_notify_at,
-    tasknotes_status_state, tasknotes_total_time_minutes, IndexedTaskNote, ParsedTaskNoteInput,
-    TaskNotesReminder, TaskNotesStatusState, TaskNotesTimeEntry,
+    tasknotes_status_definition, tasknotes_status_state, tasknotes_total_time_minutes,
+    IndexedTaskNote, ParsedTaskNoteInput, TaskNotesReminder, TaskNotesStatusState,
+    TaskNotesTimeEntry,
 };
 pub use tasks::{
     evaluate_parsed_tasks_query, evaluate_tasks_query, load_tasks_blocks, parse_recurrence_text,

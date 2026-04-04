@@ -17,6 +17,15 @@ pub(crate) fn handle_tasks_command(
     use_stdout_color: bool,
     use_stderr_color: bool,
 ) -> Result<(), CliError> {
+    if should_process_tasknotes_auto_archive(command) {
+        crate::process_due_tasknote_auto_archives(
+            paths,
+            auto_archive_excluded_task(command),
+            cli.output,
+            use_stderr_color,
+        )?;
+    }
+
     match command {
         TasksCommand::Add {
             text,
@@ -350,5 +359,69 @@ pub(crate) fn handle_tasks_command(
                 crate::print_tasknotes_view_list_report(cli.output, &report)
             }
         },
+    }
+}
+
+fn should_process_tasknotes_auto_archive(command: &TasksCommand) -> bool {
+    match command {
+        TasksCommand::Add { dry_run, .. }
+        | TasksCommand::Set { dry_run, .. }
+        | TasksCommand::Complete { dry_run, .. }
+        | TasksCommand::Archive { dry_run, .. }
+        | TasksCommand::Convert { dry_run, .. }
+        | TasksCommand::Create { dry_run, .. }
+        | TasksCommand::Reschedule { dry_run, .. } => !*dry_run,
+        TasksCommand::Track { command } => match command {
+            TasksTrackCommand::Start { dry_run, .. } | TasksTrackCommand::Stop { dry_run, .. } => {
+                !*dry_run
+            }
+            TasksTrackCommand::Status
+            | TasksTrackCommand::Log { .. }
+            | TasksTrackCommand::Summary { .. } => true,
+        },
+        TasksCommand::Show { .. }
+        | TasksCommand::Edit { .. }
+        | TasksCommand::Query { .. }
+        | TasksCommand::Eval { .. }
+        | TasksCommand::List { .. }
+        | TasksCommand::Next { .. }
+        | TasksCommand::Blocked
+        | TasksCommand::Graph
+        | TasksCommand::Reminders { .. }
+        | TasksCommand::Due { .. }
+        | TasksCommand::View { .. } => true,
+    }
+}
+
+fn auto_archive_excluded_task(command: &TasksCommand) -> Option<&str> {
+    match command {
+        TasksCommand::Show { task }
+        | TasksCommand::Edit { task, .. }
+        | TasksCommand::Archive { task, .. }
+        | TasksCommand::Set { task, .. }
+        | TasksCommand::Complete { task, .. }
+        | TasksCommand::Reschedule { task, .. } => Some(task.as_str()),
+        TasksCommand::Track { command } => match command {
+            TasksTrackCommand::Start { task, .. }
+            | TasksTrackCommand::Log { task }
+            | TasksTrackCommand::Stop {
+                task: Some(task), ..
+            } => Some(task.as_str()),
+            TasksTrackCommand::Status
+            | TasksTrackCommand::Summary { .. }
+            | TasksTrackCommand::Stop { task: None, .. } => None,
+        },
+        TasksCommand::Add { .. }
+        | TasksCommand::Convert { .. }
+        | TasksCommand::Create { .. }
+        | TasksCommand::Query { .. }
+        | TasksCommand::Eval { .. }
+        | TasksCommand::List { .. }
+        | TasksCommand::Next { .. }
+        | TasksCommand::Blocked
+        | TasksCommand::Graph
+        | TasksCommand::Reminders { .. }
+        | TasksCommand::Due { .. }
+        | TasksCommand::View { .. } => None,
     }
 }

@@ -79,21 +79,21 @@ use vulcan_core::{
     repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note, save_saved_report,
     scan_vault_with_progress, search_vault, shape_tasks_query_result, step_period_start,
     task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
-    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_state,
-    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
-    BasesEvalReport, BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport,
-    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
-    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
-    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
-    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
-    KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
+    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
+    tasknotes_status_state, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
+    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
+    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
+    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
+    ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsEvalOptions,
+    DataviewJsOutput, DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    EvaluatedInlineExpression, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
+    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
+    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
+    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
     PeriodicNotesImporter, PluginImporter, QueryReport, RebuildQuery, RebuildReport,
     RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
     RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
@@ -3595,6 +3595,39 @@ fn default_tasknote_reminders_yaml_value(
         .map_err(CliError::operation)
 }
 
+fn tasknote_auto_archive_due(
+    record: &TaskNoteRecord,
+    config: &vulcan_core::VaultConfig,
+    now_ms: i64,
+) -> bool {
+    if record.indexed.archived {
+        return false;
+    }
+
+    let Some(status) = tasknotes_status_definition(&config.tasknotes, &record.indexed.status)
+    else {
+        return false;
+    };
+    if !status.is_completed || !status.auto_archive {
+        return false;
+    }
+
+    let completed_at = record
+        .indexed
+        .completed_date
+        .as_deref()
+        .and_then(parse_date_like_string)
+        .unwrap_or_default();
+    if completed_at <= 0 {
+        return false;
+    }
+
+    let delay_ms = i64::try_from(status.auto_archive_delay)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(60_000);
+    now_ms >= completed_at.saturating_add(delay_ms)
+}
+
 fn resolve_task_track_summary_window(
     config: &vulcan_core::VaultConfig,
     period: TasksTrackSummaryPeriodArg,
@@ -6168,6 +6201,99 @@ fn update_inline_task_due_marker(line: &str, due: &str) -> Result<String, CliErr
     }
 }
 
+fn prepare_tasknote_archive_plan(
+    frontmatter: &mut YamlMapping,
+    loaded: &LoadedTaskNote,
+) -> Result<TaskMutationPlan, CliError> {
+    let status_state = tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
+    if !loaded.indexed.archived && !status_state.completed {
+        return Err(CliError::operation(format!(
+            "task must be completed before archiving: {}",
+            loaded.path
+        )));
+    }
+
+    let mut changes = Vec::new();
+    let archive_tag = &loaded.config.tasknotes.field_mapping.archive_tag;
+    let tags_key = YamlValue::String("tags".to_string());
+    let mut tags = yaml_string_list(frontmatter.get(&tags_key));
+    if !tags.iter().any(|tag| tag.eq_ignore_ascii_case(archive_tag)) {
+        tags.push(archive_tag.clone());
+        tags.sort();
+        if let Some(change) = set_tasknote_frontmatter_value(
+            frontmatter,
+            "tags",
+            Some(YamlValue::Sequence(
+                tags.iter().cloned().map(YamlValue::String).collect(),
+            )),
+        ) {
+            changes.push(change);
+        }
+    }
+
+    let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
+    if let Some(change) = set_tasknote_frontmatter_value(
+        frontmatter,
+        modified_key,
+        Some(YamlValue::String(current_utc_timestamp_string())),
+    ) {
+        changes.push(change);
+    }
+
+    let moved_to = Path::new(&loaded.path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| {
+            let archive_folder = loaded
+                .config
+                .tasknotes
+                .archive_folder
+                .trim()
+                .trim_matches('/');
+            (!archive_folder.is_empty()).then(|| format!("{archive_folder}/{name}"))
+        });
+
+    Ok(TaskMutationPlan { changes, moved_to })
+}
+
+pub(crate) fn process_due_tasknote_auto_archives(
+    paths: &VaultPaths,
+    exclude_task: Option<&str>,
+    output: OutputFormat,
+    use_stderr_color: bool,
+) -> Result<Vec<String>, CliError> {
+    let config = load_vault_config(paths).config;
+    let now_ms = current_utc_timestamp_ms();
+    let excluded_path = exclude_task
+        .and_then(|task| load_tasknote_note(paths, task).ok())
+        .map(|loaded| loaded.path);
+    let candidates = load_tasknote_records(paths)?
+        .into_iter()
+        .filter(|record| excluded_path.as_ref() != Some(&record.path))
+        .filter(|record| tasknote_auto_archive_due(record, &config, now_ms))
+        .map(|record| record.path)
+        .collect::<Vec<_>>();
+    let mut changed_paths = Vec::new();
+
+    for path in candidates {
+        let loaded = load_tasknote_note(paths, &path)?;
+        let report = apply_loaded_tasknote_mutation(
+            paths,
+            &loaded,
+            "auto_archive",
+            false,
+            output,
+            use_stderr_color,
+            prepare_tasknote_archive_plan,
+        )?;
+        changed_paths.extend(report.changed_paths);
+    }
+
+    changed_paths.sort();
+    changed_paths.dedup();
+    Ok(changed_paths)
+}
+
 fn run_tasks_archive_command(
     paths: &VaultPaths,
     task: &str,
@@ -6182,58 +6308,7 @@ fn run_tasks_archive_command(
         dry_run,
         output,
         use_stderr_color,
-        |frontmatter, loaded| {
-            let status_state =
-                tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
-            if !loaded.indexed.archived && !status_state.completed {
-                return Err(CliError::operation(format!(
-                    "task must be completed before archiving: {}",
-                    loaded.path
-                )));
-            }
-
-            let mut changes = Vec::new();
-            let archive_tag = &loaded.config.tasknotes.field_mapping.archive_tag;
-            let tags_key = YamlValue::String("tags".to_string());
-            let mut tags = yaml_string_list(frontmatter.get(&tags_key));
-            if !tags.iter().any(|tag| tag.eq_ignore_ascii_case(archive_tag)) {
-                tags.push(archive_tag.clone());
-                tags.sort();
-                if let Some(change) = set_tasknote_frontmatter_value(
-                    frontmatter,
-                    "tags",
-                    Some(YamlValue::Sequence(
-                        tags.iter().cloned().map(YamlValue::String).collect(),
-                    )),
-                ) {
-                    changes.push(change);
-                }
-            }
-
-            let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
-            if let Some(change) = set_tasknote_frontmatter_value(
-                frontmatter,
-                modified_key,
-                Some(YamlValue::String(current_utc_timestamp_string())),
-            ) {
-                changes.push(change);
-            }
-
-            let moved_to = Path::new(&loaded.path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| {
-                    let archive_folder = loaded
-                        .config
-                        .tasknotes
-                        .archive_folder
-                        .trim()
-                        .trim_matches('/');
-                    (!archive_folder.is_empty()).then(|| format!("{archive_folder}/{name}"))
-                });
-
-            Ok(TaskMutationPlan { changes, moved_to })
-        },
+        prepare_tasknote_archive_plan,
     )
 }
 
