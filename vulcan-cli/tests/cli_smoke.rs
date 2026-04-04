@@ -3501,6 +3501,119 @@ fn tasks_create_json_output_honors_explicit_target_and_flags() {
 }
 
 #[test]
+fn tasks_reschedule_json_output_updates_tasknote_due_date() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    run_scan(&vault_root);
+
+    let reschedule_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "reschedule",
+            "Write Docs",
+            "--due",
+            "2026-04-12",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let reschedule_json = parse_stdout_json(&reschedule_assert);
+
+    assert_eq!(reschedule_json["action"], "reschedule");
+    assert_eq!(reschedule_json["path"], "TaskNotes/Tasks/Write Docs.md");
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "show",
+            "Write Docs",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["due"], "2026-04-12");
+}
+
+#[test]
+fn tasks_reschedule_json_output_replaces_inline_due_marker() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::write(
+        vault_root.join("Inbox.md"),
+        "- [ ] Review release #ops 🗓️ 2026-04-09\n",
+    )
+    .expect("inline task note should be written");
+    run_scan(&vault_root);
+
+    let reschedule_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "reschedule",
+            "Inbox.md:1",
+            "--due",
+            "2026-04-11",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let reschedule_json = parse_stdout_json(&reschedule_assert);
+
+    assert_eq!(reschedule_json["action"], "reschedule");
+    assert_eq!(reschedule_json["path"], "Inbox.md");
+    assert_eq!(
+        reschedule_json["changes"][0]["after"],
+        "- [ ] Review release #ops 🗓️ 2026-04-11"
+    );
+
+    let updated =
+        fs::read_to_string(vault_root.join("Inbox.md")).expect("updated note should exist");
+    assert_eq!(updated, "- [ ] Review release #ops 🗓️ 2026-04-11\n");
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--source",
+            "inline",
+        ])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list_assert);
+    assert_eq!(list_json["result_count"], Value::Number(1.into()));
+    assert_eq!(list_json["tasks"][0]["due"], "2026-04-11");
+}
+
+#[test]
 fn tasks_archive_json_output_moves_completed_task_into_archive_folder() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -2291,7 +2291,7 @@ The `vulcan tasks` command group is the unified interface for all task operation
 **Task mutations (from 9.18.9):**
 
 - [x] `vulcan tasks create <text> [--in <note>] [--due <date>] [--priority <p>]` — create an inline task in a note (as opposed to `tasks add` which creates a TaskNotes file)
-- [ ] `vulcan tasks reschedule <task-id> --due <date>` — change task due date (both types)
+- [x] `vulcan tasks reschedule <task-id> --due <date>` — change task due date (both types)
 
 **Shared:**
 
