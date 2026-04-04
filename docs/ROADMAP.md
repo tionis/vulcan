@@ -2317,7 +2317,7 @@ Deferred to post-Phase 9 enhancements. Calendar integration needs deeper researc
   | **Task defaults** | `taskCreationDefaults` (defaultContexts, defaultTags, defaultProjects, defaultDueDate, defaultTimeEstimate, defaultReminders) |
 - [x] Skipped during import (deferred features): Calendar view settings, ICS integration, Google Calendar, Microsoft Calendar, API/webhook settings, UI/editor settings. Report these as "skipped (feature not yet supported)" in the import summary.
 - [x] `vulcan config import tasknotes` — import TaskNotes settings, create Vulcan-native config, report mapping (implement as `PluginImporter` per 9.17.1)
-- [ ] Migrate `.base` view files: copy TaskNotes view definitions and validate they work with Vulcan's Bases evaluator
+- [x] Migrate `.base` view files: copy TaskNotes view definitions and validate they work with Vulcan's Bases evaluator
 
 #### ~~9.15.12 HTTP API compatibility~~ — deferred
 

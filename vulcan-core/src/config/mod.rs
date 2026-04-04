@@ -1,7 +1,10 @@
-use crate::paths::{ensure_vulcan_dir, VaultPaths};
+use crate::bases::inspect_base_file;
+use crate::paths::{
+    ensure_vulcan_dir, normalize_relative_input_path, RelativePathOptions, VaultPaths,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -1424,6 +1427,7 @@ pub struct ConfigImportMapping {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ConfigImportReport {
     pub plugin: String,
     pub source_path: PathBuf,
@@ -1433,12 +1437,30 @@ pub struct ConfigImportReport {
     pub target_file: PathBuf,
     pub created_config: bool,
     pub updated: bool,
+    #[serde(skip)]
+    pub config_updated: bool,
     pub dry_run: bool,
     pub mappings: Vec<ConfigImportMapping>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub migrated_files: Vec<ImportMigratedFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<ImportSkippedSetting>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<ImportConflict>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMigratedFileAction {
+    Copy,
+    ValidateOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImportMigratedFile {
+    pub source: PathBuf,
+    pub target: PathBuf,
+    pub action: ImportMigratedFileAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2553,8 +2575,10 @@ fn apply_import_settings(
         target_file,
         created_config,
         updated,
+        config_updated: updated,
         dry_run,
         mappings: import_settings_to_mappings(settings),
+        migrated_files: Vec::new(),
         skipped: Vec::new(),
         conflicts: Vec::new(),
     })
@@ -2937,7 +2961,20 @@ impl PluginImporter for TaskNotesImporter {
             target,
             dry_run,
         )?;
+        let migration = tasknotes_migrate_view_files(paths, &raw, dry_run)?;
+        report.source_paths.extend(migration.source_paths);
+        report.source_paths.sort();
+        report.source_paths.dedup();
+        report.migrated_files = migration.migrated_files;
         report.skipped = tasknotes_skipped_settings(&raw);
+        report.skipped.extend(migration.skipped);
+        if report
+            .migrated_files
+            .iter()
+            .any(|file| matches!(file.action, ImportMigratedFileAction::Copy))
+        {
+            report.updated = true;
+        }
         Ok(report)
     }
 }
@@ -3906,6 +3943,264 @@ fn tasknotes_config_import_mappings(
     Ok(mappings)
 }
 
+#[derive(Debug, Default)]
+struct TaskNotesViewMigrationResult {
+    source_paths: Vec<PathBuf>,
+    migrated_files: Vec<ImportMigratedFile>,
+    skipped: Vec<ImportSkippedSetting>,
+}
+
+fn tasknotes_view_target_path(command: &str) -> Option<&'static str> {
+    match command {
+        "open-calendar-view" => Some("TaskNotes/Views/mini-calendar-default.base"),
+        "open-kanban-view" => Some("TaskNotes/Views/kanban-default.base"),
+        "open-tasks-view" => Some("TaskNotes/Views/tasks-default.base"),
+        "open-advanced-calendar-view" => Some("TaskNotes/Views/calendar-default.base"),
+        "open-agenda-view" => Some("TaskNotes/Views/agenda-default.base"),
+        "relationships" | "project-subtasks" => Some("TaskNotes/Views/relationships.base"),
+        _ => None,
+    }
+}
+
+fn tasknotes_command_file_mappings(raw: &Value) -> Vec<(String, String)> {
+    let mut mappings = BTreeMap::from([
+        (
+            "open-calendar-view".to_string(),
+            "TaskNotes/Views/mini-calendar-default.base".to_string(),
+        ),
+        (
+            "open-kanban-view".to_string(),
+            "TaskNotes/Views/kanban-default.base".to_string(),
+        ),
+        (
+            "open-tasks-view".to_string(),
+            "TaskNotes/Views/tasks-default.base".to_string(),
+        ),
+        (
+            "open-advanced-calendar-view".to_string(),
+            "TaskNotes/Views/calendar-default.base".to_string(),
+        ),
+        (
+            "open-agenda-view".to_string(),
+            "TaskNotes/Views/agenda-default.base".to_string(),
+        ),
+        (
+            "relationships".to_string(),
+            "TaskNotes/Views/relationships.base".to_string(),
+        ),
+    ]);
+
+    if let Some(command_mapping) = raw.get("commandFileMapping").and_then(Value::as_object) {
+        for (command, path) in command_mapping {
+            if let Some(path) = path.as_str() {
+                mappings.insert(command.clone(), path.to_string());
+            }
+        }
+        if !command_mapping.contains_key("relationships") {
+            if let Some(path) = command_mapping
+                .get("project-subtasks")
+                .and_then(Value::as_str)
+            {
+                mappings.insert("project-subtasks".to_string(), path.to_string());
+            }
+        }
+    }
+
+    mappings.into_iter().collect()
+}
+
+fn normalize_tasknotes_import_path(path: &str) -> Result<String, ConfigImportError> {
+    normalize_relative_input_path(
+        path,
+        RelativePathOptions {
+            expected_extension: Some("base"),
+            append_extension_if_missing: true,
+        },
+    )
+    .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))
+}
+
+fn normalize_tasknotes_import_source_type(source_type: &str) -> String {
+    source_type
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
+}
+
+fn supports_tasknotes_import_view_type(view_type: &str) -> bool {
+    matches!(
+        normalize_tasknotes_import_source_type(view_type).as_str(),
+        "table" | "tasknotestasklist" | "tasknoteskanban"
+    )
+}
+
+fn tasknotes_base_contents_for_vulcan(source: &str, source_type: &str) -> String {
+    if normalize_tasknotes_import_source_type(source_type) == "tasknotes" {
+        source.to_string()
+    } else {
+        format!("source: tasknotes\n\n{source}")
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn tasknotes_migrate_view_files(
+    paths: &VaultPaths,
+    raw: &Value,
+    dry_run: bool,
+) -> Result<TaskNotesViewMigrationResult, ConfigImportError> {
+    let mut result = TaskNotesViewMigrationResult::default();
+    let mut source_paths = BTreeSet::new();
+    let mut target_sources = BTreeMap::<String, String>::new();
+    let explicit_commands = raw
+        .get("commandFileMapping")
+        .and_then(Value::as_object)
+        .map(|mapping| mapping.keys().cloned().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+
+    for (command, source_path) in tasknotes_command_file_mappings(raw) {
+        let Some(target_path) = tasknotes_view_target_path(&command) else {
+            continue;
+        };
+        let source_path = match normalize_tasknotes_import_path(&source_path) {
+            Ok(path) => path,
+            Err(error) => {
+                result.skipped.push(ImportSkippedSetting {
+                    source: format!("commandFileMapping.{command}"),
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+        };
+
+        if let Some(previous_source) =
+            target_sources.insert(target_path.to_string(), source_path.clone())
+        {
+            if previous_source != source_path {
+                result.skipped.push(ImportSkippedSetting {
+                    source: format!("commandFileMapping.{command}"),
+                    reason: format!(
+                        "target `{target_path}` already maps to `{previous_source}` during import"
+                    ),
+                });
+                continue;
+            }
+        }
+
+        let source_absolute = paths.vault_root().join(&source_path);
+        if !source_absolute.exists() {
+            if explicit_commands.contains(&command) {
+                result.skipped.push(ImportSkippedSetting {
+                    source: format!("commandFileMapping.{command}"),
+                    reason: format!("view file `{source_path}` was not found"),
+                });
+            }
+            continue;
+        }
+        source_paths.insert(source_absolute.clone());
+
+        let info = match inspect_base_file(paths, &source_path) {
+            Ok(info) => info,
+            Err(error) => {
+                result.skipped.push(ImportSkippedSetting {
+                    source: format!("commandFileMapping.{command}"),
+                    reason: format!("view file `{source_path}` could not be parsed: {error}"),
+                });
+                continue;
+            }
+        };
+
+        if let Some(diagnostic) = info.diagnostics.first() {
+            result.skipped.push(ImportSkippedSetting {
+                source: format!("commandFileMapping.{command}"),
+                reason: format!(
+                    "view file `{source_path}` has unsupported syntax: {}",
+                    diagnostic.message
+                ),
+            });
+            continue;
+        }
+
+        let normalized_source_type = normalize_tasknotes_import_source_type(&info.source_type);
+        if !matches!(normalized_source_type.as_str(), "file" | "tasknotes") {
+            result.skipped.push(ImportSkippedSetting {
+                source: format!("commandFileMapping.{command}"),
+                reason: format!(
+                    "view file `{source_path}` uses unsupported source type `{}`",
+                    info.source_type
+                ),
+            });
+            continue;
+        }
+        if info.views.is_empty() {
+            result.skipped.push(ImportSkippedSetting {
+                source: format!("commandFileMapping.{command}"),
+                reason: format!("view file `{source_path}` does not define any views"),
+            });
+            continue;
+        }
+
+        let unsupported_view_types = info
+            .views
+            .iter()
+            .filter(|view| !supports_tasknotes_import_view_type(&view.view_type))
+            .map(|view| view.view_type.clone())
+            .collect::<BTreeSet<_>>();
+        if !unsupported_view_types.is_empty() {
+            result.skipped.push(ImportSkippedSetting {
+                source: format!("commandFileMapping.{command}"),
+                reason: format!(
+                    "view file `{source_path}` uses unsupported view types: {}",
+                    unsupported_view_types
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+            continue;
+        }
+
+        let source_contents = fs::read_to_string(&source_absolute)?;
+        let migrated_contents =
+            tasknotes_base_contents_for_vulcan(&source_contents, &info.source_type);
+        let target_absolute = paths.vault_root().join(target_path);
+        let action = if target_absolute.exists() {
+            let existing_contents = fs::read_to_string(&target_absolute)?;
+            if existing_contents == migrated_contents {
+                ImportMigratedFileAction::ValidateOnly
+            } else if source_absolute == target_absolute {
+                ImportMigratedFileAction::Copy
+            } else {
+                result.skipped.push(ImportSkippedSetting {
+                    source: format!("commandFileMapping.{command}"),
+                    reason: format!(
+                        "target `{target_path}` already exists with different contents"
+                    ),
+                });
+                continue;
+            }
+        } else {
+            ImportMigratedFileAction::Copy
+        };
+
+        if matches!(action, ImportMigratedFileAction::Copy) && !dry_run {
+            if let Some(parent) = target_absolute.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&target_absolute, migrated_contents)?;
+        }
+
+        result.migrated_files.push(ImportMigratedFile {
+            source: source_absolute,
+            target: target_absolute,
+            action,
+        });
+    }
+
+    result.source_paths = source_paths.into_iter().collect();
+    Ok(result)
+}
+
 #[allow(clippy::too_many_lines)]
 fn tasknotes_skipped_settings(raw: &Value) -> Vec<ImportSkippedSetting> {
     let Some(settings) = raw.as_object() else {
@@ -4000,7 +4295,6 @@ fn tasknotes_skipped_settings(raw: &Value) -> Vec<ImportSkippedSetting> {
             "enableBases",
             "enableMdbaseSpec",
             "autoCreateDefaultBasesFiles",
-            "commandFileMapping",
         ],
         "TaskNotes Bases integration settings are not yet supported",
     );
@@ -7763,7 +8057,64 @@ default_mode = "off"
         let vault_root = temp_dir.path();
         fs::create_dir_all(vault_root.join(".obsidian/plugins/tasknotes"))
             .expect("tasknotes plugin dir should be created");
+        fs::create_dir_all(vault_root.join("Views Source"))
+            .expect("tasknotes view source dir should be created");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+        fs::write(
+            vault_root.join("Views Source/tasks-custom.base"),
+            concat!(
+                "# All Tasks\n\n",
+                "views:\n",
+                "  - type: tasknotesTaskList\n",
+                "    name: \"All Tasks\"\n",
+                "    order:\n",
+                "      - note.status\n",
+                "      - note.priority\n",
+                "      - note.due\n",
+            ),
+        )
+        .expect("task list base should be written");
+        fs::write(
+            vault_root.join("Views Source/kanban-custom.base"),
+            concat!(
+                "# Kanban\n\n",
+                "views:\n",
+                "  - type: tasknotesKanban\n",
+                "    name: \"Kanban\"\n",
+                "    order:\n",
+                "      - note.status\n",
+                "      - note.priority\n",
+                "    groupBy:\n",
+                "      property: note.status\n",
+                "      direction: ASC\n",
+            ),
+        )
+        .expect("kanban base should be written");
+        fs::write(
+            vault_root.join("Views Source/relationships-custom.base"),
+            concat!(
+                "# Relationships\n\n",
+                "views:\n",
+                "  - type: tasknotesTaskList\n",
+                "    name: \"Projects\"\n",
+                "    filters:\n",
+                "      and:\n",
+                "        - list(this.projects).contains(file.asLink())\n",
+                "    order:\n",
+                "      - note.projects\n",
+            ),
+        )
+        .expect("relationships base should be written");
+        fs::write(
+            vault_root.join("Views Source/agenda-custom.base"),
+            concat!(
+                "# Agenda\n\n",
+                "views:\n",
+                "  - type: tasknotesCalendar\n",
+                "    name: \"Agenda\"\n",
+            ),
+        )
+        .expect("agenda base should be written");
         fs::write(
             vault_root.join(".obsidian/plugins/tasknotes/data.json"),
             r##"{
@@ -7827,6 +8178,12 @@ default_mode = "off"
                 "defaultDueDate": "tomorrow",
                 "defaultScheduledDate": "today",
                 "defaultRecurrence": "weekly"
+              },
+              "commandFileMapping": {
+                "open-tasks-view": "Views Source/tasks-custom.base",
+                "open-kanban-view": "Views Source/kanban-custom.base",
+                "relationships": "Views Source/relationships-custom.base",
+                "open-agenda-view": "Views Source/agenda-custom.base"
               }
             }"##,
         )
@@ -7853,6 +8210,25 @@ default_mode = "off"
             .iter()
             .any(|mapping| mapping.target == "tasknotes.field_mapping.due"
                 && mapping.value == Value::String("deadline".to_string())));
+        assert_eq!(report.migrated_files.len(), 3);
+        assert!(report.migrated_files.iter().any(|file| {
+            file.target == vault_root.join("TaskNotes/Views/tasks-default.base")
+                && matches!(file.action, ImportMigratedFileAction::Copy)
+        }));
+        assert!(report.migrated_files.iter().any(|file| {
+            file.target == vault_root.join("TaskNotes/Views/kanban-default.base")
+                && matches!(file.action, ImportMigratedFileAction::Copy)
+        }));
+        assert!(report.migrated_files.iter().any(|file| {
+            file.target == vault_root.join("TaskNotes/Views/relationships.base")
+                && matches!(file.action, ImportMigratedFileAction::Copy)
+        }));
+        assert!(report.skipped.iter().any(|item| {
+            item.source == "commandFileMapping.open-agenda-view"
+                && item
+                    .reason
+                    .contains("unsupported view types: tasknotesCalendar")
+        }));
 
         let rendered = fs::read_to_string(paths.config_file()).expect("config should exist");
         assert!(rendered.contains("[git]"));
@@ -7890,10 +8266,23 @@ default_mode = "off"
         assert!(rendered.contains("\"@home\""));
         assert!(rendered.contains("default_due_date = \"tomorrow\""));
         assert!(rendered.contains("default_recurrence = \"weekly\""));
+        let migrated_tasks =
+            fs::read_to_string(vault_root.join("TaskNotes/Views/tasks-default.base"))
+                .expect("migrated tasks base should exist");
+        assert!(migrated_tasks.starts_with("source: tasknotes\n\n# All Tasks\n"));
+        let migrated_tasks_info = inspect_base_file(&paths, "TaskNotes/Views/tasks-default.base")
+            .expect("migrated tasks base should parse");
+        assert_eq!(migrated_tasks_info.source_type, "tasknotes");
+        assert_eq!(migrated_tasks_info.views.len(), 1);
+        assert_eq!(migrated_tasks_info.views[0].view_type, "tasknotesTaskList");
 
         let second_report =
             import_tasknotes_plugin_config(&paths).expect("second import should succeed");
         assert!(!second_report.updated);
+        assert!(second_report
+            .migrated_files
+            .iter()
+            .all(|file| { matches!(file.action, ImportMigratedFileAction::ValidateOnly) }));
     }
 
     #[test]
@@ -7948,6 +8337,43 @@ default_mode = "off"
             .any(|item| { item.reason == "API and webhook settings are not yet supported" }));
         assert!(skipped.iter().any(|item| {
             item.reason == "TaskNotes Bases integration settings are not yet supported"
+        }));
+    }
+
+    #[test]
+    fn tasknotes_view_migration_skips_conflicting_existing_target_files() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join("Views Source"))
+            .expect("view source dir should be created");
+        fs::create_dir_all(vault_root.join("TaskNotes/Views"))
+            .expect("tasknotes views dir should be created");
+        fs::write(
+            vault_root.join("Views Source/tasks-custom.base"),
+            "views:\n  - type: tasknotesTaskList\n    name: Tasks\n",
+        )
+        .expect("source base should be written");
+        fs::write(
+            vault_root.join("TaskNotes/Views/tasks-default.base"),
+            "source: tasknotes\n\nviews:\n  - type: tasknotesTaskList\n    name: Existing\n",
+        )
+        .expect("existing target base should be written");
+
+        let raw = serde_json::json!({
+            "commandFileMapping": {
+                "open-tasks-view": "Views Source/tasks-custom.base"
+            }
+        });
+
+        let result = tasknotes_migrate_view_files(&VaultPaths::new(vault_root), &raw, false)
+            .expect("view migration should succeed");
+
+        assert!(result.migrated_files.is_empty());
+        assert!(result.skipped.iter().any(|item| {
+            item.source == "commandFileMapping.open-tasks-view"
+                && item
+                    .reason
+                    .contains("already exists with different contents")
         }));
     }
 
@@ -8012,12 +8438,14 @@ default_mode = "off"
                 target_file: PathBuf::from(".vulcan/config.toml"),
                 created_config: false,
                 updated: true,
+                config_updated: true,
                 dry_run: false,
                 mappings: vec![ConfigImportMapping {
                     source: "app.json.useMarkdownLinks".to_string(),
                     target: "links.style".to_string(),
                     value: Value::String("wikilink".to_string()),
                 }],
+                migrated_files: Vec::new(),
                 skipped: Vec::new(),
                 conflicts: Vec::new(),
             },
@@ -8031,12 +8459,14 @@ default_mode = "off"
                 target_file: PathBuf::from(".vulcan/config.toml"),
                 created_config: false,
                 updated: true,
+                config_updated: true,
                 dry_run: false,
                 mappings: vec![ConfigImportMapping {
                     source: "templates_folder".to_string(),
                     target: "links.style".to_string(),
                     value: Value::String("markdown".to_string()),
                 }],
+                migrated_files: Vec::new(),
                 skipped: Vec::new(),
                 conflicts: Vec::new(),
             },

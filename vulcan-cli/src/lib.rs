@@ -12864,7 +12864,7 @@ fn run_config_import(
                 .commit(
                     paths,
                     &format!("config-import-{}", importer.name()),
-                    &config_import_changed_files(paths, had_gitignore, &report.target_file),
+                    &config_import_changed_files(paths, had_gitignore, &report),
                 )
                 .map_err(CliError::operation)?;
         }
@@ -13024,6 +13024,14 @@ fn print_config_import_batch_report(
                         conflict.sources.join(", ")
                     );
                 }
+                for file in &item.migrated_files {
+                    println!(
+                        "    view: {} -> {} ({})",
+                        file.source.display(),
+                        file.target.display(),
+                        render_config_import_migrated_file_action(report.dry_run, file.action)
+                    );
+                }
                 for skipped in &item.skipped {
                     println!("    skipped: {} ({})", skipped.source, skipped.reason);
                 }
@@ -13042,7 +13050,7 @@ fn config_import_batch_changed_files(
     let mut changed = reports
         .iter()
         .filter(|report| report.updated)
-        .flat_map(|report| config_import_changed_files(paths, had_gitignore, &report.target_file))
+        .flat_map(|report| config_import_changed_files(paths, had_gitignore, report))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -13115,6 +13123,14 @@ fn print_config_import_report(
                     render_config_import_value(&conflict.kept_value)?
                 );
             }
+            for file in &report.migrated_files {
+                println!(
+                    "  view: {} -> {} ({})",
+                    file.source.display(),
+                    file.target.display(),
+                    render_config_import_migrated_file_action(report.dry_run, file.action)
+                );
+            }
             for skipped in &report.skipped {
                 println!("  skipped: {} ({})", skipped.source, skipped.reason);
             }
@@ -13137,6 +13153,15 @@ fn normalize_config_import_report(
         .collect();
     report.config_path = relativize_config_import_path(paths, &report.config_path);
     report.target_file = relativize_config_import_path(paths, &report.target_file);
+    report.migrated_files = report
+        .migrated_files
+        .iter()
+        .map(|file| vulcan_core::ImportMigratedFile {
+            source: relativize_config_import_path(paths, &file.source),
+            target: relativize_config_import_path(paths, &file.target),
+            action: file.action,
+        })
+        .collect();
     report
 }
 
@@ -13180,17 +13205,50 @@ fn print_scan_summary(output: OutputFormat, summary: &ScanSummary, use_color: bo
 fn config_import_changed_files(
     paths: &VaultPaths,
     had_gitignore: bool,
-    target_file: &Path,
+    report: &ConfigImportReport,
 ) -> Vec<String> {
-    let relative_target = target_file.strip_prefix(paths.vault_root()).map_or_else(
-        |_| target_file.display().to_string(),
-        |path| path.display().to_string(),
+    let mut changed = Vec::new();
+    if report.config_updated {
+        changed.push(
+            report
+                .target_file
+                .strip_prefix(paths.vault_root())
+                .map_or_else(
+                    |_| report.target_file.display().to_string(),
+                    |path| path.display().to_string(),
+                ),
+        );
+    }
+    changed.extend(
+        report
+            .migrated_files
+            .iter()
+            .filter(|file| matches!(file.action, vulcan_core::ImportMigratedFileAction::Copy))
+            .map(|file| {
+                file.target.strip_prefix(paths.vault_root()).map_or_else(
+                    |_| file.target.display().to_string(),
+                    |path| path.display().to_string(),
+                )
+            }),
     );
-    let mut changed = vec![relative_target];
-    if !had_gitignore && paths.gitignore_file().exists() {
+    if report.config_updated && !had_gitignore && paths.gitignore_file().exists() {
         changed.push(".vulcan/.gitignore".to_string());
     }
+    changed.sort();
+    changed.dedup();
     changed
+}
+
+fn render_config_import_migrated_file_action(
+    dry_run: bool,
+    action: vulcan_core::ImportMigratedFileAction,
+) -> &'static str {
+    match (dry_run, action) {
+        (true, vulcan_core::ImportMigratedFileAction::Copy) => "would copy and validate",
+        (false, vulcan_core::ImportMigratedFileAction::Copy) => "copied and validated",
+        (true, vulcan_core::ImportMigratedFileAction::ValidateOnly) => "would validate",
+        (false, vulcan_core::ImportMigratedFileAction::ValidateOnly) => "validated",
+    }
 }
 
 fn kanban_archive_changed_files(report: &KanbanArchiveReport) -> Vec<String> {
