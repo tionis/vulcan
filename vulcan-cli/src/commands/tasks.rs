@@ -3,7 +3,8 @@
 use crate::commit::AutoCommitPolicy;
 use crate::output::ListOutputControls;
 use crate::{
-    warn_auto_commit_if_needed, Cli, CliError, TasksCommand, TasksTrackCommand, TasksViewCommand,
+    warn_auto_commit_if_needed, Cli, CliError, TasksCommand, TasksPomodoroCommand,
+    TasksTrackCommand, TasksViewCommand,
 };
 use vulcan_core::VaultPaths;
 
@@ -333,6 +334,55 @@ pub(crate) fn handle_tasks_command(
                 crate::print_task_track_summary_report(cli.output, &report)
             }
         },
+        TasksCommand::Pomodoro { command } => match command {
+            TasksPomodoroCommand::Start {
+                task,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = crate::run_tasks_pomodoro_start_command(
+                    paths,
+                    task,
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !*dry_run {
+                    auto_commit
+                        .commit(paths, "tasks pomodoro start", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                crate::print_task_pomodoro_report(cli.output, &report)
+            }
+            TasksPomodoroCommand::Stop {
+                task,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = crate::run_tasks_pomodoro_stop_command(
+                    paths,
+                    task.as_deref(),
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !*dry_run {
+                    auto_commit
+                        .commit(paths, "tasks pomodoro stop", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                crate::print_task_pomodoro_report(cli.output, &report)
+            }
+            TasksPomodoroCommand::Status => {
+                let report =
+                    crate::run_tasks_pomodoro_status_command(paths, cli.output, use_stderr_color)?;
+                crate::print_task_pomodoro_status_report(cli.output, &report)
+            }
+        },
         TasksCommand::Reminders { upcoming } => {
             let report = crate::run_tasks_reminders_command(paths, upcoming)?;
             crate::print_task_reminders_report(cli.output, &report)
@@ -379,6 +429,11 @@ fn should_process_tasknotes_auto_archive(command: &TasksCommand) -> bool {
             | TasksTrackCommand::Log { .. }
             | TasksTrackCommand::Summary { .. } => true,
         },
+        TasksCommand::Pomodoro { command } => match command {
+            TasksPomodoroCommand::Start { dry_run, .. }
+            | TasksPomodoroCommand::Stop { dry_run, .. } => !*dry_run,
+            TasksPomodoroCommand::Status => true,
+        },
         TasksCommand::Show { .. }
         | TasksCommand::Edit { .. }
         | TasksCommand::Query { .. }
@@ -410,6 +465,13 @@ fn auto_archive_excluded_task(command: &TasksCommand) -> Option<&str> {
             TasksTrackCommand::Status
             | TasksTrackCommand::Summary { .. }
             | TasksTrackCommand::Stop { task: None, .. } => None,
+        },
+        TasksCommand::Pomodoro { command } => match command {
+            TasksPomodoroCommand::Start { task, .. }
+            | TasksPomodoroCommand::Stop {
+                task: Some(task), ..
+            } => Some(task.as_str()),
+            TasksPomodoroCommand::Status | TasksPomodoroCommand::Stop { task: None, .. } => None,
         },
         TasksCommand::Add { .. }
         | TasksCommand::Convert { .. }
