@@ -2270,7 +2270,7 @@ The `vulcan tasks` command group is the unified interface for all task operation
 - [x] `vulcan tasks set <task> <property> <value>` — update a task property
 - [x] `vulcan tasks complete <task>` — mark task as completed (set status to done, record `completedDate`); works for both file-based and inline tasks
 - [x] `vulcan tasks archive <task>` — archive a completed task (TaskNotes only)
-- [ ] `vulcan tasks convert <file> [--line <n>]` — convert a line, checkbox, or heading in an existing note into a TaskNotes task file
+- [x] `vulcan tasks convert <file> [--line <n>]` — convert a line, checkbox, or heading in an existing note into a TaskNotes task file
 
 **Unified query (both task types):**
 

@@ -3174,6 +3174,188 @@ fn tasks_convert_json_output_turns_existing_note_into_tasknote() {
 }
 
 #[test]
+fn tasks_convert_json_output_converts_checkbox_line_into_task_file() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
+    fs::write(
+        vault_root.join("Notes/Inbox.md"),
+        concat!(
+            "# Inbox\n",
+            "\n",
+            "- [ ] Ship docs due 2026-04-10 @desk #ops\n",
+            "- [ ] Leave alone\n",
+        ),
+    )
+    .expect("source note should be written");
+    run_scan(&vault_root);
+
+    let convert_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "convert",
+            "Notes/Inbox.md",
+            "--line",
+            "3",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let convert_json = parse_stdout_json(&convert_assert);
+
+    assert_eq!(convert_json["action"], "convert");
+    assert_eq!(convert_json["mode"], "line");
+    assert_eq!(convert_json["source_path"], "Notes/Inbox.md");
+    assert_eq!(convert_json["target_path"], "TaskNotes/Tasks/Ship docs.md");
+    assert_eq!(convert_json["line_number"], Value::Number(3.into()));
+    assert_eq!(convert_json["title"], "Ship docs");
+    assert_eq!(convert_json["created"], Value::Bool(true));
+    assert_eq!(
+        convert_json["source_changes"][0]["before"],
+        Value::String("- [ ] Ship docs due 2026-04-10 @desk #ops".to_string())
+    );
+    assert_eq!(
+        convert_json["source_changes"][0]["after"],
+        Value::String("- [[TaskNotes/Tasks/Ship docs]]".to_string())
+    );
+    assert_eq!(convert_json["frontmatter"]["due"], "2026-04-10");
+    assert_eq!(
+        convert_json["frontmatter"]["contexts"],
+        serde_json::json!(["@desk"])
+    );
+    assert!(convert_json["frontmatter"]["tags"]
+        .as_array()
+        .is_some_and(|tags| tags.iter().any(|tag| tag == "ops")));
+    assert!(convert_json["frontmatter"]["tags"]
+        .as_array()
+        .is_some_and(|tags| tags.iter().any(|tag| tag == "task")));
+
+    let updated =
+        fs::read_to_string(vault_root.join("Notes/Inbox.md")).expect("updated note should exist");
+    assert!(updated.contains("- [[TaskNotes/Tasks/Ship docs]]"));
+    assert!(updated.contains("- [ ] Leave alone"));
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "show",
+            "TaskNotes/Tasks/Ship docs.md",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+
+    assert_eq!(show_json["title"], "Ship docs");
+    assert_eq!(show_json["due"], "2026-04-10");
+    assert_eq!(show_json["contexts"], serde_json::json!(["@desk"]));
+    assert_eq!(show_json["body"], "");
+}
+
+#[test]
+fn tasks_convert_json_output_converts_heading_section_into_task_file() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
+    fs::write(
+        vault_root.join("Notes/Plan.md"),
+        concat!(
+            "# Plan\n",
+            "\n",
+            "## Ship release\n",
+            "\n",
+            "Coordinate docs.\n",
+            "- [ ] Notify team\n",
+            "\n",
+            "## Later\n",
+            "\n",
+            "Other notes.\n",
+        ),
+    )
+    .expect("source note should be written");
+    run_scan(&vault_root);
+
+    let convert_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "convert",
+            "Notes/Plan.md",
+            "--line",
+            "3",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let convert_json = parse_stdout_json(&convert_assert);
+
+    assert_eq!(convert_json["mode"], "line");
+    assert_eq!(
+        convert_json["target_path"],
+        "TaskNotes/Tasks/Ship release.md"
+    );
+    assert_eq!(convert_json["title"], "Ship release");
+    assert!(convert_json["source_changes"][0]["before"]
+        .as_str()
+        .is_some_and(|before| before.contains("## Ship release")));
+    assert_eq!(
+        convert_json["source_changes"][0]["after"],
+        Value::String("- [[TaskNotes/Tasks/Ship release]]".to_string())
+    );
+    assert_eq!(
+        convert_json["body"],
+        "Coordinate docs.\n- [ ] Notify team\n"
+    );
+
+    let updated =
+        fs::read_to_string(vault_root.join("Notes/Plan.md")).expect("updated note should exist");
+    assert!(updated.contains("- [[TaskNotes/Tasks/Ship release]]"));
+    assert!(updated.contains("## Later"));
+    assert!(!updated.contains("## Ship release"));
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "show",
+            "TaskNotes/Tasks/Ship release.md",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+
+    assert_eq!(show_json["title"], "Ship release");
+    assert_eq!(show_json["body"], "Coordinate docs.\n- [ ] Notify team\n");
+}
+
+#[test]
 fn tasks_archive_json_output_moves_completed_task_into_archive_folder() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
