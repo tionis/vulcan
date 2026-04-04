@@ -6061,6 +6061,25 @@ fn note_commands_without_arguments_fail_cleanly_in_non_interactive_mode() {
         .as_str()
         .is_some_and(|message| message
             .contains("missing note; provide a note identifier or run interactively")));
+
+    let suggest_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "suggest",
+            "mentions",
+            "Missing",
+        ])
+        .assert()
+        .failure();
+    let suggest_json = parse_stdout_json(&suggest_assert);
+    assert_eq!(suggest_json["code"], "operation_failed");
+    assert!(suggest_json["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("note not found")));
 }
 
 #[test]
