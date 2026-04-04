@@ -2217,6 +2217,7 @@ dependencies = [
  "crossterm",
  "csv",
  "predicates",
+ "pulldown-cmark",
  "ratatui",
  "regex",
  "reqwest",

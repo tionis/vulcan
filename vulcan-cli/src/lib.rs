@@ -3,9 +3,11 @@ mod browse_tui;
 mod cli;
 mod commit;
 mod editor;
+mod js_repl;
 mod note_picker;
 mod serve;
 mod template_engine;
+mod terminal_markdown;
 
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
@@ -37,10 +39,10 @@ use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use serve::{serve_forever, ServeOptions};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write as FmtWrite};
 use std::fs;
 use std::io;
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
@@ -80,24 +82,24 @@ use vulcan_core::{
     BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
     CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
     CheckpointRecord, ClusterQuery, ClusterReport, ConfigImportReport, CoreImporter,
-    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DataviewJsSession,
-    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
-    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
-    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
-    KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
-    PeriodicNotesImporter, PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
-    TaskNotesImporter, TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig,
-    VaultPaths, VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
+    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
+    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
+    PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
+    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths,
+    VectorDuplicatePair, VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
     VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
     VectorRepairQuery, VectorRepairReport, WatchOptions, WatchReport,
 };
@@ -2283,47 +2285,6 @@ fn run_js_command(
         DataviewJsEvalOptions { timeout, sandbox },
     )
     .map_err(CliError::operation)
-}
-
-fn run_js_repl(
-    paths: &VaultPaths,
-    output: OutputFormat,
-    timeout: Option<Duration>,
-    sandbox: Option<JsRuntimeSandbox>,
-) -> Result<(), CliError> {
-    let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout, sandbox })
-        .map_err(CliError::operation)?;
-    let mut line = String::new();
-    let stdin = io::stdin();
-    let mut handle = stdin.lock();
-
-    loop {
-        print!("vulcan> ");
-        io::stdout().flush().map_err(CliError::operation)?;
-        line.clear();
-        let read = io::BufRead::read_line(&mut handle, &mut line).map_err(CliError::operation)?;
-        if read == 0 {
-            break;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if matches!(trimmed, ".exit" | ".quit") {
-            break;
-        }
-
-        match session.evaluate(trimmed).map_err(CliError::operation) {
-            Ok(result) => {
-                print_dataview_js_result(output, &result, false)?;
-            }
-            Err(error) => {
-                eprintln!("error: {error}");
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn run_dataview_eval_command(
@@ -10867,10 +10828,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         },
         Command::Suggest { ref command } => match command {
             SuggestCommand::Mentions { note, export } => {
-                let note = if note.is_none() && interactive_note_selection {
-                    note_picker::pick_note(&paths, None, None).map_err(CliError::operation)?
+                let note = if note.is_some() || interactive_note_selection {
+                    Some(resolve_note_argument(
+                        &paths,
+                        note.as_deref(),
+                        interactive_note_selection,
+                        "note",
+                    )?)
                 } else {
-                    note.clone()
+                    None
                 };
                 let report =
                     suggest_mentions(&paths, note.as_deref()).map_err(CliError::operation)?;
@@ -11181,7 +11147,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let timeout = parse_run_timeout(timeout.as_deref())?;
             let sandbox = parse_run_sandbox(sandbox.as_deref())?;
             if script.is_none() && io::stdin().is_terminal() {
-                run_js_repl(&paths, cli.output, timeout, sandbox)
+                js_repl::run_js_repl(&paths, cli.output, timeout, sandbox)
             } else {
                 let result =
                     run_js_command(&paths, script.as_deref(), script_mode, timeout, sandbox)?;
@@ -11812,32 +11778,33 @@ fn print_help_command(
 
     match output {
         OutputFormat::Human => {
-            println!("# {}", report.name);
-            println!();
-            println!("{}", report.summary);
+            let mut markdown = format!("# {}\n\n{}\n", report.name, report.summary);
             if !report.body.is_empty() {
-                println!();
-                println!("{}", report.body);
+                markdown.push('\n');
+                markdown.push_str(&report.body);
+                markdown.push('\n');
             }
             if !report.subcommands.is_empty() {
-                println!();
-                println!("Subcommands:");
+                markdown.push_str("\n## Subcommands\n\n");
                 for subcommand in &report.subcommands {
-                    println!("- {subcommand}");
+                    let _ = writeln!(markdown, "- `{subcommand}`");
                 }
             }
             if !report.options.is_empty() {
-                println!();
-                println!("Options:");
+                markdown.push_str("\n## Options\n\n");
                 for option in &report.options {
                     let flag = option
                         .long
                         .as_deref()
                         .map_or_else(|| option.id.clone(), |long| format!("--{long}"));
                     let summary = option.help.as_deref().unwrap_or("undocumented");
-                    println!("- {flag}: {summary}");
+                    let _ = writeln!(markdown, "- `{flag}`: {summary}");
                 }
             }
+            println!(
+                "{}",
+                terminal_markdown::render_terminal_markdown(&markdown, io::stdout().is_terminal())
+            );
             Ok(())
         }
         OutputFormat::Json => print_json(&report),
@@ -15432,7 +15399,7 @@ fn print_dql_diagnostics_human(diagnostics: &[vulcan_core::DqlDiagnostic]) {
     }
 }
 
-fn render_dataview_inline_value(value: &Value) -> String {
+pub(crate) fn render_dataview_inline_value(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         _ => serde_json::to_string(value).expect("inline result should serialize"),
