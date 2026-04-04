@@ -16,7 +16,8 @@ pub use ast::{
     TasksDateField, TasksDateRelation, TasksFilter, TasksQuery, TasksQueryCommand, TasksTextField,
 };
 pub use eval::{
-    evaluate_parsed_tasks_query, evaluate_tasks_query, TasksQueryGroup, TasksQueryResult,
+    evaluate_parsed_tasks_query, evaluate_tasks_query, shape_tasks_query_result, TasksQueryGroup,
+    TasksQueryResult,
 };
 pub use parse::parse_tasks_query;
 pub(crate) use recurrence::{inject_task_recurrence_fields, task_recurrence_properties};

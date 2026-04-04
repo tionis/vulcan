@@ -2274,11 +2274,11 @@ The `vulcan tasks` command group is the unified interface for all task operation
 
 **Unified query (both task types):**
 
-- [ ] `vulcan tasks list [--filter <expr>]` — list tasks with optional filter expression; queries both TaskNotes files and inline tasks by default
-  - [ ] `--source file|inline|all` — filter by task type (default: `all`)
-  - [ ] `--status <s>`, `--priority <p>`, `--due-before <date>`, `--due-after <date>`, `--project <p>`, `--context <c>` — shorthand filters
-  - [ ] `--group-by <field>`, `--sort-by <field>` — grouping and sorting
-  - [ ] `--include-archived` — include archived tasks (excluded by default)
+- [x] `vulcan tasks list [--filter <expr>]` — list tasks with optional filter expression; queries both TaskNotes files and inline tasks by default
+  - [x] `--source file|inline|all` — filter by task type (default: `all`)
+  - [x] `--status <s>`, `--priority <p>`, `--due-before <date>`, `--due-after <date>`, `--project <p>`, `--context <c>` — shorthand filters
+  - [x] `--group-by <field>`, `--sort-by <field>` — grouping and sorting
+  - [x] `--include-archived` — include archived tasks (excluded by default)
 - [ ] `vulcan tasks next <n>` — show next N upcoming task instances across all recurring tasks (both types)
 - [ ] `vulcan tasks blocked` — list all blocked tasks with their blocking dependencies (both types)
 - [ ] `vulcan tasks graph` — visualize task dependency graph (both types)

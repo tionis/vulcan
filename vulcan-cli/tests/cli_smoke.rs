@@ -2433,6 +2433,205 @@ fn tasks_list_json_output_includes_tasknotes_file_tasks() {
 }
 
 #[test]
+fn tasks_list_json_output_supports_source_filters_and_archived_toggle() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::write(
+        vault_root.join("Inbox.md"),
+        concat!(
+            "- [ ] Inline follow-up #ops 🗓️ 2026-04-09\n",
+            "- [x] Inline shipped #ops\n"
+        ),
+    )
+    .expect("inline task fixture should be written");
+    fs::write(
+        vault_root.join("TaskNotes/Tasks/Archived Flag.md"),
+        concat!(
+            "---\n",
+            "title: \"Archived flag\"\n",
+            "status: \"done\"\n",
+            "priority: \"low\"\n",
+            "tags: [\"task\", \"archived\"]\n",
+            "---\n"
+        ),
+    )
+    .expect("archived task fixture should be written");
+    run_scan(&vault_root);
+
+    let file_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--source",
+            "file",
+            "--status",
+            "in-progress",
+            "--priority",
+            "high",
+            "--due-before",
+            "2026-04-11",
+            "--project",
+            "[[Projects/Website]]",
+            "--context",
+            "@desk",
+            "--sort-by",
+            "due",
+            "--group-by",
+            "source",
+        ])
+        .assert()
+        .success();
+    let file_json = parse_stdout_json(&file_assert);
+
+    assert_eq!(file_json["result_count"], Value::Number(1.into()));
+    assert_eq!(
+        file_json["tasks"][0]["text"],
+        Value::String("Write docs".to_string())
+    );
+    assert_eq!(
+        file_json["tasks"][0]["taskSource"],
+        Value::String("file".to_string())
+    );
+    assert_eq!(
+        file_json["groups"][0]["key"],
+        Value::String("file".to_string())
+    );
+
+    let inline_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--source",
+            "inline",
+        ])
+        .assert()
+        .success();
+    let inline_json = parse_stdout_json(&inline_assert);
+
+    assert_eq!(inline_json["result_count"], Value::Number(2.into()));
+    assert!(inline_json["tasks"]
+        .as_array()
+        .expect("tasks should be an array")
+        .iter()
+        .all(|task| task["taskSource"] == Value::String("inline".to_string())));
+
+    let archived_default_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--source",
+            "file",
+        ])
+        .assert()
+        .success();
+    let archived_default_json = parse_stdout_json(&archived_default_assert);
+    assert_eq!(
+        archived_default_json["result_count"],
+        Value::Number(2.into())
+    );
+
+    let archived_all_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--source",
+            "file",
+            "--include-archived",
+        ])
+        .assert()
+        .success();
+    let archived_all_json = parse_stdout_json(&archived_all_assert);
+    assert_eq!(archived_all_json["result_count"], Value::Number(3.into()));
+    assert!(archived_all_json["tasks"]
+        .as_array()
+        .expect("tasks should be an array")
+        .iter()
+        .any(|task| task["text"] == Value::String("Archived flag".to_string())));
+}
+
+#[test]
+fn tasks_list_dql_filter_keeps_sort_and_group_options() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::write(
+        vault_root.join("Inbox.md"),
+        concat!(
+            "- [ ] Inline follow-up #ops 🗓️ 2026-04-09\n",
+            "- [x] Inline shipped #ops\n"
+        ),
+    )
+    .expect("inline task fixture should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+            "--filter",
+            "completed && taskSource = \"inline\"",
+            "--sort-by",
+            "source",
+            "--group-by",
+            "source",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["result_count"], Value::Number(1.into()));
+    assert_eq!(
+        json["tasks"][0]["text"],
+        Value::String("Inline shipped #ops".to_string())
+    );
+    assert_eq!(json["groups"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        json["groups"][0]["field"],
+        Value::String("source".to_string())
+    );
+    assert_eq!(
+        json["groups"][0]["key"],
+        Value::String("inline".to_string())
+    );
+}
+
+#[test]
 fn tasks_next_and_graph_json_output_support_tasknotes_recurrence_and_dependencies() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

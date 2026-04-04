@@ -13,9 +13,9 @@ pub use cli::{
     DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs, ExportCommand, ExportFormat,
     GitCommand, GraphCommand, InitArgs, KanbanCommand, NoteCommand, OutputFormat, PeriodicOpenArgs,
     PeriodicSubcommand, QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand,
-    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand,
-    WebFetchMode,
+    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TasksListSourceArg, TasksViewCommand,
+    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, VectorQueueCommand, VectorsCommand,
+    WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -68,27 +68,28 @@ use vulcan_core::{
     rebuild_vectors_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
     repair_fts, repair_vectors_with_progress, resolve_link, resolve_note_reference,
     resolve_periodic_note, save_saved_report, scan_vault_with_progress, search_vault,
-    step_period_start, suggest_duplicates, suggest_mentions, task_upcoming_occurrences,
-    tasknotes_default_date_value, tasknotes_default_recurrence_rule, tasknotes_status_state,
-    vector_duplicates, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
-    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesCreateContext, BasesEvalReport,
-    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterQuery, ClusterReport, ConfigImportReport, CoreImporter,
-    DataviewImporter, DataviewJsOutput, DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    EvaluatedInlineExpression, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
-    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
-    KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
-    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
-    PeriodicNotesImporter, PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksImporter,
+    shape_tasks_query_result, step_period_start, suggest_duplicates, suggest_mentions,
+    task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
+    tasknotes_status_state, vector_duplicates, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BaseViewGroupBy, BaseViewPatch, BaseViewSpec,
+    BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterQuery, ClusterReport,
+    ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsOutput, DataviewJsResult,
+    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
+    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
+    PluginImporter, QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
+    RefactorReport, RelatedNoteHit, RelatedNotesQuery, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TasksImporter,
     TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
     VectorDuplicatesQuery, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
     VectorIndexQuery, VectorIndexReport, VectorNeighborHit, VectorNeighborsQuery,
@@ -3348,16 +3349,42 @@ fn run_tasks_eval_command(
 
 fn run_tasks_list_command(
     paths: &VaultPaths,
-    filter: Option<&str>,
+    options: TasksListOptions<'_>,
 ) -> Result<TasksQueryResult, CliError> {
     let config = load_vault_config(paths).config.tasks;
-    let Some(filter) = filter.map(str::trim).filter(|filter| !filter.is_empty()) else {
-        return run_tasks_query_command(paths, "");
-    };
+    let filter = options
+        .filter
+        .map(str::trim)
+        .filter(|filter| !filter.is_empty());
+    let prefilter_source = tasks_list_prefilter_source(&options);
+    let layout_source = tasks_list_layout_source(&options);
 
-    match parse_tasks_query(filter) {
-        Ok(_) => run_tasks_query_command(paths, filter),
-        Err(tasks_error) => run_tasks_list_dql_filter(paths, filter, &tasks_error, &config),
+    match filter {
+        None => {
+            let source = join_tasks_query_sections([
+                Some(prefilter_source.as_str()),
+                Some(layout_source.as_str()),
+            ]);
+            run_tasks_query_command(paths, &source)
+        }
+        Some(filter) => match parse_tasks_query(filter) {
+            Ok(_) => {
+                let source = join_tasks_query_sections([
+                    Some(prefilter_source.as_str()),
+                    Some(filter),
+                    Some(layout_source.as_str()),
+                ]);
+                run_tasks_query_command(paths, &source)
+            }
+            Err(tasks_error) => run_tasks_list_dql_filter(
+                paths,
+                filter,
+                &tasks_error,
+                &config,
+                &prefilter_source,
+                &layout_source,
+            ),
+        },
     }
 }
 
@@ -3407,6 +3434,8 @@ fn run_tasks_list_dql_filter(
     filter: &str,
     tasks_error: &str,
     config: &vulcan_core::config::TasksConfig,
+    prefilter_source: &str,
+    layout_source: &str,
 ) -> Result<TasksQueryResult, CliError> {
     let expression_source = tasks_dql_filter_expression(config, filter);
     let expression = parse_expression(&expression_source).map_err(|expression_error| {
@@ -3415,7 +3444,7 @@ fn run_tasks_list_dql_filter(
         ))
     })?;
 
-    let base_source = tasks_query_source(config, "", false);
+    let base_source = tasks_query_source(config, prefilter_source, false);
     let base_result = evaluate_tasks_query(paths, &base_source).map_err(CliError::operation)?;
     let note_index = load_note_index(paths).map_err(CliError::operation)?;
     let note_by_path = note_index
@@ -3449,14 +3478,19 @@ fn run_tasks_list_dql_filter(
         }
     }
 
-    let mut result = TasksQueryResult {
-        result_count: tasks.len(),
-        tasks,
-        groups: Vec::new(),
-        hidden_fields: Vec::new(),
-        shown_fields: Vec::new(),
-        short_mode: false,
-        plan: None,
+    let mut result = if layout_source.trim().is_empty() {
+        TasksQueryResult {
+            result_count: tasks.len(),
+            tasks,
+            groups: Vec::new(),
+            hidden_fields: Vec::new(),
+            shown_fields: Vec::new(),
+            short_mode: false,
+            plan: None,
+        }
+    } else {
+        let layout_query = parse_tasks_query(layout_source).map_err(CliError::operation)?;
+        shape_tasks_query_result(tasks, &layout_query)
     };
     strip_global_filter_from_output(&mut result, config);
     Ok(result)
@@ -3512,6 +3546,105 @@ fn tasks_query_source(
         sections.push(source.trim().to_string());
     }
     sections.join("\n")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TasksListOptions<'a> {
+    filter: Option<&'a str>,
+    source: TasksListSourceArg,
+    status: Option<&'a str>,
+    priority: Option<&'a str>,
+    due_before: Option<&'a str>,
+    due_after: Option<&'a str>,
+    project: Option<&'a str>,
+    context: Option<&'a str>,
+    group_by: Option<&'a str>,
+    sort_by: Option<&'a str>,
+    include_archived: bool,
+}
+
+fn tasks_list_prefilter_source(options: &TasksListOptions<'_>) -> String {
+    let mut sections = Vec::new();
+    if !options.include_archived {
+        sections.push("is not archived".to_string());
+    }
+    match options.source {
+        TasksListSourceArg::File => sections.push("source is file".to_string()),
+        TasksListSourceArg::Inline => sections.push("source is inline".to_string()),
+        TasksListSourceArg::All => {}
+    }
+    if let Some(status) = tasks_query_value(options.status) {
+        sections.push(format!("status is {}", quote_tasks_query_value(status)));
+    }
+    if let Some(priority) = tasks_query_value(options.priority) {
+        sections.push(format!("priority is {}", quote_tasks_query_value(priority)));
+    }
+    if let Some(due_before) = tasks_query_value(options.due_before) {
+        sections.push(format!(
+            "due before {}",
+            quote_tasks_query_value(due_before)
+        ));
+    }
+    if let Some(due_after) = tasks_query_value(options.due_after) {
+        sections.push(format!("due after {}", quote_tasks_query_value(due_after)));
+    }
+    if let Some(project) = tasks_query_value(options.project) {
+        sections.push(format!(
+            "project includes {}",
+            quote_tasks_query_value(project)
+        ));
+    }
+    if let Some(context) = tasks_query_value(options.context) {
+        sections.push(format!(
+            "context includes {}",
+            quote_tasks_query_value(context)
+        ));
+    }
+    sections.join("\n")
+}
+
+fn tasks_list_layout_source(options: &TasksListOptions<'_>) -> String {
+    let mut sections = Vec::new();
+    if let Some(sort_by) = tasks_query_value(options.sort_by) {
+        sections.push(format!("sort by {}", quote_tasks_query_value(sort_by)));
+    }
+    if let Some(group_by) = tasks_query_value(options.group_by) {
+        sections.push(format!("group by {}", quote_tasks_query_value(group_by)));
+    }
+    sections.join("\n")
+}
+
+fn tasks_query_value(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn quote_tasks_query_value(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '#' | '@'))
+    {
+        return value.to_string();
+    }
+
+    if !value.contains('"') {
+        return format!("\"{value}\"");
+    }
+    if !value.contains('\'') {
+        return format!("'{value}'");
+    }
+
+    value.to_string()
+}
+
+fn join_tasks_query_sections<'a>(sections: impl IntoIterator<Item = Option<&'a str>>) -> String {
+    sections
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|section| !section.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn tasks_dql_filter_expression(config: &vulcan_core::config::TasksConfig, filter: &str) -> String {
@@ -8341,8 +8474,35 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let report = run_tasks_eval_command(&paths, file, *block)?;
                 print_tasks_eval_report(cli.output, &report)
             }
-            TasksCommand::List { filter } => {
-                let result = run_tasks_list_command(&paths, filter.as_deref())?;
+            TasksCommand::List {
+                filter,
+                source,
+                status,
+                priority,
+                due_before,
+                due_after,
+                project,
+                context,
+                group_by,
+                sort_by,
+                include_archived,
+            } => {
+                let result = run_tasks_list_command(
+                    &paths,
+                    TasksListOptions {
+                        filter: filter.as_deref(),
+                        source: *source,
+                        status: status.as_deref(),
+                        priority: priority.as_deref(),
+                        due_before: due_before.as_deref(),
+                        due_after: due_after.as_deref(),
+                        project: project.as_deref(),
+                        context: context.as_deref(),
+                        group_by: group_by.as_deref(),
+                        sort_by: sort_by.as_deref(),
+                        include_archived: *include_archived,
+                    },
+                )?;
                 print_tasks_query_result(cli.output, &result)
             }
             TasksCommand::Next { count, from } => {
@@ -15768,14 +15928,49 @@ mod tests {
 
     #[test]
     fn parses_tasks_list_command() {
-        let cli = Cli::try_parse_from(["vulcan", "tasks", "list", "--filter", "completed"])
-            .expect("cli should parse");
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tasks",
+            "list",
+            "--filter",
+            "completed",
+            "--source",
+            "file",
+            "--status",
+            "in-progress",
+            "--priority",
+            "high",
+            "--due-before",
+            "2026-04-11",
+            "--due-after",
+            "2026-04-01",
+            "--project",
+            "[[Projects/Website]]",
+            "--context",
+            "@desk",
+            "--group-by",
+            "source",
+            "--sort-by",
+            "due",
+            "--include-archived",
+        ])
+        .expect("cli should parse");
 
         assert_eq!(
             cli.command,
             Command::Tasks {
                 command: TasksCommand::List {
                     filter: Some("completed".to_string()),
+                    source: TasksListSourceArg::File,
+                    status: Some("in-progress".to_string()),
+                    priority: Some("high".to_string()),
+                    due_before: Some("2026-04-11".to_string()),
+                    due_after: Some("2026-04-01".to_string()),
+                    project: Some("[[Projects/Website]]".to_string()),
+                    context: Some("@desk".to_string()),
+                    group_by: Some("source".to_string()),
+                    sort_by: Some("due".to_string()),
+                    include_archived: true,
                 },
             }
         );

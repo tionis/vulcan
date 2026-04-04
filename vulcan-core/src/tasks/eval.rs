@@ -49,6 +49,7 @@ impl TaskRow {
 
     fn field(&self, field: &str) -> Value {
         match field {
+            "source" => self.task.get("taskSource").cloned().unwrap_or(Value::Null),
             "status.name" => self.task.get("statusName").cloned().unwrap_or(Value::Null),
             "status.type" => self.task.get("statusType").cloned().unwrap_or(Value::Null),
             "status.next" | "status.nextSymbol" => {
@@ -72,49 +73,16 @@ pub fn evaluate_parsed_tasks_query(
     query: &TasksQuery,
 ) -> Result<TasksQueryResult, TasksError> {
     let note_index = load_note_index(paths)?;
-    let mut rows = task_rows(&note_index);
-    let completion_by_id = task_completion_by_id(&rows);
-    let mut hidden_fields = Vec::new();
-    let mut shown_fields = Vec::new();
-    let mut short_mode = false;
-    let mut group_field: Option<(String, bool)> = None;
-    let mut limit_groups = None;
-    let mut explain = false;
+    Ok(build_tasks_query_result(
+        task_rows(&note_index),
+        query,
+        true,
+    ))
+}
 
-    for command in &query.commands {
-        match command {
-            TasksQueryCommand::Filter { filter } => {
-                rows.retain(|row| task_matches_filter(row, filter, &completion_by_id));
-            }
-            TasksQueryCommand::Sort { field, reverse } => {
-                rows.sort_by(|left, right| compare_task_rows(left, right, field, *reverse));
-            }
-            TasksQueryCommand::Group { field, reverse } => {
-                group_field = Some((field.clone(), *reverse));
-            }
-            TasksQueryCommand::Limit { value } => rows.truncate(*value),
-            TasksQueryCommand::LimitGroups { value } => limit_groups = Some(*value),
-            TasksQueryCommand::Hide { field } => hidden_fields.push(field.clone()),
-            TasksQueryCommand::Show { field } => shown_fields.push(field.clone()),
-            TasksQueryCommand::ShortMode => short_mode = true,
-            TasksQueryCommand::Explain => explain = true,
-        }
-    }
-
-    let groups = group_field
-        .map(|(field, reverse)| build_groups(&rows, &field, reverse, limit_groups))
-        .unwrap_or_default();
-    let tasks = rows.into_iter().map(|row| row.value()).collect::<Vec<_>>();
-
-    Ok(TasksQueryResult {
-        result_count: tasks.len(),
-        tasks,
-        groups,
-        hidden_fields,
-        shown_fields,
-        short_mode,
-        plan: explain.then(|| query.clone()),
-    })
+#[must_use]
+pub fn shape_tasks_query_result(tasks: Vec<Value>, query: &TasksQuery) -> TasksQueryResult {
+    build_tasks_query_result(task_rows_from_values(tasks), query, false)
 }
 
 fn task_rows(note_index: &HashMap<String, crate::NoteRecord>) -> Vec<TaskRow> {
@@ -151,6 +119,79 @@ fn task_rows(note_index: &HashMap<String, crate::NoteRecord>) -> Vec<TaskRow> {
     rows
 }
 
+fn task_rows_from_values(tasks: Vec<Value>) -> Vec<TaskRow> {
+    let mut rows = Vec::new();
+
+    for task in tasks {
+        let Value::Object(task) = task else {
+            continue;
+        };
+        let path = task
+            .get("path")
+            .and_then(Value::as_str)
+            .map_or_else(String::new, ToOwned::to_owned);
+        let line = task.get("line").and_then(Value::as_i64).unwrap_or_default();
+        rows.push(TaskRow { task, path, line });
+    }
+
+    rows.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.line.cmp(&right.line))
+    });
+    rows
+}
+
+fn build_tasks_query_result(
+    mut rows: Vec<TaskRow>,
+    query: &TasksQuery,
+    apply_filters: bool,
+) -> TasksQueryResult {
+    let completion_by_id = task_completion_by_id(&rows);
+    let mut hidden_fields = Vec::new();
+    let mut shown_fields = Vec::new();
+    let mut short_mode = false;
+    let mut group_field: Option<(String, bool)> = None;
+    let mut limit_groups = None;
+    let mut explain = false;
+
+    for command in &query.commands {
+        match command {
+            TasksQueryCommand::Filter { filter } if apply_filters => {
+                rows.retain(|row| task_matches_filter(row, filter, &completion_by_id));
+            }
+            TasksQueryCommand::Filter { .. } => {}
+            TasksQueryCommand::Sort { field, reverse } => {
+                rows.sort_by(|left, right| compare_task_rows(left, right, field, *reverse));
+            }
+            TasksQueryCommand::Group { field, reverse } => {
+                group_field = Some((field.clone(), *reverse));
+            }
+            TasksQueryCommand::Limit { value } => rows.truncate(*value),
+            TasksQueryCommand::LimitGroups { value } => limit_groups = Some(*value),
+            TasksQueryCommand::Hide { field } => hidden_fields.push(field.clone()),
+            TasksQueryCommand::Show { field } => shown_fields.push(field.clone()),
+            TasksQueryCommand::ShortMode => short_mode = true,
+            TasksQueryCommand::Explain => explain = true,
+        }
+    }
+
+    let groups = group_field
+        .map(|(field, reverse)| build_groups(&rows, &field, reverse, limit_groups))
+        .unwrap_or_default();
+    let tasks = rows.into_iter().map(|row| row.value()).collect::<Vec<_>>();
+
+    TasksQueryResult {
+        result_count: tasks.len(),
+        tasks,
+        groups,
+        hidden_fields,
+        shown_fields,
+        short_mode,
+        plan: explain.then(|| query.clone()),
+    }
+}
+
 fn task_completion_by_id(rows: &[TaskRow]) -> HashMap<String, bool> {
     let mut completion_by_id = HashMap::new();
     for row in rows {
@@ -168,6 +209,7 @@ fn task_matches_filter(
 ) -> bool {
     match filter {
         TasksFilter::Done { value } => bool_field(&row.field("completed")) == *value,
+        TasksFilter::StatusIs { value } => task_status_matches(row, value),
         TasksFilter::StatusNameIncludes { value } => {
             string_contains(&row.field("statusName"), value)
         }
@@ -207,10 +249,23 @@ fn task_matches_filter(
             .field("tags")
             .as_array()
             .is_some_and(|tags| tags.iter().any(|tag| tag_matches(tag, value))),
+        TasksFilter::ContextIncludes { value } => row
+            .field("contexts")
+            .as_array()
+            .is_some_and(|values| values.iter().any(|item| tag_matches(item, value))),
+        TasksFilter::ProjectIncludes { value } => row
+            .field("projects")
+            .as_array()
+            .is_some_and(|values| values.iter().any(|item| tag_matches(item, value))),
         TasksFilter::PriorityIs { value } => row
             .field("priority")
             .as_str()
             .is_some_and(|priority| priority.eq_ignore_ascii_case(value)),
+        TasksFilter::SourceIs { value } => row
+            .field("source")
+            .as_str()
+            .is_some_and(|source| source.eq_ignore_ascii_case(value)),
+        TasksFilter::Archived { value } => bool_field(&row.field("archived")) == *value,
         TasksFilter::Recurring { value } => {
             let recurring = non_empty_string(&row.field("recurrence")).is_some();
             recurring == *value
@@ -331,6 +386,29 @@ fn string_contains(haystack: &Value, needle: &str) -> bool {
             .to_ascii_lowercase()
             .contains(&needle.to_ascii_lowercase())
     })
+}
+
+fn task_status_matches(row: &TaskRow, needle: &str) -> bool {
+    let normalized = normalize_status_value(needle);
+    [
+        row.field("status"),
+        row.field("statusName"),
+        row.field("statusType"),
+    ]
+    .iter()
+    .any(|value| {
+        value.as_str().is_some_and(|status| {
+            status.eq_ignore_ascii_case(needle) || normalize_status_value(status) == normalized
+        })
+    })
+}
+
+fn normalize_status_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && !matches!(ch, '-' | '_'))
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 fn tag_matches(tag: &Value, needle: &str) -> bool {
@@ -502,6 +580,18 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("tasknotes", &vault_root);
+        fs::write(
+            vault_root.join("TaskNotes/Tasks/Archived Flag.md"),
+            concat!(
+                "---\n",
+                "title: \"Archived flag\"\n",
+                "status: \"done\"\n",
+                "priority: \"low\"\n",
+                "tags: [\"task\", \"archived\"]\n",
+                "---\n"
+            ),
+        )
+        .expect("archived tasknote should be written");
         let paths = VaultPaths::new(&vault_root);
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
@@ -521,8 +611,65 @@ mod tests {
         let has_id = evaluate_tasks_query(&paths, "has id").expect("id query should succeed");
         assert_eq!(
             task_texts(&has_id),
-            vec!["Prep outline".to_string(), "Write docs".to_string()]
+            vec![
+                "Archived flag".to_string(),
+                "Prep outline".to_string(),
+                "Write docs".to_string()
+            ]
         );
+
+        let source =
+            evaluate_tasks_query(&paths, "source is file").expect("source query should succeed");
+        assert_eq!(
+            task_texts(&source),
+            vec![
+                "Archived flag".to_string(),
+                "Prep outline".to_string(),
+                "Write docs".to_string()
+            ]
+        );
+
+        let archived =
+            evaluate_tasks_query(&paths, "is archived").expect("archived query should succeed");
+        assert_eq!(task_texts(&archived), vec!["Archived flag".to_string()]);
+
+        let scoped = evaluate_tasks_query(
+            &paths,
+            "status is in progress\ncontext includes @desk\nproject includes [[Projects/Website]]",
+        )
+        .expect("scoped query should succeed");
+        assert_eq!(task_texts(&scoped), vec!["Write docs".to_string()]);
+    }
+
+    #[test]
+    fn shapes_prefiltered_results_with_sorts_and_groups() {
+        let query = parse_tasks_query("sort by source reverse\ngroup by source")
+            .expect("query should parse");
+        let result = shape_tasks_query_result(
+            vec![
+                serde_json::json!({
+                    "text": "Inline task",
+                    "path": "Inbox.md",
+                    "line": 3,
+                    "taskSource": "inline"
+                }),
+                serde_json::json!({
+                    "text": "File task",
+                    "path": "TaskNotes/Tasks/Write Docs.md",
+                    "line": 1,
+                    "taskSource": "file"
+                }),
+            ],
+            &query,
+        );
+
+        assert_eq!(
+            task_texts(&result),
+            vec!["Inline task".to_string(), "File task".to_string()]
+        );
+        assert_eq!(result.groups.len(), 2);
+        assert_eq!(result.groups[0].field, "source");
+        assert_eq!(result.groups[0].key, Value::String("file".to_string()));
     }
 
     fn task_texts(result: &TasksQueryResult) -> Vec<String> {

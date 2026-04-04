@@ -455,12 +455,14 @@ Subcommands:
 Notes:
   `tasks query` uses the Tasks DSL.
   `tasks list --filter` accepts either the Tasks DSL or a Dataview expression.
+  `tasks list` excludes archived TaskNotes by default; pass `--include-archived` to include them.
   Vault task defaults under [tasks] in .vulcan/config.toml apply to Tasks queries.
 
 Examples:
   vulcan tasks query 'not done'
   vulcan tasks eval Dashboard --block 0
   vulcan tasks list
+  vulcan tasks list --source file --status in-progress --sort-by due
   vulcan tasks list --filter 'completed && file.name = \"Alpha\"'
   vulcan tasks next 5 --from 2026-03-29
   vulcan tasks blocked
@@ -1397,6 +1399,34 @@ pub enum TasksCommand {
     List {
         #[arg(long, help = "Optional Tasks DSL query or Dataview expression filter")]
         filter: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = TasksListSourceArg::All,
+            help = "Restrict results to TaskNotes file tasks, inline tasks, or both"
+        )]
+        source: TasksListSourceArg,
+        #[arg(
+            long,
+            help = "Match a status symbol, name, type, or TaskNotes status string"
+        )]
+        status: Option<String>,
+        #[arg(long, help = "Match one priority name")]
+        priority: Option<String>,
+        #[arg(long = "due-before", help = "Require due dates before this value")]
+        due_before: Option<String>,
+        #[arg(long = "due-after", help = "Require due dates after this value")]
+        due_after: Option<String>,
+        #[arg(long, help = "Require one matching TaskNotes project link")]
+        project: Option<String>,
+        #[arg(long, help = "Require one matching TaskNotes context value")]
+        context: Option<String>,
+        #[arg(long = "group-by", help = "Group the output by one task field")]
+        group_by: Option<String>,
+        #[arg(long = "sort-by", help = "Sort the output by one task field")]
+        sort_by: Option<String>,
+        #[arg(long, help = "Include archived TaskNotes in the result set")]
+        include_archived: bool,
     },
     #[command(about = "Show upcoming recurring task instances")]
     Next {
@@ -1430,6 +1460,13 @@ pub enum TasksViewCommand {
     },
     #[command(about = "List available TaskNotes Bases views")]
     List,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TasksListSourceArg {
+    File,
+    Inline,
+    All,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
