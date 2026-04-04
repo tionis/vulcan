@@ -79,27 +79,29 @@ use vulcan_core::{
     search_vault, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
     tasknotes_default_date_value, tasknotes_default_recurrence_rule, tasknotes_status_state,
     verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
-    BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
-    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
-    ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport, CoreImporter,
-    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
-    PluginImporter, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
-    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
-    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    BasesEvalReport, BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport,
+    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
+    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
+    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
+    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
+    KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
+    PeriodicNotesImporter, PluginImporter, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
+    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 
 #[derive(Debug)]
@@ -991,12 +993,21 @@ struct TaskDependencyNode {
 struct TaskDependencyEdge {
     blocked_key: String,
     blocker_id: String,
+    relation_type: Option<String>,
+    gap: Option<String>,
     resolved: bool,
     blocker_key: Option<String>,
     blocker_path: Option<String>,
     blocker_line: Option<i64>,
     blocker_text: Option<String>,
     blocker_completed: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskDependencyReference {
+    blocker_id: String,
+    relation_type: Option<String>,
+    gap: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2325,9 +2336,11 @@ struct TaskNotesViewListReport {
 struct TaskNotesViewTarget {
     file: String,
     view_name: Option<String>,
+    saved_view: Option<TaskNotesSavedViewConfig>,
 }
 
 fn run_tasks_view_list_command(paths: &VaultPaths) -> Result<TaskNotesViewListReport, CliError> {
+    let config = load_vault_config(paths).config;
     let mut files = Vec::new();
     let root = paths.vault_root().join("TaskNotes/Views");
     collect_tasknotes_base_files(&root, "TaskNotes/Views", &mut files)?;
@@ -2354,6 +2367,16 @@ fn run_tasks_view_list_command(paths: &VaultPaths) -> Result<TaskNotesViewListRe
         }
     }
 
+    for saved_view in &config.tasknotes.saved_views {
+        views.push(TaskNotesViewListItem {
+            file: format!("config.tasknotes.saved_views.{}", saved_view.id),
+            file_stem: saved_view.id.clone(),
+            supported: true,
+            view_name: Some(saved_view.name.clone()),
+            view_type: tasknotes_saved_view_type(saved_view).to_string(),
+        });
+    }
+
     views.sort_by(|left, right| {
         left.file
             .cmp(&right.file)
@@ -2366,6 +2389,13 @@ fn run_tasks_view_list_command(paths: &VaultPaths) -> Result<TaskNotesViewListRe
 
 fn run_tasks_view_command(paths: &VaultPaths, name: &str) -> Result<BasesEvalReport, CliError> {
     let target = resolve_tasknotes_view_target(paths, name)?;
+    if let Some(saved_view) = target.saved_view.as_ref() {
+        let tasknotes = load_vault_config(paths).config.tasknotes;
+        let yaml = render_tasknotes_saved_view_base_yaml(&tasknotes, saved_view)?;
+        return BasesEvaluator::new()
+            .evaluate_yaml(paths, &target.file, &yaml)
+            .map_err(CliError::operation);
+    }
     let mut report = evaluate_base_file(paths, &target.file).map_err(CliError::operation)?;
     if let Some(view_name) = target.view_name.as_deref() {
         report
@@ -2398,11 +2428,15 @@ fn resolve_tasknotes_view_target(
         return Ok(TaskNotesViewTarget {
             file: normalized,
             view_name: None,
+            saved_view: None,
         });
     }
 
     let catalog = run_tasks_view_list_command(paths)?;
     if let Some(target) = unique_tasknotes_view_name_match(&catalog.views, name)? {
+        return Ok(target);
+    }
+    if let Some(target) = unique_tasknotes_saved_view_match(paths, name)? {
         return Ok(target);
     }
     if let Some(target) = unique_tasknotes_view_file_match(&catalog.views, name)? {
@@ -2486,6 +2520,7 @@ fn unique_tasknotes_view_name_match(
     Ok(Some(TaskNotesViewTarget {
         file: matches[0].file.clone(),
         view_name: matches[0].view_name.clone(),
+        saved_view: None,
     }))
 }
 
@@ -2522,6 +2557,40 @@ fn unique_tasknotes_view_file_match(
     Ok(Some(TaskNotesViewTarget {
         file: file.clone(),
         view_name: None,
+        saved_view: None,
+    }))
+}
+
+fn unique_tasknotes_saved_view_match(
+    paths: &VaultPaths,
+    name: &str,
+) -> Result<Option<TaskNotesViewTarget>, CliError> {
+    let config = load_vault_config(paths).config;
+    let matches = config
+        .tasknotes
+        .saved_views
+        .into_iter()
+        .filter(|view| view.id.eq_ignore_ascii_case(name) || view.name.eq_ignore_ascii_case(name))
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    if matches.len() > 1 {
+        let options = matches
+            .iter()
+            .map(|view| format!("{} ({})", view.name, view.id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(CliError::operation(format!(
+            "multiple TaskNotes saved views matched `{name}`: {options}"
+        )));
+    }
+
+    let saved_view = matches[0].clone();
+    Ok(Some(TaskNotesViewTarget {
+        file: format!("config.tasknotes.saved_views.{}", saved_view.id),
+        view_name: Some(saved_view.name.clone()),
+        saved_view: Some(saved_view),
     }))
 }
 
@@ -2531,6 +2600,564 @@ fn tasknotes_view_file_aliases(file_stem: &str) -> Vec<String> {
         aliases.push(alias.to_string());
     }
     aliases
+}
+
+fn tasknotes_saved_view_type(saved_view: &TaskNotesSavedViewConfig) -> &'static str {
+    let has_kanban_options = saved_view
+        .view_options
+        .keys()
+        .any(|key| matches!(key.as_str(), "columnWidth" | "hideEmptyColumns"));
+    if has_kanban_options {
+        "tasknotesKanban"
+    } else {
+        "tasknotesTaskList"
+    }
+}
+
+fn render_tasknotes_saved_view_base_yaml(
+    tasknotes: &vulcan_core::TaskNotesConfig,
+    saved_view: &TaskNotesSavedViewConfig,
+) -> Result<String, CliError> {
+    let mut root = YamlMapping::new();
+    let mut source = YamlMapping::new();
+    source.insert(
+        YamlValue::String("type".to_string()),
+        YamlValue::String("tasknotes".to_string()),
+    );
+    let mut source_config = YamlMapping::new();
+    source_config.insert(
+        YamlValue::String("type".to_string()),
+        YamlValue::String(tasknotes_saved_view_type(saved_view).to_string()),
+    );
+    source.insert(
+        YamlValue::String("config".to_string()),
+        YamlValue::Mapping(source_config),
+    );
+    root.insert(
+        YamlValue::String("source".to_string()),
+        YamlValue::Mapping(source),
+    );
+
+    let mut view = YamlMapping::new();
+    view.insert(
+        YamlValue::String("type".to_string()),
+        YamlValue::String(tasknotes_saved_view_type(saved_view).to_string()),
+    );
+    view.insert(
+        YamlValue::String("name".to_string()),
+        YamlValue::String(saved_view.name.clone()),
+    );
+    if let Some(filters) = tasknotes_saved_view_query_to_yaml(tasknotes, &saved_view.query)? {
+        view.insert(YamlValue::String("filters".to_string()), filters);
+    }
+    if let Some(sort_column) = tasknotes_saved_view_sort_column(tasknotes, &saved_view.query) {
+        let mut sort_entry = YamlMapping::new();
+        sort_entry.insert(
+            YamlValue::String("column".to_string()),
+            YamlValue::String(sort_column),
+        );
+        sort_entry.insert(
+            YamlValue::String("direction".to_string()),
+            YamlValue::String(
+                saved_view
+                    .query
+                    .sort_direction
+                    .clone()
+                    .unwrap_or_else(|| "ASC".to_string())
+                    .to_ascii_uppercase(),
+            ),
+        );
+        view.insert(
+            YamlValue::String("sort".to_string()),
+            YamlValue::Sequence(vec![YamlValue::Mapping(sort_entry)]),
+        );
+    }
+    if let Some(group_property) = tasknotes_saved_view_group_column(tasknotes, &saved_view.query) {
+        let mut group_by = YamlMapping::new();
+        group_by.insert(
+            YamlValue::String("property".to_string()),
+            YamlValue::String(group_property),
+        );
+        group_by.insert(
+            YamlValue::String("direction".to_string()),
+            YamlValue::String(
+                saved_view
+                    .query
+                    .sort_direction
+                    .clone()
+                    .unwrap_or_else(|| "ASC".to_string())
+                    .to_ascii_uppercase(),
+            ),
+        );
+        view.insert(
+            YamlValue::String("groupBy".to_string()),
+            YamlValue::Mapping(group_by),
+        );
+    }
+
+    root.insert(
+        YamlValue::String("views".to_string()),
+        YamlValue::Sequence(vec![YamlValue::Mapping(view)]),
+    );
+
+    serde_yaml::to_string(&root).map_err(CliError::operation)
+}
+
+fn tasknotes_saved_view_query_to_yaml(
+    tasknotes: &vulcan_core::TaskNotesConfig,
+    query: &vulcan_core::TaskNotesSavedViewQuery,
+) -> Result<Option<YamlValue>, CliError> {
+    let filters =
+        tasknotes_saved_view_group_yaml(tasknotes, &query.conjunction, &query.children, &query.id)?;
+    Ok(filters.map(|filters| match filters {
+        YamlValue::String(_) => YamlValue::Sequence(vec![filters]),
+        other => other,
+    }))
+}
+
+fn tasknotes_saved_view_group_yaml(
+    tasknotes: &vulcan_core::TaskNotesConfig,
+    conjunction: &str,
+    children: &[TaskNotesSavedViewNode],
+    _group_id: &str,
+) -> Result<Option<YamlValue>, CliError> {
+    let mut clauses = Vec::new();
+    for child in children {
+        let clause = match child {
+            TaskNotesSavedViewNode::Condition(condition) => {
+                tasknotes_saved_view_condition_yaml(tasknotes, condition)?
+            }
+            TaskNotesSavedViewNode::Group(group) => tasknotes_saved_view_group_yaml(
+                tasknotes,
+                &group.conjunction,
+                &group.children,
+                &group.id,
+            )?,
+        };
+        if let Some(clause) = clause {
+            clauses.push(clause);
+        }
+    }
+
+    if clauses.is_empty() {
+        return Ok(None);
+    }
+    if clauses.len() == 1 {
+        return Ok(clauses.into_iter().next());
+    }
+
+    let key = if conjunction.eq_ignore_ascii_case("or") {
+        "or"
+    } else {
+        "and"
+    };
+    let mut mapping = YamlMapping::new();
+    mapping.insert(
+        YamlValue::String(key.to_string()),
+        YamlValue::Sequence(clauses),
+    );
+    Ok(Some(YamlValue::Mapping(mapping)))
+}
+
+fn tasknotes_saved_view_condition_yaml(
+    tasknotes: &vulcan_core::TaskNotesConfig,
+    condition: &vulcan_core::TaskNotesSavedViewCondition,
+) -> Result<Option<YamlValue>, CliError> {
+    if condition.property.trim().is_empty() || condition.operator.trim().is_empty() {
+        return Ok(None);
+    }
+    let no_value = matches!(
+        condition.operator.as_str(),
+        "is-empty" | "is-not-empty" | "is-checked" | "is-not-checked"
+    );
+    if !no_value && condition.value.is_none() {
+        return Ok(None);
+    }
+    let expression = tasknotes_saved_view_expression(tasknotes, condition)?;
+    Ok(Some(YamlValue::String(expression)))
+}
+
+fn tasknotes_saved_view_expression(
+    tasknotes: &vulcan_core::TaskNotesConfig,
+    condition: &vulcan_core::TaskNotesSavedViewCondition,
+) -> Result<String, CliError> {
+    let property = condition.property.as_str();
+    let operator = condition.operator.as_str();
+
+    if property == "status.isCompleted" {
+        let completed_statuses = tasknotes
+            .statuses
+            .iter()
+            .filter(|status| status.is_completed)
+            .map(|status| {
+                format!(
+                    "note.{} == {}",
+                    tasknotes.field_mapping.status,
+                    quote_saved_view_string(&status.value)
+                )
+            })
+            .collect::<Vec<_>>();
+        let completed_expr = if completed_statuses.is_empty() {
+            "false".to_string()
+        } else if completed_statuses.len() == 1 {
+            completed_statuses[0].clone()
+        } else {
+            format!("({})", completed_statuses.join(" || "))
+        };
+        let result = format!(
+            "({completed_expr}) || (note.{} && note.{}.map(date(value).format(\"YYYY-MM-DD\")).contains({}))",
+            tasknotes.field_mapping.complete_instances,
+            tasknotes.field_mapping.complete_instances,
+            quote_saved_view_string(&current_utc_date_string())
+        );
+        return Ok(if matches!(operator, "is-not" | "is-not-checked") {
+            format!("!({result})")
+        } else {
+            result
+        });
+    }
+
+    if property == "archived" {
+        let archived_expr = format!(
+            "file.tags.contains({})",
+            quote_saved_view_string(&tasknotes.field_mapping.archive_tag)
+        );
+        return Ok(if matches!(operator, "is-not" | "is-not-checked") {
+            format!("!{archived_expr}")
+        } else {
+            archived_expr
+        });
+    }
+
+    if property == "dependencies.isBlocked" {
+        let blocked_key = &tasknotes.field_mapping.blocked_by;
+        let blocked_expr = format!("(note.{blocked_key} && list(note.{blocked_key}).length > 0)");
+        return Ok(if matches!(operator, "is-not" | "is-not-checked") {
+            format!("!({blocked_expr})")
+        } else {
+            blocked_expr
+        });
+    }
+
+    if property == "dependencies.isBlocking" {
+        return Ok("true".to_string());
+    }
+
+    let base_property = tasknotes_saved_view_property_path(tasknotes, property);
+    tasknotes_saved_view_operator_expression(
+        &base_property,
+        operator,
+        property,
+        condition.value.as_ref(),
+    )
+}
+
+fn tasknotes_saved_view_operator_expression(
+    base_property: &str,
+    operator: &str,
+    property: &str,
+    value: Option<&TaskNotesSavedViewFilterValue>,
+) -> Result<String, CliError> {
+    let expression = match operator {
+        "is" => tasknotes_saved_view_is_expression(base_property, property, value)?,
+        "is-not" => format!(
+            "!({})",
+            tasknotes_saved_view_is_expression(base_property, property, value)?
+        ),
+        "contains" => tasknotes_saved_view_contains_expression(base_property, property, value)?,
+        "does-not-contain" => format!(
+            "!({})",
+            tasknotes_saved_view_contains_expression(base_property, property, value)?
+        ),
+        "is-before" => format!(
+            "{base_property} < {}",
+            quote_saved_view_value(value.ok_or_else(|| {
+                CliError::operation("saved view date comparison is missing a value")
+            })?)
+        ),
+        "is-after" => format!(
+            "{base_property} > {}",
+            quote_saved_view_value(value.ok_or_else(|| {
+                CliError::operation("saved view date comparison is missing a value")
+            })?)
+        ),
+        "is-on-or-before" => format!(
+            "{base_property} <= {}",
+            quote_saved_view_value(value.ok_or_else(|| {
+                CliError::operation("saved view date comparison is missing a value")
+            })?)
+        ),
+        "is-on-or-after" => format!(
+            "{base_property} >= {}",
+            quote_saved_view_value(value.ok_or_else(|| {
+                CliError::operation("saved view date comparison is missing a value")
+            })?)
+        ),
+        "is-empty" => format!("{base_property}.isEmpty()"),
+        "is-not-empty" => format!("!{base_property}.isEmpty()"),
+        "is-checked" => format!("{base_property} == true"),
+        "is-not-checked" => format!("{base_property} != true"),
+        "is-greater-than" => format!(
+            "{base_property} > {}",
+            numeric_saved_view_value(value.ok_or_else(|| {
+                CliError::operation("saved view numeric comparison is missing a value")
+            })?)
+        ),
+        "is-less-than" => format!(
+            "{base_property} < {}",
+            numeric_saved_view_value(value.ok_or_else(|| {
+                CliError::operation("saved view numeric comparison is missing a value")
+            })?)
+        ),
+        "is-greater-than-or-equal" => format!(
+            "{base_property} >= {}",
+            numeric_saved_view_value(value.ok_or_else(|| {
+                CliError::operation("saved view numeric comparison is missing a value")
+            })?)
+        ),
+        "is-less-than-or-equal" => format!(
+            "{base_property} <= {}",
+            numeric_saved_view_value(value.ok_or_else(|| {
+                CliError::operation("saved view numeric comparison is missing a value")
+            })?)
+        ),
+        other => {
+            return Err(CliError::operation(format!(
+                "unsupported TaskNotes saved view operator: {other}"
+            )))
+        }
+    };
+    Ok(expression)
+}
+
+fn tasknotes_saved_view_is_expression(
+    base_property: &str,
+    property: &str,
+    value: Option<&TaskNotesSavedViewFilterValue>,
+) -> Result<String, CliError> {
+    let value =
+        value.ok_or_else(|| CliError::operation("saved view comparison is missing a value"))?;
+    match value {
+        TaskNotesSavedViewFilterValue::TextList(values) => {
+            if values.is_empty() {
+                Ok(format!("(!{base_property} || {base_property}.length == 0)"))
+            } else {
+                let clauses = values
+                    .iter()
+                    .map(|entry| tasknotes_saved_view_contains_one(base_property, property, entry))
+                    .collect::<Vec<_>>();
+                Ok(parenthesize_joined_or(clauses))
+            }
+        }
+        TaskNotesSavedViewFilterValue::Bool(flag) => Ok(format!("{base_property} == {flag}")),
+        TaskNotesSavedViewFilterValue::Integer(number) => {
+            Ok(format!("{base_property} == {number}"))
+        }
+        TaskNotesSavedViewFilterValue::Text(text) => {
+            if text.trim().is_empty() {
+                Ok(format!(
+                    "(!{base_property} || {base_property} == \"\" || {base_property} == null)"
+                ))
+            } else if tasknotes_saved_view_is_list_property(property) {
+                Ok(tasknotes_saved_view_contains_one(
+                    base_property,
+                    property,
+                    text,
+                ))
+            } else {
+                Ok(format!(
+                    "{base_property} == {}",
+                    quote_saved_view_string(text)
+                ))
+            }
+        }
+    }
+}
+
+fn tasknotes_saved_view_contains_expression(
+    base_property: &str,
+    property: &str,
+    value: Option<&TaskNotesSavedViewFilterValue>,
+) -> Result<String, CliError> {
+    let value = value
+        .ok_or_else(|| CliError::operation("saved view contains comparison is missing a value"))?;
+    match value {
+        TaskNotesSavedViewFilterValue::TextList(values) => Ok(parenthesize_joined_or(
+            values
+                .iter()
+                .map(|entry| tasknotes_saved_view_contains_one(base_property, property, entry))
+                .collect(),
+        )),
+        TaskNotesSavedViewFilterValue::Text(text) => Ok(tasknotes_saved_view_contains_one(
+            base_property,
+            property,
+            text,
+        )),
+        TaskNotesSavedViewFilterValue::Bool(flag) => Ok(format!(
+            "{base_property}.lower().contains({})",
+            quote_saved_view_string(&flag.to_string())
+        )),
+        TaskNotesSavedViewFilterValue::Integer(number) => Ok(format!(
+            "{base_property}.lower().contains({})",
+            quote_saved_view_string(&number.to_string())
+        )),
+    }
+}
+
+fn tasknotes_saved_view_contains_one(base_property: &str, property: &str, value: &str) -> String {
+    if property == "projects" {
+        if value.starts_with("[[") && value.ends_with("]]") {
+            return format!(
+                "{base_property}.contains({})",
+                quote_saved_view_string(value)
+            );
+        }
+        return format!(
+            "({base_property}.contains({}) || {base_property}.contains({}))",
+            quote_saved_view_string(&format!("[[{value}]]")),
+            quote_saved_view_string(value)
+        );
+    }
+
+    if tasknotes_saved_view_is_list_property(property) {
+        return format!(
+            "{base_property}.contains({})",
+            quote_saved_view_string(value)
+        );
+    }
+
+    format!(
+        "{base_property}.lower().contains({})",
+        quote_saved_view_string(&value.to_ascii_lowercase())
+    )
+}
+
+fn tasknotes_saved_view_is_list_property(property: &str) -> bool {
+    matches!(
+        property,
+        "tags" | "contexts" | "projects" | "blockedBy" | "blocking"
+    )
+}
+
+fn tasknotes_saved_view_property_path(
+    tasknotes: &vulcan_core::TaskNotesConfig,
+    property: &str,
+) -> String {
+    match property {
+        "title" => "file.name".to_string(),
+        "status" => format!("note.{}", tasknotes.field_mapping.status),
+        "priority" => format!("note.{}", tasknotes.field_mapping.priority),
+        "due" => format!("note.{}", tasknotes.field_mapping.due),
+        "scheduled" => format!("note.{}", tasknotes.field_mapping.scheduled),
+        "contexts" => format!("note.{}", tasknotes.field_mapping.contexts),
+        "projects" => format!("note.{}", tasknotes.field_mapping.projects),
+        "tags" => "file.tags".to_string(),
+        "path" => "file.path".to_string(),
+        "dateCreated" => "file.ctime".to_string(),
+        "dateModified" => "file.mtime".to_string(),
+        "timeEstimate" => format!("note.{}", tasknotes.field_mapping.time_estimate),
+        "completedDate" => format!("note.{}", tasknotes.field_mapping.completed_date),
+        "recurrence" => format!("note.{}", tasknotes.field_mapping.recurrence),
+        "blockedBy" => format!("note.{}", tasknotes.field_mapping.blocked_by),
+        user if user.starts_with("user:") => tasknotes
+            .user_fields
+            .iter()
+            .find(|field| field.id == user[5..] || field.key == user[5..])
+            .map_or_else(
+                || format!("note.{user}"),
+                |field| format!("note.{}", field.key),
+            ),
+        other => format!("note.{other}"),
+    }
+}
+
+fn tasknotes_saved_view_sort_column(
+    tasknotes: &vulcan_core::TaskNotesConfig,
+    query: &vulcan_core::TaskNotesSavedViewQuery,
+) -> Option<String> {
+    query
+        .sort_key
+        .as_deref()
+        .filter(|key| !key.trim().is_empty() && *key != "none")
+        .map(|key| tasknotes_saved_view_column_name(tasknotes, key))
+}
+
+fn tasknotes_saved_view_group_column(
+    tasknotes: &vulcan_core::TaskNotesConfig,
+    query: &vulcan_core::TaskNotesSavedViewQuery,
+) -> Option<String> {
+    query
+        .group_key
+        .as_deref()
+        .filter(|key| !key.trim().is_empty() && *key != "none")
+        .map(|key| tasknotes_saved_view_column_name(tasknotes, key))
+}
+
+fn tasknotes_saved_view_column_name(tasknotes: &vulcan_core::TaskNotesConfig, key: &str) -> String {
+    match key {
+        "due" => tasknotes.field_mapping.due.clone(),
+        "scheduled" => tasknotes.field_mapping.scheduled.clone(),
+        "priority" => tasknotes.field_mapping.priority.clone(),
+        "status" => tasknotes.field_mapping.status.clone(),
+        "title" => tasknotes.field_mapping.title.clone(),
+        "dateCreated" => "file.ctime".to_string(),
+        "dateModified" => "file.mtime".to_string(),
+        "completedDate" => tasknotes.field_mapping.completed_date.clone(),
+        "tags" => "file.tags".to_string(),
+        "path" => "file.path".to_string(),
+        "timeEstimate" => tasknotes.field_mapping.time_estimate.clone(),
+        "recurrence" => tasknotes.field_mapping.recurrence.clone(),
+        user if user.starts_with("user:") => tasknotes
+            .user_fields
+            .iter()
+            .find(|field| field.id == user[5..] || field.key == user[5..])
+            .map_or_else(|| user.to_string(), |field| field.key.clone()),
+        other => other.to_string(),
+    }
+}
+
+fn quote_saved_view_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn quote_saved_view_value(value: &TaskNotesSavedViewFilterValue) -> String {
+    match value {
+        TaskNotesSavedViewFilterValue::Bool(flag) => flag.to_string(),
+        TaskNotesSavedViewFilterValue::Integer(number) => number.to_string(),
+        TaskNotesSavedViewFilterValue::Text(text) => quote_saved_view_string(text),
+        TaskNotesSavedViewFilterValue::TextList(values) => {
+            quote_saved_view_string(&values.join(", "))
+        }
+    }
+}
+
+fn numeric_saved_view_value(value: &TaskNotesSavedViewFilterValue) -> String {
+    match value {
+        TaskNotesSavedViewFilterValue::Integer(number) => number.to_string(),
+        TaskNotesSavedViewFilterValue::Bool(flag) => {
+            if *flag {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            }
+        }
+        TaskNotesSavedViewFilterValue::Text(text) => {
+            text.parse::<i64>().unwrap_or_default().to_string()
+        }
+        TaskNotesSavedViewFilterValue::TextList(values) => values
+            .first()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
+fn parenthesize_joined_or(clauses: Vec<String>) -> String {
+    if clauses.len() == 1 {
+        clauses.into_iter().next().unwrap_or_default()
+    } else {
+        format!("({})", clauses.join(" || "))
+    }
 }
 
 #[derive(Debug)]
@@ -5308,11 +5935,14 @@ fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, CliE
     let mut edges = tasks
         .iter()
         .flat_map(|(key, task)| {
-            task_blocker_ids(task).into_iter().map(|blocker_id| {
+            task_blocker_references(task).into_iter().map(|reference| {
+                let blocker_id = reference.blocker_id;
                 let blocker = node_by_id.get(blocker_id.as_str());
                 TaskDependencyEdge {
                     blocked_key: key.clone(),
                     blocker_id,
+                    relation_type: reference.relation_type,
+                    gap: reference.gap,
                     resolved: blocker.is_some(),
                     blocker_key: blocker.map(|node| node.key.clone()),
                     blocker_path: blocker.map(|node| node.path.clone()),
@@ -5453,29 +6083,59 @@ fn task_dependency_key(task: &Value) -> Option<String> {
     )
 }
 
-fn task_blocker_ids(task: &Value) -> Vec<String> {
-    let mut ids = Vec::new();
-    collect_task_blocker_ids(task.get("blocked-by").unwrap_or(&Value::Null), &mut ids);
-    ids
+fn task_blocker_references(task: &Value) -> Vec<TaskDependencyReference> {
+    let mut references = Vec::new();
+    collect_task_blocker_references(
+        task.get("blockedBy").unwrap_or(&Value::Null),
+        &mut references,
+    );
+    if references.is_empty() {
+        collect_task_blocker_references(
+            task.get("blocked-by").unwrap_or(&Value::Null),
+            &mut references,
+        );
+    }
+    references.sort_by(|left, right| {
+        left.blocker_id
+            .cmp(&right.blocker_id)
+            .then_with(|| left.relation_type.cmp(&right.relation_type))
+            .then_with(|| left.gap.cmp(&right.gap))
+    });
+    references.dedup();
+    references
 }
 
-fn collect_task_blocker_ids(value: &Value, ids: &mut Vec<String>) {
+fn collect_task_blocker_references(value: &Value, references: &mut Vec<TaskDependencyReference>) {
     match value {
         Value::String(text) => {
             let text = text.trim();
             if !text.is_empty() {
-                ids.push(text.to_string());
+                references.push(TaskDependencyReference {
+                    blocker_id: text.to_string(),
+                    relation_type: None,
+                    gap: None,
+                });
             }
         }
         Value::Array(values) => {
             for value in values {
-                collect_task_blocker_ids(value, ids);
+                collect_task_blocker_references(value, references);
             }
         }
         Value::Object(object) => {
             if let Some(uid) = object.get("uid").and_then(Value::as_str).map(str::trim) {
                 if !uid.is_empty() {
-                    ids.push(uid.to_string());
+                    references.push(TaskDependencyReference {
+                        blocker_id: uid.to_string(),
+                        relation_type: object
+                            .get("reltype")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                        gap: object
+                            .get("gap")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                    });
                 }
             }
         }
@@ -13323,9 +13983,15 @@ fn print_tasks_blocked_report(
                 println!("{path}");
                 println!("- [{status}] {text}");
                 for blocker in &blocked.blockers {
+                    let relation = blocker.relation_type.as_deref().unwrap_or("FINISHTOSTART");
+                    let gap = blocker
+                        .gap
+                        .as_deref()
+                        .map(|value| format!(", gap {value}"))
+                        .unwrap_or_default();
                     if blocker.resolved {
                         println!(
-                            "  blocked by {} ({}, line {}) [{}]",
+                            "  blocked by {} ({}, line {}) [{relation}{gap}; {}]",
                             blocker.blocker_id,
                             blocker.blocker_path.as_deref().unwrap_or("<unknown>"),
                             blocker.blocker_line.unwrap_or_default(),
@@ -13336,7 +14002,10 @@ fn print_tasks_blocked_report(
                             }
                         );
                     } else {
-                        println!("  blocked by {} [unresolved]", blocker.blocker_id);
+                        println!(
+                            "  blocked by {} [{relation}{gap}; unresolved]",
+                            blocker.blocker_id
+                        );
                     }
                 }
             }
@@ -13358,16 +14027,25 @@ fn print_tasks_graph_report(
                 return Ok(());
             }
             for edge in &report.edges {
+                let relation = edge.relation_type.as_deref().unwrap_or("FINISHTOSTART");
+                let gap = edge
+                    .gap
+                    .as_deref()
+                    .map(|value| format!(", gap {value}"))
+                    .unwrap_or_default();
                 if edge.resolved {
                     println!(
-                        "- {} -> {} ({}, line {})",
+                        "- {} -> {} ({}, line {}) [{relation}{gap}]",
                         edge.blocked_key,
                         edge.blocker_id,
                         edge.blocker_path.as_deref().unwrap_or("<unknown>"),
                         edge.blocker_line.unwrap_or_default()
                     );
                 } else {
-                    println!("- {} -> {} [unresolved]", edge.blocked_key, edge.blocker_id);
+                    println!(
+                        "- {} -> {} [{relation}{gap}; unresolved]",
+                        edge.blocked_key, edge.blocker_id
+                    );
                 }
             }
             Ok(())

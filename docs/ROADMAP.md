@@ -2194,14 +2194,14 @@ Reuses the RRULE parsing and recurrence expansion infrastructure from 9.10.2. Ta
 Reuses the dependency graph infrastructure from 9.10.3 (which handles inline emoji dependencies: `🆔`/`⛔`). TaskNotes extends the graph with richer RFC 9253 relation types and duration gaps. Both dependency formats feed into the same graph — `vulcan tasks blocked` and `vulcan tasks graph` show a unified view across inline and file-based tasks.
 
 - [x] Parse `blockedBy` array: each entry has `uid` (wikilink to blocking task), `reltype`, and optional `gap` (ISO 8601 duration)
-- [ ] Dependency relation types (RFC 9253) — extends 9.10.3's simple blocked-by with:
+- [x] Dependency relation types (RFC 9253) — extends 9.10.3's simple blocked-by with:
   | Type | Meaning |
   |---|---|
   | `FINISHTOSTART` | Blocked task can start after blocker finishes (default, same as 9.10.3 `⛔`) |
   | `FINISHTOFINISH` | Blocked task can finish after blocker finishes |
   | `STARTTOSTART` | Blocked task can start after blocker starts |
   | `STARTTOFINISH` | Blocked task can finish after blocker starts |
-- [ ] Duration gaps: `gap: P1D` means "1 day after the blocker completes"
+- [x] Duration gaps: `gap: P1D` means "1 day after the blocker completes"
 - [x] Feed TaskNotes dependencies into the shared dependency graph (9.10.3) so both emoji-based and frontmatter-based dependencies are queryable together
 
 #### 9.15.6 Time tracking and pomodoro
@@ -2254,7 +2254,7 @@ TaskNotes v4+ is built entirely on Obsidian Bases. Vulcan should register equiva
 - [x] `vulcan tasks view <name>` — evaluate a saved Bases view from the command line
 - [x] `vulcan tasks view list` — list available TaskNotes views
 - [x] `--output json|table` on view evaluation (structured JSON or default human table output)
-- [ ] Saved filter views: support `savedViews` config (named filter+sort+group presets) as CLI aliases
+- [x] Saved filter views: support `savedViews` config (named filter+sort+group presets) as CLI aliases
 
 #### 9.15.9 Unified CLI surface (`vulcan tasks`)
 

@@ -3074,6 +3074,14 @@ fn tasks_next_and_graph_json_output_support_tasknotes_recurrence_and_dependencie
         graph_json["edges"][0]["blocker_id"],
         Value::String("[[TaskNotes/Tasks/Prep Outline]]".to_string())
     );
+    assert_eq!(
+        graph_json["edges"][0]["relation_type"],
+        Value::String("FINISHTOSTART".to_string())
+    );
+    assert_eq!(
+        graph_json["edges"][0]["gap"],
+        Value::String("P1D".to_string())
+    );
     assert_eq!(graph_json["edges"][0]["resolved"], Value::Bool(true));
 }
 
@@ -3112,6 +3120,64 @@ fn tasks_view_list_json_output_reports_available_tasknotes_views() {
         view["file"] == "TaskNotes/Views/kanban-default.base"
             && view["view_name"] == "Kanban Board"
             && view["view_type"] == "tasknotesKanban"
+            && view["supported"] == true
+    }));
+}
+
+#[test]
+fn tasks_view_list_json_output_includes_saved_view_aliases() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[tasknotes]
+
+[[tasknotes.saved_views]]
+id = "blocked"
+name = "Blocked Tasks"
+
+[tasknotes.saved_views.query]
+type = "group"
+id = "root"
+conjunction = "and"
+sortKey = "due"
+sortDirection = "asc"
+
+[[tasknotes.saved_views.query.children]]
+type = "condition"
+id = "status-filter"
+property = "status"
+operator = "is"
+value = "in-progress"
+"#,
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "view",
+            "list",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    let views = json["views"].as_array().expect("views should be an array");
+    assert!(views.iter().any(|view| {
+        view["file"] == "config.tasknotes.saved_views.blocked"
+            && view["file_stem"] == "blocked"
+            && view["view_name"] == "Blocked Tasks"
+            && view["view_type"] == "tasknotesTaskList"
             && view["supported"] == true
     }));
 }
@@ -3160,6 +3226,73 @@ fn tasks_view_json_output_evaluates_named_tasknotes_views() {
     assert_eq!(
         json["views"][0]["rows"][1]["cells"]["efficiencyRatio"],
         Value::Number(67.into())
+    );
+}
+
+#[test]
+fn tasks_view_json_output_evaluates_saved_view_aliases() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[tasknotes]
+
+[[tasknotes.saved_views]]
+id = "blocked"
+name = "Blocked Tasks"
+
+[tasknotes.saved_views.query]
+type = "group"
+id = "root"
+conjunction = "and"
+sortKey = "due"
+sortDirection = "asc"
+
+[[tasknotes.saved_views.query.children]]
+type = "condition"
+id = "status-filter"
+property = "status"
+operator = "is"
+value = "in-progress"
+"#,
+    )
+    .expect("config should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "view",
+            "show",
+            "blocked",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(
+        json["file"],
+        Value::String("config.tasknotes.saved_views.blocked".to_string())
+    );
+    assert_eq!(json["views"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        json["views"][0]["name"],
+        Value::String("Blocked Tasks".to_string())
+    );
+    assert_eq!(json["diagnostics"].as_array().map(Vec::len), Some(0));
+    assert_eq!(json["views"][0]["rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        json["views"][0]["rows"][0]["document_path"],
+        Value::String("TaskNotes/Tasks/Write Docs.md".to_string())
     );
 }
 
