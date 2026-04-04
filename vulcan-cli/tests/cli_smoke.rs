@@ -3335,9 +3335,286 @@ fn tasks_show_json_output_reports_tasknote_details() {
     assert_eq!(json["blocked_by"].as_array().map(Vec::len), Some(1));
     assert_eq!(json["reminders"].as_array().map(Vec::len), Some(1));
     assert_eq!(json["time_entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(json["total_time_minutes"], serde_json::json!(60));
+    assert_eq!(json["active_time_minutes"], serde_json::json!(0));
+    assert_eq!(json["estimate_remaining_minutes"], serde_json::json!(30));
+    assert_eq!(json["efficiency_ratio"], serde_json::json!(67));
     assert_eq!(json["custom_fields"]["effort"], serde_json::json!(3.0));
     assert_eq!(json["frontmatter"]["title"], "Write docs");
     assert_eq!(json["body"], "Write the docs body.\n");
+}
+
+#[test]
+fn tasks_track_start_stop_and_status_json_output_manage_time_entries() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    run_scan(&vault_root);
+
+    let start_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "track",
+            "start",
+            "Prep Outline",
+            "--description",
+            "Deep work",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let start_json = parse_stdout_json(&start_assert);
+
+    assert_eq!(start_json["action"], "start");
+    assert_eq!(start_json["path"], "TaskNotes/Tasks/Prep Outline.md");
+    assert_eq!(start_json["session"]["description"], "Deep work");
+    assert_eq!(start_json["session"]["active"], true);
+
+    let status_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "track",
+            "status",
+        ])
+        .assert()
+        .success();
+    let status_json = parse_stdout_json(&status_assert);
+    assert_eq!(status_json["total_active_sessions"], serde_json::json!(1));
+    assert_eq!(
+        status_json["active_sessions"][0]["path"],
+        "TaskNotes/Tasks/Prep Outline.md"
+    );
+
+    let stop_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "track",
+            "stop",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let stop_json = parse_stdout_json(&stop_assert);
+
+    assert_eq!(stop_json["action"], "stop");
+    assert_eq!(stop_json["path"], "TaskNotes/Tasks/Prep Outline.md");
+    assert_eq!(stop_json["session"]["active"], false);
+    assert!(stop_json["session"]["end_time"].is_string());
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "show",
+            "Prep Outline",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["time_entries"].as_array().map(Vec::len), Some(1));
+    assert!(show_json["time_entries"][0]["endTime"].is_string());
+}
+
+#[test]
+fn tasks_track_log_and_summary_json_output_report_totals() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    run_scan(&vault_root);
+
+    let log_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "track",
+            "log",
+            "Write Docs",
+        ])
+        .assert()
+        .success();
+    let log_json = parse_stdout_json(&log_assert);
+    assert_eq!(log_json["path"], "TaskNotes/Tasks/Write Docs.md");
+    assert_eq!(log_json["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(log_json["total_time_minutes"], serde_json::json!(60));
+    assert_eq!(
+        log_json["estimate_remaining_minutes"],
+        serde_json::json!(30)
+    );
+    assert_eq!(log_json["efficiency_ratio"], serde_json::json!(67));
+
+    let summary_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "track",
+            "summary",
+            "--period",
+            "all",
+        ])
+        .assert()
+        .success();
+    let summary_json = parse_stdout_json(&summary_assert);
+    assert_eq!(summary_json["period"], "all");
+    assert_eq!(summary_json["total_minutes"], serde_json::json!(60));
+    assert_eq!(summary_json["tasks_with_time"], serde_json::json!(1));
+    assert_eq!(
+        summary_json["top_tasks"][0]["path"],
+        "TaskNotes/Tasks/Write Docs.md"
+    );
+    assert_eq!(
+        summary_json["top_projects"][0]["project"],
+        "[[Projects/Website]]"
+    );
+}
+
+#[test]
+fn tasks_due_json_output_lists_due_tasknotes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::write(
+        vault_root.join("TaskNotes/Tasks/Old Task.md"),
+        concat!(
+            "---\n",
+            "title: \"Old task\"\n",
+            "status: \"open\"\n",
+            "priority: \"low\"\n",
+            "due: \"2000-01-01\"\n",
+            "tags: [\"task\"]\n",
+            "dateCreated: \"1999-12-31T08:00:00Z\"\n",
+            "dateModified: \"1999-12-31T08:00:00Z\"\n",
+            "---\n",
+        ),
+    )
+    .expect("old task should be written");
+    run_scan(&vault_root);
+
+    let due_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "due",
+            "--within",
+            "2000y",
+        ])
+        .assert()
+        .success();
+    let due_json = parse_stdout_json(&due_assert);
+    let tasks = due_json["tasks"]
+        .as_array()
+        .expect("tasks should be an array");
+
+    assert!(tasks
+        .iter()
+        .any(|task| task["path"] == "TaskNotes/Tasks/Write Docs.md" && task["overdue"] == false));
+    assert!(tasks
+        .iter()
+        .any(|task| task["path"] == "TaskNotes/Tasks/Old Task.md" && task["overdue"] == true));
+}
+
+#[test]
+fn tasks_reminders_json_output_evaluates_relative_and_absolute_reminders() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::write(
+        vault_root.join("TaskNotes/Tasks/Future Reminder.md"),
+        concat!(
+            "---\n",
+            "title: \"Future reminder\"\n",
+            "status: \"open\"\n",
+            "priority: \"normal\"\n",
+            "tags: [\"task\"]\n",
+            "reminders:\n",
+            "  - id: \"abs-1\"\n",
+            "    type: \"absolute\"\n",
+            "    absoluteTime: \"2999-01-01T09:00:00Z\"\n",
+            "    description: \"Far future\"\n",
+            "dateCreated: \"2026-04-01T08:00:00Z\"\n",
+            "dateModified: \"2026-04-01T08:00:00Z\"\n",
+            "---\n",
+        ),
+    )
+    .expect("future reminder task should be written");
+    run_scan(&vault_root);
+
+    let reminders_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "reminders",
+            "--upcoming",
+            "2000y",
+        ])
+        .assert()
+        .success();
+    let reminders_json = parse_stdout_json(&reminders_assert);
+    let reminders = reminders_json["reminders"]
+        .as_array()
+        .expect("reminders should be an array");
+
+    assert!(reminders.iter().any(|reminder| {
+        reminder["path"] == "TaskNotes/Tasks/Write Docs.md"
+            && reminder["reminder_id"] == "rem-1"
+            && reminder["notify_at"] == "2026-04-09T23:45:00Z"
+    }));
+    assert!(reminders.iter().any(|reminder| {
+        reminder["path"] == "TaskNotes/Tasks/Future Reminder.md"
+            && reminder["reminder_id"] == "abs-1"
+            && reminder["reminder_type"] == "absolute"
+            && reminder["notify_at"] == "2999-01-01T09:00:00Z"
+    }));
 }
 
 #[test]

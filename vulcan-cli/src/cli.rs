@@ -1570,10 +1570,74 @@ pub enum TasksCommand {
     Blocked,
     #[command(about = "Show the task dependency graph")]
     Graph,
+    #[command(about = "Manage TaskNotes time tracking sessions")]
+    Track {
+        #[command(subcommand)]
+        command: TasksTrackCommand,
+    },
+    #[command(about = "List TaskNotes reminders due within a time window")]
+    Reminders {
+        #[arg(
+            long,
+            default_value = "1d",
+            help = "Show reminders up to this duration ahead; overdue reminders are included"
+        )]
+        upcoming: String,
+    },
+    #[command(about = "List TaskNotes tasks due within a time window")]
+    Due {
+        #[arg(
+            long,
+            default_value = "7d",
+            help = "Show due tasks up to this duration ahead; overdue tasks are included"
+        )]
+        within: String,
+    },
     #[command(about = "Inspect TaskNotes Bases views")]
     View {
         #[command(subcommand)]
         command: TasksViewCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum TasksTrackCommand {
+    #[command(about = "Start time tracking for one TaskNotes task")]
+    Start {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+        #[arg(long, help = "Optional description for the started session")]
+        description: Option<String>,
+        #[arg(long, help = "Report the planned change without writing the task file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Stop the active time tracking session")]
+    Stop {
+        #[arg(help = "Optional task path, filename, alias, or title")]
+        task: Option<String>,
+        #[arg(long, help = "Report the planned change without writing the task file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Show the currently active time tracking session")]
+    Status,
+    #[command(about = "Show time entries for one TaskNotes task")]
+    Log {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+    },
+    #[command(about = "Summarize tracked time across TaskNotes tasks")]
+    Summary {
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = TasksTrackSummaryPeriodArg::Week,
+            help = "Summary window"
+        )]
+        period: TasksTrackSummaryPeriodArg,
     },
 }
 
@@ -1588,6 +1652,14 @@ pub enum TasksViewCommand {
     },
     #[command(about = "List available TaskNotes Bases views")]
     List,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TasksTrackSummaryPeriodArg {
+    Day,
+    Week,
+    Month,
+    All,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

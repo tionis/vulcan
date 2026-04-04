@@ -2,7 +2,9 @@
 
 use crate::commit::AutoCommitPolicy;
 use crate::output::ListOutputControls;
-use crate::{warn_auto_commit_if_needed, Cli, CliError, TasksCommand, TasksViewCommand};
+use crate::{
+    warn_auto_commit_if_needed, Cli, CliError, TasksCommand, TasksTrackCommand, TasksViewCommand,
+};
 use vulcan_core::VaultPaths;
 
 #[allow(clippy::too_many_arguments)]
@@ -263,6 +265,72 @@ pub(crate) fn handle_tasks_command(
         TasksCommand::Graph => {
             let report = crate::build_tasks_graph_report(paths)?;
             crate::print_tasks_graph_report(cli.output, &report)
+        }
+        TasksCommand::Track { command } => match command {
+            TasksTrackCommand::Start {
+                task,
+                description,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = crate::run_tasks_track_start_command(
+                    paths,
+                    task,
+                    description.as_deref(),
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !*dry_run {
+                    auto_commit
+                        .commit(paths, "tasks track start", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                crate::print_task_track_report(cli.output, &report)
+            }
+            TasksTrackCommand::Stop {
+                task,
+                dry_run,
+                no_commit,
+            } => {
+                let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+                warn_auto_commit_if_needed(&auto_commit);
+                let report = crate::run_tasks_track_stop_command(
+                    paths,
+                    task.as_deref(),
+                    *dry_run,
+                    cli.output,
+                    use_stderr_color,
+                )?;
+                if !*dry_run {
+                    auto_commit
+                        .commit(paths, "tasks track stop", &report.changed_paths)
+                        .map_err(CliError::operation)?;
+                }
+                crate::print_task_track_report(cli.output, &report)
+            }
+            TasksTrackCommand::Status => {
+                let report = crate::run_tasks_track_status_command(paths)?;
+                crate::print_task_track_status_report(cli.output, &report)
+            }
+            TasksTrackCommand::Log { task } => {
+                let report = crate::run_tasks_track_log_command(paths, task)?;
+                crate::print_task_track_log_report(cli.output, &report)
+            }
+            TasksTrackCommand::Summary { period } => {
+                let report = crate::run_tasks_track_summary_command(paths, *period)?;
+                crate::print_task_track_summary_report(cli.output, &report)
+            }
+        },
+        TasksCommand::Reminders { upcoming } => {
+            let report = crate::run_tasks_reminders_command(paths, upcoming)?;
+            crate::print_task_reminders_report(cli.output, &report)
+        }
+        TasksCommand::Due { within } => {
+            let report = crate::run_tasks_due_command(paths, within)?;
+            crate::print_task_due_report(cli.output, &report)
         }
         TasksCommand::View { command } => match command {
             TasksViewCommand::Show { name, export } => {
