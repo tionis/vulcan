@@ -1436,7 +1436,15 @@ pub struct ConfigImportReport {
     pub dry_run: bool,
     pub mappings: Vec<ConfigImportMapping>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<ImportSkippedSetting>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<ImportConflict>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImportSkippedSetting {
+    pub source: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2547,6 +2555,7 @@ fn apply_import_settings(
         updated,
         dry_run,
         mappings: import_settings_to_mappings(settings),
+        skipped: Vec::new(),
         conflicts: Vec::new(),
     })
 }
@@ -2913,12 +2922,13 @@ impl PluginImporter for TaskNotesImporter {
             return Err(ConfigImportError::MissingSource(source_path));
         }
 
-        let obsidian =
-            serde_json::from_str::<ObsidianTaskNotesConfig>(&fs::read_to_string(&source_path)?)?;
+        let source = fs::read_to_string(&source_path)?;
+        let raw = serde_json::from_str::<Value>(&source)?;
+        let obsidian = serde_json::from_value::<ObsidianTaskNotesConfig>(raw.clone())?;
         let imported_tasknotes = imported_tasknotes_config(obsidian);
         let settings =
             import_settings_from_mappings(tasknotes_config_import_mappings(&imported_tasknotes)?);
-        apply_import_settings(
+        let mut report = apply_import_settings(
             paths,
             self.name(),
             source_path.clone(),
@@ -2926,7 +2936,9 @@ impl PluginImporter for TaskNotesImporter {
             &settings,
             target,
             dry_run,
-        )
+        )?;
+        report.skipped = tasknotes_skipped_settings(&raw);
+        Ok(report)
     }
 }
 
@@ -3892,6 +3904,177 @@ fn tasknotes_config_import_mappings(
         &config.task_creation_defaults.default_recurrence,
     )?;
     Ok(mappings)
+}
+
+#[allow(clippy::too_many_lines)]
+fn tasknotes_skipped_settings(raw: &Value) -> Vec<ImportSkippedSetting> {
+    let Some(settings) = raw.as_object() else {
+        return Vec::new();
+    };
+
+    let mut skipped = Vec::new();
+    push_tasknotes_skipped_group(
+        &mut skipped,
+        settings,
+        &["calendarViewSettings"],
+        "calendar view settings are not yet supported",
+    );
+    push_tasknotes_skipped_group(
+        &mut skipped,
+        settings,
+        &[
+            "pomodoroWorkDuration",
+            "pomodoroShortBreakDuration",
+            "pomodoroLongBreakDuration",
+            "pomodoroLongBreakInterval",
+            "pomodoroAutoStartBreaks",
+            "pomodoroAutoStartWork",
+            "pomodoroNotifications",
+            "pomodoroSoundEnabled",
+            "pomodoroSoundVolume",
+            "pomodoroStorageLocation",
+            "pomodoroMobileSidebar",
+        ],
+        "pomodoro settings are not yet supported",
+    );
+    push_tasknotes_skipped_group(
+        &mut skipped,
+        settings,
+        &[
+            "moveArchivedTasks",
+            "hideIdentifyingTagsInCards",
+            "taskOrgFiltersCollapsed",
+            "taskFilenameFormat",
+            "storeTitleInFilename",
+            "customFilenameTemplate",
+            "enableTaskLinkOverlay",
+            "disableOverlayOnAlias",
+            "enableInstantTaskConvert",
+            "useDefaultsOnInstantConvert",
+            "uiLanguage",
+            "statusSuggestionTrigger",
+            "projectAutosuggest",
+            "singleClickAction",
+            "doubleClickAction",
+            "inlineTaskConvertFolder",
+            "disableNoteIndexing",
+            "suggestionDebounceMs",
+            "recurrenceMigrated",
+            "lastSeenVersion",
+            "showReleaseNotesOnUpdate",
+            "showTrackedTasksInStatusBar",
+            "autoStopTimeTrackingOnComplete",
+            "autoStopTimeTrackingNotification",
+            "showRelationships",
+            "relationshipsPosition",
+            "showTaskCardInNote",
+            "showExpandableSubtasks",
+            "subtaskChevronPosition",
+            "viewsButtonAlignment",
+            "hideCompletedFromOverdue",
+            "enableNotifications",
+            "notificationType",
+            "modalFieldsConfig",
+            "enableModalSplitLayout",
+            "defaultVisibleProperties",
+            "inlineVisibleProperties",
+        ],
+        "UI and editor settings are not yet supported",
+    );
+    push_tasknotes_skipped_group(
+        &mut skipped,
+        settings,
+        &["icsIntegration"],
+        "ICS integration settings are not yet supported",
+    );
+    push_tasknotes_skipped_group(
+        &mut skipped,
+        settings,
+        &["savedViews"],
+        "saved views are not yet supported",
+    );
+    push_tasknotes_skipped_group(
+        &mut skipped,
+        settings,
+        &[
+            "enableBases",
+            "enableMdbaseSpec",
+            "autoCreateDefaultBasesFiles",
+            "commandFileMapping",
+        ],
+        "TaskNotes Bases integration settings are not yet supported",
+    );
+    push_tasknotes_skipped_group(
+        &mut skipped,
+        settings,
+        &[
+            "enableAPI",
+            "apiPort",
+            "apiAuthToken",
+            "enableMCP",
+            "webhooks",
+        ],
+        "API and webhook settings are not yet supported",
+    );
+    push_tasknotes_skipped_group(
+        &mut skipped,
+        settings,
+        &[
+            "googleOAuthClientId",
+            "googleOAuthClientSecret",
+            "enableGoogleCalendar",
+            "enabledGoogleCalendars",
+            "googleCalendarSyncTokens",
+            "googleCalendarExport",
+        ],
+        "Google Calendar integration settings are not yet supported",
+    );
+    push_tasknotes_skipped_group(
+        &mut skipped,
+        settings,
+        &[
+            "microsoftOAuthClientId",
+            "microsoftOAuthClientSecret",
+            "enableMicrosoftCalendar",
+            "enabledMicrosoftCalendars",
+            "microsoftCalendarSyncTokens",
+        ],
+        "Microsoft Calendar integration settings are not yet supported",
+    );
+
+    if settings
+        .get("taskCreationDefaults")
+        .and_then(Value::as_object)
+        .is_some_and(|defaults| defaults.contains_key("defaultReminders"))
+    {
+        skipped.push(ImportSkippedSetting {
+            source: "taskCreationDefaults.defaultReminders".to_string(),
+            reason: "default reminder settings are not yet supported".to_string(),
+        });
+    }
+
+    skipped
+}
+
+fn push_tasknotes_skipped_group(
+    skipped: &mut Vec<ImportSkippedSetting>,
+    settings: &serde_json::Map<String, Value>,
+    keys: &[&str],
+    reason: &str,
+) {
+    let present = keys
+        .iter()
+        .filter(|key| settings.contains_key(**key))
+        .copied()
+        .collect::<Vec<_>>();
+    if present.is_empty() {
+        return;
+    }
+
+    skipped.push(ImportSkippedSetting {
+        source: present.join(", "),
+        reason: reason.to_string(),
+    });
 }
 
 #[allow(clippy::too_many_lines)]
@@ -6815,8 +6998,23 @@ time_format = "HH:mm:ss"
                 "defaultTimeEstimate": 45,
                 "defaultDueDate": "tomorrow",
                 "defaultScheduledDate": "today",
-                "defaultRecurrence": "weekly"
-              }
+                "defaultRecurrence": "weekly",
+                "defaultReminders": [{ "id": "rem-1", "type": "relative" }]
+              },
+              "calendarViewSettings": { "defaultView": "month" },
+              "pomodoroWorkDuration": 25,
+              "enableTaskLinkOverlay": true,
+              "uiLanguage": "de",
+              "icsIntegration": { "enabled": true },
+              "savedViews": [{ "id": "today", "name": "Today" }],
+              "enableAPI": true,
+              "webhooks": [{ "url": "https://example.test/hook" }],
+              "enableBases": true,
+              "commandFileMapping": { "open-tasks-view": "TaskNotes/Views/tasks.base" },
+              "enableGoogleCalendar": true,
+              "googleOAuthClientId": "google-client",
+              "enableMicrosoftCalendar": true,
+              "microsoftOAuthClientId": "microsoft-client"
             }"##,
         )
         .expect("tasknotes config should be written");
@@ -7708,6 +7906,52 @@ default_mode = "off"
     }
 
     #[test]
+    fn tasknotes_skipped_settings_report_unsupported_categories() {
+        let raw = serde_json::json!({
+            "calendarViewSettings": { "defaultView": "month" },
+            "pomodoroWorkDuration": 25,
+            "enableTaskLinkOverlay": true,
+            "uiLanguage": "de",
+            "icsIntegration": { "enabled": true },
+            "savedViews": [{ "id": "today", "name": "Today" }],
+            "enableAPI": true,
+            "webhooks": [{ "url": "https://example.test/hook" }],
+            "enableBases": true,
+            "commandFileMapping": { "open-tasks-view": "TaskNotes/Views/tasks.base" },
+            "enableGoogleCalendar": true,
+            "googleOAuthClientId": "google-client",
+            "enableMicrosoftCalendar": true,
+            "microsoftOAuthClientId": "microsoft-client",
+            "taskCreationDefaults": {
+                "defaultReminders": [{ "id": "rem-1", "type": "relative" }]
+            }
+        });
+
+        let skipped = tasknotes_skipped_settings(&raw);
+
+        assert!(skipped.iter().any(|item| {
+            item.source == "calendarViewSettings"
+                && item.reason == "calendar view settings are not yet supported"
+        }));
+        assert!(skipped.iter().any(|item| {
+            item.source == "taskCreationDefaults.defaultReminders"
+                && item.reason == "default reminder settings are not yet supported"
+        }));
+        assert!(skipped.iter().any(|item| {
+            item.reason == "Google Calendar integration settings are not yet supported"
+        }));
+        assert!(skipped.iter().any(|item| {
+            item.reason == "Microsoft Calendar integration settings are not yet supported"
+        }));
+        assert!(skipped
+            .iter()
+            .any(|item| { item.reason == "API and webhook settings are not yet supported" }));
+        assert!(skipped.iter().any(|item| {
+            item.reason == "TaskNotes Bases integration settings are not yet supported"
+        }));
+    }
+
+    #[test]
     fn importer_registry_dispatches_existing_importers_in_priority_order() {
         let importer_names = all_importers()
             .into_iter()
@@ -7774,6 +8018,7 @@ default_mode = "off"
                     target: "links.style".to_string(),
                     value: Value::String("wikilink".to_string()),
                 }],
+                skipped: Vec::new(),
                 conflicts: Vec::new(),
             },
             ConfigImportReport {
@@ -7792,6 +8037,7 @@ default_mode = "off"
                     target: "links.style".to_string(),
                     value: Value::String("markdown".to_string()),
                 }],
+                skipped: Vec::new(),
                 conflicts: Vec::new(),
             },
         ];

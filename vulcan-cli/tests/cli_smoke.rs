@@ -2064,8 +2064,23 @@ fn write_tasknotes_import_fixture(vault_root: &Path) {
             "defaultTimeEstimate": 45,
             "defaultDueDate": "tomorrow",
             "defaultScheduledDate": "today",
-            "defaultRecurrence": "weekly"
-          }
+            "defaultRecurrence": "weekly",
+            "defaultReminders": [{ "id": "rem-1", "type": "relative" }]
+          },
+          "calendarViewSettings": { "defaultView": "month" },
+          "pomodoroWorkDuration": 25,
+          "enableTaskLinkOverlay": true,
+          "uiLanguage": "de",
+          "icsIntegration": { "enabled": true },
+          "savedViews": [{ "id": "today", "name": "Today" }],
+          "enableAPI": true,
+          "webhooks": [{ "url": "https://example.test/hook" }],
+          "enableBases": true,
+          "commandFileMapping": { "open-tasks-view": "TaskNotes/Views/tasks.base" },
+          "enableGoogleCalendar": true,
+          "googleOAuthClientId": "google-client",
+          "enableMicrosoftCalendar": true,
+          "microsoftOAuthClientId": "microsoft-client"
         }"##,
     )
     .expect("tasknotes plugin config should be written");
@@ -2420,6 +2435,18 @@ fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
         .as_array()
         .is_some_and(|mappings| mappings.iter().any(|mapping| {
             mapping["target"] == "tasknotes.field_mapping.due" && mapping["value"] == "deadline"
+        })));
+    assert!(json["skipped"]
+        .as_array()
+        .is_some_and(|skipped| skipped.iter().any(|item| {
+            item["source"] == "calendarViewSettings"
+                && item["reason"] == "calendar view settings are not yet supported"
+        })));
+    assert!(json["skipped"]
+        .as_array()
+        .is_some_and(|skipped| skipped.iter().any(|item| {
+            item["source"] == "taskCreationDefaults.defaultReminders"
+                && item["reason"] == "default reminder settings are not yet supported"
         })));
 
     let rendered =
