@@ -40,14 +40,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("--output <OUTPUT>"))
             .and(predicate::str::contains("--refresh <REFRESH>"))
             .and(predicate::str::contains("--verbose"))
-            .and(predicate::str::contains("init"))
-            .and(predicate::str::contains("scan"))
-            .and(predicate::str::contains("rebuild"))
-            .and(predicate::str::contains("repair"))
-            .and(predicate::str::contains("watch"))
-            .and(predicate::str::contains("serve"))
-            .and(predicate::str::contains("links"))
-            .and(predicate::str::contains("backlinks"))
+            .and(predicate::str::contains("index"))
             .and(predicate::str::contains("graph"))
             .and(predicate::str::contains("notes"))
             .and(predicate::str::contains("ls"))
@@ -57,22 +50,13 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("browse"))
             .and(predicate::str::contains("note"))
             .and(predicate::str::contains("bases"))
-            .and(predicate::str::contains("suggest"))
             .and(predicate::str::contains("search"))
             .and(predicate::str::contains("vectors"))
             .and(predicate::str::contains("cluster"))
             .and(predicate::str::contains("related"))
             .and(predicate::str::contains("edit"))
-            .and(predicate::str::contains("move"))
-            .and(predicate::str::contains("link-mentions"))
-            .and(predicate::str::contains("rewrite"))
             .and(predicate::str::contains("doctor"))
             .and(predicate::str::contains("cache"))
-            .and(predicate::str::contains("rename-property"))
-            .and(predicate::str::contains("merge-tags"))
-            .and(predicate::str::contains("rename-alias"))
-            .and(predicate::str::contains("rename-heading"))
-            .and(predicate::str::contains("rename-block-ref"))
             .and(predicate::str::contains("refactor"))
             .and(predicate::str::contains("saved"))
             .and(predicate::str::contains("checkpoint"))
@@ -90,23 +74,20 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("export"))
             .and(predicate::str::contains("config"))
             .and(predicate::str::contains("automation"))
+            .and(predicate::str::contains("run"))
             .and(predicate::str::contains("help"))
             .and(predicate::str::contains("describe"))
             .and(predicate::str::contains("completions"))
             .and(predicate::str::contains("open"))
-            .and(predicate::str::contains(
-                "Initialize .vulcan/ state for a vault",
-            ))
+            .and(predicate::str::contains("Initialize, scan, rebuild, repair, watch, and serve index state"))
             .and(predicate::str::contains("Search indexed note content"))
             .and(predicate::str::contains(
                 "Generate shell completion scripts",
             ))
             .and(predicate::str::contains("Command Groups:"))
+            .and(predicate::str::contains("Indexing: index"))
             .and(predicate::str::contains(
-                "Indexing: init, scan, rebuild, repair, watch, serve",
-            ))
-            .and(predicate::str::contains(
-                "Graph and Query: links, backlinks, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, suggest, diff",
+                "Graph and Query: note, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, diff",
             ))
             .and(predicate::str::contains(
                 "Journaling: daily, weekly, monthly, periodic, inbox, template",
@@ -118,10 +99,10 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Reports and Automation: saved, checkpoint, changes, batch, export, automation",
             ))
             .and(predicate::str::contains(
-                "Mutations: note, edit, update, unset, refactor",
+                "Mutations: edit, update, unset, refactor",
             ))
             .and(predicate::str::contains(
-                "Maintenance: move, doctor, cache, link-mentions, rewrite, config, git, web, open, help, describe, completions",
+                "Maintenance: doctor, cache, config, git, run, web, open, help, describe, completions",
             ))
             .and(predicate::str::contains("User guide: docs/cli.md"))
             .and(predicate::str::contains(
@@ -8275,7 +8256,7 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .as_array()
         .expect("commands should be an array")
         .iter()
-        .any(|command| command["name"] == "repair"));
+        .any(|command| command["name"] == "index"));
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")
@@ -8291,6 +8272,11 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .expect("commands should be an array")
         .iter()
         .any(|command| command["name"] == "help"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .any(|command| command["name"] == "run"));
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")
@@ -8333,6 +8319,11 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .and_then(|command| command["after_help"].as_str())
         .expect("notes after_help should be present")
         .contains("Filter syntax:"));
+    assert!(json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .all(|command| command["name"] != "repair"));
 }
 
 #[test]
@@ -8378,6 +8369,48 @@ fn help_json_output_returns_structured_topic_docs() {
         .as_str()
         .expect("body should be present")
         .contains("vault.daily.today()"));
+}
+
+#[test]
+fn run_json_output_executes_script_files_and_named_scripts() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    fs::create_dir_all(vault_root.join(".vulcan/scripts")).expect("scripts dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/scripts/runtime-demo.js"),
+        concat!(
+            "#!/usr/bin/env -S vulcan run --script\n",
+            "console.log(help(vault.search));\n",
+            "({ note: vault.note(\"Projects/Alpha\").file.name, hits: vault.search(\"Alpha\", { limit: 1 }).hits.length });\n",
+        ),
+    )
+    .expect("named script should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "run",
+            "runtime-demo",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["value"]["note"], "Alpha");
+    assert_eq!(json["value"]["hits"], 1);
+    assert_eq!(
+        json["outputs"][0]["text"],
+        "vault.search(query, opts?): run one indexed search query."
+    );
 }
 
 #[test]
@@ -9323,6 +9356,7 @@ fn build_command_snapshot() -> Value {
                     .expect("vault path should be valid utf-8"),
                 "--output",
                 "json",
+                "index",
                 "init",
             ])
             .assert()
@@ -9348,6 +9382,7 @@ fn build_command_snapshot() -> Value {
                 &basic_root_str,
                 "--output",
                 "json",
+                "index",
                 "scan",
                 "--full",
             ])
@@ -9363,6 +9398,7 @@ fn build_command_snapshot() -> Value {
                 &basic_root_str,
                 "--output",
                 "json",
+                "index",
                 "rebuild",
                 "--dry-run",
             ])
@@ -9378,6 +9414,7 @@ fn build_command_snapshot() -> Value {
                 &basic_root_str,
                 "--output",
                 "json",
+                "index",
                 "repair",
                 "fts",
                 "--dry-run",
@@ -9396,6 +9433,7 @@ fn build_command_snapshot() -> Value {
                 "json",
                 "--fields",
                 "note_path,raw_text,resolved_target_path,resolution_status",
+                "note",
                 "links",
                 "Start",
             ])
@@ -9413,6 +9451,7 @@ fn build_command_snapshot() -> Value {
                 "json",
                 "--fields",
                 "note_path,source_path,raw_text",
+                "note",
                 "backlinks",
                 "Projects/Alpha",
             ])
@@ -9516,6 +9555,7 @@ fn build_command_snapshot() -> Value {
                 "json",
                 "--fields",
                 "source_path,matched_text,target_path,candidate_count,status",
+                "refactor",
                 "suggest",
                 "mentions",
                 "Home",
@@ -9534,6 +9574,7 @@ fn build_command_snapshot() -> Value {
                 "json",
                 "--fields",
                 "kind,value,left_path,right_path,score",
+                "refactor",
                 "suggest",
                 "duplicates",
             ])
@@ -9549,6 +9590,7 @@ fn build_command_snapshot() -> Value {
                 &suggestions_root_str,
                 "--output",
                 "json",
+                "refactor",
                 "link-mentions",
                 "Home",
                 "--dry-run",
@@ -9565,6 +9607,7 @@ fn build_command_snapshot() -> Value {
                 &suggestions_root_str,
                 "--output",
                 "json",
+                "refactor",
                 "rewrite",
                 "--find",
                 "Guide",
@@ -9592,6 +9635,7 @@ fn build_command_snapshot() -> Value {
                 &move_root_str,
                 "--output",
                 "json",
+                "refactor",
                 "move",
                 "Projects/Alpha.md",
                 "Archive/Alpha.md",
@@ -9706,20 +9750,20 @@ fn build_command_snapshot() -> Value {
     server.shutdown();
 
     serde_json::json!({
-        "init": init_json,
-        "scan": scan_json,
-        "rebuild": rebuild_json,
-        "repair_fts": repair_json,
-        "links": links_json,
-        "backlinks": backlinks_json,
+        "index_init": init_json,
+        "index_scan": scan_json,
+        "index_rebuild": rebuild_json,
+        "index_repair_fts": repair_json,
+        "note_links": links_json,
+        "note_backlinks": backlinks_json,
         "search": search_json,
         "notes": notes_json,
         "bases": bases_json,
-        "suggest_mentions": suggest_mentions_json,
-        "suggest_duplicates": suggest_duplicates_json,
-        "link_mentions": link_mentions_json,
-        "rewrite": rewrite_json,
-        "move": move_json,
+        "refactor_suggest_mentions": suggest_mentions_json,
+        "refactor_suggest_duplicates": suggest_duplicates_json,
+        "refactor_link_mentions": link_mentions_json,
+        "refactor_rewrite": rewrite_json,
+        "refactor_move": move_json,
         "doctor": doctor_json,
         "describe": describe_json,
         "vectors_index": vectors_index_json,

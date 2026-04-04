@@ -19,8 +19,8 @@ The binary is written to:
 Typical first run against a vault:
 
 ```bash
-./target/release/vulcan --vault ~/wikis/mimir init
-./target/release/vulcan --vault ~/wikis/mimir scan
+./target/release/vulcan --vault ~/wikis/mimir index init
+./target/release/vulcan --vault ~/wikis/mimir index scan
 ./target/release/vulcan --vault ~/wikis/mimir notes --limit 5
 ./target/release/vulcan --vault ~/wikis/mimir browse
 ```
@@ -85,7 +85,7 @@ Precedence is:
 3. `.obsidian/app.json`
 4. Built-in defaults
 
-`vulcan init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan init --import` to apply every detected importer immediately. Use `vulcan init --agent-files` to write the bundled `AGENTS.md` template and default `AI/Skills/*.md` reference files into the vault.
+`vulcan index init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan index init --import` to apply every detected importer immediately. Use `vulcan index init --agent-files` to write the bundled `AGENTS.md` template and default `AI/Skills/*.md` reference files into the vault.
 
 Automatic cache refresh is configured under `[scan]`:
 
@@ -97,7 +97,7 @@ browse_mode = "background"
 
 Meaning:
 
-- `default_mode` controls one-shot cache-backed commands such as `backlinks`, `links`, `notes`, `search`, `graph`, `diff`, `query`, and note-refactoring commands that depend on current cache state.
+- `default_mode` controls one-shot cache-backed commands such as `note backlinks`, `note links`, `notes`, `search`, `graph`, `diff`, `query`, and refactor commands that depend on current cache state.
 - `browse_mode` controls `vulcan browse`.
 - `off` uses the current cache as-is.
 - `blocking` runs an incremental scan before the command continues.
@@ -106,7 +106,7 @@ Meaning:
 Use `--refresh` to override the configured behavior for one invocation:
 
 ```bash
-vulcan --refresh off backlinks Projects/Alpha
+vulcan --refresh off note backlinks Projects/Alpha
 vulcan --refresh background browse
 ```
 
@@ -120,12 +120,12 @@ Note resolution rules:
 
 ### Indexing, cache, and local service commands
 
-- `vulcan init [--import|--no-import] [--agent-files]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import all detected Obsidian settings immediately and optionally write the bundled AGENTS/skills files.
-- `vulcan scan [--full] [--no-commit]`: perform an incremental or full scan and refresh the cache.
-- `vulcan rebuild [--dry-run]`: rebuild the cache from disk.
-- `vulcan repair fts [--dry-run]`: rebuild the full-text search index from cached chunks.
-- `vulcan watch [--debounce-ms <MS>] [--no-commit]`: keep the cache fresh from filesystem events.
-- `vulcan serve [--bind <ADDR>] [--no-watch] [--debounce-ms <MS>] [--auth-token <TOKEN>]`: start the local HTTP API server backed by the cache.
+- `vulcan index init [--import|--no-import] [--agent-files]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import all detected Obsidian settings immediately and optionally write the bundled AGENTS/skills files.
+- `vulcan index scan [--full] [--no-commit]`: perform an incremental or full scan and refresh the cache.
+- `vulcan index rebuild [--dry-run]`: rebuild the cache from disk.
+- `vulcan index repair fts [--dry-run]`: rebuild the full-text search index from cached chunks.
+- `vulcan index watch [--debounce-ms <MS>] [--no-commit]`: keep the cache fresh from filesystem events.
+- `vulcan index serve [--bind <ADDR>] [--no-watch] [--debounce-ms <MS>] [--auth-token <TOKEN>]`: start the local HTTP API server backed by the cache.
 - `vulcan cache inspect`: show cache sizes and row counts.
 - `vulcan cache verify [--fail-on-errors]`: verify cache invariants.
 - `vulcan cache vacuum [--dry-run]`: run SQLite `VACUUM` on the cache.
@@ -155,8 +155,8 @@ Shared behavior:
 
 ### Query, graph, and reporting commands
 
-- `vulcan links [note]`: list outgoing links for a note.
-- `vulcan backlinks [note]`: list inbound links for a note.
+- `vulcan note links [note]`: list outgoing links for a note.
+- `vulcan note backlinks [note]`: list inbound links for a note.
 - `vulcan graph path [from] [to]`: shortest resolved-link path between two notes.
 - `vulcan graph hubs`: notes with the highest degree.
 - `vulcan graph moc`: candidate map-of-content notes.
@@ -168,8 +168,8 @@ Shared behavior:
 - `vulcan search <query> [--regex <pattern>] ...`: full-text search with optional typed property filters, explicit result sorting, and explicit regex mode.
 - `vulcan query ...`: run the human DSL or JSON query payload with `--format table|paths|detail|count` and optional `--glob`.
 - `vulcan ls [--where <filter>] [--tag <tag>] [--glob <pattern>] [--format <paths|detail|count>]`: thin alias for `query 'from notes'`.
-- `vulcan suggest mentions [note]`: plain-text mentions that could become links.
-- `vulcan suggest duplicates`: duplicate titles, alias collisions, and merge candidates.
+- `vulcan refactor suggest mentions [note]`: plain-text mentions that could become links.
+- `vulcan refactor suggest duplicates`: duplicate titles, alias collisions, and merge candidates.
 - `vulcan refactor ...`: grouped cross-vault mutation commands (`rename-*`, `merge-tags`, `rewrite`, `move`, `link-mentions`, `suggest`).
 - `vulcan saved list`: list saved query/report definitions from `.vulcan/reports`.
 - `vulcan saved show <name>`: show one saved report definition.
@@ -215,6 +215,20 @@ Behavior:
 - All `git` subcommands support `--output json`.
 - `git diff` and `git blame` take vault-relative file paths, not note aliases.
 - `git commit` refuses to stage `.vulcan/` state even when it is dirty.
+
+### Runtime commands
+
+- `vulcan run <script.js>`: execute a JavaScript file through the Vulcan runtime, stripping a leading shebang line when present.
+- `vulcan run <script-name>`: resolve `.vulcan/scripts/<name>` or `.vulcan/scripts/<name>.js`.
+- `vulcan run --script <file>`: shebang-friendly entrypoint for `#!/usr/bin/env -S vulcan run --script`.
+- `vulcan run`: open the current line-oriented REPL.
+
+Behavior:
+
+- `console.log(...)` emits paragraph output before the final return value.
+- `--output json` returns both `outputs` and the final `value`.
+- The current REPL executes one line at a time and does not preserve JS variables between prompts.
+- The current runtime exposes read-oriented helpers such as `vault.note()`, `vault.notes()`, `vault.query()`, `vault.search()`, `vault.graph.*`, `vault.daily.*`, `vault.events()`, and `help(obj)`.
 
 ### Web commands
 
@@ -267,7 +281,7 @@ Important behavior:
 
 ## Query and filter syntax
 
-`vulcan notes`, `vulcan search --where`, `vulcan rewrite`, `vulcan update`, `vulcan unset`, and `bases view-*` filters all use the same typed filter grammar.
+`vulcan notes`, `vulcan search --where`, `vulcan refactor rewrite`, `vulcan update`, `vulcan unset`, and `bases view-*` filters all use the same typed filter grammar.
 
 Each filter uses this form:
 
@@ -326,7 +340,7 @@ vulcan notes --where 'file.path starts_with "Projects/"'
 vulcan notes --where 'file.name matches "^2026-"'
 vulcan notes --where 'owner matches_i "alice"'
 vulcan update --where 'status = draft' --key status --value done --dry-run
-vulcan rewrite --where 'file.path starts_with "Archive/"' --find TODO --replace DONE
+vulcan refactor rewrite --where 'file.path starts_with "Archive/"' --find TODO --replace DONE
 vulcan bases view-add release.base Inbox --filter 'status = idea'
 ```
 
@@ -442,8 +456,8 @@ Use `vulcan describe` when you need the runtime schema for the JSON form rather 
 
 These commands can resolve a note interactively when you omit the note in a TTY session:
 
-- `links`
-- `backlinks`
+- `note links`
+- `note backlinks`
 - `graph path`
 - `related`
 - `vectors related`
@@ -534,16 +548,16 @@ Most vault-mutating commands support `--no-commit`. Preview-capable mutations al
 Common mutating commands:
 
 - `note`
-- `move`
-- `link-mentions`
-- `rewrite`
+- `refactor move`
+- `refactor link-mentions`
+- `refactor rewrite`
+- `refactor rename-property`
+- `refactor merge-tags`
+- `refactor rename-alias`
+- `refactor rename-heading`
+- `refactor rename-block-ref`
 - `update`
 - `unset`
-- `rename-property`
-- `merge-tags`
-- `rename-alias`
-- `rename-heading`
-- `rename-block-ref`
 - `edit`
 - `browse`
 - `daily`
@@ -772,7 +786,7 @@ Supported shells:
 
 ### Phase A: CLI for LLMs (Roadmap Wave 5)
 
-The core Wave 5 CLI surface is implemented. The main remaining external-harness deliverables are the vault `AGENTS.md` template, bundled default skills in `AI/Skills/`, and fully consistent structured JSON error output.
+The core Wave 5 CLI surface is implemented: grouped commands, note CRUD, structured `help`, `describe --format ...`, bundled AGENTS/skills files, web tools, and git tools are all available today.
 
 ### Phase B: Embedded Agent (Roadmap Wave 6)
 
@@ -799,21 +813,21 @@ vulcan assistant platforms                   # list configured platforms
 vulcan assistant memory <platform> <user-id> # show user memory
 ```
 
-### CLI Redesign — Remaining Command Reorganization (Roadmap 9.18.1, lands last)
+### Runtime Gaps (Roadmap 9.18.5 follow-up)
 
-The full two-level command hierarchy. This is a pre-alpha clean break that restructures the flat command layout.
+The grouped command hierarchy has landed. The main remaining JS-runtime work is deeper runtime ergonomics and sandbox tiers rather than basic command availability.
 
 ```
-vulcan run <script.js|script-name> [--sandbox strict|fs|net|none] [--timeout 30s]  # strips #! shebang if present
-vulcan run --script <file>          # shebang entry point (for #!/usr/bin/env -S vulcan run --script)
-vulcan run                          # REPL mode (no args)
-vulcan tasks create|complete|reschedule  # new mutations
+vulcan run <script.js|script-name>  # current script execution surface
+vulcan run --script <file>          # current shebang entry point
+vulcan run                          # current line-oriented REPL
 ```
 
-**Key remaining changes from current layout:**
-- `links`, `backlinks` → `note links`, `note backlinks`
-- `init`, `scan`, `rebuild`, `repair`, `watch`, `serve` → `index *`
-- New still pending here: `run` (JS runtime + REPL), `assistant *`
+**Main remaining runtime work:**
+- sandbox selection flags such as `--sandbox strict|fs|net|none`
+- explicit per-run timeout overrides such as `--timeout 30s`
+- persistent REPL context, history, multiline input, and completion
+- write-capable JS APIs such as `vault.transaction()` and network-gated `web.*`
 
 ### `canvas` (Roadmap Phase 18)
 
