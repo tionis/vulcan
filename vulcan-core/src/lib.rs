@@ -188,6 +188,28 @@ pub use vector::{
 };
 pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchReport};
 
+const FIXED_NOW_ENV: &str = "VULCAN_FIXED_NOW";
+
+#[must_use]
+pub fn current_utc_timestamp_ms() -> i64 {
+    current_time_override_ms().unwrap_or_else(|| {
+        let duration = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        i64::try_from(duration.as_millis()).unwrap_or_default()
+    })
+}
+
+#[must_use]
+pub fn current_time_override_ms() -> Option<i64> {
+    let value = std::env::var(FIXED_NOW_ENV).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    expression::functions::parse_date_like_string(trimmed).or_else(|| trimmed.parse::<i64>().ok())
+}
+
 pub const PARSER_VERSION: u32 = 6;
 pub const EXTRACTION_VERSION: u32 = 1;
 pub const SCHEMA_VERSION: u32 = 16;

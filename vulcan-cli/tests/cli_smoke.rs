@@ -10,6 +10,8 @@ use std::thread;
 use tempfile::TempDir;
 use vulcan_core::{CacheDatabase, VaultPaths};
 
+const FIXED_NOW: &str = "2026-04-04T12:00:00Z";
+
 fn run_git_ok(vault_root: &Path, args: &[&str]) {
     let status = ProcessCommand::new("git")
         .arg("-C")
@@ -29,6 +31,12 @@ fn init_git_repo(vault_root: &Path) {
 fn commit_all(vault_root: &Path, message: &str) {
     run_git_ok(vault_root, &["add", "."]);
     run_git_ok(vault_root, &["commit", "-m", message]);
+}
+
+fn cargo_vulcan_fixed_now() -> Command {
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+    command.env("VULCAN_FIXED_NOW", FIXED_NOW);
+    command
 }
 
 #[test]
@@ -946,8 +954,7 @@ fn note_append_periodic_creates_note_and_renders_quickadd_tokens() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
 
-    let assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
+    let assert = cargo_vulcan_fixed_now()
         .args([
             "--vault",
             vault_root
@@ -997,8 +1004,7 @@ global_variables = { agenda = "- {{VALUE:title|case:slug}} due {{VDATE:due,YYYY-
     .expect("quickadd config should be written");
     run_scan(&vault_root);
 
-    let assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
+    let assert = cargo_vulcan_fixed_now()
         .args([
             "--vault",
             vault_root
@@ -3687,8 +3693,7 @@ fn tasks_pomodoro_daily_note_storage_completes_due_sessions() {
     .expect("config should be written");
     run_scan(&vault_root);
 
-    let start_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
+    let start_assert = cargo_vulcan_fixed_now()
         .args([
             "--vault",
             vault_root
@@ -3721,8 +3726,7 @@ fn tasks_pomodoro_daily_note_storage_completes_due_sessions() {
     fs::write(&daily_note, updated).expect("daily note should be updated");
     run_scan(&vault_root);
 
-    let status_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
+    let status_assert = cargo_vulcan_fixed_now()
         .args([
             "--vault",
             vault_root
@@ -4409,8 +4413,7 @@ fn tasks_create_json_output_appends_inline_task_to_default_inbox_note() {
     )
     .expect("config should be written");
 
-    let create_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
+    let create_assert = cargo_vulcan_fixed_now()
         .args([
             "--vault",
             vault_root
@@ -4443,8 +4446,7 @@ fn tasks_create_json_output_appends_inline_task_to_default_inbox_note() {
         "- [ ] Review release @desk #ops #task 🗓️ 2026-04-05 ➕ 2026-04-04 🔺\n"
     );
 
-    let list_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
+    let list_assert = cargo_vulcan_fixed_now()
         .args([
             "--vault",
             vault_root
@@ -5063,8 +5065,7 @@ fn tasks_add_json_output_applies_default_reminders_from_config() {
     )
     .expect("tasknotes config should be written");
 
-    let add_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
+    let add_assert = cargo_vulcan_fixed_now()
         .args([
             "--vault",
             vault_root
@@ -5091,8 +5092,7 @@ fn tasks_add_json_output_applies_default_reminders_from_config() {
         Value::String("-PT15M".to_string())
     );
 
-    let show_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
+    let show_assert = cargo_vulcan_fixed_now()
         .args([
             "--vault",
             vault_root
@@ -5123,8 +5123,7 @@ fn tasks_add_json_output_respects_configured_nlp_language() {
     )
     .expect("tasknotes config should be written");
 
-    let add_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
+    let add_assert = cargo_vulcan_fixed_now()
         .args([
             "--vault",
             vault_root
