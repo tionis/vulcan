@@ -148,13 +148,28 @@ pub fn evaluate_parsed_dql(
     } else {
         default_rows(query, &all_notes)
     };
+    // Resolve the note that contains the query, used as the `this` reference in expressions.
+    // When the query is embedded in a note (e.g. a Dataview code block), `current_file` names
+    // that note so `WHERE file.name != this.file.name` can filter it out.
+    let source_note: Option<NoteRecord> = current_file.and_then(|path| {
+        note_lookup
+            .values()
+            .find(|n| n.document_path == path)
+            .cloned()
+    });
     let mut page_rows_are_pristine = query.query_type != super::DqlQueryType::Task;
 
     for command in &compiled.commands {
         match command {
             CompiledDqlCommand::From(_) => {}
             CompiledDqlCommand::Where(where_clause) => {
+                // Only use the fast SQL filter path when there is no `this` reference in the WHERE
+                // expression; SQL filtering has no knowledge of the source note so `this.*` fields
+                // would evaluate incorrectly there.
+                let has_this_reference =
+                    source_note.is_some() && where_clause_uses_this(&where_clause.expr);
                 if page_rows_are_pristine
+                    && !has_this_reference
                     && query.query_type != super::DqlQueryType::Task
                     && where_clause.filters.is_some()
                 {
@@ -172,6 +187,7 @@ pub fn evaluate_parsed_dql(
                         &where_clause.expr,
                         query,
                         &note_lookup,
+                        source_note.as_ref(),
                         time_zone,
                         &mut diagnostics,
                     )?;
@@ -182,7 +198,12 @@ pub fn evaluate_parsed_dql(
                 for row in rows {
                     let mut values = Vec::with_capacity(keys.len());
                     for key in keys {
-                        let value = match row.evaluate(&key.expr, &note_lookup, time_zone) {
+                        let value = match row.evaluate_with_source(
+                            &key.expr,
+                            &note_lookup,
+                            time_zone,
+                            source_note.as_ref(),
+                        ) {
                             Ok(value) => value,
                             Err(error) => recover_unsupported_feature(
                                 &mut diagnostics,
@@ -366,12 +387,25 @@ impl ExecutionRow {
         note_lookup: &HashMap<String, NoteRecord>,
         time_zone: DataviewTimeZone,
     ) -> Result<Value, String> {
+        self.evaluate_with_source(expr, note_lookup, time_zone, None)
+    }
+
+    fn evaluate_with_source(
+        &self,
+        expr: &crate::expression::ast::Expr,
+        note_lookup: &HashMap<String, NoteRecord>,
+        time_zone: DataviewTimeZone,
+        source_note: Option<&NoteRecord>,
+    ) -> Result<Value, String> {
         let mut note = self.note.clone();
         note.properties = Value::Object(self.fields.clone());
         let formulas = BTreeMap::new();
-        let ctx = EvalContext::new(&note, &formulas)
+        let mut ctx = EvalContext::new(&note, &formulas)
             .with_note_lookup(note_lookup)
             .with_time_zone(time_zone);
+        if let Some(sn) = source_note {
+            ctx = ctx.with_this_note(sn);
+        }
         evaluate(expr, &ctx)
     }
 
@@ -449,11 +483,43 @@ fn task_rows_for_note(note: &NoteRecord) -> Vec<ExecutionRow> {
     }
 }
 
+/// Returns true if the expression tree contains a reference to `this` (the Dataview identifier
+/// for the note that contains the query).  Used to decide whether to fall back from the fast SQL
+/// filter path to the full expression evaluator, which can properly resolve `this.*`.
+fn where_clause_uses_this(expr: &crate::expression::ast::Expr) -> bool {
+    use crate::expression::ast::Expr;
+    match expr {
+        Expr::Identifier(name) => crate::expression::eval::normalize_field_name(name) == "this",
+        Expr::FieldAccess(receiver, _) => where_clause_uses_this(receiver),
+        Expr::IndexAccess(receiver, index) => {
+            where_clause_uses_this(receiver) || where_clause_uses_this(index)
+        }
+        Expr::FunctionCall(_, args) => args.iter().any(where_clause_uses_this),
+        Expr::MethodCall(receiver, _, args) => {
+            where_clause_uses_this(receiver) || args.iter().any(where_clause_uses_this)
+        }
+        Expr::BinaryOp(left, _, right) => {
+            where_clause_uses_this(left) || where_clause_uses_this(right)
+        }
+        Expr::UnaryOp(_, operand) => where_clause_uses_this(operand),
+        Expr::Lambda(_, body) => where_clause_uses_this(body),
+        Expr::Array(elements) => elements.iter().any(where_clause_uses_this),
+        Expr::Object(entries) => entries.iter().any(|(_, v)| where_clause_uses_this(v)),
+        Expr::Null
+        | Expr::Bool(_)
+        | Expr::Number(_)
+        | Expr::Str(_)
+        | Expr::Regex { .. }
+        | Expr::FormulaRef(_) => false,
+    }
+}
+
 fn apply_where_expression(
     rows: Vec<ExecutionRow>,
     expr: &crate::expression::ast::Expr,
     query: &DqlQuery,
     note_lookup: &HashMap<String, NoteRecord>,
+    source_note: Option<&NoteRecord>,
     time_zone: DataviewTimeZone,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
@@ -461,7 +527,7 @@ fn apply_where_expression(
     let mut directly_matched_task_ids = HashSet::new();
 
     for row in rows {
-        let value = match row.evaluate(expr, note_lookup, time_zone) {
+        let value = match row.evaluate_with_source(expr, note_lookup, time_zone, source_note) {
             Ok(value) => value,
             Err(error) => recover_unsupported_feature(
                 diagnostics,
@@ -1788,6 +1854,62 @@ FROM "Notes""#,
         assert_eq!(
             result.rows,
             vec![serde_json::json!({ "local": "2026-04-18 00:00" })]
+        );
+    }
+
+    #[test]
+    fn this_file_name_resolves_to_source_note_not_current_row() {
+        // `this.file.name` should reference the note *containing* the query, not each row being
+        // evaluated.  `WHERE file.name != this.file.name` must exclude only the source note.
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir");
+        // Three notes: the query lives in "Dashboard.md" (the source note).
+        // The WHERE clause should return only the two non-Dashboard notes.
+        fs::write(vault_root.join("Dashboard.md"), "# Dashboard\n").expect("Dashboard note");
+        fs::write(vault_root.join("Alpha.md"), "# Alpha\n").expect("Alpha note");
+        fs::write(vault_root.join("Beta.md"), "# Beta\n").expect("Beta note");
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let result = evaluate_dql(
+            &paths,
+            "TABLE WITHOUT ID file.name AS Name\nWHERE file.name != this.file.name\nSORT file.name ASC",
+            Some("Dashboard.md"),
+        )
+        .expect("DQL with this.file.name should evaluate");
+
+        let names: Vec<&str> = result
+            .rows
+            .iter()
+            .filter_map(|row| row["Name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["Alpha", "Beta"], "Dashboard should be excluded");
+    }
+
+    #[test]
+    fn this_file_name_without_current_file_falls_back_to_row() {
+        // When no current_file is provided, `this` falls back to the current row (prior behaviour).
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir");
+        fs::write(vault_root.join("Alpha.md"), "# Alpha\n").expect("Alpha note");
+
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        // Without a source file, `this.file.name != file.name` is always false.
+        let result = evaluate_dql(
+            &paths,
+            "TABLE WITHOUT ID file.name AS Name\nWHERE file.name != this.file.name",
+            None,
+        )
+        .expect("DQL should evaluate");
+
+        assert_eq!(
+            result.result_count, 0,
+            "without source note, this == current row so WHERE is always false"
         );
     }
 

@@ -518,6 +518,7 @@ pub(crate) fn evaluate_callback(
         time_zone: ctx.time_zone,
         locals: ctx.locals.clone(),
         note_lookup: ctx.note_lookup,
+        this_note: ctx.this_note,
     };
 
     if let Expr::Lambda(params, body) = expr {

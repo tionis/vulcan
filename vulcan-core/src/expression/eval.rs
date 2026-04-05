@@ -21,6 +21,10 @@ pub struct EvalContext<'a> {
     /// Vault-wide note index keyed by `file_name` (basename without extension).
     /// Used to resolve `.asFile()` and `.linksTo()` on link values.
     pub note_lookup: Option<&'a HashMap<String, NoteRecord>>,
+    /// The note that contains the query (for Dataview `this` semantics).
+    /// When set, `this` resolves to this note rather than the current row's note.
+    /// Used so that `WHERE file.name != this.file.name` filters out the query-containing file.
+    pub this_note: Option<&'a NoteRecord>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -33,6 +37,7 @@ impl<'a> EvalContext<'a> {
             time_zone: DataviewTimeZone::default(),
             locals: BTreeMap::new(),
             note_lookup: None,
+            this_note: None,
         }
     }
 
@@ -45,6 +50,13 @@ impl<'a> EvalContext<'a> {
     #[must_use]
     pub fn with_time_zone(mut self, time_zone: DataviewTimeZone) -> Self {
         self.time_zone = time_zone;
+        self
+    }
+
+    /// Set the note that contains the query, used to resolve `this` in expressions.
+    #[must_use]
+    pub fn with_this_note(mut self, this_note: &'a NoteRecord) -> Self {
+        self.this_note = Some(this_note);
         self
     }
 }
@@ -82,7 +94,12 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
             }
             let normalized_name = normalize_field_name(name);
             if normalized_name == "this" {
-                return Ok(note_to_page_object(ctx.note));
+                // In Dataview, `this` refers to the note that *contains* the query, not the
+                // current row being evaluated.  When a source note is provided via `this_note`
+                // we use it; otherwise fall back to the current row (e.g. in Bases formulas
+                // where there is no separate source context).
+                let this_note = ctx.this_note.unwrap_or(ctx.note);
+                return Ok(note_to_page_object(this_note));
             }
             // `file` standalone → basename string (usable as link target)
             if normalized_name == "file" {
