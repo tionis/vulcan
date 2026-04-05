@@ -2110,6 +2110,7 @@ fn write_tasks_import_fixture(vault_root: &Path) {
     .expect("tasks plugin config should be written");
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_tasknotes_import_fixture(vault_root: &Path) {
     fs::create_dir_all(vault_root.join(".obsidian/plugins/tasknotes"))
         .expect("tasknotes plugin dir should exist");
@@ -2587,6 +2588,7 @@ fn config_import_tasks_json_output_writes_config_and_reports_mapping() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -2856,6 +2858,7 @@ fn tasks_list_json_output_includes_tasknotes_file_tasks() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn tasks_list_json_output_supports_source_filters_and_archived_toggle() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -3545,6 +3548,7 @@ fn tasks_track_log_and_summary_json_output_report_totals() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn tasks_pomodoro_start_stop_and_status_json_output_manage_task_storage() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -9324,7 +9328,7 @@ fn run_json_output_enforces_sandbox_levels_and_supports_configured_script_roots(
     .expect("config should be written");
     fs::write(
         vault_root.join("Runtime/Scripts/mutate.js"),
-        r###"
+        r##"
         const created = vault.transaction((tx) => {
           const note = tx.create("Scratch", { content: "# Scratch\n\n## Log\n" });
           tx.append("Scratch", "Follow-up", { heading: "Log" });
@@ -9333,7 +9337,7 @@ fn run_json_output_enforces_sandbox_levels_and_supports_configured_script_roots(
           return note;
         });
         ({ path: created.path, headings: vault.note("Scratch").headings.length, hasStatus: vault.note("Scratch").frontmatter.status !== undefined });
-        "###,
+        "##,
     )
     .expect("script should be written");
 
@@ -10354,8 +10358,13 @@ fn write_test_editor(base: &Path, body: &str) -> String {
     #[cfg(windows)]
     {
         let script = base.join("editor.cmd");
-        fs::write(&script, format!("@echo off\r\necho {body}> %1\r\n"))
-            .expect("editor script should be written");
+        let payload = base.join("editor-payload.txt");
+        fs::write(&payload, body).expect("editor payload should be written");
+        fs::write(
+            &script,
+            format!("@echo off\r\ntype \"{}\" > \"%~1\"\r\n", payload.display()),
+        )
+        .expect("editor script should be written");
         format!("cmd /C {}", script.display())
     }
 }
