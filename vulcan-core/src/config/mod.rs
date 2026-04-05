@@ -8625,7 +8625,7 @@ time_format = "HH:mm:ss"
             .expect("tasks plugin dir should be created");
         fs::write(
             vault_root.join(".obsidian/plugins/obsidian-tasks-plugin/data.json"),
-            r###"{
+            r##"{
               "globalFilter": "#task",
               "globalQuery": "",
               "removeGlobalFilter": true,
@@ -8641,7 +8641,7 @@ time_format = "HH:mm:ss"
                   { "symbol": "~", "name": "Parked", "type": "NON_TASK" }
                 ]
               }
-            }"###,
+            }"##,
         )
         .expect("tasks config should be written");
 
@@ -8677,6 +8677,7 @@ time_format = "HH:mm:ss"
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn tasknotes_plugin_settings_seed_tasknotes_config() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
@@ -8947,6 +8948,7 @@ time_format = "HH:mm:ss"
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn vulcan_overrides_replace_tasknotes_settings() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
@@ -9305,7 +9307,7 @@ default_mode = "off"
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
         fs::write(
             vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
-            r##"{
+            r#"{
               "command_timeout": 12,
               "templates_folder": "Templater/Templates",
               "templates_pairs": [["slugify", "bun run slugify"], ["", ""]],
@@ -9329,7 +9331,7 @@ default_mode = "off"
               "enabled_templates_hotkeys": ["Daily", ""],
               "startup_templates": ["Startup", ""],
               "intellisense_render": 4
-            }"##,
+            }"#,
         )
         .expect("templater config should be written");
         fs::write(
@@ -9392,6 +9394,7 @@ default_mode = "off"
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn import_quickadd_plugin_config_preserves_existing_sections_and_is_idempotent() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
@@ -9783,6 +9786,7 @@ default_mode = "off"
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn import_tasknotes_plugin_config_preserves_existing_sections_and_is_idempotent() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();

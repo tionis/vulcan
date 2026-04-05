@@ -1279,23 +1279,28 @@ mod tests {
 
     use crate::config::{
         TaskNotesConfig, TaskNotesDateDefault, TaskNotesDefaultReminderConfig,
-        TaskNotesDefaultReminderType, TaskNotesIdentificationMethod, TaskNotesRecurrenceDefault,
-        TaskNotesReminderAnchor, TaskNotesReminderDirection, TaskNotesReminderUnit,
-        TaskNotesUserFieldConfig, TaskNotesUserFieldType,
+        TaskNotesDefaultReminderType, TaskNotesFieldMapping, TaskNotesIdentificationMethod,
+        TaskNotesRecurrenceDefault, TaskNotesReminderAnchor, TaskNotesReminderDirection,
+        TaskNotesReminderUnit, TaskNotesUserFieldConfig, TaskNotesUserFieldType,
     };
 
     use super::*;
 
     #[test]
     fn extracts_tag_identified_tasknotes_with_mapped_fields() {
-        let mut config = TaskNotesConfig::default();
-        config.field_mapping.due = "deadline".to_string();
-        config.user_fields = vec![TaskNotesUserFieldConfig {
-            id: "effort".to_string(),
-            display_name: "Effort".to_string(),
-            key: "effort".to_string(),
-            field_type: TaskNotesUserFieldType::Number,
-        }];
+        let config = TaskNotesConfig {
+            field_mapping: TaskNotesFieldMapping {
+                due: "deadline".to_string(),
+                ..TaskNotesFieldMapping::default()
+            },
+            user_fields: vec![TaskNotesUserFieldConfig {
+                id: "effort".to_string(),
+                display_name: "Effort".to_string(),
+                key: "effort".to_string(),
+                field_type: TaskNotesUserFieldType::Number,
+            }],
+            ..TaskNotesConfig::default()
+        };
 
         let properties = json!({
             "title": "Write docs",
@@ -1333,8 +1338,10 @@ mod tests {
 
     #[test]
     fn supports_property_identification_with_status_priority_fallback() {
-        let mut config = TaskNotesConfig::default();
-        config.identification_method = TaskNotesIdentificationMethod::Property;
+        let config = TaskNotesConfig {
+            identification_method: TaskNotesIdentificationMethod::Property,
+            ..TaskNotesConfig::default()
+        };
 
         let fallback = json!({
             "title": "Fallback task",
@@ -1349,8 +1356,11 @@ mod tests {
         )
         .is_some());
 
-        config.task_property_name = Some("isTask".to_string());
-        config.task_property_value = Some("yes".to_string());
+        let explicit_config = TaskNotesConfig {
+            task_property_name: Some("isTask".to_string()),
+            task_property_value: Some("yes".to_string()),
+            ..config.clone()
+        };
         let explicit = json!({
             "title": "Explicit task",
             "status": "open",
@@ -1361,7 +1371,7 @@ mod tests {
             "TaskNotes/Tasks/Explicit.md",
             "Explicit",
             &explicit,
-            &config
+            &explicit_config
         )
         .is_some());
 
@@ -1371,13 +1381,21 @@ mod tests {
             "priority": "normal",
             "isTask": "no"
         });
-        assert!(extract_tasknote("Projects/Project.md", "Project", &not_a_task, &config).is_none());
+        assert!(extract_tasknote(
+            "Projects/Project.md",
+            "Project",
+            &not_a_task,
+            &explicit_config
+        )
+        .is_none());
     }
 
     #[test]
     fn excludes_configured_folders_and_computes_archived_tag() {
-        let mut config = TaskNotesConfig::default();
-        config.excluded_folders = vec!["TaskNotes/Archive".to_string()];
+        let config = TaskNotesConfig {
+            excluded_folders: vec!["TaskNotes/Archive".to_string()],
+            ..TaskNotesConfig::default()
+        };
 
         let archived = json!({
             "title": "Archived task",
@@ -1456,8 +1474,10 @@ mod tests {
 
     #[test]
     fn honors_nlp_default_to_scheduled_for_ambiguous_dates() {
-        let mut config = TaskNotesConfig::default();
-        config.nlp_default_to_scheduled = true;
+        let config = TaskNotesConfig {
+            nlp_default_to_scheduled: true,
+            ..TaskNotesConfig::default()
+        };
 
         let parsed = parse_tasknote_natural_language(
             "Plan sprint next monday",
@@ -1472,8 +1492,10 @@ mod tests {
 
     #[test]
     fn parses_german_natural_language_dates_and_priority_keywords() {
-        let mut config = TaskNotesConfig::default();
-        config.nlp_language = "de".to_string();
+        let config = TaskNotesConfig {
+            nlp_language: "de".to_string(),
+            ..TaskNotesConfig::default()
+        };
 
         let parsed = parse_tasknote_natural_language(
             "Bericht morgen @arbeit #wichtig dringend",
@@ -1493,15 +1515,19 @@ mod tests {
         let reference_ms =
             parse_date_like_string("2026-04-04").expect("reference date should parse");
 
-        let mut french = TaskNotesConfig::default();
-        french.nlp_language = "fr".to_string();
+        let french = TaskNotesConfig {
+            nlp_language: "fr".to_string(),
+            ..TaskNotesConfig::default()
+        };
         let french_parsed =
             parse_tasknote_natural_language("Planifier revue demain", &french, reference_ms);
         assert_eq!(french_parsed.title, "Planifier revue");
         assert_eq!(french_parsed.due.as_deref(), Some("2026-04-05"));
 
-        let mut spanish = TaskNotesConfig::default();
-        spanish.nlp_language = "es".to_string();
+        let spanish = TaskNotesConfig {
+            nlp_language: "es".to_string(),
+            ..TaskNotesConfig::default()
+        };
         let spanish_parsed = parse_tasknote_natural_language(
             "Planificar entrega proximo lunes",
             &spanish,

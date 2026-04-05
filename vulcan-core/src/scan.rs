@@ -2887,6 +2887,17 @@ mod tests {
         Option<String>,
         String,
     );
+    type TasknoteProjectionRow = (
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        String,
+        String,
+    );
 
     fn assert_dataview_fixture_row_counts(connection: &rusqlite::Connection) {
         assert_eq!(count_rows(connection, "list_items"), 6);
@@ -3532,17 +3543,7 @@ mod tests {
         let connection = database.connection();
         assert_eq!(count_rows(connection, "tasknotes_tasks"), 2);
 
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            String,
-            i64,
-            String,
-            String,
-            String,
-            String,
-        )> = connection
+        let rows: Vec<TasknoteProjectionRow> = connection
             .prepare(
                 "
                 SELECT documents.path,

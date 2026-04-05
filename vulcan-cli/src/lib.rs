@@ -14448,8 +14448,10 @@ fn normalize_config_import_report(
 }
 
 fn relativize_config_import_path(paths: &VaultPaths, path: &Path) -> PathBuf {
-    path.strip_prefix(paths.vault_root())
-        .map_or_else(|_| path.to_path_buf(), Path::to_path_buf)
+    let relative_or_original = path
+        .strip_prefix(paths.vault_root())
+        .map_or_else(|_| path.to_path_buf(), Path::to_path_buf);
+    PathBuf::from(relative_or_original.to_string_lossy().replace('\\', "/"))
 }
 
 fn render_config_import_value(value: &Value) -> Result<String, CliError> {

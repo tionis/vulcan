@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_expands_namespaces_and_lists_ambiguous_matches() -> Result<(), CliError> {
+    fn completion_expands_namespaces_and_lists_ambiguous_matches() {
         let helper = ReplHelper::new(REPL_COMPLETIONS);
 
         let (graph_start, graph_matches) = helper
@@ -587,7 +587,6 @@ mod tests {
             .expect("completion candidates should exist");
         assert!(matches.iter().any(|item| item == "vault.note("));
         assert!(matches.iter().any(|item| item == "vault.graph."));
-        Ok(())
     }
 
     #[test]
