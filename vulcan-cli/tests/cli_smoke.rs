@@ -10359,7 +10359,12 @@ fn write_test_editor(base: &Path, body: &str) -> String {
     {
         let script = base.join("editor.cmd");
         let payload = base.join("editor-payload.txt");
-        fs::write(&payload, body).expect("editor payload should be written");
+        let payload_body = if body.ends_with('\n') {
+            body.to_string()
+        } else {
+            format!("{body}\r\n")
+        };
+        fs::write(&payload, payload_body).expect("editor payload should be written");
         fs::write(
             &script,
             format!("@echo off\r\ntype \"{}\" > \"%~1\"\r\n", payload.display()),
