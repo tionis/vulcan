@@ -8987,10 +8987,22 @@ fn resolve_template_file(
     templates: &[TemplateCandidate],
     name: &str,
 ) -> Result<TemplateCandidate, CliError> {
-    if let Some(template) = templates
-        .iter()
-        .find(|template| template.name == name || template.name.trim_end_matches(".md") == name)
-    {
+    // Normalize the requested name: strip .md suffix and normalize path separators
+    let name_normalized = name.trim_end_matches(".md").replace('\\', "/");
+
+    if let Some(template) = templates.iter().find(|template| {
+        let stem = template.name.trim_end_matches(".md");
+        let display_stem = template
+            .display_path
+            .trim_end_matches(".md")
+            .replace('\\', "/");
+        // Match by bare filename (e.g. "daily") or by display_path which includes
+        // directory components (e.g. "00-09 Templates/daily")
+        stem == name_normalized
+            || stem == name
+            || display_stem == name_normalized
+            || display_stem == name
+    }) {
         return Ok(template.clone());
     }
 
@@ -9020,28 +9032,55 @@ fn list_templates_in_directory(
         return Ok(Vec::new());
     }
 
-    let mut templates = fs::read_dir(template_dir)
-        .map_err(CliError::operation)?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            (path.extension().and_then(|ext| ext.to_str()) == Some("md")).then(|| {
-                let name = path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .map(ToOwned::to_owned)?;
-                Some(TemplateCandidate {
-                    display_path: format!("{display_root}/{name}"),
-                    name,
-                    source,
-                    absolute_path: path,
-                    warning: None,
-                })
-            })?
-        })
-        .collect::<Vec<_>>();
-    templates.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut templates = Vec::new();
+    collect_templates_recursive(
+        template_dir,
+        template_dir,
+        display_root,
+        source,
+        &mut templates,
+    )?;
+    templates.sort_by(|left, right| left.display_path.cmp(&right.display_path));
     Ok(templates)
+}
+
+fn collect_templates_recursive(
+    base_dir: &Path,
+    current_dir: &Path,
+    display_root: &str,
+    source: &'static str,
+    out: &mut Vec<TemplateCandidate>,
+) -> Result<(), CliError> {
+    let entries = fs::read_dir(current_dir).map_err(CliError::operation)?;
+    for entry in entries.filter_map(std::result::Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_templates_recursive(base_dir, &path, display_root, source, out)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            let Some(name) = path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .map(ToOwned::to_owned)
+            else {
+                continue;
+            };
+            // relative path from the template directory root, using forward slashes
+            let rel = path
+                .strip_prefix(base_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let display_path = format!("{display_root}/{rel}");
+            out.push(TemplateCandidate {
+                name,
+                display_path,
+                source,
+                absolute_path: path,
+                warning: None,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn template_output_path(
@@ -21317,6 +21356,7 @@ mod tests {
             Command::Vectors {
                 command: VectorsCommand::Duplicates {
                     threshold: 0.95,
+                    limit: 50,
                     export: ExportArgs::default(),
                 },
             }
@@ -21809,5 +21849,99 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.name == "related"));
+    }
+
+    #[test]
+    fn resolve_template_file_matches_by_bare_name() {
+        // Build a minimal set of candidates
+        let candidates = vec![
+            TemplateCandidate {
+                name: "daily.md".to_string(),
+                display_path: ".vulcan/templates/daily.md".to_string(),
+                source: "vulcan",
+                absolute_path: PathBuf::from(".vulcan/templates/daily.md"),
+                warning: None,
+            },
+            TemplateCandidate {
+                name: "weekly.md".to_string(),
+                display_path: ".vulcan/templates/weekly.md".to_string(),
+                source: "vulcan",
+                absolute_path: PathBuf::from(".vulcan/templates/weekly.md"),
+                warning: None,
+            },
+        ];
+
+        // Match by bare name (no extension)
+        let paths = VaultPaths::new(PathBuf::from("/tmp/fake-vault"));
+        let result = resolve_template_file(&paths, &candidates, "daily");
+        assert!(result.is_ok(), "should match by bare name");
+        assert_eq!(result.unwrap().name, "daily.md");
+    }
+
+    #[test]
+    fn resolve_template_file_matches_by_display_path_with_directory() {
+        // Simulate a template whose display_path includes a directory component, as happens
+        // when the Templater/Obsidian folder is a subdirectory like
+        // "00-09 Management & Meta/05 Templates".
+        let candidates = vec![TemplateCandidate {
+            name: "daily.md".to_string(),
+            display_path: "00-09 Management & Meta/05 Templates/daily.md".to_string(),
+            source: "templater",
+            absolute_path: PathBuf::from("00-09 Management & Meta/05 Templates/daily.md"),
+            warning: None,
+        }];
+
+        let paths = VaultPaths::new(PathBuf::from("/tmp/fake-vault"));
+
+        // Match by full directory path without extension (what periodic config provides)
+        let r1 = resolve_template_file(
+            &paths,
+            &candidates,
+            "00-09 Management & Meta/05 Templates/daily",
+        );
+        assert!(r1.is_ok(), "should match by display_path without .md");
+
+        // Match by full directory path with extension
+        let r2 = resolve_template_file(
+            &paths,
+            &candidates,
+            "00-09 Management & Meta/05 Templates/daily.md",
+        );
+        assert!(r2.is_ok(), "should match by display_path with .md");
+
+        // Match by bare name still works
+        let r3 = resolve_template_file(&paths, &candidates, "daily");
+        assert!(r3.is_ok(), "bare name should still match");
+    }
+
+    #[test]
+    fn list_templates_in_directory_scans_subdirectories() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let root = tmp.path();
+
+        // Create a nested template
+        let sub = root.join("subdir");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("nested.md"), "# Nested").unwrap();
+        // Also a top-level one
+        fs::write(root.join("top.md"), "# Top").unwrap();
+        // Non-markdown file should be ignored
+        fs::write(root.join("ignored.txt"), "ignore me").unwrap();
+
+        let templates =
+            list_templates_in_directory(root, "Templates", "test").expect("should list templates");
+
+        assert_eq!(templates.len(), 2, "should find both .md files");
+        let names: Vec<&str> = templates.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"nested.md"), "nested.md should be found");
+        assert!(names.contains(&"top.md"), "top.md should be found");
+
+        let nested = templates.iter().find(|t| t.name == "nested.md").unwrap();
+        assert!(
+            nested.display_path.contains("subdir"),
+            "display_path should include subdir"
+        );
     }
 }

@@ -799,6 +799,12 @@ pub enum VectorsCommand {
             help = "Minimum cosine similarity threshold for duplicate candidates"
         )]
         threshold: f32,
+        #[arg(
+            long,
+            default_value_t = 50,
+            help = "Maximum number of duplicate pairs to report"
+        )]
+        limit: usize,
         #[command(flatten)]
         export: ExportArgs,
     },
