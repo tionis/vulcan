@@ -8,15 +8,16 @@ Headless CLI and multi-vault platform for Obsidian vaults and plain Markdown dir
 - `docs/ROADMAP.md` — Phased task breakdown with checkboxes. Update task status as you complete work.
 - `docs/investigations/` — Dependency research (pulldown-cmark gaps, sqlite-vec build, parser comparison).
 - `references/` — Plugin source repos and documentation (obsidian-dataview, Templater, obsidian-kanban, quickadd, tasknotes, obsidian-skills). Use these as authoritative references when implementing plugin compatibility.
+- `docs/assistant/` — AGENTS.md template for user vaults and default skills shipped with Vulcan (relevant for 9.12 and 9.18.7 work).
 
 ## Architecture
 
 Three-layer model: vault (source of truth) → SQLite cache (rebuildable) → search indexes (derived).
 
 Cargo workspace with crates:
-- `vulcan-core` — Parser, indexer, data model, SQLite cache, file scanning, config, git integration, expression evaluator, query AST
+- `vulcan-core` — Parser, indexer, data model, SQLite cache, file scanning, config, git integration, expression evaluator, query AST, DQL, DataviewJS (rquickjs), Kanban, TaskNotes, periodic notes, refactoring
 - `vulcan-embed` — Embedding provider trait, OpenAI-compatible provider, vector store abstraction
-- `vulcan-cli` — CLI binary, command handlers, output formatting, TUI (note picker, bases TUI, browse TUI)
+- `vulcan-cli` — CLI binary, command handlers, output formatting, TUI (note picker, bases TUI, browse TUI), JS REPL, template engine, serve
 - `vulcan-daemon` (planned) — axum-based HTTP daemon, multi-vault registry, middleware
 - `vulcan-sync` (planned) — Sync backend trait and implementations
 
@@ -32,6 +33,7 @@ Cargo workspace with crates:
 - `vulcan-core` stays synchronous. Async boundaries live in the daemon layer (`spawn_blocking`).
 - Shell out to `git` CLI for git operations — avoid libgit2.
 - Every CLI command must work without the daemon running (direct SQLite access).
+- **JS sandbox tiers** (from most to least restrictive): `strict` (pure computation only, no I/O), `fs` (adds read-only vault file access), `net` (adds `web.search()` and `web.fetch()`), `none` (unrestricted). Default is `strict`. Scripts and DataviewJS blocks inherit the configured tier; web tools require `net` or higher.
 
 ## Tech stack
 
@@ -40,52 +42,59 @@ Cargo workspace with crates:
 - `rusqlite` with `bundled` feature, WAL mode, `user_version` pragma for migrations
 - `sqlite-vec` 0.1.x for vector search (statically compiled from bundled C source)
 - `blake3` for content hashing, `clap` for CLI, `ratatui` + `crossterm` for TUI
+- `rquickjs` for DataviewJS/Templater JS sandbox (behind `js_runtime` feature flag)
+- `reqwest` for web search/fetch (blocking client, gated on `net` sandbox tier)
+- **Feature flag:** `js_runtime` (default on). Disables rquickjs, DataviewJS, Templater JS execution, and `web.*` JS APIs when off. Build without it via `cargo build --no-default-features`. All JS-dependent code must be gated with `#[cfg(feature = "js_runtime")]`.
 - Planned: `axum` + `tokio` for daemon, `automerge` for collaborative editing
 
 ## Current implementation status
 
-Phases 1–8 and 9.1–9.7 are complete. The codebase has:
+Phases 1–8, 9.1–9.11, 9.13, 9.15–9.18 are complete. Phase 9.12 (AI assistant) and 9.19 (CLI polish) are not yet started. The codebase has:
 - Full vault indexing with incremental scan, link resolution, graph queries, FTS5 search, vector search
 - Bases evaluator with full expression language, formulas, and interactive TUI
 - Canonical query AST shared across CLI, Bases, and API surfaces
 - Query-driven mutations (`update`, `unset`) with dry-run support
 - Browse TUI, note picker, auto-commit, templates, inbox, diff
 - Performance optimizations (Aho-Corasick, graph caching, batch filtering)
+- Dataview: inline fields, DQL parser/evaluator, DataviewJS (rquickjs sandbox), `file.*` metadata, ~60 built-in functions
+- Templater: `<% %>` syntax, full `tp.*` API (native + JS modules), settings import
+- Tasks plugin: query DSL, recurring tasks (RRULE), dependencies, custom statuses
+- Kanban: board parsing, archive, CLI surface, settings import
+- TaskNotes: task-as-note files, NLP creation, time tracking, pomodoro, reminders, Bases integration
+- Periodic notes: daily/weekly/monthly with create/open/append/list, structured events, ICS export
+- Unified settings import: `vulcan config import --all` with conflict detection, batch import
+- CLI redesign (9.18): note CRUD (`note get/set/create/append/patch`), refactor commands, JS runtime with REPL, web tools (`web search`/`web fetch`), git ops, `describe --format mcp|openai-tools`, integrated `help` system
+- QuickAdd: capture format compatibility and settings import
 
-## Next implementation phases (Phase 9.8+)
+## Next implementation phases
 
-See "Phase 9 implementation order" in `docs/ROADMAP.md` for the full dependency graph. Summary:
+See `docs/ROADMAP.md` for the full dependency graph and detailed task lists.
 
-**Plugin compatibility (Waves 3–4):**
-1. **9.8 Dataview** (largest) — Inline fields, type inference, `file.*` metadata, DQL parser/evaluator, ~60 built-in functions, DataviewJS sandbox (behind `js_runtime` feature flag)
-2. **9.9 Templater** — `<% %>` template syntax, `tp.*` API modules, reuses DataviewJS sandbox for JS
-3. **9.10 Tasks plugin** — `tasks` code block DSL, recurring tasks (RRULE), dependencies, custom statuses
-4. **9.11 Kanban** — Board parsing, configurable date/time triggers, archive, CLI commands
-5. **9.16 Periodic notes** — Daily/weekly/monthly note infrastructure (shared dependency for many plugins)
+**9.12 Embedded AI assistant:** Full vault-native agent — OpenAI-compatible inference, tiered tool exposure (core tools always in prompt, rest via gradual discovery through `describe`/`help`), vault-aware system prompt, conversation persistence as vault notes (gemini-scribe callout format), context budgeting, prompts and skills as executable knowledge (markdown files that teach the LLM how to use Vulcan). Advanced skills can include executable JS scripts with `#!/usr/bin/env -S vulcan run --script` shebangs.
 
-**CLI for LLMs (Wave 5):** Note CRUD (`note get/set/create/append/patch`), query enhancements, web tools, git ops, polished `describe` with `--format mcp|openai-tools` for tool schema export, `help --output json` for machine consumption, default skills shipped with Vulcan, vault AGENTS.md template. This wave makes the CLI usable as a tool surface by any LLM harness (Claude Code, Codex, Gemini CLI) without the embedded agent.
+**9.12.8 Chat platform adapters:** Telegram first (internal, behind cargo feature flag), then Discord/Signal/Matrix. Chat platforms become mobile interfaces to the vault with per-user/per-platform sandboxed tool permissions.
 
-**Embedded AI assistant (Wave 6):** Full vault-native agent — OpenAI-compatible inference, tiered tool exposure (core tools always in prompt, rest via gradual discovery through `describe`/`help`), vault-aware system prompt, conversation persistence as vault notes (gemini-scribe callout format), context budgeting, prompts and skills as executable knowledge (markdown files that teach the LLM how to use Vulcan). Advanced skills can include executable JS scripts with `#!/usr/bin/env -S vulcan run --script` shebangs — these are runnable by external harnesses as plain executables.
-
-**Chat platform adapters (Wave 7):** Telegram first (internal, behind cargo feature flag), then Discord/Signal/Matrix. Chat platforms become mobile interfaces to the vault with per-user/per-platform sandboxed tool permissions.
-
-**Other:**
-6. **9.13 QuickAdd** — Investigation phase for macro/capture automation
-7. **9.15 TaskNotes** — Task-as-note files, NLP creation, Bases view integration
-8. **9.17 Unified import** — `vulcan config import --all` for all plugin settings
-
-Each plugin phase includes a settings importer reading from `.obsidian/plugins/<plugin>/data.json`.
+**9.19 CLI polish:** Bug fixes, `vulcan run` improvements, shell completions, help polish, DQL completeness, missing commands, command reorg, scriptability, web search backend expansion (Exa/Tavily/Brave), settings TUI, event-driven plugin system, permission layer.
 
 ## Key modules for new work
 
-- `vulcan-core/src/expression/` — Bases expression evaluator (tokenizer, parser, evaluator). Foundation for Dataview expressions.
-- `vulcan-core/src/bases.rs` — Bases file parsing, evaluation, view management. Extend with custom source types (4.5.1).
+- `vulcan-core/src/expression/` — Bases expression evaluator (tokenizer, parser, evaluator). Shared with Dataview expressions.
+- `vulcan-core/src/bases.rs` — Bases file parsing, evaluation, view management.
 - `vulcan-core/src/query.rs` — Canonical query AST. DQL compiles to this.
-- `vulcan-core/src/parser/` — Markdown parser pipeline. Extend for inline fields, list item extraction.
+- `vulcan-core/src/dql/` — DQL parser and evaluator.
+- `vulcan-core/src/parser/` — Markdown parser pipeline, inline field extraction, list item/task extraction.
+- `vulcan-core/src/dataview_js.rs` — DataviewJS rquickjs sandbox, `dv.*` and `web.*` JS APIs.
 - `vulcan-core/src/properties.rs` — Property storage and typed projections.
 - `vulcan-core/src/config/mod.rs` — `VaultConfig` struct. New config sections go here.
-- `vulcan-cli/src/bases_tui.rs` — Bases TUI with editor handoff. Shared TUI utilities extracted here.
+- `vulcan-core/src/kanban.rs` — Kanban board parsing and evaluation.
+- `vulcan-core/src/tasknotes.rs` — TaskNotes file format, NLP creation, time tracking.
+- `vulcan-core/src/periodic.rs` — Periodic note discovery, resolution, and structured events.
+- `vulcan-core/src/refactor.rs` — Vault-wide refactoring passes and suggestions.
+- `vulcan-cli/src/commands/` — Command handler modules (one per command group).
+- `vulcan-cli/src/bases_tui.rs` — Bases TUI with editor handoff.
 - `vulcan-cli/src/browse_tui.rs` — File browser TUI.
+- `vulcan-cli/src/js_repl.rs` — JavaScript REPL for `vulcan run --repl`.
+- `vulcan-cli/src/template_engine.rs` — Templater-compatible template processing.
 - `vulcan-cli/src/serve.rs` — Single-vault HTTP server. Will be superseded by daemon.
 
 ## Conventions
@@ -98,7 +107,24 @@ Each plugin phase includes a settings importer reading from `.obsidian/plugins/<
 - Daemon REST API response format matches CLI `--output json` format.
 - Auto-commit is always opt-in and suppressible with `--no-commit`.
 
-## Before committing
+## Workflow
+
+### Write tests for every change
+
+Every new feature, bug fix, or behavioral change must include tests. Do not defer testing to a later commit.
+
+- **New functions/modules:** add unit tests in the same file or a `tests` submodule.
+- **New CLI commands or changed output:** add or update integration tests (often snapshot-based JSON output tests in `vulcan-cli/tests/`).
+- **Parser or indexer changes:** add test cases to the relevant fixture vault or create a new fixture vault if needed.
+- **Bug fixes:** add a regression test that would have caught the bug.
+- **Config changes:** test both default values and explicit overrides.
+- If a change cannot be meaningfully tested (e.g. pure formatting), note why in the commit message.
+
+### Commit after each completed item
+
+Commit each discrete feature, fix, or roadmap item as its own commit once it passes all checks. Do not batch unrelated changes into a single commit. Each commit should be a self-contained, working state.
+
+### Before committing
 
 **Always run before committing or submitting changes:**
 
@@ -115,7 +141,7 @@ Fix any formatting, lint, or test failures before committing. Do not skip these 
 ## Testing
 
 - Unit tests for every module.
-- Integration tests against fixture vaults: `basic/`, `ambiguous-links/`, `mixed-properties/`, `broken-frontmatter/`, `move-rewrite/`, `bases/`, `dataview/`. Additional vaults planned for `templater/`, `tasks-plugin/`, `kanban/`, `tasknotes/`, `periodic/`, `ai-sessions/`.
+- Integration tests against fixture vaults: `basic/`, `ambiguous-links/`, `mixed-properties/`, `broken-frontmatter/`, `move-rewrite/`, `bases/`, `dataview/`, `attachments/`, `refactors/`, `suggestions/`, `tasknotes/`.
 - Reindex idempotency: index twice, assert identical state.
 - Move roundtrip: move then move back, assert original link text restored.
 - JSON output snapshot tests for CLI commands.
