@@ -3168,7 +3168,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 6. **9.19.6** (missing commands) — filling gaps, MCP server
 7. **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
 8. **9.19.9** (command clarity) — docs and naming, low effort
-9. **9.19.10** (web search backends) — Tavily/Brave, quick swap
+9. **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
 10. **9.19.7** (reorg) — after everything above is built, reorganize in one pass
 11. **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
 12. **9.19.12** (plugins) — after permissions design is clear
@@ -3579,16 +3579,19 @@ The command may not correctly toggle between TaskNotes-only and all-tasks (inclu
 - [ ] At minimum, add a clear error message when `vulcan notes get` or `vulcan note --where` is attempted: suggest the correct command
 - [ ] Long-term: absorb `notes` into `query` (see 9.19.7) to eliminate the confusion entirely
 
-#### 9.19.10 Web search backend migration
+#### 9.19.10 Web search backend expansion
 
-Kagi web search is in a closed beta. Switch the default backend to a more accessible alternative.
+Make the search backend an explicit enum (`SearchBackend`) and add support for additional providers beyond the current Kagi implementation.
 
-- [ ] Implement Tavily search backend (`SearchBackend` trait): `api_key_env = "TAVILY_API_KEY"`
+- [ ] Replace free-form `backend: String` with a `SearchBackend` enum (`Kagi`, `Exa`, `Tavily`, `Brave`) in config
+- [ ] Each variant defines its own `default_api_key_env()` and `default_base_url()` so users only need to set `backend = "exa"` and the rest auto-derives
+- [ ] Implement Exa search backend: `api_key_env = "EXA_API_KEY"`, `base_url = "https://api.exa.ai/search"`, auth via `x-api-key` header, JSON POST body
+- [ ] Implement Tavily search backend: `api_key_env = "TAVILY_API_KEY"`
 - [ ] Implement Brave Search backend: `api_key_env = "BRAVE_API_KEY"`
-- [ ] Change default backend order: Tavily (if key present) → Brave (if key present) → Kagi (if key present) → error with setup instructions
+- [ ] Change default backend order: Kagi (if key present) → Exa (if key present) → Tavily (if key present) → Brave (if key present) → error with setup instructions
 - [ ] For `web fetch`, evaluate Tavily Extract and Firecrawl as alternatives to the current readability-based extraction
-- [ ] Keep Kagi backend available for users who have access
-- [ ] Update config documentation with backend options
+- [ ] Keep Kagi as the default backend for backwards compatibility
+- [ ] Update config documentation with backend options and per-provider examples
 
 #### 9.19.11 Settings TUI
 
