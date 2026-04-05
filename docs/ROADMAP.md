@@ -3158,6 +3158,23 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 
 **Reference data sources:** The issues below were discovered using a private Obsidian vault (`~/wikis/mimir`). Relevant query examples from that vault are captured in the DQL test cases rather than referenced directly.
 
+**Recommended priority order** (within the Wave 6+ window where most 9.19 items land):
+
+1. **9.19.1** (bug fixes) — broken things first
+2. **9.19.5** (DQL completeness) — core functionality gap blocking real queries
+3. **9.19.4** (help polish) — first impression for new users
+4. **9.19.2** (run improvements) — developer experience, `--eval` is quick win
+5. **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
+6. **9.19.6** (missing commands) — filling gaps, MCP server
+7. **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
+8. **9.19.9** (command clarity) — docs and naming, low effort
+9. **9.19.10** (web search backends) — Tavily/Brave, quick swap
+10. **9.19.7** (reorg) — after everything above is built, reorganize in one pass
+11. **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
+12. **9.19.12** (plugins) — after permissions design is clear
+13. **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
+14. **9.19.14** (binary size) — informational, anytime
+
 #### 9.19.1 Bug fixes
 
 **Periodic template resolution is broken**
@@ -3388,22 +3405,15 @@ The `config` group currently only has `import`. Users need to inspect and modify
 
 - [ ] **`vulcan today`** — top-level alias for `vulcan daily today`. This is the single most common command; saving keystrokes matters.
 
-**MCP server mode and serve API parity**
+**MCP server mode**
 
-`index serve` exposes HTTP but only 8 read-only endpoints (`/search`, `/notes`, `/graph/stats`, `/related`, `/dataview/*`). The full CLI surface — note CRUD, tasks, refactor, git, web, templates, periodic notes, kanban, bases, vectors — is not accessible via the API. Additionally, there is no MCP transport for direct LLM harness integration.
+`index serve` exposes HTTP but only 8 read-only endpoints. There is no MCP transport for direct LLM harness integration. The HTTP API expansion to cover the full CLI surface (note CRUD, tasks, refactor, git, etc.) is deferred to **Phase 10.3** where it ships properly with axum, middleware, and multi-vault support — expanding the hand-rolled TCP server here would be throwaway work.
 
-- [ ] **Expand `index serve` HTTP API** to cover the full CLI tool surface, not just read operations. Priority endpoints:
-  - Note CRUD: `/note/get`, `/note/create`, `/note/set`, `/note/append`, `/note/patch`, `/note/delete`
-  - Tasks: `/tasks/list`, `/tasks/add`, `/tasks/show`, `/tasks/set`, `/tasks/complete`
-  - Refactor: `/refactor/rename-alias`, `/refactor/move`, etc.
-  - Query: `/query` (accepting both Vulcan DSL and DQL)
-  - Git: `/git/status`, `/git/log`, `/git/diff`, `/git/commit`
-  - Periodic: `/daily/today`, `/daily/append`
-- [ ] **`index serve --mcp`** — start an MCP server over stdio (JSON-RPC). Exposes the same tool surface as `describe --format mcp` but as a live server.
-- [ ] Alternatively, **`vulcan mcp`** as a dedicated top-level command if MCP and HTTP serve modes are sufficiently different.
+- [ ] **`vulcan mcp`** — start an MCP server over stdio (JSON-RPC). Exposes the full tool surface from `describe --format mcp` as a live server. Stdio-based, no HTTP server changes needed.
 - [ ] Reuse the `describe --format mcp` tool definitions as the MCP tool manifest
 - [ ] Support MCP tool calls by dispatching to the same command handlers used by the CLI
-- [ ] Both HTTP and MCP serve modes should respect the permission layer (9.19.13)
+- [ ] MCP server should respect the permission layer (9.19.13) via `--permissions <profile>`
+- [ ] Add `vulcan mcp` to the top-level command list (it's an integration point, not a subcommand of `index`)
 
 #### 9.19.7 Command reorganization
 
