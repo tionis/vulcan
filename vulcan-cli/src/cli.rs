@@ -2402,6 +2402,20 @@ pub enum Command {
         script_mode: bool,
         #[arg(
             long,
+            short = 'e',
+            value_name = "CODE",
+            action = clap::ArgAction::Append,
+            help = "Evaluate a JS expression and print the result (may be repeated)"
+        )]
+        eval: Vec<String>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Load and evaluate a JS file, then drop into the REPL"
+        )]
+        eval_file: Option<String>,
+        #[arg(
+            long,
             value_name = "DURATION",
             help = "Override the JS execution timeout (for example 500ms, 30s, or 2m)"
         )]
@@ -2413,6 +2427,11 @@ pub enum Command {
             help = "Select the JS sandbox level"
         )]
         sandbox: Option<String>,
+        #[arg(
+            long,
+            help = "Skip auto-loading .vulcan/scripts/startup.js even in trusted vaults"
+        )]
+        no_startup: bool,
     },
     #[command(
         about = "Fetch and search external web content",
@@ -2850,6 +2869,21 @@ Examples:
         #[arg(help = "Shell to generate completions for")]
         shell: Shell,
     },
+    #[command(about = "Manage vault trust for startup scripts and plugin execution")]
+    Trust {
+        #[command(subcommand)]
+        command: Option<TrustCommand>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum TrustCommand {
+    #[command(about = "Mark the current vault as trusted")]
+    Add,
+    #[command(about = "Remove trust from the current vault")]
+    Revoke,
+    #[command(about = "List all trusted vault paths")]
+    List,
 }
 
 #[derive(Debug, Clone, Parser)]

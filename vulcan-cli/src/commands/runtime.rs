@@ -37,20 +37,40 @@ pub(crate) fn handle_git_command(
     }
 }
 
+pub(crate) struct RunArgs<'a> {
+    pub script: Option<&'a str>,
+    pub script_mode: bool,
+    pub eval: &'a [String],
+    pub eval_file: Option<&'a str>,
+    pub timeout: Option<&'a str>,
+    pub sandbox: Option<&'a str>,
+    pub no_startup: bool,
+}
+
 pub(crate) fn handle_run_command(
     cli: &Cli,
     paths: &VaultPaths,
-    script: Option<&str>,
-    script_mode: bool,
-    timeout: Option<&str>,
-    sandbox: Option<&str>,
+    args: &RunArgs<'_>,
 ) -> Result<(), CliError> {
-    let timeout = crate::parse_run_timeout(timeout)?;
-    let sandbox = crate::parse_run_sandbox(sandbox)?;
-    if script.is_none() && io::stdin().is_terminal() {
-        js_repl::run_js_repl(paths, cli.output, timeout, sandbox)
+    let timeout = crate::parse_run_timeout(args.timeout)?;
+    let sandbox = crate::parse_run_sandbox(args.sandbox)?;
+
+    // --eval/-e: evaluate one or more code snippets sequentially and print each result.
+    if !args.eval.is_empty() {
+        for code in args.eval {
+            let result = crate::run_js_eval(paths, code, timeout, sandbox)?;
+            crate::print_dataview_js_result(cli.output, &result, false)?;
+        }
+        return Ok(());
+    }
+
+    // --eval-file: load a file into the JS context, then start the REPL.
+    if let Some(path) = args.eval_file {
+        js_repl::run_js_repl_with_preload(paths, cli.output, timeout, sandbox, path)
+    } else if args.script.is_none() && io::stdin().is_terminal() {
+        js_repl::run_js_repl(paths, cli.output, timeout, sandbox, args.no_startup)
     } else {
-        let result = crate::run_js_command(paths, script, script_mode, timeout, sandbox)?;
+        let result = crate::run_js_command(paths, args.script, args.script_mode, timeout, sandbox)?;
         crate::print_dataview_js_result(cli.output, &result, false)
     }
 }
