@@ -10,8 +10,8 @@ use crate::{Cli, CliError, OutputFormat, VectorQueueCommand, VectorsCommand};
 use vulcan_core::{
     cluster_vectors, drop_vector_model, index_vectors_with_progress, inspect_vector_queue,
     list_vector_models, query_related_notes, query_vector_neighbors, rebuild_vectors_with_progress,
-    repair_vectors_with_progress, vector_duplicates, ClusterQuery, RelatedNotesQuery, VaultPaths,
-    VectorDuplicatesQuery, VectorIndexQuery, VectorNeighborsQuery, VectorRebuildQuery,
+    repair_vectors_with_progress, vector_duplicates_with_progress, ClusterQuery, RelatedNotesQuery,
+    VaultPaths, VectorDuplicatesQuery, VectorIndexQuery, VectorNeighborsQuery, VectorRebuildQuery,
     VectorRepairQuery,
 };
 
@@ -221,16 +221,31 @@ pub(crate) fn handle_vectors_command(
             stdout_is_tty,
             use_stdout_color,
         ),
-        VectorsCommand::Duplicates { threshold, export } => {
-            let report = vector_duplicates(
+        VectorsCommand::Duplicates {
+            threshold,
+            limit,
+            export,
+        } => {
+            let effective_limit = (*limit).max(1);
+            let is_tty = stdout_is_tty;
+            let report = vector_duplicates_with_progress(
                 paths,
                 &VectorDuplicatesQuery {
                     provider: cli.provider.clone(),
                     threshold: *threshold,
-                    limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
+                    limit: effective_limit,
+                },
+                |completed, total| {
+                    if is_tty && total > 0 {
+                        let pct = completed * 100 / total;
+                        eprint!("\rScanning vectors: {completed}/{total} ({pct}%)   ");
+                    }
                 },
             )
             .map_err(CliError::operation)?;
+            if is_tty {
+                eprintln!(); // clear progress line
+            }
             let export = crate::resolve_cli_export(export)?;
             crate::print_vector_duplicates_report(
                 cli.output,

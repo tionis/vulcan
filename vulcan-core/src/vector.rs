@@ -4,7 +4,7 @@ use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, CacheError, VaultPaths};
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::Write as _;
 use std::fmt::{Display, Formatter};
@@ -991,10 +991,48 @@ pub fn query_vector_neighbors(
     })
 }
 
+/// Heap entry for the bounded top-N similarity scan in [`vector_duplicates_with_progress`].
+///
+/// Negating the similarity bits turns Rust's max-heap (`BinaryHeap`) into a min-heap so the root
+/// always holds the *lowest* similarity in the current top-N set, enabling cheap eviction.
+struct DuplicatesHeapEntry {
+    neg_sim_bits: u32,
+    pair: VectorDuplicatePair,
+}
+impl PartialEq for DuplicatesHeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.neg_sim_bits == other.neg_sim_bits
+    }
+}
+impl Eq for DuplicatesHeapEntry {}
+impl Ord for DuplicatesHeapEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.neg_sim_bits.cmp(&other.neg_sim_bits)
+    }
+}
+impl PartialOrd for DuplicatesHeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 pub fn vector_duplicates(
     paths: &VaultPaths,
     query: &VectorDuplicatesQuery,
 ) -> Result<VectorDuplicatesReport, VectorDuplicatesError> {
+    vector_duplicates_with_progress(paths, query, |_, _| {})
+}
+
+/// Like [`vector_duplicates`] but calls `progress(completed_rows, total_rows)` periodically so
+/// callers can render a progress bar or emit incremental output.
+pub fn vector_duplicates_with_progress<F>(
+    paths: &VaultPaths,
+    query: &VectorDuplicatesQuery,
+    progress: F,
+) -> Result<VectorDuplicatesReport, VectorDuplicatesError>
+where
+    F: Fn(usize, usize),
+{
     let loaded = load_embedding_provider(paths, query.provider.as_deref())?;
     let provider = loaded.provider;
     let database = open_existing_cache(paths)?;
@@ -1014,12 +1052,22 @@ pub fn vector_duplicates(
             .map(|vector| vector.chunk_id.clone())
             .collect::<Vec<_>>(),
     )?;
-    let mut pairs = Vec::new();
+
+    let n = vectors.len();
+    let limit = query.limit.max(1);
+
+    // Use a bounded min-heap of size `limit` to keep the top-N pairs without collecting all
+    // O(n²) of them. Once the heap is full we raise the similarity floor so inner-loop
+    // candidates below the current worst are skipped early.
+    let mut heap: BinaryHeap<DuplicatesHeapEntry> = BinaryHeap::with_capacity(limit + 1);
+    // The minimum similarity currently tracked. Starts at threshold so we never go below it.
+    let mut min_tracked = query.threshold;
 
     for (left_index, left) in vectors.iter().enumerate() {
+        progress(left_index, n);
         for right in vectors.iter().skip(left_index + 1) {
             let similarity = cosine_similarity(&left.embedding, &right.embedding);
-            if similarity < query.threshold {
+            if similarity < min_tracked {
                 continue;
             }
 
@@ -1029,16 +1077,32 @@ pub fn vector_duplicates(
             let Some(right_chunk) = chunks.get(&right.chunk_id) else {
                 continue;
             };
-            pairs.push(VectorDuplicatePair {
+
+            let pair = VectorDuplicatePair {
                 left_document_path: left_chunk.document_path.clone(),
                 left_chunk_id: left.chunk_id.clone(),
                 right_document_path: right_chunk.document_path.clone(),
                 right_chunk_id: right.chunk_id.clone(),
                 similarity,
+            };
+            heap.push(DuplicatesHeapEntry {
+                neg_sim_bits: (!similarity.to_bits()),
+                pair,
             });
+
+            // Once the heap exceeds the limit, pop the worst entry and raise the bar.
+            if heap.len() > limit {
+                if let Some(evicted) = heap.pop() {
+                    // The evicted entry had the lowest similarity; raise the cutoff.
+                    let evicted_sim = f32::from_bits(!evicted.neg_sim_bits);
+                    min_tracked = min_tracked.max(evicted_sim);
+                }
+            }
         }
     }
+    progress(n, n);
 
+    let mut pairs: Vec<VectorDuplicatePair> = heap.into_iter().map(|e| e.pair).collect();
     pairs.sort_by(|left, right| {
         right
             .similarity
@@ -1047,7 +1111,6 @@ pub fn vector_duplicates(
             .then_with(|| left.left_chunk_id.cmp(&right.left_chunk_id))
             .then_with(|| left.right_chunk_id.cmp(&right.right_chunk_id))
     });
-    pairs.truncate(query.limit.max(1));
 
     Ok(VectorDuplicatesReport {
         provider_name: active_model.provider_name,

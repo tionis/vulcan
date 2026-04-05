@@ -5743,6 +5743,17 @@
                 ]
               },
               {
+                "help": "Maximum number of duplicate pairs to report",
+                "id": "limit",
+                "long": "limit",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIMIT"
+                ]
+              },
+              {
                 "help": "Write query rows to a CSV or JSONL file",
                 "id": "export",
                 "long": "export",
