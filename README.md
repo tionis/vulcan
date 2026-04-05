@@ -1,6 +1,21 @@
 # Vulcan
 
-Headless CLI for Obsidian-style vaults and plain Markdown directories.
+Headless CLI for [Obsidian](https://obsidian.md)-style vaults and plain Markdown directories. A single Rust binary that indexes your vault into a local SQLite cache and exposes graph queries, full-text search, semantic retrieval, scripting, and safe bulk mutations — no running Obsidian instance required.
+
+## Features
+
+- **Graph-aware indexing** — backlinks, outgoing links, embeds, orphan detection, alias resolution, and incremental cache refresh via file watcher or on-demand scan.
+- **Full-text and semantic search** — SQLite FTS5 for keyword search; pluggable embedding providers and `sqlite-vec` for vector similarity, clustering, and related-note recommendations.
+- **Structured queries** — filter notes by frontmatter properties, file metadata, tags, folders, and links. Supports Dataview Query Language (DQL), Dataview inline fields (`key:: value`), and Bases-style views.
+- **Tasks and Kanban** — query and filter Tasks-plugin tasks and Kanban board cards from the index.
+- **Journaling** — daily, weekly, monthly, and custom periodic notes with create/open/append/list workflows and ICS export.
+- **Safe mutations** — rename/move notes with automatic link rewriting, bulk property updates, frontmatter unset, refactoring passes, and inbox quick-capture.
+- **Templates** — create notes from Handlebars/Tera templates with property interpolation and date math.
+- **JavaScript runtime** — embedded rquickjs sandbox for scripting (`vulcan run`), with a vault-aware JS API (`dv.*`, `web.search()`, `web.fetch()`), configurable sandbox tiers (strict / fs / net / none).
+- **Web tools** — `vulcan web search` and `vulcan web fetch` for external lookups with configurable backends (Kagi, with more planned).
+- **Reports and automation** — saved reports, batch execution, checkpoints, change detection, diff, and an automation command for CI/scheduled jobs.
+- **Agent and tool integration** — `--output json` on every command, machine-readable schema export (`vulcan describe`), OpenAI function-calling and MCP tool definitions, shell completions.
+- **Interactive TUI** — `vulcan browse` opens a persistent note browser in the terminal.
 
 ## Quick start
 
@@ -13,44 +28,45 @@ cargo build --release -p vulcan-cli --bin vulcan
 Initialize and scan a vault:
 
 ```bash
-./target/release/vulcan --vault ~/wikis/mimir init
-./target/release/vulcan --vault ~/wikis/mimir scan
+vulcan --vault ~/notes init
+vulcan --vault ~/notes scan
 ```
 
-Common discovery commands:
+Explore:
 
 ```bash
-./target/release/vulcan --help
-./target/release/vulcan notes --help
-./target/release/vulcan search --help
-./target/release/vulcan browse --help
-./target/release/vulcan edit --help
-./target/release/vulcan describe
+vulcan --vault ~/notes browse              # interactive TUI
+vulcan --vault ~/notes search 'meeting notes'
+vulcan --vault ~/notes notes --tag project --limit 10
+vulcan --vault ~/notes daily today          # open today's daily note
+vulcan --vault ~/notes query 'FROM "Projects" WHERE status = "active"'
+vulcan --vault ~/notes describe             # print command inventory
 ```
 
-Common day-to-day commands:
+## Configuration
 
-```bash
-./target/release/vulcan --vault ~/wikis/mimir browse
-./target/release/vulcan --vault ~/wikis/mimir --refresh background browse
-./target/release/vulcan --vault ~/wikis/mimir search 'dashboard "release notes"'
-./target/release/vulcan --vault ~/wikis/mimir edit Projects/Alpha
-./target/release/vulcan --vault ~/wikis/mimir inbox "Capture this idea"
-```
+Configuration lives in `.vulcan/` inside the vault root:
 
-Configuration is split into shared `.vulcan/config.toml` and optional device-local `.vulcan/config.local.toml`. The local file overrides any shared setting and is ignored by the default `.vulcan/.gitignore`.
+- `config.toml` — shared vault config (intended to be committed/synced)
+- `config.local.toml` — device-local overrides (gitignored by default)
+
+The local file merges on top of the shared file. See `vulcan help config` for details.
 
 ## Documentation
 
-- `docs/cli.md` — Comprehensive CLI guide: command catalogue, query/filter syntax, search syntax, interactive flows, auto-refresh/config layering, auto-commit, inbox/templates, JSON/export behavior
-- `docs/design_document.md` — Architecture and design decisions
-- `docs/ROADMAP.md` — Phased implementation status and remaining work
-- `docs/performance.md` — Benchmarking and performance notes
+- [`docs/cli.md`](docs/cli.md) — CLI guide: command catalogue, query/filter syntax, search, interactive flows, config layering, auto-commit, templates, JSON/export
+- [`docs/design_document.md`](docs/design_document.md) — Architecture and design decisions
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — Phased implementation status and remaining work
+- [`docs/performance.md`](docs/performance.md) — Benchmarking and performance notes
+- `vulcan help` — integrated topic index at runtime
+- `vulcan help <topic>` — per-command and concept docs (e.g. `vulcan help filters`, `vulcan help sandbox`)
 
 ## Workspace
 
-The repository is organized as a Cargo workspace:
+The repository is a Cargo workspace:
 
-- `vulcan-core`: parsing, indexing, cache management, and vault configuration
-- `vulcan-embed`: embedding provider and vector store abstractions
-- `vulcan-cli`: the `vulcan` binary and command-line interface
+| Crate | Purpose |
+|---|---|
+| `vulcan-core` | Parsing, indexing, cache management, vault configuration, DQL, JS runtime |
+| `vulcan-embed` | Embedding provider and vector store abstractions |
+| `vulcan-cli` | The `vulcan` binary and command-line interface |
