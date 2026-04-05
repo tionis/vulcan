@@ -3874,6 +3874,28 @@
             ]
           },
           {
+            "help": "Evaluate a JS expression and print the result (may be repeated)",
+            "id": "eval",
+            "long": "eval",
+            "possible_values": [],
+            "required": false,
+            "short": "e",
+            "value_names": [
+              "CODE"
+            ]
+          },
+          {
+            "help": "Load and evaluate a JS file, then drop into the REPL",
+            "id": "eval_file",
+            "long": "eval-file",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "PATH"
+            ]
+          },
+          {
             "help": "Override the JS execution timeout (for example 500ms, 30s, or 2m)",
             "id": "timeout",
             "long": "timeout",
@@ -3898,6 +3920,20 @@
             "short": null,
             "value_names": [
               "LEVEL"
+            ]
+          },
+          {
+            "help": "Skip auto-loading .vulcan/scripts/startup.js even in trusted vaults",
+            "id": "no_startup",
+            "long": "no-startup",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_STARTUP"
             ]
           }
         ],
@@ -6816,6 +6852,31 @@
           }
         ],
         "subcommands": []
+      },
+      {
+        "about": "Manage vault trust for startup scripts and plugin execution",
+        "name": "trust",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Mark the current vault as trusted",
+            "name": "add",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Remove trust from the current vault",
+            "name": "revoke",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "List all trusted vault paths",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          }
+        ]
       }
     ],
     "global_options": [

@@ -11,6 +11,7 @@ mod resolve;
 mod serve;
 mod template_engine;
 mod terminal_markdown;
+mod trust;
 
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
@@ -21,7 +22,7 @@ pub use cli::{
     RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
     SuggestCommand, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
     TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -2476,6 +2477,79 @@ fn run_js_command(
         DataviewJsEvalOptions { timeout, sandbox },
     )
     .map_err(CliError::operation)
+}
+
+fn run_js_eval(
+    paths: &VaultPaths,
+    code: &str,
+    timeout: Option<Duration>,
+    sandbox: Option<JsRuntimeSandbox>,
+) -> Result<DataviewJsResult, CliError> {
+    evaluate_dataview_js_with_options(
+        paths,
+        code,
+        None,
+        DataviewJsEvalOptions { timeout, sandbox },
+    )
+    .map_err(CliError::operation)
+}
+
+fn handle_trust_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: Option<&TrustCommand>,
+) -> Result<(), CliError> {
+    match command.unwrap_or(&TrustCommand::Add) {
+        TrustCommand::Add => {
+            let added = trust::add_trust(paths.vault_root())?;
+            if cli.output == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "trusted": true,
+                        "vault": paths.vault_root().display().to_string(),
+                        "newly_added": added,
+                    })
+                );
+            } else if added {
+                println!("Vault marked as trusted: {}", paths.vault_root().display());
+            } else {
+                println!("Vault is already trusted: {}", paths.vault_root().display());
+            }
+        }
+        TrustCommand::Revoke => {
+            let removed = trust::revoke_trust(paths.vault_root())?;
+            if cli.output == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "trusted": false,
+                        "vault": paths.vault_root().display().to_string(),
+                        "was_trusted": removed,
+                    })
+                );
+            } else if removed {
+                println!("Trust removed from vault: {}", paths.vault_root().display());
+            } else {
+                println!("Vault was not trusted: {}", paths.vault_root().display());
+            }
+        }
+        TrustCommand::List => {
+            let vaults = trust::list_trusted()?;
+            if cli.output == OutputFormat::Json {
+                let paths_json: Vec<_> = vaults.iter().map(|p| p.display().to_string()).collect();
+                println!("{}", serde_json::json!({ "trusted_vaults": paths_json }));
+            } else if vaults.is_empty() {
+                println!("No trusted vaults.");
+            } else {
+                println!("Trusted vaults:");
+                for vault in &vaults {
+                    println!("  {}", vault.display());
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run_dataview_eval_command(
@@ -11582,6 +11656,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             generate(shell, &mut command, "vulcan", &mut io::stdout());
             Ok(())
         }
+        Command::Trust { ref command } => handle_trust_command(cli, &paths, command.as_ref()),
         Command::Bases { ref command } => commands::bases::handle_bases_command(
             cli,
             &paths,
@@ -12209,15 +12284,23 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Run {
             ref script,
             script_mode,
+            ref eval,
+            ref eval_file,
             ref timeout,
             ref sandbox,
+            no_startup,
         } => commands::runtime::handle_run_command(
             cli,
             &paths,
-            script.as_deref(),
-            script_mode,
-            timeout.as_deref(),
-            sandbox.as_deref(),
+            &commands::runtime::RunArgs {
+                script: script.as_deref(),
+                script_mode,
+                eval,
+                eval_file: eval_file.as_deref(),
+                timeout: timeout.as_deref(),
+                sandbox: sandbox.as_deref(),
+                no_startup,
+            },
         ),
         Command::Web { ref command } => commands::runtime::handle_web_command(cli, &paths, command),
         Command::Weekly { ref args } => {
@@ -21747,8 +21830,11 @@ mod tests {
             Command::Run {
                 script: Some("demo".to_string()),
                 script_mode: true,
+                eval: vec![],
+                eval_file: None,
                 timeout: Some("45s".to_string()),
                 sandbox: None,
+                no_startup: false,
             }
         );
     }

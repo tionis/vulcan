@@ -1,4 +1,4 @@
-use crate::{render_dataview_inline_value, CliError, OutputFormat};
+use crate::{render_dataview_inline_value, trust, CliError, OutputFormat};
 use rustyline::completion::{Completer, Pair};
 use rustyline::config::{CompletionType, Config};
 use rustyline::error::ReadlineError;
@@ -70,10 +70,31 @@ pub(crate) fn run_js_repl(
     output: OutputFormat,
     timeout: Option<Duration>,
     sandbox: Option<JsRuntimeSandbox>,
+    no_startup: bool,
 ) -> Result<(), CliError> {
     let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout, sandbox })
         .map_err(CliError::operation)?;
     fs::create_dir_all(paths.vulcan_dir()).map_err(CliError::operation)?;
+
+    // Auto-load startup script when the vault is trusted and the file exists.
+    if !no_startup {
+        let startup_path = paths.vulcan_dir().join("scripts").join("startup.js");
+        if startup_path.exists() {
+            if trust::is_trusted(paths.vault_root()) {
+                eprintln!("Loading {}...", startup_path.display());
+                let source = fs::read_to_string(&startup_path).map_err(CliError::operation)?;
+                match session.evaluate(&source).map_err(CliError::operation) {
+                    Ok(result) => print_repl_result(output, &result)?,
+                    Err(error) => print_repl_error(output, &error.to_string())?,
+                }
+            } else {
+                eprintln!(
+                    "Note: .vulcan/scripts/startup.js exists but vault is not trusted — \
+                     run `vulcan trust` to enable startup scripts."
+                );
+            }
+        }
+    }
 
     let history_path = paths.vulcan_dir().join("repl_history");
     let mut history = load_history(&history_path)?;
@@ -121,6 +142,79 @@ pub(crate) fn run_js_repl(
             Err(ReadlineError::Eof) => {
                 break;
             }
+            Err(error) => return Err(CliError::operation(&error)),
+        }
+    }
+
+    save_history(&history_path, &history)?;
+    Ok(())
+}
+
+/// Start the REPL after pre-loading a JS file.  The file is evaluated in the session and its
+/// result is printed before entering the interactive loop.
+pub(crate) fn run_js_repl_with_preload(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    timeout: Option<Duration>,
+    sandbox: Option<JsRuntimeSandbox>,
+    preload_path: &str,
+) -> Result<(), CliError> {
+    let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout, sandbox })
+        .map_err(CliError::operation)?;
+
+    // Load and evaluate the preload file before entering the REPL.
+    let source = std::fs::read_to_string(preload_path).map_err(|error| {
+        CliError::operation(format!("failed to read eval-file {preload_path}: {error}"))
+    })?;
+    eprintln!("Loading {preload_path}...");
+    match session.evaluate(&source).map_err(CliError::operation) {
+        Ok(result) => print_repl_result(output, &result)?,
+        Err(error) => print_repl_error(output, &error.to_string())?,
+    }
+
+    // Now hand off to the regular REPL loop using the same session.
+    let history_path = paths.vulcan_dir().join("repl_history");
+    let mut history = load_history(&history_path)?;
+    let mut editor = build_repl_editor(&history, REPL_COMPLETIONS)?;
+    let mut pending = String::new();
+
+    loop {
+        let prompt = if pending.is_empty() {
+            PRIMARY_PROMPT
+        } else {
+            CONTINUATION_PROMPT
+        };
+        match editor.readline(prompt) {
+            Ok(line) => {
+                if !pending.is_empty() {
+                    pending.push('\n');
+                }
+                pending.push_str(&line);
+                if repl_input_needs_continuation(&pending) {
+                    continue;
+                }
+                let src = std::mem::take(&mut pending);
+                let trimmed = src.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if record_submission(&mut history, &src) {
+                    let _ = editor
+                        .add_history_entry(src.as_str())
+                        .map_err(|error| CliError::operation(&error))?;
+                }
+                if matches!(trimmed, ".exit" | ".quit") {
+                    break;
+                }
+                match session.evaluate(&src).map_err(CliError::operation) {
+                    Ok(result) => print_repl_result(output, &result)?,
+                    Err(error) => print_repl_error(output, &error.to_string())?,
+                }
+            }
+            Err(ReadlineError::Interrupted) => {
+                pending.clear();
+            }
+            Err(ReadlineError::Eof) => break,
             Err(error) => return Err(CliError::operation(&error)),
         }
     }
