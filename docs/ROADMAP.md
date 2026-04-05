@@ -3106,6 +3106,17 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.18.5 (JS runtime/REPL) ← 9.8.8       │── Wave 6+ (after DataviewJS)
 9.18.9 (task mutations)  ← 9.10        │── Wave 6+ (after Tasks)
 9.18.1 (cmd reorg)       ← 7           │── last (after commands exist)
+                                        │
+9.19.1 (bug fixes)       ← 9.16, 9.18  │── Wave 6+ (anytime after periodic+CLI)
+9.19.2 (run improvements)← 9.18.5      │── Wave 6+ (after JS runtime)
+9.19.3 (shell completions)← 9.18.1     │── Wave 8+ (after cmd reorg)
+9.19.4 (help polish)     ← 9.18.7      │── Wave 6+ (after help system)
+9.19.5 (DQL completeness)← 9.8         │── Wave 6+ (after Dataview)
+9.19.6 (cmd clarity)     ← 9.18.1      │── Wave 8+ (after cmd reorg)
+9.19.7 (web backend)     ← 9.18.6      │── Wave 6+ (after web tools)
+9.19.8 (settings TUI)    ← 9.17        │── Wave 8+ (after settings import)
+9.19.9 (plugin system)   ← 9.19.1,9.19.2│── Wave 8+ (after fixes + trusted vaults)
+9.19.10 (binary size)    ← standalone  │── anytime (research)
 ```
 
 **Recommended implementation order:**
@@ -3127,6 +3138,292 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 **Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the AI path, the critical chain is: 9.18.2 (note CRUD) → 9.12.1–9.12.7 (embedded agent) → 9.12.8 (chat platforms). For JS runtime: 9.8.8 → 9.18.5.
 
 **Note on 9.8.3 and 9.16:** The `file.day` metadata field in 9.8.3 depends on periodic note configuration from 9.16. However, `file.day` can be stubbed initially (return null when no periodic config exists) and filled in when 9.16 lands. This avoids blocking all of 9.8 on 9.16.
+
+### 9.19 CLI polish, bug fixes, and UX improvements
+
+**Goal:** Address usability issues, bugs, and missing features discovered during real-world CLI usage. This sub-phase focuses on polish rather than new capabilities — fixing broken flows, improving error messages, adding missing flags, and refining the interactive experience.
+
+**Depends on:** 9.18 (CLI redesign), 9.8 (Dataview/DQL), 9.16 (Periodic notes)
+
+**Test fixtures:** Several items below require test vaults that exercise features like periodic templates, DQL queries with complex expressions, and task management. A synthetic test vault should be created under `tests/fixtures/polish-vault/` with:
+- A template directory (`00-09 Management & Meta/05 Templates/`) containing `daily.md`, `weekly.md`
+- Notes with inline dataview fields, `triage_status` frontmatter, and `choice()`/`dateformat()` expressions
+- A clippings folder with mixed `triage_status` values for DQL `WHERE` clause testing
+- Kanban boards and bases for context-aware completion testing
+- TaskNotes and inline tasks for task source toggling
+
+**Reference data sources:** The issues below were discovered using a private Obsidian vault (`~/wikis/mimir`). Relevant query examples from that vault are captured in the DQL test cases rather than referenced directly.
+
+#### 9.19.1 Bug fixes
+
+**Periodic template resolution is broken**
+
+The `resolve_template_file()` function (`vulcan-cli/src/lib.rs:8985`) matches the template name from periodic config against `template.name`, which is just the filename (e.g., `daily.md`). When the periodic config specifies a path like `00-09 Management & Meta/05 Templates/daily`, the match fails because the config value includes directory components but `template.name` does not. The template file exists and manual loading works — only periodic note auto-loading is broken.
+
+- [ ] Fix `resolve_template_file()` to also match against `template.display_path` (which includes the directory prefix) and strip `.md` from both sides of the comparison
+- [ ] Normalize path separators and handle both `foo/bar/daily` and `foo/bar/daily.md` forms
+- [ ] Add test: periodic note creation with a template path containing directory components
+- [ ] Add test: template resolution by bare name (`daily`) still works
+
+**`vulcan vectors duplicates` hangs or is extremely slow**
+
+The command appears to hang on non-trivial vaults. Needs profiling to determine whether it's a quadratic similarity comparison, unbounded result set, or blocking I/O issue.
+
+- [ ] Profile `vector_duplicates()` in `vulcan-core` on a vault with >1000 embedded notes
+- [ ] Add progress reporting (incremental output or progress bar) for long-running similarity scans
+- [ ] Add `--limit` flag to cap result count and short-circuit early
+- [ ] Consider approximate nearest-neighbor indexing (e.g., HNSW) if brute-force is the bottleneck
+
+#### 9.19.2 `vulcan run` improvements
+
+**`--eval` flag for one-liners**
+
+Currently running a JS one-liner requires `echo "code" | vulcan run`. Add a direct flag.
+
+- [ ] `vulcan run --eval '<code>'` / `vulcan run -e '<code>'` — evaluate a JS expression and print the result
+- [ ] `vulcan run --eval-file <path>` — evaluate a JS file then drop into the REPL (preload mode)
+- [ ] Support multiple `-e` flags chained sequentially
+
+**Trusted vault startup scripts (stretch goal)**
+
+Auto-load `.vulcan/scripts/startup.js` before entering the REPL, but only if the vault is marked trusted.
+
+- [ ] Add vault trust model: `vulcan trust` marks current vault as trusted, stored in `~/.config/vulcan/trusted_vaults.json` (list of canonical vault root paths)
+- [ ] `vulcan trust --revoke` removes trust
+- [ ] `vulcan trust --list` shows trusted vaults
+- [ ] When trusted, `vulcan run` (REPL mode) auto-evaluates `.vulcan/scripts/startup.js` if it exists
+- [ ] Print a notice when startup script is loaded (`Loading .vulcan/scripts/startup.js...`)
+- [ ] `--no-startup` flag to skip auto-loading even in trusted vaults
+
+**JS REPL QoL improvements**
+
+The REPL currently uses rustyline but lacks several ergonomic features expected from a modern REPL.
+
+- [ ] **Tab completion:** Extend the existing completer to cover `dv.*`, `web.*`, `console.*`, and user-defined globals. Complete property names on objects returned from previous evaluations.
+- [ ] **Special variables:** `_` = last successful result, `_error` = last error object. Optionally `__` and `___` for the two results before `_`.
+- [ ] **Multi-line editing:** Allow users to navigate within multi-line expressions using arrow keys (rustyline supports this with proper configuration). Show a visual continuation indicator.
+- [ ] **Reverse history search:** Enable rustyline's `Ctrl+R` reverse search mode
+- [ ] **Persistent history:** Already implemented (`.vulcan/repl_history`), verify it persists across sessions and has a reasonable max size (e.g., 10,000 entries)
+- [ ] **Syntax highlighting:** Use rustyline's `Highlighter` trait to colorize JS keywords, strings, numbers, and comments in the input line
+- [ ] **Colorized result pretty-printing:** Objects printed with colored keys, strings in green, numbers in cyan, `null`/`undefined` in dim. Errors in red with stack traces.
+- [ ] **REPL dot-commands:** `.type <expr>` (show JS type), `.keys <expr>` (enumerate keys), `.inspect <expr>` (deep inspection), `.time <expr>` (measure execution time), `.bench <expr> [n]` (run `n` iterations and report stats), `.source <fn>` (show function source if available)
+
+**`help()` improvements in JS runtime**
+
+- [ ] `help()` with no arguments — print a welcome message listing available globals (`vault`, `dv`, `web`, `console`) and how to use `help(obj)`
+- [ ] `help(vault)` — print an overview of the vault API with all available namespaces
+- [ ] `help(dv)` — print an overview of the Dataview JS API
+- [ ] Register help metadata for all top-level objects, not just nested functions
+- [ ] Bare `help` (without parens) — detect the common mistake and print a hint: "Did you mean `help()`? In JS, `help` without parentheses is a reference to the function."
+
+**`dv` global completeness**
+
+The `dv` global is registered (`globalThis.dv = dv` in `dataview_js.rs:2394`) and has functions, but users report it appears empty. Investigate and fix:
+
+- [ ] Verify `dv` is accessible in the REPL context (not just in dataview block evaluation)
+- [ ] If `dv` methods are present but not discoverable, add help metadata for each `dv` function
+- [ ] Ensure `Object.keys(dv)` returns the expected set of method names
+
+**Obsidian API compatibility objects**
+
+The JS runtime does not expose Obsidian-compatible objects (`app`, `tp`, etc.) that users expect for cross-compatibility with Obsidian scripts.
+
+- [ ] Add a stub `app` global with key properties: `app.vault.getName()`, `app.vault.getAbstractFileByPath()`, `app.vault.getMarkdownFiles()`, `app.vault.read()`, `app.vault.modify()`
+- [ ] Map Obsidian API calls to Vulcan equivalents where possible (e.g., `app.vault.read(file)` → `vault.note(path).content`)
+- [ ] For unsupported Obsidian APIs, return stubs that throw descriptive errors: `"app.workspace is not supported in Vulcan — use vault.* instead"`
+- [ ] Document compatibility coverage in `help js.obsidian-compat`
+
+**Error handling for bare identifiers**
+
+`help` (without parens) produces `error: Error converting from js 'undefined' into type 'string'`. This is a rquickjs type coercion error that leaks to the user.
+
+- [ ] Catch type conversion errors in the REPL eval loop and produce friendlier messages
+- [ ] For known function names typed without parens (`help`, `vault`, `dv`), suggest the parenthesized form
+
+**Raw markdown / HTML access**
+
+- [ ] Ensure `vault.note(path).content` returns raw markdown (verify this works and document it)
+- [ ] Add `vault.note(path).html` — render the note's markdown to HTML using the existing markdown pipeline
+- [ ] `--mode html` flag on `vulcan note get` for CLI access to rendered HTML
+
+#### 9.19.3 Shell completion improvements
+
+The current completions are generated by clap and are not context-aware — they complete command names and flags but not dynamic arguments.
+
+- [ ] **`vulcan bases eval <tab>`** — complete with available bases view names (requires querying the vault index at completion time)
+- [ ] **`vulcan kanban <tab>`** — complete with kanban board note names
+- [ ] **`vulcan note get <tab>`** — complete with note names/paths from the index
+- [ ] **`vulcan daily show <tab>`** — complete with available date patterns (`today`, `yesterday`, `tomorrow`, ISO dates)
+- [ ] **`vulcan run <tab>`** — complete with script names from `.vulcan/scripts/`
+- [ ] **`vulcan tasks view <tab>`** — complete with saved task view names
+- [ ] Implementation: generate a completion script that shells out to `vulcan --complete <context>` for dynamic completions. Add a hidden `--complete` subcommand that returns candidates as newline-separated values.
+- [ ] Support Fish, Bash, and Zsh dynamic completions
+
+#### 9.19.4 Help system and CLI formatting polish
+
+**Root help page redesign**
+
+The current `vulcan help` is a flat list of command names without descriptions. It should be a grouped tree view.
+
+- [ ] Group commands by category (Note operations, Query & Search, Refactor, Tasks, etc.) with one-line descriptions
+- [ ] Show the command tree hierarchy with indentation for subcommands
+- [ ] Add a brief intro paragraph explaining what Vulcan is and common workflows
+- [ ] Colorize group headers, command names, and descriptions differently
+- [ ] `vulcan help <group>` (e.g., `vulcan help note`) shows all subcommands in that group with descriptions and usage examples
+
+**Color and formatting**
+
+- [ ] Use consistent color scheme across all output: headers in bold, warnings in yellow, errors in red, paths in cyan, counts in bold white
+- [ ] Add `--color auto|always|never` global flag (respect `NO_COLOR` env var)
+- [ ] Format table output with aligned columns and box-drawing characters when stdout is a TTY
+- [ ] Progress bars for long-running operations (scan, vectors, batch) using `indicatif` or similar
+
+**`describe` command assessment**
+
+Evaluate whether `describe` is still needed as a user-facing command or should be hidden/internal-only, given the improved `help` system.
+
+- [ ] If `describe` is only useful for LLM harness integration, move it to `vulcan describe` (keep it but remove from the main help listing, mark as `hide = true` in clap)
+- [ ] Ensure `help` covers all use cases that a human user would have used `describe` for
+
+#### 9.19.5 DQL completeness
+
+The DQL engine is missing several Dataview features needed for real-world queries. Example query that fails (from a clippings management view):
+
+```dql
+TABLE
+    file.link AS Clipping,
+    choice(triage_status, triage_status, "new") AS Triage,
+    dateformat(file.ctime, "yyyy-MM-dd") AS Added,
+    dateformat(file.mtime, "yyyy-MM-dd") AS Updated
+  FROM "00-09 Management & Meta/00 Inbox/00.12 Clippings"
+  WHERE file.name != this.file.name
+    AND (
+      !triage_status
+      OR triage_status = "new"
+      OR triage_status = "split"
+    )
+  SORT file.ctime ASC
+  LIMIT 100
+```
+
+Additional examples to test against (create synthetic equivalents in test fixtures):
+- Project management views with `GROUP BY` and nested property access
+- Master/admin dashboards with `FLATTEN` and multi-condition `WHERE` clauses
+- Task triage views with `this.file.name` self-referencing and negation checks on frontmatter fields
+
+Missing DQL features:
+
+- [ ] **`this.file.name` / `this.file.*` self-reference** — the current note's metadata in `WHERE` clauses. Requires passing the "source file" context to DQL evaluation.
+- [ ] **`file.link`** — render file path as a wikilink `[[name]]` in TABLE output
+- [ ] **`file.ctime` / `file.mtime`** — file creation and modification timestamps. Verify these are exposed in the DQL evaluation context; if not, add them from filesystem metadata or the scan cache.
+- [ ] **Falsy checks on frontmatter fields** — `!triage_status` should evaluate to true when the field is missing, null, empty string, or false. Currently may not handle missing-field-as-falsy correctly.
+- [ ] **`choice()` function** — already parsed (confirmed in `dql/compile.rs` tests) but verify end-to-end evaluation works with truthy frontmatter values as the condition
+- [ ] **`dateformat()` function** — already parsed (confirmed in `dql/eval.rs` tests) but verify it handles `file.ctime`/`file.mtime` date values correctly
+- [ ] **`FLATTEN` operator** — expand array-valued fields into separate rows
+- [ ] **`GROUP BY` with expressions** — group results by computed expressions, not just field names
+- [ ] Add integration tests for each of the above using the synthetic test vault
+
+#### 9.19.6 Command clarity and discoverability
+
+**`vulcan automation run` / `vulcan batch` / `vulcan saved` — report system is opaque**
+
+The relationship between saved reports, automation run, batch, and the `saved` command is unclear to users. It's not obvious what a "report" even is, how to create one, or when to use which command. The `--all` flag semantics differ between commands.
+
+- [ ] Write a clear conceptual overview for `vulcan help reports` explaining: what a saved report is (a persisted query/check in `.vulcan/reports/`), how to create one, the report file format, and how they relate to automation/batch/saved
+- [ ] Clarify the command roles and either merge or clearly differentiate:
+  - `vulcan saved` — CRUD for saved reports (list, show, create, delete)
+  - `vulcan automation run` — execute reports with scan, exit codes for CI
+  - `vulcan batch` — run multiple reports sequentially
+- [ ] If the distinction between `automation run` and `batch` doesn't justify two commands, merge them
+- [ ] Make `--all` behavior consistent across commands
+- [ ] Add usage examples showing the full workflow: create a report → run it → use in CI
+
+**`vulcan changes` purpose**
+
+The command reports note/link/property/embedding changes since the last scan or checkpoint. Clarify when users should use it.
+
+- [ ] Add a clear description in `--help` and `vulcan help changes` explaining use cases: post-sync review, changelog generation, CI diff checks
+- [ ] Add usage examples in the help text
+
+**`vulcan export` expansion**
+
+Currently only supports `export search-index`. Add more useful export targets and archive formats.
+
+- [ ] `vulcan export markdown <query>` — export matched notes as a combined markdown document
+- [ ] `vulcan export json <query>` — export note metadata and content as JSON
+- [ ] `vulcan export csv <query>` — export query results as CSV
+- [ ] `vulcan export html <query>` — render matched notes to static HTML
+- [ ] `vulcan export graph --format dot|json` — export the link graph in DOT or JSON format
+- [ ] `vulcan export zip <query> -o vault.zip` — export matched notes with content, metadata, and attachments as a structured ZIP archive (preserves directory layout)
+- [ ] `vulcan export sqlite <query> -o vault.db` — export to a self-contained SQLite database with tables for notes (path, content, frontmatter JSON), links, tags, and tasks
+- [ ] `vulcan export epub <query> -o book.epub` (future) — render matched notes to an EPUB document with table of contents derived from note structure and link ordering
+
+**`vulcan tasks` source selection**
+
+The command may not correctly toggle between TaskNotes-only and all-tasks (including inline embedded tasks) modes.
+
+- [ ] Add `--source tasknotes|inline|all` flag (default from config)
+- [ ] Add config option `[tasks] default_source = "all"` in `.vulcan/config.toml`
+- [ ] Verify filtering logic works correctly for each source mode
+- [ ] Document the distinction in `vulcan help tasks`
+
+#### 9.19.7 Web search backend migration
+
+Kagi web search is in a closed beta. Switch the default backend to a more accessible alternative.
+
+- [ ] Implement Tavily search backend (`SearchBackend` trait): `api_key_env = "TAVILY_API_KEY"`
+- [ ] Implement Brave Search backend: `api_key_env = "BRAVE_API_KEY"`
+- [ ] Change default backend order: Tavily (if key present) → Brave (if key present) → Kagi (if key present) → error with setup instructions
+- [ ] For `web fetch`, evaluate Tavily Extract and Firecrawl as alternatives to the current readability-based extraction
+- [ ] Keep Kagi backend available for users who have access
+- [ ] Update config documentation with backend options
+
+#### 9.19.8 Settings TUI
+
+**Goal:** A terminal UI for viewing and editing `.vulcan/config.toml` with import-from-Obsidian support.
+
+- [ ] `vulcan config edit` — open a TUI (using `ratatui`) for browsing and editing settings
+- [ ] Organize settings by category with descriptions for each option
+- [ ] `vulcan config import --preview` — show a diff of what would change before applying imported settings
+- [ ] `vulcan config import --apply` — apply the diff
+- [ ] Validate settings on save (reject invalid values with inline error messages)
+- [ ] TaskNotes settings import may need fixes — verify and fix edge cases
+
+#### 9.19.9 Event-driven plugin system (research + design)
+
+**Goal:** Allow users to write JS plugins that hook into Vulcan lifecycle events (file write, pre-commit, post-scan, note create, etc.), similar to Git hooks or IDE extensions but running inside the rquickjs sandbox with the vault trust and permission model from 9.19.2.
+
+**Depends on:** 9.19.1 (bug fixes), 9.19.2 (trusted vaults, JS runtime improvements)
+
+**Design considerations:**
+
+- Plugins are JS files in `.vulcan/plugins/` registered via `.vulcan/config.toml`
+- Event model: `on_note_write`, `on_note_create`, `on_note_delete`, `on_pre_commit`, `on_post_commit`, `on_scan_complete`, `on_refactor`, etc.
+- Plugins declare which events they subscribe to and what permissions they need (read-only, fs, net)
+- Vault must be trusted (9.19.2 trust model) for plugins to run; untrusted vaults skip plugin execution with a warning
+- Plugins can block events (e.g., a linter returning errors on `on_note_write` prevents the write) or run as post-hooks (fire-and-forget)
+- Sandbox level per plugin, capped at the vault's trust level
+- Plugin execution timeout inherited from JS runtime config
+- `vulcan plugin list`, `vulcan plugin enable/disable`, `vulcan plugin run <name>` for manual invocation
+
+**Tasks:**
+
+- [ ] Design the event lifecycle and hook points — enumerate all mutation paths in vulcan-core that should emit events
+- [ ] Design the plugin manifest format (event subscriptions, permissions, metadata)
+- [ ] Design blocking vs non-blocking hook semantics (pre-hooks can abort, post-hooks cannot)
+- [ ] Prototype: single `on_note_write` hook running a JS linter function in rquickjs
+- [ ] Implement plugin discovery and registration from `.vulcan/plugins/`
+- [ ] Implement event dispatch at each hook point in vulcan-core
+- [ ] Implement `vulcan plugin` CLI commands
+- [ ] Document the plugin API in `help js.plugins`
+
+#### 9.19.10 Binary size analysis
+
+The release binary is 28MB. This is acceptable given the portability goal, but worth understanding the breakdown.
+
+- [ ] Run `cargo bloat --release` and document the top contributors (rquickjs/QuickJS, SQLite, regex, reqwest/TLS, etc.)
+- [ ] Identify any low-hanging optimizations (unused features, redundant dependencies)
+- [ ] Document findings in `docs/performance.md` — no action required unless easy wins are found
 
 ---
 
