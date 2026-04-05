@@ -3890,13 +3890,7 @@ globalThis.Function = undefined;
     }
 
     fn current_utc_timestamp_string() -> String {
-        let seconds = i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        )
-        .unwrap_or(i64::MAX);
+        let seconds = crate::current_utc_timestamp_ms().div_euclid(1_000);
         let days_since_epoch = seconds.div_euclid(86_400);
         let seconds_of_day = seconds.rem_euclid(86_400);
         let hour = seconds_of_day / 3_600;

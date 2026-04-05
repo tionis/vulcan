@@ -233,12 +233,7 @@ pub fn step_period_start(
 
 #[must_use]
 pub fn today_utc_string() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .try_into()
-        .unwrap_or(i64::MAX);
+    let seconds = crate::current_utc_timestamp_ms().div_euclid(1_000);
     civil_from_days(seconds.div_euclid(86_400)).iso_string()
 }
 

@@ -3142,10 +3142,7 @@ fn file_timestamp_millis(path: &Path, creation: bool) -> Option<i64> {
 
 #[cfg(feature = "js_runtime")]
 fn current_timestamp_millis() -> i64 {
-    let duration = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    i64::try_from(duration.as_millis()).unwrap_or_default()
+    vulcan_core::current_utc_timestamp_ms()
 }
 
 #[cfg(feature = "js_runtime")]

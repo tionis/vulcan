@@ -3532,7 +3532,7 @@ fn normalize_tasknote_body(body: &str) -> String {
 }
 
 fn current_utc_timestamp_ms() -> i64 {
-    parse_date_like_string(&current_utc_timestamp_string()).unwrap_or_default()
+    vulcan_core::current_utc_timestamp_ms()
 }
 
 fn format_utc_timestamp_ms(ms: i64) -> String {
@@ -9353,28 +9353,7 @@ struct TimestampStrings {
 
 impl TemplateTimestamp {
     fn current() -> Self {
-        let seconds = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .try_into()
-            .unwrap_or(i64::MAX);
-        let days_since_epoch = seconds.div_euclid(86_400);
-        let seconds_of_day = seconds.rem_euclid(86_400);
-        let hour = seconds_of_day / 3_600;
-        let minute = (seconds_of_day % 3_600) / 60;
-        let second = seconds_of_day % 60;
-        let (year, month, day) = civil_from_days(days_since_epoch);
-
-        Self {
-            days_since_epoch,
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-        }
+        Self::from_millis(vulcan_core::current_utc_timestamp_ms())
     }
 
     fn from_millis(ms: i64) -> Self {
