@@ -18,12 +18,12 @@ pub use cli::{
     ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
     DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs, ExportCommand, ExportFormat,
     GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg,
-    NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryEngineArg, QueryFormatArg,
-    RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
-    SearchBackendArg, SuggestCommand, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
-    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchMode,
+    NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryEngineArg,
+    QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchBackendArg,
+    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TasksListSourceArg,
+    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
+    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -1683,8 +1683,8 @@ fn run_incremental_scan(
     use_stderr_color: bool,
     quiet: bool,
 ) -> Result<ScanSummary, CliError> {
-    let mut progress =
-        (output == OutputFormat::Human && !quiet).then(|| ScanProgressReporter::new(use_stderr_color));
+    let mut progress = (output == OutputFormat::Human && !quiet)
+        .then(|| ScanProgressReporter::new(use_stderr_color));
     scan_vault_with_progress(paths, ScanMode::Incremental, |event| {
         if let Some(progress) = progress.as_mut() {
             progress.record(&event);
@@ -2217,7 +2217,7 @@ impl SearchBackend for BraveSearchBackend {
     }
 
     fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
-        let count = limit.max(1).min(20).to_string();
+        let count = limit.clamp(1, 20).to_string();
         let response = self
             .client
             .get(&self.base_url)
@@ -2261,10 +2261,26 @@ impl SearchBackend for BraveSearchBackend {
 
 /// Candidates for auto-detection in priority order.
 const AUTO_DETECT_ORDER: &[(SearchBackendArg, &str, &str)] = &[
-    (SearchBackendArg::Kagi, "KAGI_API_KEY", "https://kagi.com/api/v0/search"),
-    (SearchBackendArg::Exa, "EXA_API_KEY", "https://api.exa.ai/search"),
-    (SearchBackendArg::Tavily, "TAVILY_API_KEY", "https://api.tavily.com/search"),
-    (SearchBackendArg::Brave, "BRAVE_API_KEY", "https://api.search.brave.com/res/v1/web/search"),
+    (
+        SearchBackendArg::Kagi,
+        "KAGI_API_KEY",
+        "https://kagi.com/api/v0/search",
+    ),
+    (
+        SearchBackendArg::Exa,
+        "EXA_API_KEY",
+        "https://api.exa.ai/search",
+    ),
+    (
+        SearchBackendArg::Tavily,
+        "TAVILY_API_KEY",
+        "https://api.tavily.com/search",
+    ),
+    (
+        SearchBackendArg::Brave,
+        "BRAVE_API_KEY",
+        "https://api.search.brave.com/res/v1/web/search",
+    ),
 ];
 
 fn build_search_backend(
@@ -2274,18 +2290,30 @@ fn build_search_backend(
     base_url: &str,
 ) -> Result<Box<dyn SearchBackend>, CliError> {
     let api_key = std::env::var(api_key_env).map_err(|_| {
-        CliError::operation(format!(
-            "missing web search API key env var {api_key_env}"
-        ))
+        CliError::operation(format!("missing web search API key env var {api_key_env}"))
     })?;
     let base_url = base_url.to_string();
     Ok(match kind {
-        SearchBackendArg::Kagi | SearchBackendArg::Auto => {
-            Box::new(KagiSearchBackend { client, base_url, api_key })
-        }
-        SearchBackendArg::Exa => Box::new(ExaSearchBackend { client, base_url, api_key }),
-        SearchBackendArg::Tavily => Box::new(TavilySearchBackend { client, base_url, api_key }),
-        SearchBackendArg::Brave => Box::new(BraveSearchBackend { client, base_url, api_key }),
+        SearchBackendArg::Kagi | SearchBackendArg::Auto => Box::new(KagiSearchBackend {
+            client,
+            base_url,
+            api_key,
+        }),
+        SearchBackendArg::Exa => Box::new(ExaSearchBackend {
+            client,
+            base_url,
+            api_key,
+        }),
+        SearchBackendArg::Tavily => Box::new(TavilySearchBackend {
+            client,
+            base_url,
+            api_key,
+        }),
+        SearchBackendArg::Brave => Box::new(BraveSearchBackend {
+            client,
+            base_url,
+            api_key,
+        }),
     })
 }
 
@@ -2301,7 +2329,7 @@ fn run_web_search_command(
     let client = build_web_client(&config.user_agent)?;
 
     // Determine effective backend kind from override → config → auto-detect.
-    let effective_kind = backend_override.unwrap_or_else(|| match config.search.backend {
+    let effective_kind = backend_override.unwrap_or(match config.search.backend {
         SearchBackendKind::Auto => SearchBackendArg::Auto,
         SearchBackendKind::Kagi => SearchBackendArg::Kagi,
         SearchBackendKind::Exa => SearchBackendArg::Exa,
@@ -2328,23 +2356,21 @@ fn run_web_search_command(
             .search
             .api_key_env
             .as_deref()
-            .unwrap_or_else(|| match effective_kind {
-                SearchBackendArg::Kagi => "KAGI_API_KEY",
+            .unwrap_or(match effective_kind {
                 SearchBackendArg::Exa => "EXA_API_KEY",
                 SearchBackendArg::Tavily => "TAVILY_API_KEY",
                 SearchBackendArg::Brave => "BRAVE_API_KEY",
-                SearchBackendArg::Auto => "KAGI_API_KEY",
+                SearchBackendArg::Kagi | SearchBackendArg::Auto => "KAGI_API_KEY",
             });
         let base_url = config
             .search
             .base_url
             .as_deref()
-            .unwrap_or_else(|| match effective_kind {
-                SearchBackendArg::Kagi => "https://kagi.com/api/v0/search",
+            .unwrap_or(match effective_kind {
                 SearchBackendArg::Exa => "https://api.exa.ai/search",
                 SearchBackendArg::Tavily => "https://api.tavily.com/search",
                 SearchBackendArg::Brave => "https://api.search.brave.com/res/v1/web/search",
-                SearchBackendArg::Auto => "https://kagi.com/api/v0/search",
+                SearchBackendArg::Kagi | SearchBackendArg::Auto => "https://kagi.com/api/v0/search",
             });
         build_search_backend(client, effective_kind, api_key_env, base_url)?
     };
@@ -5527,7 +5553,11 @@ fn build_converted_tasknote(
     })
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
 fn run_tasks_add_command(
     paths: &VaultPaths,
     text: &str,
@@ -6100,6 +6130,7 @@ fn run_tasks_convert_line_command(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_tasknote_mutation<F>(
     paths: &VaultPaths,
     task: &str,
@@ -6126,6 +6157,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_loaded_tasknote_mutation<F>(
     paths: &VaultPaths,
     loaded: &LoadedTaskNote,
@@ -7036,6 +7068,7 @@ fn run_tasks_edit_command(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_tasks_set_command(
     paths: &VaultPaths,
     task: &str,
@@ -7098,6 +7131,7 @@ fn run_tasks_set_command(
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_tasks_complete_command(
     paths: &VaultPaths,
     task: &str,
@@ -10192,6 +10226,7 @@ fn run_note_get_command(
     })
 }
 
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
 fn run_note_set_command(
     paths: &VaultPaths,
     note: &str,
@@ -10221,6 +10256,7 @@ fn run_note_set_command(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_note_create_command(
     paths: &VaultPaths,
     path: &str,
@@ -12972,12 +13008,6 @@ fn print_help_command(
                 markdown.push_str(&report.body);
                 markdown.push('\n');
             }
-            if !report.subcommands.is_empty() {
-                markdown.push_str("\n## Subcommands\n\n");
-                for subcommand in &report.subcommands {
-                    let _ = writeln!(markdown, "- `{subcommand}`");
-                }
-            }
             if !report.options.is_empty() {
                 markdown.push_str("\n## Options\n\n");
                 for option in &report.options {
@@ -13332,6 +13362,7 @@ fn filter_notes_by_glob<'a>(
         .collect())
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy)]
 struct QueryReportRenderOptions<'a> {
     format: QueryFormatArg,
@@ -13343,6 +13374,7 @@ struct QueryReportRenderOptions<'a> {
     export: Option<&'a ResolvedExport>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn print_query_report(
     paths: &VaultPaths,
     output: OutputFormat,
@@ -17558,6 +17590,7 @@ fn resolve_help_topic(topic: &[String]) -> Result<HelpTopicReport, CliError> {
     Ok(help_topic_from_command(command, topic))
 }
 
+#[allow(clippy::too_many_lines)]
 fn help_overview() -> HelpTopicReport {
     let concept_names = builtin_help_topics()
         .into_iter()
@@ -17566,83 +17599,192 @@ fn help_overview() -> HelpTopicReport {
 
     // Grouped command reference. Each tuple is (group_header, [(command, description)]).
     let groups: &[(&str, &[(&str, &str)])] = &[
-        ("Notes", &[
-            ("note get",    "Open a note, resolve its path, or print frontmatter"),
-            ("note set",    "Replace a note's content from stdin or a file"),
-            ("note create", "Create a new note with optional template and frontmatter"),
-            ("note append", "Append text to a note or under a heading"),
-            ("note patch",  "Find-and-replace inside a note with match-count guard"),
-            ("note open",   "Open a note in $EDITOR"),
-            ("note move",   "Move a note and rewrite all inbound links"),
-            ("note links",  "List outgoing links for a note"),
-            ("note backlinks", "List notes that link to a note"),
-            ("note diff",   "Show a note's changes since git HEAD or a checkpoint"),
-            ("inbox",       "Append a quick capture entry to the inbox note"),
-        ]),
-        ("Query & Search", &[
-            ("query",    "Run a DQL query — `FROM notes WHERE ...` — and print results"),
-            ("search",   "Full-text and semantic search across the vault"),
-            ("ls",       "List notes filtered by tags, properties, or a path prefix"),
-            ("notes",    "List notes filtered by typed property expressions"),
-            ("backlinks","List notes that link to the given note"),
-            ("links",    "List outgoing links from the given note"),
-            ("changes",  "Report note/link/property changes since a baseline"),
-        ]),
-        ("Refactor", &[
-            ("refactor",         "Vault-wide rename, retag, rewrite, and suggest passes"),
-            ("move",             "Move a note and rewrite inbound links"),
-            ("rename-property",  "Rename a frontmatter property key across notes"),
-        ]),
-        ("Tasks", &[
-            ("tasks",  "Create, list, complete, and track TaskNotes tasks"),
-            ("kanban", "Inspect and move cards on Kanban boards"),
-        ]),
-        ("Daily Notes & Periodic", &[
-            ("daily",    "Open today's daily note; append text, list notes, or export as ICS"),
-            ("periodic", "List, gap-check, and open periodic notes of any cadence"),
-            ("template", "Render and insert Templater-compatible templates"),
-        ]),
-        ("Obsidian Plugin Views", &[
-            ("bases",    "Evaluate and interact with .base files"),
-            ("dataview", "Evaluate Dataview inline fields and blocks"),
-        ]),
-        ("Graph & Analysis", &[
-            ("graph",   "Shortest paths, hub notes, orphans, and vault analytics"),
-            ("suggest", "Surface plain-text mentions that could become links"),
-            ("cluster", "Cluster indexed vectors into topical groups"),
-            ("related", "Recommend semantically related notes"),
-            ("doctor",  "Inspect the vault for broken or suspicious state"),
-        ]),
-        ("Index Maintenance", &[
-            ("index",   "Scan, rebuild, repair, watch, and serve the cache"),
-            ("vectors", "Embed, query, and maintain the vector index"),
-            ("cache",   "Inspect and maintain the SQLite cache"),
-            ("repair",  "Repair derived indexes and cache structures"),
-        ]),
-        ("JavaScript & Web", &[
-            ("run", "Execute JavaScript in the Vulcan runtime sandbox; interactive REPL"),
-            ("web", "Fetch URLs and run web searches via configured backends"),
-        ]),
-        ("Git", &[
-            ("git", "Git status, log, diff, blame, and commit within the vault"),
-        ]),
-        ("Automation & Export", &[
-            ("saved",      "List, show, and run persisted query/report definitions"),
-            ("automation", "Run saved reports, checks, and repairs for CI workflows"),
-            ("batch",      "Run multiple saved reports sequentially"),
-            ("export",     "Write static export artifacts from the cache"),
-            ("checkpoint", "Create and list named cache-state checkpoints"),
-        ]),
-        ("Setup & Configuration", &[
-            ("init",   "Initialize .vulcan/ state for a vault"),
-            ("config", "Import Obsidian plugin settings into .vulcan/config.toml"),
-            ("trust",  "Manage vault trust for startup scripts and plugins"),
-        ]),
-        ("Help & Info", &[
-            ("help",     "Browse integrated docs (this page); `help <topic>` for details"),
-            ("describe", "Machine-readable command schema for LLM and tool harnesses"),
-            ("version",  "Print the Vulcan version"),
-        ]),
+        (
+            "Notes",
+            &[
+                (
+                    "note get",
+                    "Open a note, resolve its path, or print frontmatter",
+                ),
+                ("note set", "Replace a note's content from stdin or a file"),
+                (
+                    "note create",
+                    "Create a new note with optional template and frontmatter",
+                ),
+                ("note append", "Append text to a note or under a heading"),
+                (
+                    "note patch",
+                    "Find-and-replace inside a note with match-count guard",
+                ),
+                ("note open", "Open a note in $EDITOR"),
+                ("note move", "Move a note and rewrite all inbound links"),
+                ("note links", "List outgoing links for a note"),
+                ("note backlinks", "List notes that link to a note"),
+                (
+                    "note diff",
+                    "Show a note's changes since git HEAD or a checkpoint",
+                ),
+                ("inbox", "Append a quick capture entry to the inbox note"),
+            ],
+        ),
+        (
+            "Query & Search",
+            &[
+                (
+                    "query",
+                    "Run a DQL query — `FROM notes WHERE ...` — and print results",
+                ),
+                ("search", "Full-text and semantic search across the vault"),
+                (
+                    "ls",
+                    "List notes filtered by tags, properties, or a path prefix",
+                ),
+                ("notes", "List notes filtered by typed property expressions"),
+                ("backlinks", "List notes that link to the given note"),
+                ("links", "List outgoing links from the given note"),
+                (
+                    "changes",
+                    "Report note/link/property changes since a baseline",
+                ),
+            ],
+        ),
+        (
+            "Refactor",
+            &[
+                (
+                    "refactor",
+                    "Vault-wide rename, retag, rewrite, and suggest passes",
+                ),
+                ("move", "Move a note and rewrite inbound links"),
+                (
+                    "rename-property",
+                    "Rename a frontmatter property key across notes",
+                ),
+            ],
+        ),
+        (
+            "Tasks",
+            &[
+                ("tasks", "Create, list, complete, and track TaskNotes tasks"),
+                ("kanban", "Inspect and move cards on Kanban boards"),
+            ],
+        ),
+        (
+            "Daily Notes & Periodic",
+            &[
+                (
+                    "daily",
+                    "Open today's daily note; append text, list notes, or export as ICS",
+                ),
+                (
+                    "periodic",
+                    "List, gap-check, and open periodic notes of any cadence",
+                ),
+                (
+                    "template",
+                    "Render and insert Templater-compatible templates",
+                ),
+            ],
+        ),
+        (
+            "Obsidian Plugin Views",
+            &[
+                ("bases", "Evaluate and interact with .base files"),
+                ("dataview", "Evaluate Dataview inline fields and blocks"),
+            ],
+        ),
+        (
+            "Graph & Analysis",
+            &[
+                (
+                    "graph",
+                    "Shortest paths, hub notes, orphans, and vault analytics",
+                ),
+                (
+                    "suggest",
+                    "Surface plain-text mentions that could become links",
+                ),
+                ("cluster", "Cluster indexed vectors into topical groups"),
+                ("related", "Recommend semantically related notes"),
+                ("doctor", "Inspect the vault for broken or suspicious state"),
+            ],
+        ),
+        (
+            "Index Maintenance",
+            &[
+                ("index", "Scan, rebuild, repair, watch, and serve the cache"),
+                ("vectors", "Embed, query, and maintain the vector index"),
+                ("cache", "Inspect and maintain the SQLite cache"),
+                ("repair", "Repair derived indexes and cache structures"),
+            ],
+        ),
+        (
+            "JavaScript & Web",
+            &[
+                (
+                    "run",
+                    "Execute JavaScript in the Vulcan runtime sandbox; interactive REPL",
+                ),
+                (
+                    "web",
+                    "Fetch URLs and run web searches via configured backends",
+                ),
+            ],
+        ),
+        (
+            "Git",
+            &[(
+                "git",
+                "Git status, log, diff, blame, and commit within the vault",
+            )],
+        ),
+        (
+            "Automation & Export",
+            &[
+                (
+                    "saved",
+                    "List, show, and run persisted query/report definitions",
+                ),
+                (
+                    "automation",
+                    "Run saved reports, checks, and repairs for CI workflows",
+                ),
+                ("batch", "Run multiple saved reports sequentially"),
+                ("export", "Write static export artifacts from the cache"),
+                (
+                    "checkpoint",
+                    "Create and list named cache-state checkpoints",
+                ),
+            ],
+        ),
+        (
+            "Setup & Configuration",
+            &[
+                ("init", "Initialize .vulcan/ state for a vault"),
+                (
+                    "config",
+                    "Import Obsidian plugin settings into .vulcan/config.toml",
+                ),
+                (
+                    "trust",
+                    "Manage vault trust for startup scripts and plugins",
+                ),
+            ],
+        ),
+        (
+            "Help & Info",
+            &[
+                (
+                    "help",
+                    "Browse integrated docs (this page); `help <topic>` for details",
+                ),
+                (
+                    "describe",
+                    "Machine-readable command schema for LLM and tool harnesses",
+                ),
+                ("version", "Print the Vulcan version"),
+            ],
+        ),
     ];
 
     let mut body = String::from(
@@ -17663,10 +17805,14 @@ fn help_overview() -> HelpTopicReport {
     body.push_str("\n\n---\n");
 
     for (group, commands) in groups {
-        body.push_str(&format!("\n## {group}\n\n"));
+        let _ = writeln!(body, "\n## {group}\n");
         for (cmd, desc) in *commands {
-            body.push_str(&format!("- `{cmd}` — {desc}\n"));
+            let _ = writeln!(body, "- `{cmd}` — {desc}");
         }
+    }
+    if let Some(command_tree) = command_tree_section("Command Tree", &cli_command_tree(), false) {
+        body.push('\n');
+        body.push_str(&command_tree);
     }
 
     HelpTopicReport {
@@ -17850,10 +17996,13 @@ fn help_topic_from_command(command: &clap::Command, path: &[String]) -> HelpTopi
     );
     let mut sections = Vec::new();
     if let Some(after_help) = command.get_after_help() {
-        let trimmed = after_help.to_string();
+        let trimmed = strip_help_section(&after_help.to_string(), "Subcommands:");
         if !trimmed.is_empty() {
             sections.push(trimmed);
         }
+    }
+    if let Some(command_tree) = command_tree_section("Subcommands", command, true) {
+        sections.push(command_tree);
     }
     let subcommands = command
         .get_subcommands()
@@ -17879,6 +18028,89 @@ fn help_topic_from_command(command: &clap::Command, path: &[String]) -> HelpTopi
             .collect(),
         subcommands,
         related: Vec::new(),
+    }
+}
+
+fn strip_help_section(after_help: &str, heading: &str) -> String {
+    let mut result = Vec::new();
+    let mut lines = after_help.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        if line.trim() == heading {
+            while let Some(next_line) = lines.peek() {
+                if next_line.trim().is_empty() {
+                    lines.next();
+                    break;
+                }
+                lines.next();
+            }
+            continue;
+        }
+        result.push(line);
+    }
+
+    while result.first().is_some_and(|line| line.trim().is_empty()) {
+        result.remove(0);
+    }
+    while result.last().is_some_and(|line| line.trim().is_empty()) {
+        result.pop();
+    }
+
+    let mut normalized = Vec::new();
+    let mut previous_blank = false;
+    for line in result {
+        let blank = line.trim().is_empty();
+        if blank && previous_blank {
+            continue;
+        }
+        normalized.push(line);
+        previous_blank = blank;
+    }
+
+    normalized.join("\n")
+}
+
+fn command_tree_section(
+    title: &str,
+    command: &clap::Command,
+    include_examples: bool,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    append_command_tree_lines(command, 0, include_examples, &mut lines);
+    if lines.is_empty() {
+        None
+    } else {
+        let code_block = lines
+            .into_iter()
+            .map(|line| format!("    {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some(format!("## {title}\n\n{code_block}"))
+    }
+}
+
+fn append_command_tree_lines(
+    command: &clap::Command,
+    depth: usize,
+    include_examples: bool,
+    lines: &mut Vec<String>,
+) {
+    for subcommand in command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+    {
+        let indent = "  ".repeat(depth);
+        let name = subcommand.get_name();
+        let summary = subcommand
+            .get_about()
+            .map_or_else(|| "undocumented".to_string(), ToString::to_string);
+        lines.push(format!("{indent}{name:<16} {summary}"));
+        if include_examples {
+            if let Some(example) = extract_examples(subcommand).first() {
+                lines.push(format!("{indent}  e.g. {example}"));
+            }
+        }
+        append_command_tree_lines(subcommand, depth + 1, include_examples, lines);
     }
 }
 
@@ -19251,6 +19483,31 @@ mod tests {
     use std::process::Command as ProcessCommand;
     use tempfile::TempDir;
 
+    const CLI_TEST_STACK_BYTES: &str = "8388608";
+
+    extern "C" fn configure_cli_test_thread_stack() {
+        std::env::set_var("RUST_MIN_STACK", CLI_TEST_STACK_BYTES);
+    }
+
+    #[used]
+    #[cfg_attr(
+        any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        ),
+        link_section = ".init_array"
+    )]
+    #[cfg_attr(
+        any(target_os = "macos", target_os = "ios"),
+        link_section = "__DATA,__mod_init_func"
+    )]
+    #[cfg_attr(target_os = "windows", link_section = ".CRT$XCU")]
+    static CONFIGURE_CLI_TEST_THREAD_STACK: extern "C" fn() = configure_cli_test_thread_stack;
+
     fn run_git(vault_root: &Path, args: &[&str]) {
         let status = ProcessCommand::new("git")
             .arg("-C")
@@ -19262,7 +19519,7 @@ mod tests {
     }
 
     fn init_git_repo(vault_root: &Path) {
-        run_git(vault_root, &["init"]);
+        run_git(vault_root, &["-c", "init.defaultBranch=main", "init"]);
         run_git(vault_root, &["config", "user.name", "Vulcan Test"]);
         run_git(vault_root, &["config", "user.email", "vulcan@example.com"]);
     }

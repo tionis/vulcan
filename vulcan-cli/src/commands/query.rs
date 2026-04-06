@@ -76,7 +76,7 @@ pub(crate) fn handle_query_command(
     let use_dql = match engine {
         QueryEngineArg::Dql => true,
         QueryEngineArg::Dsl => false,
-        QueryEngineArg::Auto => dsl.map_or(false, looks_like_dql),
+        QueryEngineArg::Auto => dsl.is_some_and(looks_like_dql),
     };
 
     if use_dql {
@@ -340,4 +340,3 @@ fn looks_like_dql(input: &str) -> bool {
         "TABLE" | "LIST" | "TASK" | "CALENDAR"
     )
 }
-

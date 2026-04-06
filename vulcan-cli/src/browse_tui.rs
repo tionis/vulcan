@@ -4256,7 +4256,7 @@ mod tests {
     }
 
     fn init_git_repo(vault_root: &Path) {
-        run_git(vault_root, &["init"]);
+        run_git(vault_root, &["-c", "init.defaultBranch=main", "init"]);
         run_git(vault_root, &["config", "user.name", "Vulcan Test"]);
         run_git(vault_root, &["config", "user.email", "vulcan@example.com"]);
     }
