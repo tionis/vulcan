@@ -405,6 +405,10 @@ impl ExecutionRow {
             .with_time_zone(time_zone);
         if let Some(sn) = source_note {
             ctx = ctx.with_this_note(sn);
+        } else {
+            // No source note (e.g. CLI invocation) — `this` should resolve to null so that
+            // `file.name != this.file.name` is vacuously true rather than always false.
+            ctx = ctx.with_this_null_when_missing();
         }
         evaluate(expr, &ctx)
     }
@@ -1889,8 +1893,9 @@ FROM "Notes""#,
     }
 
     #[test]
-    fn this_file_name_without_current_file_falls_back_to_row() {
-        // When no current_file is provided, `this` falls back to the current row (prior behaviour).
+    fn this_file_name_without_current_file_resolves_to_null() {
+        // When no current_file is provided (e.g. CLI invocation), `this` resolves to null so
+        // that `file.name != this.file.name` is vacuously true — all notes pass the filter.
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir");
@@ -1899,7 +1904,6 @@ FROM "Notes""#,
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
 
-        // Without a source file, `this.file.name != file.name` is always false.
         let result = evaluate_dql(
             &paths,
             "TABLE WITHOUT ID file.name AS Name\nWHERE file.name != this.file.name",
@@ -1908,8 +1912,8 @@ FROM "Notes""#,
         .expect("DQL should evaluate");
 
         assert_eq!(
-            result.result_count, 0,
-            "without source note, this == current row so WHERE is always false"
+            result.result_count, 1,
+            "without source note, this resolves to null so all notes pass the filter"
         );
     }
 

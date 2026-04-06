@@ -1383,6 +1383,16 @@ pub enum DescribeFormatArg {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum QueryEngineArg {
+    /// Auto-detect: DQL when input starts with TABLE/LIST/TASK/CALENDAR, native DSL otherwise
+    Auto,
+    /// Vulcan native query DSL (`from notes where …`)
+    Dsl,
+    /// Dataview Query Language (`TABLE … FROM … WHERE …`)
+    Dql,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum QueryFormatArg {
     Table,
     Paths,
@@ -2855,7 +2865,7 @@ Examples:
     )]
     Query {
         #[arg(
-            help = "DSL query string; e.g. 'from notes where status = done order by file.mtime desc'"
+            help = "Query string (DSL or DQL depending on --engine)"
         )]
         dsl: Option<String>,
         #[arg(
@@ -2863,6 +2873,13 @@ Examples:
             help = "JSON query payload; mutually exclusive with the positional DSL argument"
         )]
         json: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = QueryEngineArg::Auto,
+            help = "Query engine: auto-detect (default), native dsl, or dql (Dataview)"
+        )]
+        engine: QueryEngineArg,
         #[arg(long, value_enum, default_value_t = QueryFormatArg::Table)]
         format: QueryFormatArg,
         #[arg(long, help = "Restrict result paths with a glob such as Projects/**")]

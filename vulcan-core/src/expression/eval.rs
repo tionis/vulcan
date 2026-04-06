@@ -25,6 +25,10 @@ pub struct EvalContext<'a> {
     /// When set, `this` resolves to this note rather than the current row's note.
     /// Used so that `WHERE file.name != this.file.name` filters out the query-containing file.
     pub this_note: Option<&'a NoteRecord>,
+    /// When `true` and `this_note` is `None`, `this` resolves to `null` instead of falling back
+    /// to the current row.  This is the correct behavior for DQL queries run from the CLI where
+    /// there is no source note — `file.name != this.file.name` should be vacuously true.
+    pub this_null_when_missing: bool,
 }
 
 impl<'a> EvalContext<'a> {
@@ -38,6 +42,7 @@ impl<'a> EvalContext<'a> {
             locals: BTreeMap::new(),
             note_lookup: None,
             this_note: None,
+            this_null_when_missing: false,
         }
     }
 
@@ -57,6 +62,14 @@ impl<'a> EvalContext<'a> {
     #[must_use]
     pub fn with_this_note(mut self, this_note: &'a NoteRecord) -> Self {
         self.this_note = Some(this_note);
+        self
+    }
+
+    /// When set, `this` resolves to `null` if no source note is provided rather than
+    /// falling back to the current row.
+    #[must_use]
+    pub fn with_this_null_when_missing(mut self) -> Self {
+        self.this_null_when_missing = true;
         self
     }
 }
@@ -98,8 +111,15 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
                 // current row being evaluated.  When a source note is provided via `this_note`
                 // we use it; otherwise fall back to the current row (e.g. in Bases formulas
                 // where there is no separate source context).
-                let this_note = ctx.this_note.unwrap_or(ctx.note);
-                return Ok(note_to_page_object(this_note));
+                // When `this_null_when_missing` is set (DQL CLI context), resolve to null
+                // instead of the current row so `file.name != this.file.name` is vacuously true.
+                if let Some(this_note) = ctx.this_note {
+                    return Ok(note_to_page_object(this_note));
+                }
+                if ctx.this_null_when_missing {
+                    return Ok(Value::Null);
+                }
+                return Ok(note_to_page_object(ctx.note));
             }
             // `file` standalone → basename string (usable as link target)
             if normalized_name == "file" {
