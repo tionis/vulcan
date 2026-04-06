@@ -11,7 +11,8 @@ use crate::{
     warn_auto_commit_if_needed, Cli, CliError, NoteAppendMode, NoteAppendOptions, NoteCommand,
     NoteGetOptions, NotePatchOptions,
 };
-use vulcan_core::{query_backlinks, query_links, VaultPaths};
+use std::path::Path;
+use vulcan_core::{move_note, query_backlinks, query_links, resolve_note_reference, VaultPaths};
 
 pub(crate) fn handle_note_command(
     cli: &Cli,
@@ -184,6 +185,25 @@ pub(crate) fn handle_note_command(
             }
             crate::print_note_patch_report(cli.output, &report)
         }
+        NoteCommand::Rename {
+            note,
+            new_name,
+            dry_run,
+            no_commit,
+        } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
+            let destination = note_rename_destination(&resolved.path, new_name);
+            let summary = move_note(paths, &resolved.path, &destination, *dry_run)
+                .map_err(CliError::operation)?;
+            if !*dry_run {
+                auto_commit
+                    .commit(paths, "note-rename", &crate::move_changed_files(&summary))
+                    .map_err(CliError::operation)?;
+            }
+            crate::print_move_summary(cli.output, &summary)
+        }
         NoteCommand::Info { note } => {
             let report = crate::run_note_info_command(paths, note)?;
             crate::print_note_info_report(cli.output, &report)
@@ -230,5 +250,45 @@ pub(crate) fn handle_note_command(
             let report = crate::run_diff_command(paths, Some(note), since.as_deref(), false)?;
             crate::print_diff_report(cli.output, &report)
         }
+    }
+}
+
+fn note_rename_destination(source_path: &str, new_name: &str) -> String {
+    if Path::new(new_name).components().count() > 1 {
+        return new_name.to_string();
+    }
+
+    match Path::new(source_path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        Some(parent) => format!("{}/{new_name}", parent.to_string_lossy()),
+        None => new_name.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::note_rename_destination;
+
+    #[test]
+    fn note_rename_destination_keeps_same_folder_for_bare_names() {
+        assert_eq!(
+            note_rename_destination("Projects/Alpha.md", "Beta"),
+            "Projects/Beta"
+        );
+    }
+
+    #[test]
+    fn note_rename_destination_keeps_root_notes_at_root() {
+        assert_eq!(note_rename_destination("Alpha.md", "Beta.md"), "Beta.md");
+    }
+
+    #[test]
+    fn note_rename_destination_allows_explicit_destination_paths() {
+        assert_eq!(
+            note_rename_destination("Projects/Alpha.md", "Archive/Beta"),
+            "Archive/Beta"
+        );
     }
 }

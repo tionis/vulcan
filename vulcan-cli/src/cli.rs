@@ -245,6 +245,7 @@ Subcommands:
   create      create a new note, optionally from a template and extra frontmatter
   append      append text to the end of a note, at the top, or under a heading
   patch       perform a guarded single-note find/replace
+  rename      rename a note in place and rewrite inbound links
   info        show one note's summary metadata and graph stats
   history     show git history scoped to one note
 
@@ -264,6 +265,7 @@ Examples:
   vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"
   vulcan note append Projects/Alpha \"Pinned\" --prepend
   vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"
+  vulcan note rename Projects/Alpha Beta
   vulcan note patch Projects/Alpha --find TODO --replace DONE";
 
 const QUERY_COMMAND_AFTER_HELP: &str = "\
@@ -2193,6 +2195,19 @@ pub enum NoteCommand {
         #[arg(long, help = "Run non-blocking doctor-like diagnostics after patching")]
         check: bool,
         #[arg(long, help = "Report the planned patch without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Rename a note in place and rewrite inbound links")]
+    Rename {
+        #[arg(help = "Note path, filename, or alias to rename")]
+        note: String,
+        #[arg(
+            help = "New note name in the same folder, or a full destination path to move elsewhere"
+        )]
+        new_name: String,
+        #[arg(long, help = "Report rewrite changes without renaming the file")]
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,

@@ -9068,6 +9068,64 @@ fn move_json_output_supports_dry_run_and_apply() {
 }
 
 #[test]
+fn note_rename_json_output_renames_in_place_and_rewrites_links() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("move-rewrite", &vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let dry_run = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "rename",
+            "Alpha",
+            "Beta",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let dry_run_json = parse_stdout_json(&dry_run);
+
+    assert_eq!(dry_run_json["dry_run"], true);
+    assert_eq!(dry_run_json["source_path"], "Projects/Alpha.md");
+    assert_eq!(dry_run_json["destination_path"], "Projects/Beta.md");
+    assert!(vault_root.join("Projects/Alpha.md").exists());
+
+    let applied = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "rename",
+            "Alpha",
+            "Beta",
+        ])
+        .assert()
+        .success();
+    let applied_json = parse_stdout_json(&applied);
+
+    assert_eq!(applied_json["dry_run"], false);
+    assert_eq!(applied_json["destination_path"], "Projects/Beta.md");
+    assert!(!vault_root.join("Projects/Alpha.md").exists());
+    assert!(vault_root.join("Projects/Beta.md").exists());
+    assert!(fs::read_to_string(vault_root.join("Home.md"))
+        .expect("home should be readable")
+        .contains("[[Projects/Beta#Status]]"));
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn suggest_and_rewrite_json_outputs_cover_linking_and_duplicates() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
