@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan daily                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox\n  Query:       query, search, ls, notes, backlinks, links, changes\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    daily, weekly, monthly, periodic, template\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, cluster, related, doctor\n  Index:       index, vectors, cache, repair\n  Runtime:     run, web\n  Git:         git\n  Automation:  saved, automation, batch, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox\n  Query:       query, search, ls, notes, backlinks, links, changes\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, weekly, monthly, periodic, template\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, cluster, related, doctor\n  Index:       index, vectors, cache, repair\n  Runtime:     run, web\n  Git:         git\n  Automation:  saved, automation, batch, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -3771,6 +3771,42 @@
             "subcommands": []
           }
         ]
+      },
+      {
+        "about": "Open or create today's daily note",
+        "after_help": "Behavior:\n  `today` is a top-level alias for `daily today`.\n  It opens or creates the configured daily note for the current date.\n\nExamples:\n  vulcan today\n  vulcan today --no-edit",
+        "name": "today",
+        "options": [
+          {
+            "help": "Create the note without opening it in the editor",
+            "id": "no_edit",
+            "long": "no-edit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_EDIT"
+            ]
+          },
+          {
+            "help": "Suppress auto-commit for this invocation",
+            "id": "no_commit",
+            "long": "no-commit",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_COMMIT"
+            ]
+          }
+        ],
+        "subcommands": []
       },
       {
         "about": "Inspect and mutate the vault git repository",

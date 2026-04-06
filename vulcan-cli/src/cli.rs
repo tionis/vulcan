@@ -6,7 +6,7 @@ const ROOT_AFTER_HELP: &str = "\
 Quick start:
   vulcan query 'from notes where status = \"open\"'    Query by property
   vulcan search \"meeting notes\"                       Full-text search
-  vulcan daily                                         Open today's daily note
+  vulcan today                                         Open today's daily note
   vulcan note create Projects/new-idea.md              Create a note
   vulcan run                                           Start the JS REPL
 
@@ -15,7 +15,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   Query:       query, search, ls, notes, backlinks, links, changes
   Refactor:    refactor, move, rename-property
   Tasks:       tasks, kanban
-  Periodic:    daily, weekly, monthly, periodic, template
+  Periodic:    today, daily, weekly, monthly, periodic, template
   Plugins:     bases, dataview
   Analysis:    graph, suggest, cluster, related, doctor
   Index:       index, vectors, cache, repair
@@ -589,6 +589,15 @@ Examples:
   vulcan periodic yearly 2026-01-01
   vulcan periodic list --type daily
   vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07";
+
+const TODAY_COMMAND_AFTER_HELP: &str = "\
+Behavior:
+  `today` is a top-level alias for `daily today`.
+  It opens or creates the configured daily note for the current date.
+
+Examples:
+  vulcan today
+  vulcan today --no-edit";
 
 const KANBAN_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -2473,6 +2482,16 @@ pub enum Command {
     Daily {
         #[command(subcommand)]
         command: DailyCommand,
+    },
+    #[command(
+        about = "Open or create today's daily note",
+        after_help = TODAY_COMMAND_AFTER_HELP
+    )]
+    Today {
+        #[arg(long, help = "Create the note without opening it in the editor")]
+        no_edit: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(
         about = "Inspect and mutate the vault git repository",

@@ -12769,6 +12769,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             interactive_note_selection,
             &list_controls,
         ),
+        Command::Today { no_edit, no_commit } => commands::periodic::handle_today_command(
+            cli,
+            &paths,
+            no_edit,
+            no_commit,
+            interactive_note_selection,
+        ),
         Command::Git { ref command } => commands::runtime::handle_git_command(cli, &paths, command),
         Command::Run {
             ref script,
@@ -20574,6 +20581,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_today_command() {
+        let cli = Cli::try_parse_from(["vulcan", "today", "--no-edit", "--no-commit"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Today {
+                no_edit: true,
+                no_commit: true,
+            }
+        );
+    }
+
+    #[test]
     fn parses_note_get_command() {
         let cli = Cli::try_parse_from([
             "vulcan",
@@ -22083,6 +22104,8 @@ mod tests {
             Cli::try_parse_from(["vulcan", "checkpoint", "list"]).expect("cli should parse");
         let changes = Cli::try_parse_from(["vulcan", "changes", "--checkpoint", "weekly"])
             .expect("cli should parse");
+        let today =
+            Cli::try_parse_from(["vulcan", "today", "--no-edit"]).expect("cli should parse");
         let batch = Cli::try_parse_from(["vulcan", "batch", "--all"]).expect("cli should parse");
         let automation = Cli::try_parse_from([
             "vulcan",
@@ -22599,6 +22622,13 @@ mod tests {
             Command::Changes {
                 checkpoint: Some("weekly".to_string()),
                 export: ExportArgs::default(),
+            }
+        );
+        assert_eq!(
+            today.command,
+            Command::Today {
+                no_edit: true,
+                no_commit: false,
             }
         );
         assert_eq!(

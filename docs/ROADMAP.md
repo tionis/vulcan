@@ -3403,7 +3403,7 @@ The `config` group currently only has `import`. Users need to inspect and modify
 
 **Convenience aliases**
 
-- [ ] **`vulcan today`** — top-level alias for `vulcan daily today`. This is the single most common command; saving keystrokes matters.
+- [x] **`vulcan today`** — top-level alias for `vulcan daily today`. This is the single most common command; saving keystrokes matters.
 
 **MCP server mode**
 
