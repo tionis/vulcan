@@ -1,0 +1,382 @@
+# Deferred Native Assistant Reference
+
+This document preserves the native assistant steering that existed before Phase 9.12 was re-scoped around external runtime integration with `pi`.
+
+It is not the current implementation plan.
+
+Current plan:
+
+- Vulcan is `pi`-first for agent/runtime integration.
+- Native assistant and chat runtime work are deferred.
+
+This document exists so the earlier design work is not lost. If Vulcan later needs an in-process assistant, this should be the starting point for the revisit.
+
+## 1. Native assistant scope
+
+Original direction:
+
+- A vault-aware AI assistant that can search, read, write, and analyze notes using an LLM inference backend
+- CLI-first interaction model
+- Full access to the vault through Vulcan's existing query and mutation infrastructure
+- Conversation state and durable assistant artifacts stored in the vault where useful
+
+Original dependencies:
+
+- Phase 5 vectors and embeddings
+- Phase 7.12 query model
+- Phase 9.6 search
+
+## 2. Inference backend
+
+Preserved steering:
+
+- `AssistantProvider` trait with:
+  - `chat(messages, tools?) -> Response`
+  - `stream_chat(messages, tools?) -> Stream<Token>`
+- `OpenAICompatibleProvider` as the primary concrete implementation
+- Support OpenRouter, local Ollama/vLLM, OpenAI, and Anthropic-via-proxy through `/v1/chat/completions`
+- Configurable provider settings in `.vulcan/config.toml`
+
+Original config sketch:
+
+```toml
+[assistant]
+provider = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+model = "anthropic/claude-sonnet-4"
+max_tokens = 4096
+temperature = 0.7
+```
+
+Additional steering:
+
+- allow `--model` override at invocation time
+- support streaming output for interactive sessions
+
+## 3. Tool exposure model
+
+The core design idea is still useful even if the runtime lives outside Vulcan:
+
+- keep a small core tool set always available
+- keep `describe` and `help` as discovery/meta-tools
+- make the full command surface callable on demand
+- preserve CLI-to-tool 1:1 mapping
+
+### Core tools
+
+Original core set:
+
+- `note_get(path, opts?)`
+- `note_create(path, content?, template?, frontmatter?)`
+- `note_set(path, content)`
+- `note_append(path, text, heading?)`
+- `note_patch(path, find, replace)`
+- `search(query)`
+- `query(dsl)`
+- `update_property(path, key, value)`
+- `unset_property(path, key)`
+- `inbox(text)`
+
+Original rule:
+
+- write-capable tools require explicit write permission, with confirmation by default
+
+### Discovery meta-tools
+
+Original set:
+
+- `describe()`
+- `help(command)`
+- `run_js(code, sandbox?)`
+- `skill_list()`
+- `skill_get(name)`
+
+### Discoverable tools
+
+Original examples:
+
+- `note_links(path)`
+- `note_backlinks(path)`
+- `note_doctor(path)`
+- `similar(path)`
+- `daily_list(from?, to?)`
+- `daily_append(text, heading?, date?)`
+- `git_status()`
+- `git_log(limit?)`
+- `git_diff(path?)`
+- `git_blame(path)`
+- `git_commit(message)`
+- `web_search(query)`
+- `web_fetch(url, mode?)`
+- graph tools such as `graph_path`, `graph_hubs`, `graph_components`, `graph_dead_ends`
+- refactor tools such as `rename_alias`, `rename_heading`, `merge_tags`, `rewrite`, `move`, `link_mentions`
+
+### Discovery flow
+
+Preserved pattern:
+
+1. call `describe`
+2. call `help("<command>")` for full schema
+3. call the tool
+
+Alternative path:
+
+- load a relevant skill first
+- then use the tools or `run_js`
+
+## 4. Native CLI surface
+
+If a native runtime is revived, the previous CLI surface is still a reasonable baseline:
+
+- `vulcan assistant <prompt>`
+- `vulcan assistant --chat`
+- `vulcan assistant --file <note> <prompt>`
+- `vulcan assistant --summarize <note>`
+- `vulcan assistant --ask <question>`
+- `vulcan assistant --prompt <name>`
+- `vulcan assistant --skill <name>`
+- `--output json`
+- `--dry-run` for write operations
+- `--require-confirmation` for mutating tool calls
+
+## 5. System prompt and vault awareness
+
+The preserved prompt layering model:
+
+- vault context summary:
+  - vault name
+  - note count
+  - top tags with counts
+  - property catalog summary
+- full schemas for core tools
+- schemas for discovery tools
+- command-group summaries for discoverable surfaces
+- skill directory summary
+- vault `AGENTS.md` injected as extra system context when present
+- active prompt/skill content appended when invoked with one
+
+Context management ideas worth preserving:
+
+- retrieve relevant notes via search/query before injection
+- truncate long notes aggressively
+- prioritize recent and relevant sections
+- optionally support `--context <dql>` to pre-filter vault context
+
+## 6. Conversation persistence
+
+The most opinionated native-runtime idea that was removed from the active roadmap was vault-native session persistence.
+
+### Session storage
+
+Original plan:
+
+- store sessions as Markdown files in a configurable folder
+- default folder: `AI/Sessions/`
+
+Original frontmatter sketch:
+
+```yaml
+---
+session_id: <ULID>
+type: conversation
+title: <auto-generated or user-provided>
+created: <ISO 8601>
+last_active: <ISO 8601>
+model: <model name used>
+context_files:
+  - <paths of notes used as context>
+enabled_tools:
+  - search
+  - read_note
+  - query
+require_confirmation: true
+---
+```
+
+### Message format
+
+Original format used gemini-scribe-style callouts:
+
+- `> [!user]+ User`
+- `> [!assistant]+ Assistant`
+- `> [!metadata]- Metadata`
+
+Additional ideas:
+
+- auto-save after each turn
+- resume sessions by ID or title
+- list sessions with title, date, and message count
+- auto-title sessions after the first exchange
+
+This is explicitly deferred under the `pi`-first plan, but it remains a strong candidate if external runtimes prove insufficient.
+
+## 7. Prompt system
+
+The prompt system survives conceptually even without a native runtime, but these are the native-runtime-specific ideas that were cut from the active roadmap:
+
+- `vulcan assistant --prompt <name>`
+- `vulcan assistant prompts`
+- prompt frontmatter controlling how prompt content composes with the default system prompt
+- runtime variable expansion such as:
+  - `{{context_files}}`
+  - `{{vault_name}}`
+  - `{{current_date}}`
+- prompts declaring `context_files` in frontmatter for automatic loading
+
+Original prompt frontmatter sketch:
+
+```yaml
+---
+name: summarize-meeting
+description: Summarize meeting notes into action items
+version: 1
+override_system_prompt: false
+tags:
+  - productivity
+  - meetings
+---
+```
+
+## 8. Skill system
+
+The general skill concept remains active, but these were the native-runtime execution ideas:
+
+- `vulcan assistant --skill <name>`
+- `vulcan assistant skills`
+- skill frontmatter narrowing the relevant tool set
+- `output_file` writing results automatically to a vault note
+- skill chaining
+- `skill_list()` and `skill_get(name)` as first-class agent tools
+
+Original skill frontmatter sketch:
+
+```yaml
+---
+name: daily-review
+description: Review today's notes and create a daily summary
+tools:
+  - search
+  - note_get
+  - note_create
+  - query
+  - daily_list
+require_confirmation: false
+output_file: "Reviews/{{date}}-daily-review.md"
+---
+```
+
+Preserved default skill ideas:
+
+- `note-operations`
+- `vault-query`
+- `js-api-guide`
+- `graph-exploration`
+- `daily-notes`
+- `properties-and-tags`
+- `refactoring`
+- `web-research`
+- `git-workflow`
+- `task-management`
+
+Preserved user-skill idea:
+
+- user-defined Markdown skills live alongside defaults in `AI/Skills/`
+
+Preserved executable-skill idea:
+
+- advanced skills may include JS scripts using `#!/usr/bin/env -S vulcan run --script`
+
+## 9. Native chat runtime
+
+This entire area is now deferred, but the previous steering is preserved here.
+
+### Core idea
+
+- expose the assistant over messaging platforms
+- Telegram first
+- later Discord, Signal, Matrix, Slack
+- keep a platform-agnostic assistant core
+- keep platform adapters thin
+
+### `ChatPlatform` trait
+
+Original sketch:
+
+```rust
+trait ChatPlatform {
+    fn name(&self) -> &str;
+    fn poll_messages(&mut self) -> Result<Vec<IncomingMessage>>;
+    fn send_response(&self, chat_id: &str, response: AssistantResponse) -> Result<()>;
+    fn platform_user_id(&self, msg: &IncomingMessage) -> String;
+}
+```
+
+Supporting types:
+
+- `IncomingMessage`
+- `AssistantResponse`
+
+### Native chat principles
+
+Preserved ideas:
+
+- assistant core is platform-agnostic
+- memory lives in the vault as notes
+- older chat history is summarized aggressively
+- transport adapters only handle I/O and formatting
+
+### Session and memory model
+
+Original storage ideas:
+
+- `AI/Sessions/<platform>/<chat_id>/<session_ulid>.md`
+- `AI/Memory/users/<platform>/<user_id>.md`
+- `AI/Memory/groups/<platform>/<group_id>.md`
+
+Original context stack:
+
+1. compact system prompt
+2. user memory
+3. recent turns
+4. summarized older turns
+5. on-demand vault context
+
+### Telegram-specific ideas
+
+Preserved steering:
+
+- config in `[assistant.platforms.telegram]`
+- allowlists for users and groups
+- `/start`, `/new`, `/memory`, `/status`
+- reply-to threading
+- MarkdownV2 formatting
+- multi-message splitting for long outputs
+- optional attachment ingestion
+
+### Permissions and safety
+
+Preserved ideas:
+
+- per-platform and per-chat-type tool permissions
+- stricter defaults in groups than DMs
+- rate limits on writes and message volume
+- audit trail in session metadata
+- sensitive operations can require admin approval
+
+### Git integration
+
+Preserved idea:
+
+- chat-driven mutations auto-commit with descriptive metadata-bearing commit messages
+
+## 10. When to revive this document
+
+Use this as the starting point if any of these become true:
+
+- vault-native transcripts become a product requirement
+- external runtimes cannot enforce the required permission or confirmation UX
+- mobile/chat integrations need a tightly controlled in-process model
+- the cost of maintaining runtime logic outside Vulcan becomes higher than owning it directly
+
+Until then, this document should be treated as deferred design memory, not an active build plan.

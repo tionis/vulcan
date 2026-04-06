@@ -1717,6 +1717,8 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
   - mobile/chat transports need tight in-process control
   - external runtimes cannot express the required tool discovery or sandboxing model
 
+Preserved native-runtime steering lives in `docs/assistant/native_runtime_deferred.md`. That document is deferred reference material, not the current critical path.
+
 #### 9.12.6 Prompts and skills remain vault-native
 
 Prompts and skills stay as Markdown files in the vault. External runtimes consume them as reference material; Vulcan stays responsible for scaffolding defaults and documenting conventions.
@@ -1796,6 +1798,8 @@ This makes skill scripts runnable by external agent harnesses (Claude Code, Code
 **Status:** `[-]` Deferred under the `pi`-first strategy. Native Telegram/Signal/Matrix/Discord adapters are no longer on the immediate critical path.
 
 **Rationale:** External runtimes already provide the terminal/chat loop, session management, and model integration. Vulcan should only absorb that complexity later if external runtimes cannot satisfy the workflow.
+
+Detailed native assistant and chat-runtime ideas from the previous roadmap are preserved in `docs/assistant/native_runtime_deferred.md`.
 
 - [-] Do not implement `vulcan assistant serve` or in-process chat adapters in the current Phase 9 plan
 - [-] Revisit only after Phase 9.19.13 (permissions) and Phase 10 (daemon) are mature enough to support a safe long-lived service model

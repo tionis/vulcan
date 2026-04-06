@@ -1119,7 +1119,7 @@ Current recommendation: do not build in-process Telegram, Discord, Matrix, or si
 
 If native chat integrations are revisited later, they should be treated as a thin runtime layer on top of the same CLI tool surface used by external harnesses. They should not create a second mutation path or bypass the permission system.
 
-The current boundary is documented in [`docs/assistant/pi_integration.md`](./assistant/pi_integration.md) and the re-scoped Phase 9.12 roadmap entries. Native chat adapters should only be reconsidered after the permission layer and daemon/service infrastructure are mature enough to support them safely.
+The current boundary is documented in [`docs/assistant/pi_integration.md`](./assistant/pi_integration.md) and the re-scoped Phase 9.12 roadmap entries. The preserved native-runtime steering that was cut from the active roadmap now lives in [`docs/assistant/native_runtime_deferred.md`](./assistant/native_runtime_deferred.md). Native chat adapters should only be reconsidered after the permission layer and daemon/service infrastructure are mature enough to support them safely.
 
 ## 18. Recommended phased delivery plan
 
