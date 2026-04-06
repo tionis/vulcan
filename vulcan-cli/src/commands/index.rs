@@ -24,7 +24,7 @@ pub(crate) fn handle_index_command(
         }
         IndexCommand::Scan { full, no_commit } => {
             let auto_commit = AutoCommitPolicy::for_scan(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let mut progress = (cli.output == crate::OutputFormat::Human)
                 .then(|| crate::ScanProgressReporter::new(use_stderr_color));
             let summary = scan_vault_with_progress(
@@ -73,7 +73,7 @@ pub(crate) fn handle_index_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_scan(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             if cli.output == crate::OutputFormat::Human && stdout_is_tty {
                 println!(
                     "Watching {} (debounce {}ms)",

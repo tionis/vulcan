@@ -92,30 +92,13 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains(
                 "Generate shell completion scripts",
             ))
-            .and(predicate::str::contains("Command Groups:"))
-            .and(predicate::str::contains("Indexing: index"))
-            .and(predicate::str::contains(
-                "Graph and Query: note, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, diff",
-            ))
-            .and(predicate::str::contains(
-                "Journaling: daily, weekly, monthly, periodic, inbox, template",
-            ))
-            .and(predicate::str::contains(
-                "Semantic: vectors, cluster, related",
-            ))
-            .and(predicate::str::contains(
-                "Reports and Automation: saved, checkpoint, changes, batch, export, automation",
-            ))
-            .and(predicate::str::contains(
-                "Mutations: edit, update, unset, refactor",
-            ))
-            .and(predicate::str::contains(
-                "Maintenance: doctor, cache, config, git, run, web, open, help, describe, completions",
-            ))
-            .and(predicate::str::contains("User guide: docs/cli.md"))
-            .and(predicate::str::contains(
-                "Interactive help: vulcan edit --help and vulcan browse --help",
-            ))
+            .and(predicate::str::contains("Quick start:"))
+            .and(predicate::str::contains("Command groups"))
+            .and(predicate::str::contains("Notes:"))
+            .and(predicate::str::contains("Query:"))
+            .and(predicate::str::contains("Tasks:"))
+            .and(predicate::str::contains("Index:"))
+            .and(predicate::str::contains("vulcan help <command>"))
             .and(predicate::str::contains("Machine-readable schema: vulcan describe"))
             .and(predicate::str::contains(
                 "Override automatic cache refresh with --refresh <off|blocking|background>",
@@ -9108,7 +9091,7 @@ fn describe_json_output_exposes_runtime_command_schema() {
     assert!(json["after_help"]
         .as_str()
         .expect("after_help should be a string")
-        .contains("User guide: docs/cli.md"));
+        .contains("vulcan help <command>"));
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")

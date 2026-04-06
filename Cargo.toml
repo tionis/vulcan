@@ -11,7 +11,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 assert_cmd = "2.1.1"
 blake3 = "1.8.2"
-clap = { version = "4.5.49", features = ["derive", "string"] }
+clap = { version = "4.5.49", features = ["derive", "string", "env"] }
 clap_complete = "4.5.61"
 csv = "1.4.0"
 fs2 = "0.4.3"

@@ -3,19 +3,32 @@ use clap_complete::Shell;
 use std::path::PathBuf;
 
 const ROOT_AFTER_HELP: &str = "\
-Command Groups:
-  Indexing: index
-  Graph and Query: note, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, diff
-  Journaling: daily, weekly, monthly, periodic, inbox, template
-  Semantic: vectors, cluster, related
-  Reports and Automation: saved, checkpoint, changes, batch, export, automation
-  Mutations: edit, update, unset, refactor
-  Maintenance: doctor, cache, config, git, run, web, open, help, describe, completions
+Quick start:
+  vulcan query 'from notes where status = \"open\"'    Query by property
+  vulcan search \"meeting notes\"                       Full-text search
+  vulcan daily                                         Open today's daily note
+  vulcan note create Projects/new-idea.md              Create a note
+  vulcan run                                           Start the JS REPL
 
-Docs:
-  User guide: docs/cli.md
-  Interactive help: vulcan edit --help and vulcan browse --help
-  Query/filter reference: vulcan query --help and vulcan search --help
+Command groups (run `vulcan help` for the full grouped reference):
+  Notes:       note, inbox
+  Query:       query, search, ls, notes, backlinks, links, changes
+  Refactor:    refactor, move, rename-property
+  Tasks:       tasks, kanban
+  Periodic:    daily, weekly, monthly, periodic, template
+  Plugins:     bases, dataview
+  Analysis:    graph, suggest, cluster, related, doctor
+  Index:       index, vectors, cache, repair
+  Runtime:     run, web
+  Git:         git
+  Automation:  saved, automation, batch, export, checkpoint
+  Setup:       init, config, trust
+
+Reference:
+  vulcan help <command>              Integrated help for any command
+  vulcan help --search <keyword>     Search all help topics
+  vulcan query --help                DQL syntax and field reference
+  vulcan search --help               Search query syntax and filters
   Machine-readable schema: vulcan describe
 
 Freshness:
@@ -406,6 +419,26 @@ Examples:
   vulcan open Projects/Alpha
   vulcan open Daily/2026-03-26
   vulcan open";
+
+const RUN_COMMAND_AFTER_HELP: &str = "\
+The JS runtime exposes the full vault API: query notes, search, read/write frontmatter,
+call web APIs, and run DQL — all from a sandboxed rquickjs context.
+
+Sandbox levels:
+  strict   default — no filesystem or network access beyond vault APIs
+  fs       allow filesystem access (read/write outside the vault)
+  net      allow outbound HTTP requests
+  none     no restrictions
+
+Examples:
+  vulcan run                                     Start interactive REPL
+  vulcan run -e 'dql(\"from notes limit 5\")'     Evaluate a DQL snippet
+  vulcan run -e 'notes({limit:3}).map(n=>n.path)' Inspect note paths
+  vulcan run script.js                           Execute a script file
+  vulcan run --eval-file prelude.js              Load a file then open REPL
+  vulcan run --sandbox net -e 'web.search(\"rust async\")'  Web search
+  vulcan run --no-startup                        Skip startup.js even if trusted
+  cat query.js | vulcan run                      Pipe a script via stdin";
 
 const DESCRIBE_COMMAND_AFTER_HELP: &str = "\
 Output:
@@ -1298,8 +1331,8 @@ pub enum WebCommand {
     Search {
         #[arg(help = "Search query to send to the backend")]
         query: String,
-        #[arg(long, help = "Override the configured search backend")]
-        backend: Option<String>,
+        #[arg(long, value_enum, help = "Override the configured search backend (kagi, exa, tavily, brave, auto)")]
+        backend: Option<SearchBackendArg>,
         #[arg(
             long,
             default_value_t = 10,
@@ -1327,6 +1360,21 @@ pub enum WebFetchMode {
     Raw,
 }
 
+/// CLI-level search backend selector (mirrors `SearchBackendKind` from config).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SearchBackendArg {
+    /// Auto-detect: use the first backend whose API key env var is set.
+    Auto,
+    /// Kagi Search.
+    Kagi,
+    /// Exa (formerly Metaphor) neural search.
+    Exa,
+    /// Tavily Search.
+    Tavily,
+    /// Brave Search.
+    Brave,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DescribeFormatArg {
     JsonSchema,
@@ -1340,6 +1388,10 @@ pub enum QueryFormatArg {
     Paths,
     Detail,
     Count,
+    /// Tab-separated values (one row per note, easy for shell pipelines)
+    Tsv,
+    /// Comma-separated values (RFC 4180)
+    Csv,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -2289,6 +2341,11 @@ pub enum Command {
         fuzzy: bool,
         #[arg(long, help = "Include the parsed search plan and score details")]
         explain: bool,
+        #[arg(
+            long,
+            help = "Exit with code 1 when zero results are returned (useful in shell conditionals)"
+        )]
+        exit_code: bool,
         #[command(flatten)]
         export: ExportArgs,
     },
@@ -2391,7 +2448,10 @@ pub enum Command {
         #[command(subcommand)]
         command: GitCommand,
     },
-    #[command(about = "Execute JavaScript inside the Vulcan runtime sandbox")]
+    #[command(
+        about = "Execute JavaScript inside the Vulcan runtime sandbox",
+        after_help = RUN_COMMAND_AFTER_HELP
+    )]
     Run {
         #[arg(help = "Script path or named script from .vulcan/scripts")]
         script: Option<String>,
@@ -2809,6 +2869,11 @@ Examples:
         glob: Option<String>,
         #[arg(long, help = "Print the parsed query AST alongside the results")]
         explain: bool,
+        #[arg(
+            long,
+            help = "Exit with code 1 when zero results are returned (useful in shell conditionals)"
+        )]
+        exit_code: bool,
         #[command(flatten)]
         export: ExportArgs,
     },
@@ -2954,6 +3019,24 @@ pub struct Cli {
         help = "Enable extra diagnostic output"
     )]
     pub verbose: bool,
+
+    #[arg(
+        long,
+        short = 'q',
+        global = true,
+        action = ArgAction::SetTrue,
+        env = "VULCAN_QUIET",
+        help = "Suppress scan progress, warnings, and non-essential stderr output"
+    )]
+    pub quiet: bool,
+
+    #[arg(
+        long,
+        global = true,
+        action = ArgAction::SetTrue,
+        help = "Suppress column headers in table/TSV output (useful for piping)"
+    )]
+    pub no_header: bool,
 
     #[command(subcommand)]
     pub command: Command,

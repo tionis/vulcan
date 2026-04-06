@@ -57,7 +57,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_note_set_command(
                 paths,
                 note,
@@ -66,6 +66,7 @@ pub(crate) fn handle_note_command(
                 *check,
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             auto_commit
                 .commit(paths, "note-set", std::slice::from_ref(&report.path))
@@ -80,7 +81,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_note_create_command(
                 paths,
                 path,
@@ -89,6 +90,7 @@ pub(crate) fn handle_note_command(
                 *check,
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             auto_commit
                 .commit(paths, "note-create", &report.changed_paths)
@@ -108,7 +110,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let (note, text) = match (*periodic, text.as_deref()) {
                 (Some(_), None) => (None, note_or_text.as_str()),
                 (None, Some(text)) => (Some(note_or_text.as_str()), text),
@@ -143,6 +145,7 @@ pub(crate) fn handle_note_command(
                 },
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             auto_commit
                 .commit(paths, "note-append", std::slice::from_ref(&report.path))
@@ -159,7 +162,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_note_patch_command(
                 paths,
                 NotePatchOptions {
@@ -172,6 +175,7 @@ pub(crate) fn handle_note_command(
                 },
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit

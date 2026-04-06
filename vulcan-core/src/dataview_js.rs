@@ -3921,47 +3921,40 @@ globalThis.Function = undefined;
     ) -> Result<WebSearchReport, DataviewJsError> {
         ensure_network_access(state, "web.search()")?;
         let client = build_web_client(&state.web_config.user_agent)?;
-        let backend = state.web_config.search.backend.as_str();
-        match backend {
-            "kagi" => {
-                let api_key =
-                    std::env::var(&state.web_config.search.api_key_env).map_err(|_| {
-                        DataviewJsError::Message(format!(
-                            "missing web search API key env var {}",
-                            state.web_config.search.api_key_env
-                        ))
-                    })?;
-                let limit_value = limit.max(1).to_string();
-                let response = client
-                    .get(&state.web_config.search.base_url)
-                    .header(AUTHORIZATION, format!("Bot {api_key}"))
-                    .query(&[("q", query), ("limit", limit_value.as_str())])
-                    .send()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                if !response.status().is_success() {
-                    return Err(DataviewJsError::Message(format!(
-                        "web search failed with status {}",
-                        response.status()
-                    )));
-                }
-                let payload = response
-                    .json::<Value>()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                let results = parse_search_results(&payload).ok_or_else(|| {
-                    DataviewJsError::Message(
-                        "web search backend returned an unexpected payload shape".to_string(),
-                    )
-                })?;
-                Ok(WebSearchReport {
-                    backend: backend.to_string(),
-                    query: query.to_string(),
-                    results,
-                })
-            }
-            other => Err(DataviewJsError::Message(format!(
-                "unsupported web search backend: {other}"
-            ))),
+        let search_cfg = &state.web_config.search;
+        let api_key_env = search_cfg.effective_api_key_env();
+        let base_url = search_cfg.effective_base_url();
+        let api_key = std::env::var(api_key_env).map_err(|_| {
+            DataviewJsError::Message(format!(
+                "missing web search API key env var {api_key_env}"
+            ))
+        })?;
+        let limit_value = limit.max(1).to_string();
+        let response = client
+            .get(base_url)
+            .header(AUTHORIZATION, format!("Bot {api_key}"))
+            .query(&[("q", query), ("limit", limit_value.as_str())])
+            .send()
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(DataviewJsError::Message(format!(
+                "web search failed with status {}",
+                response.status()
+            )));
         }
+        let payload = response
+            .json::<Value>()
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let results = parse_search_results(&payload).ok_or_else(|| {
+            DataviewJsError::Message(
+                "web search backend returned an unexpected payload shape".to_string(),
+            )
+        })?;
+        Ok(WebSearchReport {
+            backend: format!("{:?}", search_cfg.backend).to_lowercase(),
+            query: query.to_string(),
+            results,
+        })
     }
 
     fn run_js_web_fetch(
