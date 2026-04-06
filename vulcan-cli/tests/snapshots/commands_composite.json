@@ -6502,11 +6502,11 @@
       },
       {
         "about": "Run a query using the human DSL or a JSON payload",
-        "after_help": "Query DSL syntax:\n  from notes\n    [where <field> <op> <value> [and <field> <op> <value>...]]\n    [select <field>[,<field>...]]\n    [order by <field> [desc|asc]]\n    [limit <n>]\n    [offset <n>]\n\nOperators:\n  = | > | >= | < | <= | starts_with | contains | matches | matches_i\n\nFormats:\n  table   structured note rows (default)\n  paths   one path per line\n  detail  path, metadata summary, and content preview\n  count   matched row count only\n\nExamples:\n  vulcan query --format paths 'from notes where status = done'\n  vulcan query --glob 'Projects/**' 'from notes'\n  vulcan query 'from notes where file.name matches \"^2026-\"'\n  vulcan query 'from notes where owner matches_i \"alice\"'",
+        "after_help": "Query DSL syntax:\n  from notes\n    [where <field> <op> <value> [and <field> <op> <value>...]]\n    [select <field>[,<field>...]]\n    [order by <field> [desc|asc]]\n    [limit <n>]\n    [offset <n>]\n\nOperators:\n  = | > | >= | < | <= | starts_with | contains | matches | matches_i\n\nFormats:\n  table   structured note rows (default)\n  paths   one path per line\n  detail  path, metadata summary, and content preview\n  count   matched row count only\n\nExamples:\n  vulcan query --list-fields\n  vulcan query --format paths 'from notes where status = done'\n  vulcan query --glob 'Projects/**' 'from notes'\n  vulcan query 'from notes where file.name matches \"^2026-\"'\n  vulcan query 'from notes where owner matches_i \"alice\"'",
         "name": "query",
         "options": [
           {
-            "help": "Query string (DSL or DQL depending on --engine)",
+            "help": "Query string (DSL or DQL depending on --engine); omit with --list-fields",
             "id": "dsl",
             "long": null,
             "possible_values": [],
@@ -6525,6 +6525,20 @@
             "short": null,
             "value_names": [
               "JSON"
+            ]
+          },
+          {
+            "help": "List available property keys and file.* fields for filters, sorts, and --fields",
+            "id": "list_fields",
+            "long": "list-fields",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "LIST_FIELDS"
             ]
           },
           {

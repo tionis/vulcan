@@ -12633,6 +12633,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Query {
             ref dsl,
             ref json,
+            list_fields,
             engine,
             format,
             ref glob,
@@ -12644,6 +12645,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             &paths,
             dsl.as_deref(),
             json.as_deref(),
+            list_fields,
             engine,
             format,
             glob.as_deref(),
@@ -13657,6 +13659,8 @@ fn query_report_rows(report: &QueryReport, notes: &[&NoteRecord]) -> Vec<Value> 
                 "file_name": note.file_name,
                 "file_ext": note.file_ext,
                 "file_mtime": note.file_mtime,
+                "tags": note.tags,
+                "starred": note.starred,
                 "properties": note.properties,
                 "inline_expressions": note.inline_expressions,
                 "query": query_value,
@@ -19489,6 +19493,8 @@ fn note_rows(report: &NotesReport, notes: &[NoteRecord]) -> Vec<Value> {
                 "file_name": note.file_name,
                 "file_ext": note.file_ext,
                 "file_mtime": note.file_mtime,
+                "tags": note.tags,
+                "starred": note.starred,
                 "properties": note.properties,
                 "inline_expressions": note.inline_expressions,
             })
@@ -23507,6 +23513,7 @@ mod tests {
             Command::Query {
                 dsl: Some("from notes where file.name matches \"^2026-\"".to_string()),
                 json: None,
+                list_fields: false,
                 engine: QueryEngineArg::Auto,
                 format: QueryFormatArg::Paths,
                 glob: Some("Projects/**".to_string()),

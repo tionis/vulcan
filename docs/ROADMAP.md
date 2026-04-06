@@ -3252,8 +3252,8 @@ Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q`
 
 **Field discovery**
 
-- [ ] `vulcan query --list-fields` — print available field names for `--where`, `--sort`, `--fields` based on the current vault's frontmatter keys and `file.*` builtins
-- [ ] Include field types and example values where available
+- [x] `vulcan query --list-fields` — print available field names for `--where`, `--sort`, `--fields` based on the current vault's frontmatter keys and `file.*` builtins
+- [x] Include field types and example values where available
 
 **Exit code conventions**
 
