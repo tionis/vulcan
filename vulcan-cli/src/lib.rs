@@ -18032,10 +18032,6 @@ fn help_overview() -> HelpTopicReport {
                     "help",
                     "Browse integrated docs (this page); `help <topic>` for details",
                 ),
-                (
-                    "describe",
-                    "Machine-readable command schema for LLM and tool harnesses",
-                ),
                 ("version", "Print the Vulcan version"),
             ],
         ),

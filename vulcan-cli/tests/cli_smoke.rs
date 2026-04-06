@@ -9402,6 +9402,37 @@ fn help_human_output_includes_command_tree_and_parent_subcommand_examples() {
 }
 
 #[test]
+fn describe_is_hidden_from_root_help_but_still_has_direct_help() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Machine-readable schema: vulcan describe")
+                .and(predicate::str::contains("Describe the CLI schema and command surface").not()),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Machine-readable command schema").not());
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["describe", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Describe the CLI schema and command surface").and(
+                predicate::str::contains("vulcan --output json describe > vulcan-schema.json"),
+            ),
+        );
+}
+
+#[test]
 fn run_json_output_executes_script_files_and_named_scripts() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

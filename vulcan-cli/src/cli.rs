@@ -2978,7 +2978,8 @@ Examples:
     },
     #[command(
         about = "Describe the CLI schema and command surface",
-        after_help = DESCRIBE_COMMAND_AFTER_HELP
+        after_help = DESCRIBE_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Describe {
         #[arg(long, value_enum, default_value_t = DescribeFormatArg::JsonSchema)]
