@@ -121,9 +121,10 @@ pub use periodic::{
     PeriodicNoteMatch,
 };
 pub use properties::{
-    evaluate_note_inline_expressions, extract_indexed_properties, query_notes,
+    evaluate_note_inline_expressions, extract_indexed_properties, list_properties, query_notes,
     EvaluatedInlineExpression, IndexedProperties, IndexedPropertyListItem, IndexedPropertyValue,
-    NoteQuery, NoteRecord, NotesReport, PropertyError, PropertyTypeDiagnostic,
+    NoteQuery, NoteRecord, NotesReport, PropertyCatalogEntry, PropertyError,
+    PropertyTypeDiagnostic,
 };
 pub use query::{
     execute_query, execute_query_dsl, execute_query_json, execute_query_report, QueryAst,

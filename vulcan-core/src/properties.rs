@@ -59,6 +59,13 @@ pub struct PropertyTypeDiagnostic {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PropertyCatalogEntry {
+    pub key: String,
+    pub count: usize,
+    pub types: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertyValueOrigin {
     Frontmatter,
@@ -1516,6 +1523,45 @@ fn insert_configured_property_types(
         )?;
     }
     Ok(())
+}
+
+pub fn list_properties(paths: &VaultPaths) -> Result<Vec<PropertyCatalogEntry>, PropertyError> {
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let mut statement = connection.prepare(
+        "
+        SELECT key, observed_type, usage_count
+        FROM property_catalog
+        ORDER BY key ASC, observed_type ASC
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+
+    let mut aggregated = BTreeMap::<String, (usize, Vec<String>)>::new();
+    for row in rows {
+        let (key, observed_type, usage_count) = row?;
+        let entry = aggregated.entry(key).or_insert_with(|| (0, Vec::new()));
+        entry.0 = entry
+            .0
+            .saturating_add(usize::try_from(usage_count).unwrap_or(usize::MAX));
+        if !entry.1.iter().any(|value| value == &observed_type) {
+            entry.1.push(observed_type);
+        }
+    }
+
+    Ok(aggregated
+        .into_iter()
+        .map(|(key, (count, mut types))| {
+            types.sort();
+            PropertyCatalogEntry { key, count, types }
+        })
+        .collect())
 }
 
 fn open_existing_cache(paths: &VaultPaths) -> Result<CacheDatabase, PropertyError> {
@@ -3416,6 +3462,63 @@ completed = ["x", "v"]
         assert_eq!(
             tasks[0]["path"],
             Value::String("TaskNotes/Tasks/Write Docs.md".to_string())
+        );
+    }
+
+    #[test]
+    fn list_properties_reports_counts_and_observed_types() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let properties = list_properties(&paths).expect("property listing should succeed");
+
+        assert_eq!(
+            properties,
+            vec![
+                PropertyCatalogEntry {
+                    key: "due".to_string(),
+                    count: 3,
+                    types: vec!["date".to_string(), "text".to_string()],
+                },
+                PropertyCatalogEntry {
+                    key: "empty_list".to_string(),
+                    count: 1,
+                    types: vec!["list".to_string()],
+                },
+                PropertyCatalogEntry {
+                    key: "empty_text".to_string(),
+                    count: 1,
+                    types: vec!["text".to_string()],
+                },
+                PropertyCatalogEntry {
+                    key: "estimate".to_string(),
+                    count: 3,
+                    types: vec!["number".to_string(), "text".to_string()],
+                },
+                PropertyCatalogEntry {
+                    key: "notes".to_string(),
+                    count: 1,
+                    types: vec!["null".to_string()],
+                },
+                PropertyCatalogEntry {
+                    key: "related".to_string(),
+                    count: 3,
+                    types: vec!["link".to_string(), "list".to_string()],
+                },
+                PropertyCatalogEntry {
+                    key: "reviewed".to_string(),
+                    count: 3,
+                    types: vec!["boolean".to_string(), "text".to_string()],
+                },
+                PropertyCatalogEntry {
+                    key: "status".to_string(),
+                    count: 3,
+                    types: vec!["list".to_string(), "text".to_string()],
+                },
+            ]
         );
     }
 

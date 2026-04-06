@@ -9,9 +9,9 @@ use crate::{warn_auto_commit_if_needed, Cli, CliError, QueryEngineArg};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use vulcan_core::{
-    bulk_set_property, evaluate_dql, execute_query_report, load_vault_config, query_backlinks,
-    query_links, query_notes, search_vault, NamedCount, NoteQuery, QueryAst, QueryReport,
-    SearchQuery, VaultPaths,
+    bulk_set_property, evaluate_dql, execute_query_report, list_properties, load_vault_config,
+    query_backlinks, query_links, query_notes, search_vault, NamedCount, NoteQuery,
+    PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery, VaultPaths,
 };
 
 pub(crate) fn handle_backlinks_command(
@@ -220,6 +220,25 @@ pub(crate) fn handle_tags_command(
         .collect::<Vec<_>>();
     sort_tag_counts(&mut tags, sort);
     print_tag_counts(cli.output, &tags, show_count, list_controls)
+}
+
+pub(crate) fn handle_properties_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    sort: crate::PropertySortArg,
+    show_count: bool,
+    show_types: bool,
+    list_controls: &ListOutputControls,
+) -> Result<(), CliError> {
+    let mut properties = list_properties(paths).map_err(CliError::operation)?;
+    sort_property_catalog(&mut properties, sort);
+    print_property_catalog(
+        cli.output,
+        &properties,
+        show_count,
+        show_types,
+        list_controls,
+    )
 }
 
 pub(crate) fn handle_update_command(
@@ -433,5 +452,76 @@ fn print_tag_counts(
 fn tag_rows(tags: &[NamedCount]) -> Vec<Value> {
     tags.iter()
         .map(|tag| json!({ "tag": tag.name, "count": tag.count }))
+        .collect()
+}
+
+fn sort_property_catalog(properties: &mut [PropertyCatalogEntry], sort: crate::PropertySortArg) {
+    match sort {
+        crate::PropertySortArg::Count => properties.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.key.cmp(&right.key))
+        }),
+        crate::PropertySortArg::Name => properties.sort_by(|left, right| {
+            left.key
+                .cmp(&right.key)
+                .then_with(|| right.count.cmp(&left.count))
+        }),
+    }
+}
+
+fn print_property_catalog(
+    output: crate::OutputFormat,
+    properties: &[PropertyCatalogEntry],
+    show_count: bool,
+    show_types: bool,
+    list_controls: &ListOutputControls,
+) -> Result<(), CliError> {
+    let visible = paginated_items(properties, list_controls);
+    let rows = property_catalog_rows(visible);
+    match output {
+        crate::OutputFormat::Human => {
+            if visible.is_empty() {
+                println!("No properties found.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+                return Ok(());
+            }
+            for property in visible {
+                match (show_count, show_types) {
+                    (true, true) => {
+                        println!(
+                            "{} ({}) [{}]",
+                            property.key,
+                            property.count,
+                            property.types.join(", ")
+                        );
+                    }
+                    (true, false) => println!("{} ({})", property.key, property.count),
+                    (false, true) => println!("{} [{}]", property.key, property.types.join(", ")),
+                    (false, false) => println!("{}", property.key),
+                }
+            }
+            Ok(())
+        }
+        crate::OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
+    }
+}
+
+fn property_catalog_rows(properties: &[PropertyCatalogEntry]) -> Vec<Value> {
+    properties
+        .iter()
+        .map(|property| {
+            json!({
+                "property": property.key,
+                "count": property.count,
+                "types": property.types,
+            })
+        })
         .collect()
 }

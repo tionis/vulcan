@@ -893,6 +893,56 @@
         "subcommands": []
       },
       {
+        "about": "List indexed property keys",
+        "after_help": "Notes:\n  `properties` reads the indexed property catalog built during scans.\n  `--type` includes the observed value types for each property key.\n  Use global `--fields`, `--limit`, and `--offset` to shape list output.\n\nExamples:\n  vulcan properties\n  vulcan properties --count\n  vulcan properties --type\n  vulcan properties --count --type --sort name\n  vulcan --output json properties --type",
+        "name": "properties",
+        "options": [
+          {
+            "help": "Include counts in human output",
+            "id": "count",
+            "long": "count",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "COUNT"
+            ]
+          },
+          {
+            "help": "Include observed value types in human output",
+            "id": "type",
+            "long": "type",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "TYPE"
+            ]
+          },
+          {
+            "help": "Sort by property usage count or by property name",
+            "id": "sort",
+            "long": "sort",
+            "possible_values": [
+              "count",
+              "name"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SORT"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Evaluate Dataview-compatible metadata and inline expressions",
         "after_help": "Subcommands:\n  inline      evaluate Dataview inline expressions from one note\n  query       evaluate a DQL query string directly\n  query-js    evaluate a DataviewJS snippet directly\n  eval        evaluate indexed ```dataview``` blocks from one note\n\nExamples:\n  vulcan dataview inline Dashboard\n  vulcan --output json dataview inline Projects/Alpha\n  vulcan dataview query 'TABLE status FROM \"Projects\"'\n  vulcan dataview query-js 'dv.current()' --file Dashboard\n  vulcan dataview eval Dashboard --block 0",
         "name": "dataview",
