@@ -407,6 +407,46 @@ pub fn bulk_set_property(
     })
 }
 
+pub fn bulk_set_property_on_paths(
+    paths: &VaultPaths,
+    note_paths: &[String],
+    key: &str,
+    value: Option<&str>,
+    dry_run: bool,
+) -> Result<BulkMutationReport, RefactorError> {
+    let _lock = acquire_write_lock(paths)?;
+
+    let desired_value = parse_property_value(value)?;
+    let mut plans = Vec::new();
+
+    for path in note_paths {
+        let source = fs::read_to_string(paths.vault_root().join(path))?;
+        let Some((edit, changes)) =
+            plan_set_note_property_replacement(&source, path, key, desired_value.as_ref())?
+        else {
+            continue;
+        };
+        if let Some(plan) = build_file_plan(path, &source, &[edit], changes) {
+            plans.push(plan);
+        }
+    }
+
+    let action = if value.is_some() {
+        "bulk_update"
+    } else {
+        "bulk_unset"
+    };
+    let inner = finalize_refactor(paths, dry_run, action, plans)?;
+    Ok(BulkMutationReport {
+        dry_run,
+        action: inner.action.clone(),
+        filters: Vec::new(),
+        key: key.to_string(),
+        value: value.map(str::to_string),
+        files: inner.files,
+    })
+}
+
 /// Fetch the vault-relative paths of all notes matching the given `--where` filters.
 fn query_matching_paths(
     paths: &VaultPaths,

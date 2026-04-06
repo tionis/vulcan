@@ -10793,6 +10793,51 @@ fn update_command_sets_property_on_matching_notes() {
 }
 
 #[test]
+fn note_update_command_reads_note_paths_from_stdin() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .write_stdin("Backlog.md\nMixed.md\nBacklog.md\n")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "update",
+            "--stdin",
+            "--key",
+            "status",
+            "--value",
+            "done",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(
+        json["files"]
+            .as_array()
+            .expect("files should be an array")
+            .len(),
+        2
+    );
+
+    let backlog =
+        fs::read_to_string(vault_root.join("Backlog.md")).expect("Backlog.md should be readable");
+    let mixed =
+        fs::read_to_string(vault_root.join("Mixed.md")).expect("Mixed.md should be readable");
+    assert!(backlog.contains("status: done"));
+    assert!(mixed.contains("status: done"));
+}
+
+#[test]
 fn update_command_dry_run_does_not_modify_files() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -10867,6 +10912,51 @@ fn unset_command_removes_property_from_matching_notes() {
 }
 
 #[test]
+fn note_unset_command_reads_note_paths_from_stdin() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .write_stdin("Backlog.md\nDone.md\n")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "unset",
+            "--stdin",
+            "--key",
+            "due",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(
+        json["files"]
+            .as_array()
+            .expect("files should be an array")
+            .len(),
+        2
+    );
+
+    let backlog =
+        fs::read_to_string(vault_root.join("Backlog.md")).expect("Backlog.md should be readable");
+    let done = fs::read_to_string(vault_root.join("Done.md")).expect("Done.md should be readable");
+    let mixed =
+        fs::read_to_string(vault_root.join("Mixed.md")).expect("Mixed.md should be readable");
+    assert!(!backlog.contains("due:"));
+    assert!(!done.contains("due:"));
+    assert!(mixed.contains("due: someday"));
+}
+
+#[test]
 fn unset_command_dry_run_does_not_modify_files() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -10934,6 +11024,44 @@ fn update_command_json_output_includes_mutation_report() {
         json["filters"].as_array().is_some(),
         "JSON output should include filters"
     );
+}
+
+#[test]
+fn refactor_rewrite_command_reads_note_paths_from_stdin() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .write_stdin("Backlog.md\nDone.md\n")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "refactor",
+            "rewrite",
+            "--stdin",
+            "--find",
+            "release",
+            "--replace",
+            "launch",
+            "--no-commit",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bulk_replace"));
+
+    let backlog =
+        fs::read_to_string(vault_root.join("Backlog.md")).expect("Backlog.md should be readable");
+    let done = fs::read_to_string(vault_root.join("Done.md")).expect("Done.md should be readable");
+    let mixed =
+        fs::read_to_string(vault_root.join("Mixed.md")).expect("Mixed.md should be readable");
+    assert!(backlog.contains("launch planning"));
+    assert!(done.contains("launch readiness"));
+    assert!(mixed.contains("release risk"));
 }
 
 #[test]

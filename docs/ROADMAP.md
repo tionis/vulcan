@@ -3262,9 +3262,9 @@ Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q`
 
 **Stdin-based batch operations**
 
-- [ ] `vulcan note update --stdin` — read note paths from stdin (one per line) instead of using `--where` filters. Enables: `vulcan ls --tag todo --format paths | vulcan note update --stdin --key status --value done`
-- [ ] Same for `vulcan note unset --stdin`, `vulcan refactor rewrite --stdin`
-- [ ] This complements `--where` filters — filters for ad-hoc, stdin for composed pipelines
+- [x] `vulcan note update --stdin` — read note paths from stdin (one per line) instead of using `--where` filters. Enables: `vulcan ls --tag todo --format paths | vulcan note update --stdin --key status --value done`
+- [x] Same for `vulcan note unset --stdin`, `vulcan refactor rewrite --stdin`
+- [x] This complements `--where` filters — filters for ad-hoc, stdin for composed pipelines
 
 **`--output json` audit**
 

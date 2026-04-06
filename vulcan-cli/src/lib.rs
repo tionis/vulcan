@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use serve::{serve_forever, ServeOptions};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter, Write as FmtWrite};
 use std::fs;
@@ -116,6 +116,12 @@ pub struct CliError {
     exit_code: u8,
     code: &'static str,
     message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BulkNoteSelection {
+    Filters(Vec<String>),
+    Paths(Vec<String>),
 }
 
 impl CliError {
@@ -1832,6 +1838,8 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
             command,
             NoteCommand::Links { .. }
                 | NoteCommand::Backlinks { .. }
+                | NoteCommand::Update { .. }
+                | NoteCommand::Unset { .. }
                 | NoteCommand::Delete { .. }
                 | NoteCommand::Info { .. }
                 | NoteCommand::Doctor { .. }
@@ -10967,6 +10975,43 @@ fn read_optional_stdin_text() -> io::Result<String> {
     Ok(buffer)
 }
 
+pub(crate) fn resolve_bulk_note_selection(
+    filters: &[String],
+    stdin: bool,
+) -> Result<BulkNoteSelection, CliError> {
+    if stdin {
+        return Ok(BulkNoteSelection::Paths(read_note_paths_from_stdin()?));
+    }
+    Ok(BulkNoteSelection::Filters(filters.to_vec()))
+}
+
+pub(crate) fn read_note_paths_from_stdin() -> Result<Vec<String>, CliError> {
+    if io::stdin().is_terminal() {
+        return Err(CliError::operation(
+            "`--stdin` requires newline-delimited note paths on stdin",
+        ));
+    }
+
+    let mut buffer = String::new();
+    io::stdin()
+        .read_to_string(&mut buffer)
+        .map_err(CliError::operation)?;
+
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+    for line in buffer.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let normalized = trimmed.strip_prefix("./").unwrap_or(trimmed).to_string();
+        if seen.insert(normalized.clone()) {
+            paths.push(normalized);
+        }
+    }
+    Ok(paths)
+}
+
 fn preserve_existing_frontmatter(existing: &str, body: &str) -> String {
     find_frontmatter_block(existing).map_or_else(
         || body.to_string(),
@@ -12676,19 +12721,23 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         ),
         Command::Update {
             ref filters,
+            stdin,
             ref key,
             ref value,
             dry_run,
             no_commit,
         } => commands::query::handle_update_command(
-            cli, &paths, filters, key, value, dry_run, no_commit,
+            cli, &paths, filters, stdin, key, value, dry_run, no_commit,
         ),
         Command::Unset {
             ref filters,
+            stdin,
             ref key,
             dry_run,
             no_commit,
-        } => commands::query::handle_unset_command(cli, &paths, filters, key, dry_run, no_commit),
+        } => commands::query::handle_unset_command(
+            cli, &paths, filters, stdin, key, dry_run, no_commit,
+        ),
         Command::Notes {
             ref filters,
             ref sort,
@@ -13184,6 +13233,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Rewrite {
             ref filters,
+            stdin,
             ref find,
             ref replace,
             dry_run,
@@ -13191,8 +13241,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
-            let report = bulk_replace(&paths, filters, find, replace, dry_run)
-                .map_err(CliError::operation)?;
+            let selection = resolve_bulk_note_selection(filters, stdin)?;
+            let report = match &selection {
+                BulkNoteSelection::Filters(filters) => {
+                    bulk_replace(&paths, filters, find, replace, dry_run)
+                }
+                BulkNoteSelection::Paths(note_paths) => {
+                    vulcan_core::bulk_replace_on_paths(&paths, note_paths, find, replace, dry_run)
+                }
+            }
+            .map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
                     .commit(&paths, "rewrite", &refactor_changed_files(&report))
@@ -23177,6 +23235,7 @@ mod tests {
             rewrite.command,
             Command::Rewrite {
                 filters: vec!["reviewed = true".to_string()],
+                stdin: false,
                 find: "release".to_string(),
                 replace: "launch".to_string(),
                 dry_run: true,

@@ -132,9 +132,9 @@ pub use query::{
     QuerySource, QueryValue,
 };
 pub use refactor::{
-    bulk_set_property, merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property,
-    set_note_property, BulkMutationReport, RefactorChange, RefactorError, RefactorFileReport,
-    RefactorReport,
+    bulk_set_property, bulk_set_property_on_paths, merge_tags, rename_alias, rename_block_ref,
+    rename_heading, rename_property, set_note_property, BulkMutationReport, RefactorChange,
+    RefactorError, RefactorFileReport, RefactorReport,
 };
 pub use resolver::{
     resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverIndex,
@@ -155,9 +155,9 @@ pub use search::{
     StaticSearchIndexReport,
 };
 pub use suggestions::{
-    bulk_replace, link_mentions, suggest_duplicates, suggest_mentions, DuplicateGroup,
-    DuplicateSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    SuggestionError,
+    bulk_replace, bulk_replace_on_paths, link_mentions, suggest_duplicates, suggest_mentions,
+    DuplicateGroup, DuplicateSuggestionsReport, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, SuggestionError,
 };
 pub use tasknotes::{
     active_tasknote_time_entry, extract_tasknote, is_tasknote_document, parse_iso8601_duration_ms,
