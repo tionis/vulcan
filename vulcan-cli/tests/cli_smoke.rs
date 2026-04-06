@@ -421,6 +421,78 @@ fn config_import_all_dry_run_aggregates_detected_sources() {
 }
 
 #[test]
+fn config_show_reports_effective_config_and_selected_sections() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[templates]
+obsidian_folder = "Shared Templates"
+
+[periodic.daily]
+template = "Daily Shared"
+"#,
+    )
+    .expect("shared config should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        r#"[periodic.daily]
+template = "Daily Local"
+
+[web.search]
+backend = "brave"
+"#,
+    )
+    .expect("local config should be written");
+
+    let full_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "show",
+        ])
+        .assert()
+        .success();
+    let full_json = parse_stdout_json(&full_assert);
+
+    assert_eq!(full_json["section"], Value::Null);
+    assert_eq!(
+        full_json["config"]["templates"]["obsidian_folder"],
+        "Shared Templates"
+    );
+    assert_eq!(
+        full_json["config"]["periodic"]["daily"]["template"],
+        "Daily Local"
+    );
+    assert_eq!(full_json["diagnostics"], Value::Array(Vec::new()));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "config",
+            "show",
+            "periodic.daily",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("[periodic.daily]")
+                .and(predicate::str::contains("template = \"Daily Local\"")),
+        );
+}
+
+#[test]
 fn config_import_kanban_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
