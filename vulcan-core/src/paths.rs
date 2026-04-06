@@ -118,7 +118,7 @@ impl VaultPaths {
     }
 }
 
-pub(crate) fn ensure_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
+pub fn ensure_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
     fs::create_dir_all(paths.vulcan_dir())?;
     fs::create_dir_all(paths.reports_dir())?;
 

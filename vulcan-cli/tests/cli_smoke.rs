@@ -691,6 +691,74 @@ backend = "brave"
 }
 
 #[test]
+fn config_set_writes_validated_values_and_supports_dry_run() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[periodic.daily]
+template = "Daily Shared"
+"#,
+    )
+    .expect("shared config should be written");
+
+    let json_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "set",
+            "periodic.daily.template",
+            "Templates/Daily",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&json_assert);
+
+    assert_eq!(json["key"], "periodic.daily.template");
+    assert_eq!(json["value"], "Templates/Daily");
+    assert_eq!(json["config_path"], ".vulcan/config.toml");
+    assert_eq!(json["created_config"], false);
+    assert_eq!(json["updated"], true);
+    assert_eq!(json["dry_run"], false);
+    assert_eq!(json["diagnostics"], Value::Array(Vec::new()));
+    assert!(fs::read_to_string(vault_root.join(".vulcan/config.toml"))
+        .expect("shared config should be readable")
+        .contains("template = \"Templates/Daily\""));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "config",
+            "set",
+            "periodic.daily.enabled",
+            "not-a-bool",
+            "--dry-run",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid type: string \"not-a-bool\"",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(vault_root.join(".vulcan/config.toml"))
+            .expect("shared config should still be readable"),
+        "[periodic.daily]\ntemplate = \"Templates/Daily\"\n"
+    );
+}
+
+#[test]
 fn config_import_kanban_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

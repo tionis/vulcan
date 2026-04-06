@@ -3097,6 +3097,12 @@ pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error>
     Ok(true)
 }
 
+pub fn validate_vulcan_overrides_toml(contents: &str) -> Result<(), ConfigImportError> {
+    toml::from_str::<PartialVulcanConfig>(contents)
+        .map(|_| ())
+        .map_err(ConfigImportError::from)
+}
+
 #[derive(Debug, Clone)]
 struct ImportSetting {
     source: String,
