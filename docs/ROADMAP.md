@@ -3362,7 +3362,7 @@ Commands that are absent from the CLI but expected based on the existing surface
 **`note` group additions**
 
 - [ ] **`note delete <note> [--dry-run] [--no-commit]`** — delete a note and optionally report dangling inbound links. Currently notes can be created but not deleted from the CLI.
-- [ ] **`note rename <note> <new-name> [--dry-run] [--no-commit]`** — rename a note in-place, rewriting inbound links. Thin wrapper around `refactor move` with a friendlier interface (no target directory required when staying in the same folder).
+- [x] **`note rename <note> <new-name> [--dry-run] [--no-commit]`** — rename a note in-place, rewriting inbound links. Thin wrapper around `refactor move` with a friendlier interface (no target directory required when staying in the same folder).
 - [x] **`note info <note>`** — summary view: path, word count, heading count, link/backlink counts, tag list, frontmatter keys, created/modified dates. Quick overview without reading content. `--output json` for scripting.
 - [x] **`note history <note> [--limit <n>]`** — git log scoped to a single note file. Shortcut for `git log -- <path>` with formatted output showing commit message, date, and diff stats.
 

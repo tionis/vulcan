@@ -17870,8 +17870,11 @@ fn help_overview() -> HelpTopicReport {
                     "note patch",
                     "Find-and-replace inside a note with match-count guard",
                 ),
+                (
+                    "note rename",
+                    "Rename a note in place and rewrite inbound links",
+                ),
                 ("note open", "Open a note in $EDITOR"),
-                ("note move", "Move a note and rewrite all inbound links"),
                 ("note links", "List outgoing links for a note"),
                 ("note backlinks", "List notes that link to a note"),
                 (
@@ -20687,6 +20690,32 @@ mod tests {
                     replace: "DONE".to_string(),
                     all: true,
                     check: true,
+                    dry_run: true,
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_rename_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "note",
+            "rename",
+            "Dashboard",
+            "Archive/Dashboard",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::Rename {
+                    note: "Dashboard".to_string(),
+                    new_name: "Archive/Dashboard".to_string(),
                     dry_run: true,
                     no_commit: true,
                 },
