@@ -1589,6 +1589,13 @@ struct ConfigShowReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+struct ConfigGetReport {
+    key: String,
+    value: Value,
+    diagnostics: Vec<ConfigDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct ConfigImportBatchReport {
     dry_run: bool,
     target: ImportTarget,
@@ -12784,6 +12791,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ConfigCommand::Show { section } => {
                 run_config_show(&paths, cli.output, section.as_deref())
             }
+            ConfigCommand::Get { key } => run_config_get(&paths, cli.output, key),
             ConfigCommand::Import(selection) => {
                 if selection.command.is_some() && (selection.all || selection.list) {
                     return Err(CliError::operation(
@@ -14899,16 +14907,42 @@ fn run_config_show(
     print_config_show_report(output, &report, &selected_toml)
 }
 
+fn run_config_get(paths: &VaultPaths, output: OutputFormat, key: &str) -> Result<(), CliError> {
+    let loaded = load_vault_config(paths);
+    let json_config = serde_json::to_value(&loaded.config).map_err(CliError::operation)?;
+    let value = select_config_json_value(&json_config, key)?;
+    let report = ConfigGetReport {
+        key: key.to_string(),
+        value,
+        diagnostics: normalize_config_diagnostics(paths, &loaded.diagnostics),
+    };
+    print_config_get_report(output, &report)
+}
+
 fn select_config_json_section(config: &Value, section: Option<&str>) -> Result<Value, CliError> {
     let Some(section) = section else {
         return Ok(config.clone());
     };
 
+    select_config_json_path(config, section, "section")
+}
+
+fn select_config_json_value(config: &Value, key: &str) -> Result<Value, CliError> {
+    let value = select_config_json_path(config, key, "key")?;
+    if value.is_object() {
+        return Err(CliError::operation(format!(
+            "config key `{key}` resolves to a section; use `vulcan config show {key}` instead"
+        )));
+    }
+    Ok(value)
+}
+
+fn select_config_json_path(config: &Value, path: &str, kind: &str) -> Result<Value, CliError> {
     let mut current = config;
-    for part in parse_config_section_path(section)? {
+    for part in parse_config_path(path, kind)? {
         current = current
             .get(part)
-            .ok_or_else(|| CliError::operation(format!("unknown config section `{section}`")))?;
+            .ok_or_else(|| CliError::operation(format!("unknown config {kind} `{path}`")))?;
     }
     Ok(current.clone())
 }
@@ -14922,7 +14956,7 @@ fn select_config_toml_section(
     };
 
     let mut current = config;
-    for part in parse_config_section_path(section)? {
+    for part in parse_config_path(section, "section")? {
         current = current
             .get(part)
             .ok_or_else(|| CliError::operation(format!("unknown config section `{section}`")))?;
@@ -14930,16 +14964,16 @@ fn select_config_toml_section(
     Ok(current.clone())
 }
 
-fn parse_config_section_path(section: &str) -> Result<Vec<&str>, CliError> {
-    if section.is_empty() || section.starts_with('.') || section.ends_with('.') {
+fn parse_config_path<'a>(path: &'a str, kind: &str) -> Result<Vec<&'a str>, CliError> {
+    if path.is_empty() || path.starts_with('.') || path.ends_with('.') {
         return Err(CliError::operation(format!(
-            "invalid config section `{section}`"
+            "invalid config {kind} `{path}`"
         )));
     }
-    let parts = section.split('.').collect::<Vec<_>>();
+    let parts = path.split('.').collect::<Vec<_>>();
     if parts.iter().any(|part| part.is_empty()) {
         return Err(CliError::operation(format!(
-            "invalid config section `{section}`"
+            "invalid config {kind} `{path}`"
         )));
     }
     Ok(parts)
@@ -14984,9 +15018,45 @@ fn print_config_show_report(
     }
 }
 
+fn print_config_get_report(output: OutputFormat, report: &ConfigGetReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            print_config_value_human(&report.value)?;
+            for diagnostic in &report.diagnostics {
+                eprintln!(
+                    "warning: {}: {}",
+                    diagnostic.path.display(),
+                    diagnostic.message
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_config_value_human(value: &Value) -> Result<(), CliError> {
+    match value {
+        Value::Null => println!("null"),
+        Value::Bool(value) => println!("{value}"),
+        Value::Number(value) => println!("{value}"),
+        Value::String(value) => println!("{value}"),
+        Value::Array(_) => {
+            let rendered = serde_json::to_string_pretty(value).map_err(CliError::operation)?;
+            println!("{rendered}");
+        }
+        Value::Object(_) => {
+            return Err(CliError::operation(
+                "config get cannot print section objects in human mode".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn wrap_config_section_toml(section: &str, value: TomlValue) -> Result<TomlValue, CliError> {
     let mut wrapped = value;
-    for part in parse_config_section_path(section)?.into_iter().rev() {
+    for part in parse_config_path(section, "section")?.into_iter().rev() {
         let mut table = toml::map::Map::new();
         table.insert(part.to_string(), wrapped);
         wrapped = TomlValue::Table(table);
@@ -21199,6 +21269,21 @@ mod tests {
             Command::Config {
                 command: ConfigCommand::Show {
                     section: Some("periodic.daily".to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_get_command() {
+        let cli = Cli::try_parse_from(["vulcan", "config", "get", "periodic.daily.template"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Get {
+                    key: "periodic.daily.template".to_string(),
                 },
             }
         );

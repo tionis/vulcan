@@ -530,6 +530,7 @@ Examples:
 const CONFIG_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   show [section] print effective Vulcan config as TOML or JSON
+  get <key>      read a single effective config value
   import core    import Obsidian core settings into Vulcan config
   import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml
   import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
@@ -550,6 +551,7 @@ Notes:
 Examples:
   vulcan config show
   vulcan config show periodic.daily
+  vulcan config get periodic.daily.template
   vulcan config import core
   vulcan config import dataview
   vulcan config import kanban
@@ -560,6 +562,7 @@ Examples:
   vulcan config import tasknotes --dry-run
   vulcan config import tasks --dry-run
   vulcan config import templater --target local
+  vulcan --output json config get web.search.backend
   vulcan --output json config show web.search
   vulcan --output json config import tasks";
 
@@ -1266,6 +1269,11 @@ pub enum ConfigCommand {
     Show {
         #[arg(help = "Optional section path such as `periodic.daily` or `web.search`")]
         section: Option<String>,
+    },
+    #[command(about = "Read a single effective config value")]
+    Get {
+        #[arg(help = "Dot-notation config key such as `periodic.daily.template`")]
+        key: String,
     },
     #[command(about = "Import compatible Obsidian plugin settings")]
     Import(ConfigImportSelection),

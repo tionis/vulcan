@@ -493,6 +493,83 @@ backend = "brave"
 }
 
 #[test]
+fn config_get_reads_scalar_values_and_rejects_sections() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[periodic.daily]
+template = "Daily Shared"
+"#,
+    )
+    .expect("shared config should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        r#"[periodic.daily]
+template = "Daily Local"
+
+[web.search]
+backend = "brave"
+"#,
+    )
+    .expect("local config should be written");
+
+    let json_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "get",
+            "periodic.daily.template",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&json_assert);
+
+    assert_eq!(json["key"], "periodic.daily.template");
+    assert_eq!(json["value"], "Daily Local");
+    assert_eq!(json["diagnostics"], Value::Array(Vec::new()));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "config",
+            "get",
+            "web.search.backend",
+        ])
+        .assert()
+        .success()
+        .stdout("brave\n");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "config",
+            "get",
+            "periodic.daily",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "config key `periodic.daily` resolves to a section; use `vulcan config show periodic.daily` instead",
+        ));
+}
+
+#[test]
 fn config_import_kanban_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
