@@ -6127,7 +6127,7 @@
         "name": "query",
         "options": [
           {
-            "help": "DSL query string; e.g. 'from notes where status = done order by file.mtime desc'",
+            "help": "Query string (DSL or DQL depending on --engine)",
             "id": "dsl",
             "long": null,
             "possible_values": [],
@@ -6146,6 +6146,21 @@
             "short": null,
             "value_names": [
               "JSON"
+            ]
+          },
+          {
+            "help": "Query engine: auto-detect (default), native dsl, or dql (Dataview)",
+            "id": "engine",
+            "long": "engine",
+            "possible_values": [
+              "auto",
+              "dsl",
+              "dql"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "ENGINE"
             ]
           },
           {

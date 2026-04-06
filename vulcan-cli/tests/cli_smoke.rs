@@ -23,7 +23,7 @@ fn run_git_ok(vault_root: &Path, args: &[&str]) {
 }
 
 fn init_git_repo(vault_root: &Path) {
-    run_git_ok(vault_root, &["init"]);
+    run_git_ok(vault_root, &["-c", "init.defaultBranch=main", "init"]);
     run_git_ok(vault_root, &["config", "user.name", "Vulcan Test"]);
     run_git_ok(vault_root, &["config", "user.email", "vulcan@example.com"]);
 }
@@ -87,7 +87,9 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("describe"))
             .and(predicate::str::contains("completions"))
             .and(predicate::str::contains("open"))
-            .and(predicate::str::contains("Initialize, scan, rebuild, repair, watch, and serve index state"))
+            .and(predicate::str::contains(
+                "Initialize, scan, rebuild, repair, watch, and serve index state",
+            ))
             .and(predicate::str::contains("Search indexed note content"))
             .and(predicate::str::contains(
                 "Generate shell completion scripts",
@@ -99,11 +101,13 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("Tasks:"))
             .and(predicate::str::contains("Index:"))
             .and(predicate::str::contains("vulcan help <command>"))
-            .and(predicate::str::contains("Machine-readable schema: vulcan describe"))
+            .and(predicate::str::contains(
+                "Machine-readable schema: vulcan describe",
+            ))
             .and(predicate::str::contains(
                 "Override automatic cache refresh with --refresh <off|blocking|background>",
             )),
-        );
+    );
 }
 
 #[test]
@@ -9209,6 +9213,50 @@ fn help_json_output_returns_structured_topic_docs() {
         .as_str()
         .expect("body should be present")
         .contains("vault.daily.today()"));
+
+    let note_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "json", "help", "note"])
+        .assert()
+        .success();
+    let note_json = parse_stdout_json(&note_assert);
+    assert!(note_json["body"]
+        .as_str()
+        .expect("body should be present")
+        .contains("## Subcommands"));
+    assert!(note_json["body"]
+        .as_str()
+        .expect("body should be present")
+        .contains("e.g. vulcan note get Dashboard"));
+}
+
+#[test]
+fn help_human_output_includes_command_tree_and_parent_subcommand_examples() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Command Tree")
+                .and(predicate::str::contains(
+                    "  note             Read and mutate one note with selector-aware CRUD commands",
+                ))
+                .and(predicate::str::contains(
+                    "    get              Read one note, optionally narrowed by selectors",
+                )),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "note"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Subcommands")
+                .and(predicate::str::contains("e.g. vulcan note get Dashboard"))
+                .and(predicate::str::contains("- `note get`").not()),
+        );
 }
 
 #[test]

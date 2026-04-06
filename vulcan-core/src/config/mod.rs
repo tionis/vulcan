@@ -634,6 +634,7 @@ pub enum SearchBackendKind {
 
 impl SearchBackendKind {
     /// The environment variable that holds the API key for this backend.
+    #[must_use]
     pub fn default_api_key_env(self) -> &'static str {
         match self {
             SearchBackendKind::Auto | SearchBackendKind::Kagi => "KAGI_API_KEY",
@@ -644,16 +645,13 @@ impl SearchBackendKind {
     }
 
     /// The canonical base URL for this backend's search endpoint.
+    #[must_use]
     pub fn default_base_url(self) -> &'static str {
         match self {
-            SearchBackendKind::Auto | SearchBackendKind::Kagi => {
-                "https://kagi.com/api/v0/search"
-            }
+            SearchBackendKind::Auto | SearchBackendKind::Kagi => "https://kagi.com/api/v0/search",
             SearchBackendKind::Exa => "https://api.exa.ai/search",
             SearchBackendKind::Tavily => "https://api.tavily.com/search",
-            SearchBackendKind::Brave => {
-                "https://api.search.brave.com/res/v1/web/search"
-            }
+            SearchBackendKind::Brave => "https://api.search.brave.com/res/v1/web/search",
         }
     }
 }
@@ -673,6 +671,7 @@ pub struct WebSearchConfig {
 
 impl WebSearchConfig {
     /// Effective env-var name for the API key, accounting for any override.
+    #[must_use]
     pub fn effective_api_key_env(&self) -> &str {
         self.api_key_env
             .as_deref()
@@ -680,6 +679,7 @@ impl WebSearchConfig {
     }
 
     /// Effective base URL for the search endpoint, accounting for any override.
+    #[must_use]
     pub fn effective_base_url(&self) -> &str {
         self.base_url
             .as_deref()

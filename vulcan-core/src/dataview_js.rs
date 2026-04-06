@@ -3925,9 +3925,7 @@ globalThis.Function = undefined;
         let api_key_env = search_cfg.effective_api_key_env();
         let base_url = search_cfg.effective_base_url();
         let api_key = std::env::var(api_key_env).map_err(|_| {
-            DataviewJsError::Message(format!(
-                "missing web search API key env var {api_key_env}"
-            ))
+            DataviewJsError::Message(format!("missing web search API key env var {api_key_env}"))
         })?;
         let limit_value = limit.max(1).to_string();
         let response = client

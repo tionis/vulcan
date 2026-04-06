@@ -1331,7 +1331,11 @@ pub enum WebCommand {
     Search {
         #[arg(help = "Search query to send to the backend")]
         query: String,
-        #[arg(long, value_enum, help = "Override the configured search backend (kagi, exa, tavily, brave, auto)")]
+        #[arg(
+            long,
+            value_enum,
+            help = "Override the configured search backend (kagi, exa, tavily, brave, auto)"
+        )]
         backend: Option<SearchBackendArg>,
         #[arg(
             long,
@@ -2864,9 +2868,7 @@ Examples:
         after_help = QUERY_COMMAND_AFTER_HELP
     )]
     Query {
-        #[arg(
-            help = "Query string (DSL or DQL depending on --engine)"
-        )]
+        #[arg(help = "Query string (DSL or DQL depending on --engine)")]
         dsl: Option<String>,
         #[arg(
             long,

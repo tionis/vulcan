@@ -76,7 +76,13 @@ pub(crate) fn handle_tasks_command(
         TasksCommand::Edit { task, no_commit } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
-            let report = crate::run_tasks_edit_command(paths, task, cli.output, use_stderr_color, cli.quiet)?;
+            let report = crate::run_tasks_edit_command(
+                paths,
+                task,
+                cli.output,
+                use_stderr_color,
+                cli.quiet,
+            )?;
             auto_commit
                 .commit(paths, "tasks edit", std::slice::from_ref(&report.path))
                 .map_err(CliError::operation)?;
@@ -390,8 +396,12 @@ pub(crate) fn handle_tasks_command(
                 crate::print_task_pomodoro_report(cli.output, &report)
             }
             TasksPomodoroCommand::Status => {
-                let report =
-                    crate::run_tasks_pomodoro_status_command(paths, cli.output, use_stderr_color, cli.quiet)?;
+                let report = crate::run_tasks_pomodoro_status_command(
+                    paths,
+                    cli.output,
+                    use_stderr_color,
+                    cli.quiet,
+                )?;
                 crate::print_task_pomodoro_status_report(cli.output, &report)
             }
         },
