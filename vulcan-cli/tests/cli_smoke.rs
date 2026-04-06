@@ -9126,6 +9126,91 @@ fn note_rename_json_output_renames_in_place_and_rewrites_links() {
 }
 
 #[test]
+fn note_delete_json_output_reports_dangling_backlinks_and_removes_file() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("move-rewrite", &vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let dry_run = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "delete",
+            "Alpha",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let dry_run_json = parse_stdout_json(&dry_run);
+
+    assert_eq!(dry_run_json["dry_run"], true);
+    assert_eq!(dry_run_json["deleted"], false);
+    assert_eq!(dry_run_json["path"], "Projects/Alpha.md");
+    assert!(
+        dry_run_json["backlink_count"]
+            .as_u64()
+            .expect("backlink count should be numeric")
+            >= 2
+    );
+    let dry_run_sources = dry_run_json["backlinks"]
+        .as_array()
+        .expect("backlinks should be an array")
+        .iter()
+        .filter_map(|item| item["source_path"].as_str())
+        .collect::<Vec<_>>();
+    assert!(dry_run_sources.contains(&"Home.md"));
+    assert!(dry_run_sources.contains(&"People/Bob.md"));
+    assert!(vault_root.join("Projects/Alpha.md").exists());
+
+    let applied = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "delete",
+            "Alpha",
+        ])
+        .assert()
+        .success();
+    let applied_json = parse_stdout_json(&applied);
+
+    assert_eq!(applied_json["dry_run"], false);
+    assert_eq!(applied_json["deleted"], true);
+    assert!(
+        applied_json["backlink_count"]
+            .as_u64()
+            .expect("backlink count should be numeric")
+            >= 2
+    );
+    assert!(!vault_root.join("Projects/Alpha.md").exists());
+
+    let doctor = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault_root_str, "--output", "json", "doctor"])
+        .assert()
+        .success();
+    let doctor_json = parse_stdout_json(&doctor);
+    assert!(
+        doctor_json["summary"]["unresolved_links"]
+            .as_u64()
+            .expect("doctor summary should include unresolved link count")
+            >= 1
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn suggest_and_rewrite_json_outputs_cover_linking_and_duplicates() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

@@ -185,6 +185,28 @@ pub(crate) fn handle_note_command(
             }
             crate::print_note_patch_report(cli.output, &report)
         }
+        NoteCommand::Delete {
+            note,
+            dry_run,
+            no_commit,
+        } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let report = crate::run_note_delete_command(
+                paths,
+                note,
+                *dry_run,
+                cli.output,
+                use_stderr_color,
+                cli.quiet,
+            )?;
+            if !*dry_run {
+                auto_commit
+                    .commit(paths, "note-delete", std::slice::from_ref(&report.path))
+                    .map_err(CliError::operation)?;
+            }
+            crate::print_note_delete_report(cli.output, &report)
+        }
         NoteCommand::Rename {
             note,
             new_name,
