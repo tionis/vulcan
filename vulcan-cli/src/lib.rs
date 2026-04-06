@@ -1527,6 +1527,15 @@ struct NotePatchReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteDeleteReport {
+    path: String,
+    dry_run: bool,
+    deleted: bool,
+    backlink_count: usize,
+    backlinks: Vec<BacklinkRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct NoteInfoReport {
     path: String,
     matched_by: NoteMatchKind,
@@ -1794,6 +1803,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
             command,
             NoteCommand::Links { .. }
                 | NoteCommand::Backlinks { .. }
+                | NoteCommand::Delete { .. }
                 | NoteCommand::Info { .. }
                 | NoteCommand::Doctor { .. }
                 | NoteCommand::Diff { .. }
@@ -10546,6 +10556,34 @@ fn run_note_patch_command(
     })
 }
 
+fn run_note_delete_command(
+    paths: &VaultPaths,
+    note: &str,
+    dry_run: bool,
+    output: OutputFormat,
+    use_stderr_color: bool,
+    quiet: bool,
+) -> Result<NoteDeleteReport, CliError> {
+    let relative_path = resolve_existing_note_path(paths, note)?;
+    let backlinks = match query_backlinks(paths, &relative_path) {
+        Ok(report) => report.backlinks,
+        Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. }) => Vec::new(),
+        Err(error) => return Err(CliError::operation(error)),
+    };
+    if !dry_run {
+        fs::remove_file(paths.vault_root().join(&relative_path)).map_err(CliError::operation)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+    }
+
+    Ok(NoteDeleteReport {
+        path: relative_path,
+        dry_run,
+        deleted: !dry_run,
+        backlink_count: backlinks.len(),
+        backlinks,
+    })
+}
+
 fn run_note_info_command(paths: &VaultPaths, note: &str) -> Result<NoteInfoReport, CliError> {
     let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
     let absolute_path = paths.vault_root().join(&resolved.path);
@@ -14710,6 +14748,36 @@ fn print_note_patch_report(output: OutputFormat, report: &NotePatchReport) -> Re
     }
 }
 
+fn print_note_delete_report(
+    output: OutputFormat,
+    report: &NoteDeleteReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.dry_run {
+                println!("Dry run: would delete {}.", report.path);
+            } else {
+                println!("Deleted {}.", report.path);
+            }
+
+            if report.backlinks.is_empty() {
+                println!("No inbound links would be left dangling.");
+            } else {
+                println!(
+                    "{} inbound link{} would become unresolved:",
+                    report.backlink_count,
+                    if report.backlink_count == 1 { "" } else { "s" }
+                );
+                for backlink in &report.backlinks {
+                    println!("- {}: {}", backlink.source_path, backlink.raw_text);
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_note_info_report(output: OutputFormat, report: &NoteInfoReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
@@ -17871,6 +17939,10 @@ fn help_overview() -> HelpTopicReport {
                     "Find-and-replace inside a note with match-count guard",
                 ),
                 (
+                    "note delete",
+                    "Delete a note and report inbound links that would break",
+                ),
+                (
                     "note rename",
                     "Rename a note in place and rewrite inbound links",
                 ),
@@ -20690,6 +20762,30 @@ mod tests {
                     replace: "DONE".to_string(),
                     all: true,
                     check: true,
+                    dry_run: true,
+                    no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_delete_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "note",
+            "delete",
+            "Dashboard",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::Delete {
+                    note: "Dashboard".to_string(),
                     dry_run: true,
                     no_commit: true,
                 },

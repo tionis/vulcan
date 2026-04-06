@@ -245,6 +245,7 @@ Subcommands:
   create      create a new note, optionally from a template and extra frontmatter
   append      append text to the end of a note, at the top, or under a heading
   patch       perform a guarded single-note find/replace
+  delete      delete a note and report inbound links that would become unresolved
   rename      rename a note in place and rewrite inbound links
   info        show one note's summary metadata and graph stats
   history     show git history scoped to one note
@@ -265,6 +266,7 @@ Examples:
   vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"
   vulcan note append Projects/Alpha \"Pinned\" --prepend
   vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"
+  vulcan note delete Projects/Alpha --dry-run
   vulcan note rename Projects/Alpha Beta
   vulcan note patch Projects/Alpha --find TODO --replace DONE";
 
@@ -2195,6 +2197,15 @@ pub enum NoteCommand {
         #[arg(long, help = "Run non-blocking doctor-like diagnostics after patching")]
         check: bool,
         #[arg(long, help = "Report the planned patch without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Delete a note and report inbound links that would become unresolved")]
+    Delete {
+        #[arg(help = "Note path, filename, or alias to delete")]
+        note: String,
+        #[arg(long, help = "Report dangling inbound links without deleting the file")]
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
