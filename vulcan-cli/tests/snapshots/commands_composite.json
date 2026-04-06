@@ -846,6 +846,53 @@
         "subcommands": []
       },
       {
+        "about": "List indexed tags across matching notes",
+        "after_help": "Notes:\n  `tags` aggregates tags across indexed markdown notes.\n  `--where` reuses the same filter syntax as `vulcan notes`, including `file.path` and frontmatter fields.\n  Use global `--fields`, `--limit`, and `--offset` to shape list output.\n\nExamples:\n  vulcan tags\n  vulcan tags --count\n  vulcan tags --sort name\n  vulcan tags --where 'file.path starts_with \"Projects/\"'\n  vulcan --output json tags --count --where 'status = active'",
+        "name": "tags",
+        "options": [
+          {
+            "help": "Include counts in human output",
+            "id": "count",
+            "long": "count",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "COUNT"
+            ]
+          },
+          {
+            "help": "Sort by tag usage count or by tag name",
+            "id": "sort",
+            "long": "sort",
+            "possible_values": [
+              "count",
+              "name"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SORT"
+            ]
+          },
+          {
+            "help": "Filter notes before aggregating tags; repeatable",
+            "id": "filters",
+            "long": "where",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILTERS"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Evaluate Dataview-compatible metadata and inline expressions",
         "after_help": "Subcommands:\n  inline      evaluate Dataview inline expressions from one note\n  query       evaluate a DQL query string directly\n  query-js    evaluate a DataviewJS snippet directly\n  eval        evaluate indexed ```dataview``` blocks from one note\n\nExamples:\n  vulcan dataview inline Dashboard\n  vulcan --output json dataview inline Projects/Alpha\n  vulcan dataview query 'TABLE status FROM \"Projects\"'\n  vulcan dataview query-js 'dv.current()' --file Dashboard\n  vulcan dataview eval Dashboard --block 0",
         "name": "dataview",

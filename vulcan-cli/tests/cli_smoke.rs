@@ -59,6 +59,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("note"))
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("search"))
+            .and(predicate::str::contains("tags"))
             .and(predicate::str::contains("vectors"))
             .and(predicate::str::contains("cluster"))
             .and(predicate::str::contains("related"))
@@ -109,6 +110,63 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Override automatic cache refresh with --refresh <off|blocking|background>",
             )),
     );
+}
+
+#[test]
+fn tags_command_lists_and_filters_indexed_tags() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let json_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tags",
+            "--sort",
+            "name",
+            "--where",
+            "file.path starts_with \"Projects/\"",
+            "--where",
+            "status = active",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&json_assert);
+
+    assert_eq!(
+        rows,
+        vec![
+            serde_json::json!({ "tag": "project", "count": 1 }),
+            serde_json::json!({ "tag": "work", "count": 1 }),
+        ]
+    );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "tags",
+            "--count",
+            "--sort",
+            "name",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("dashboard (1)")
+                .and(predicate::str::contains("people/team (1)"))
+                .and(predicate::str::contains("work (1)")),
+        );
 }
 
 #[test]

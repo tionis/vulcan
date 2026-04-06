@@ -20,7 +20,7 @@ pub use cli::{
     GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg,
     NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryEngineArg,
     QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchBackendArg,
-    SearchMode, SearchSortArg, SuggestCommand, TasksCommand, TasksListSourceArg,
+    SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg,
     TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
     TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand,
     VectorsCommand, WebCommand, WebFetchMode,
@@ -1775,6 +1775,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::RenameBlockRef { .. }
         | Command::Links { .. }
         | Command::Ls { .. }
+        | Command::Tags { .. }
         | Command::Query { .. }
         | Command::Dataview { .. }
         | Command::Tasks { .. }
@@ -12555,6 +12556,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             stdout_is_tty,
             use_stdout_color,
         ),
+        Command::Tags {
+            ref filters,
+            sort,
+            count,
+        } => {
+            commands::query::handle_tags_command(cli, &paths, filters, sort, count, &list_controls)
+        }
         Command::Dataview { ref command } => {
             commands::dataview::handle_dataview_command(cli, &paths, command)
         }
@@ -18158,6 +18166,7 @@ fn help_overview() -> HelpTopicReport {
                     "Run a DQL query — `FROM notes WHERE ...` — and print results",
                 ),
                 ("search", "Full-text and semantic search across the vault"),
+                ("tags", "List indexed tags and counts across matching notes"),
                 (
                     "ls",
                     "List notes filtered by tags, properties, or a path prefix",
@@ -21285,6 +21294,29 @@ mod tests {
                 command: ConfigCommand::Get {
                     key: "periodic.daily.template".to_string(),
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tags_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "tags",
+            "--count",
+            "--sort",
+            "name",
+            "--where",
+            "status = active",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Tags {
+                count: true,
+                sort: TagSortArg::Name,
+                filters: vec!["status = active".to_string()],
             }
         );
     }

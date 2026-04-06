@@ -672,6 +672,19 @@ Examples:
   vulcan kanban add Board Todo \"Build release\"
   vulcan --output json kanban cards Board --status IN_PROGRESS";
 
+const TAGS_COMMAND_AFTER_HELP: &str = "\
+Notes:
+  `tags` aggregates tags across indexed markdown notes.
+  `--where` reuses the same filter syntax as `vulcan notes`, including `file.path` and frontmatter fields.
+  Use global `--fields`, `--limit`, and `--offset` to shape list output.
+
+Examples:
+  vulcan tags
+  vulcan tags --count
+  vulcan tags --sort name
+  vulcan tags --where 'file.path starts_with \"Projects/\"'
+  vulcan --output json tags --count --where 'status = active'";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
     Human,
@@ -689,6 +702,12 @@ pub enum RefreshMode {
     Off,
     Blocking,
     Background,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TagSortArg {
+    Count,
+    Name,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args, Default)]
@@ -2488,6 +2507,26 @@ pub enum Command {
         desc: bool,
         #[command(flatten)]
         export: ExportArgs,
+    },
+    #[command(
+        about = "List indexed tags across matching notes",
+        after_help = TAGS_COMMAND_AFTER_HELP
+    )]
+    Tags {
+        #[arg(long, help = "Include counts in human output")]
+        count: bool,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = TagSortArg::Count,
+            help = "Sort by tag usage count or by tag name"
+        )]
+        sort: TagSortArg,
+        #[arg(
+            long = "where",
+            help = "Filter notes before aggregating tags; repeatable"
+        )]
+        filters: Vec<String>,
     },
     #[command(
         about = "Evaluate Dataview-compatible metadata and inline expressions",
