@@ -529,6 +529,7 @@ Examples:
 
 const CONFIG_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  show [section] print effective Vulcan config as TOML or JSON
   import core    import Obsidian core settings into Vulcan config
   import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml
   import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
@@ -539,6 +540,7 @@ Subcommands:
   import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml
 
 Notes:
+  `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.
   Import commands preserve unrelated config sections and overwrite the mapped target keys.
   Shared flags: --dry-run, --target <shared|local>, --no-commit
   Use `config import --all` to apply every detected importer in registry order.
@@ -546,6 +548,8 @@ Notes:
   When git auto-commit is enabled for mutations, config imports participate like other mutating commands.
 
 Examples:
+  vulcan config show
+  vulcan config show periodic.daily
   vulcan config import core
   vulcan config import dataview
   vulcan config import kanban
@@ -556,6 +560,7 @@ Examples:
   vulcan config import tasknotes --dry-run
   vulcan config import tasks --dry-run
   vulcan config import templater --target local
+  vulcan --output json config show web.search
   vulcan --output json config import tasks";
 
 const SAVED_COMMAND_AFTER_HELP: &str = "\
@@ -1257,6 +1262,11 @@ pub struct ConfigImportSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ConfigCommand {
+    #[command(about = "Show the effective merged Vulcan config")]
+    Show {
+        #[arg(help = "Optional section path such as `periodic.daily` or `web.search`")]
+        section: Option<String>,
+    },
     #[command(about = "Import compatible Obsidian plugin settings")]
     Import(ConfigImportSelection),
 }
@@ -2530,7 +2540,7 @@ pub enum Command {
         command: ExportCommand,
     },
     #[command(
-        about = "Import compatible plugin settings into .vulcan/config.toml",
+        about = "Inspect and import effective Vulcan configuration",
         after_help = CONFIG_COMMAND_AFTER_HELP
     )]
     Config {

@@ -3380,7 +3380,7 @@ Commands that are absent from the CLI but expected based on the existing surface
 
 The `config` group currently only has `import`. Users need to inspect and modify config without editing TOML by hand.
 
-- [ ] **`config show [section]`** — print current effective config (merged `.vulcan/config.toml` + defaults). Optional section filter (`config show periodic`, `config show js_runtime`).
+- [x] **`config show [section]`** — print current effective config (merged `.vulcan/config.toml` + defaults). Optional section filter (`config show periodic`, `config show js_runtime`).
 - [ ] **`config set <key> <value>`** — set a single config value. Dot-notation keys: `config set periodic.daily.template "Templates/daily"`. Validates the value type before writing.
 - [ ] **`config get <key>`** — read a single config value. Useful in scripts.
 

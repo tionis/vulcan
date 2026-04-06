@@ -56,6 +56,7 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
+use toml::Value as TomlValue;
 use vulcan_core::config::QuickAddImporter;
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
 use vulcan_core::expression::functions::{
@@ -87,26 +88,26 @@ use vulcan_core::{
     BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
     BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
     CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
-    ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsEvalOptions,
-    DataviewJsOutput, DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    EvaluatedInlineExpression, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
-    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
-    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput,
-    PeriodicConfig, PeriodicNotesImporter, PluginImporter, QueryReport, RebuildQuery,
-    RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
-    TaskNotesImporter, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
-    TaskNotesSavedViewNode, TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig,
-    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
-    VectorRepairReport, WatchOptions, WatchReport,
+    ClusterReport, ConfigDiagnostic, ConfigImportReport, CoreImporter, DataviewImporter,
+    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
+    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
+    PluginImporter, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
+    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
+    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -1578,6 +1579,13 @@ struct ConfigImportDiscoveryItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ConfigImportListReport {
     importers: Vec<ConfigImportDiscoveryItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ConfigShowReport {
+    section: Option<String>,
+    config: Value,
+    diagnostics: Vec<ConfigDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -12773,6 +12781,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
         },
         Command::Config { ref command } => match command {
+            ConfigCommand::Show { section } => {
+                run_config_show(&paths, cli.output, section.as_deref())
+            }
             ConfigCommand::Import(selection) => {
                 if selection.command.is_some() && (selection.all || selection.list) {
                     return Err(CliError::operation(
@@ -14868,6 +14879,119 @@ fn print_note_check_warnings(path: &str, diagnostics: &[DoctorDiagnosticIssue]) 
             diagnostic.message
         );
     }
+}
+
+fn run_config_show(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    section: Option<&str>,
+) -> Result<(), CliError> {
+    let loaded = load_vault_config(paths);
+    let json_config = serde_json::to_value(&loaded.config).map_err(CliError::operation)?;
+    let toml_config = TomlValue::try_from(&loaded.config).map_err(CliError::operation)?;
+    let selected_json = select_config_json_section(&json_config, section)?;
+    let selected_toml = select_config_toml_section(&toml_config, section)?;
+    let report = ConfigShowReport {
+        section: section.map(ToOwned::to_owned),
+        config: selected_json,
+        diagnostics: normalize_config_diagnostics(paths, &loaded.diagnostics),
+    };
+    print_config_show_report(output, &report, &selected_toml)
+}
+
+fn select_config_json_section(config: &Value, section: Option<&str>) -> Result<Value, CliError> {
+    let Some(section) = section else {
+        return Ok(config.clone());
+    };
+
+    let mut current = config;
+    for part in parse_config_section_path(section)? {
+        current = current
+            .get(part)
+            .ok_or_else(|| CliError::operation(format!("unknown config section `{section}`")))?;
+    }
+    Ok(current.clone())
+}
+
+fn select_config_toml_section(
+    config: &TomlValue,
+    section: Option<&str>,
+) -> Result<TomlValue, CliError> {
+    let Some(section) = section else {
+        return Ok(config.clone());
+    };
+
+    let mut current = config;
+    for part in parse_config_section_path(section)? {
+        current = current
+            .get(part)
+            .ok_or_else(|| CliError::operation(format!("unknown config section `{section}`")))?;
+    }
+    Ok(current.clone())
+}
+
+fn parse_config_section_path(section: &str) -> Result<Vec<&str>, CliError> {
+    if section.is_empty() || section.starts_with('.') || section.ends_with('.') {
+        return Err(CliError::operation(format!(
+            "invalid config section `{section}`"
+        )));
+    }
+    let parts = section.split('.').collect::<Vec<_>>();
+    if parts.iter().any(|part| part.is_empty()) {
+        return Err(CliError::operation(format!(
+            "invalid config section `{section}`"
+        )));
+    }
+    Ok(parts)
+}
+
+fn normalize_config_diagnostics(
+    paths: &VaultPaths,
+    diagnostics: &[ConfigDiagnostic],
+) -> Vec<ConfigDiagnostic> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| ConfigDiagnostic {
+            path: relativize_config_import_path(paths, &diagnostic.path),
+            message: diagnostic.message.clone(),
+        })
+        .collect()
+}
+
+fn print_config_show_report(
+    output: OutputFormat,
+    report: &ConfigShowReport,
+    config: &TomlValue,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            let rendered_value = match report.section.as_deref() {
+                Some(section) => wrap_config_section_toml(section, config.clone())?,
+                None => config.clone(),
+            };
+            let rendered = toml::to_string_pretty(&rendered_value).map_err(CliError::operation)?;
+            print!("{rendered}");
+            for diagnostic in &report.diagnostics {
+                eprintln!(
+                    "warning: {}: {}",
+                    diagnostic.path.display(),
+                    diagnostic.message
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn wrap_config_section_toml(section: &str, value: TomlValue) -> Result<TomlValue, CliError> {
+    let mut wrapped = value;
+    for part in parse_config_section_path(section)?.into_iter().rev() {
+        let mut table = toml::map::Map::new();
+        table.insert(part.to_string(), wrapped);
+        wrapped = TomlValue::Table(table);
+    }
+    Ok(wrapped)
 }
 
 fn config_import_target(target: ConfigImportTargetArg) -> ImportTarget {
@@ -21061,6 +21185,21 @@ mod tests {
                         no_commit: false,
                     },
                 }),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_show_command() {
+        let cli = Cli::try_parse_from(["vulcan", "config", "show", "periodic.daily"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Show {
+                    section: Some("periodic.daily".to_string()),
+                },
             }
         );
     }
