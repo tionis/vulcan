@@ -9433,6 +9433,42 @@ fn describe_is_hidden_from_root_help_but_still_has_direct_help() {
 }
 
 #[test]
+fn saved_and_automation_help_document_end_to_end_workflow() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["saved", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Saved report definitions live under .vulcan/reports.")
+                .and(predicate::str::contains(
+                    "vulcan saved search weekly dashboard --where 'reviewed = true' --description 'weekly dashboard'",
+                ))
+                .and(predicate::str::contains("vulcan saved list"))
+                .and(predicate::str::contains(
+                    "vulcan saved run weekly --export jsonl --export-path exports/weekly.jsonl",
+                ))
+                .and(predicate::str::contains(
+                    "vulcan automation run weekly --scan --doctor",
+                )),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["automation", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("`automation run` is intended for CI, cron jobs")
+                .and(predicate::str::contains("--all-reports"))
+                .and(predicate::str::contains("--fail-on-issues"))
+                .and(predicate::str::contains(
+                    "vulcan automation run --all-reports --verify-cache --repair-fts --fail-on-issues",
+                )),
+        );
+}
+
+#[test]
 fn run_json_output_executes_script_files_and_named_scripts() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

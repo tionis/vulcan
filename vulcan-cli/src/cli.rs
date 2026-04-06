@@ -554,6 +554,39 @@ Examples:
   vulcan config import templater --target local
   vulcan --output json config import tasks";
 
+const SAVED_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  list        list saved query and report definitions
+  show        display one saved report definition
+  search      save a search report definition
+  notes       save a notes/property report definition
+  bases       save a Bases report definition
+  run         execute one saved report
+
+Notes:
+  Saved report definitions live under .vulcan/reports.
+  `saved run` uses the same execution path as the one-shot commands and supports the same export options.
+  Use `automation run` when you want saved reports plus health checks in one non-interactive step.
+
+Examples:
+  vulcan saved search weekly dashboard --where 'reviewed = true' --description 'weekly dashboard'
+  vulcan saved list
+  vulcan saved run weekly --export jsonl --export-path exports/weekly.jsonl
+  vulcan automation run weekly --scan --doctor";
+
+const AUTOMATION_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  run         execute saved reports plus optional checks and repairs
+
+Notes:
+  `automation run` is intended for CI, cron jobs, and other non-interactive workflows.
+  Pass saved report names positionally, or use --all-reports to run everything in .vulcan/reports.
+  `--fail-on-issues` returns exit code 2 when checks complete but still report problems.
+
+Examples:
+  vulcan automation run weekly --scan --doctor
+  vulcan automation run --all-reports --verify-cache --repair-fts --fail-on-issues";
+
 const DAILY_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   today       open or create today's daily note
@@ -2452,7 +2485,10 @@ pub enum Command {
         #[command(subcommand)]
         command: SuggestCommand,
     },
-    #[command(about = "Persist and run saved reports from .vulcan/reports")]
+    #[command(
+        about = "Persist and run saved reports from .vulcan/reports",
+        after_help = SAVED_COMMAND_AFTER_HELP
+    )]
     Saved {
         #[command(subcommand)]
         command: SavedCommand,
@@ -2645,7 +2681,10 @@ pub enum Command {
         #[arg(long, help = "Run every saved report definition in .vulcan/reports")]
         all: bool,
     },
-    #[command(about = "Run checks, repairs, and saved reports for CI and scripts")]
+    #[command(
+        about = "Run checks, repairs, and saved reports for CI and scripts",
+        after_help = AUTOMATION_COMMAND_AFTER_HELP
+    )]
     Automation {
         #[command(subcommand)]
         command: AutomationCommand,
