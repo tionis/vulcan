@@ -3301,7 +3301,7 @@ Most commands show only flags in their `--help` output. Add 2–3 concrete usage
 - [ ] Audit all commands for missing `Examples:` sections in their clap after-help
 - [ ] Add examples that show common workflows, not just flag combinations
 - [x] Prioritize commands users encounter first: `note get`, `query`, `search`, `daily`, `tasks list`, `run`
-- [ ] For the `saved` workflow, add an end-to-end example: create → list → run → use in automation
+- [x] For the `saved` workflow, add an end-to-end example: create → list → run → use in automation
 
 **Color and formatting**
 

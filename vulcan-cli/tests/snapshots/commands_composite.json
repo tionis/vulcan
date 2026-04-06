@@ -2909,6 +2909,7 @@
       },
       {
         "about": "Persist and run saved reports from .vulcan/reports",
+        "after_help": "Subcommands:\n  list        list saved query and report definitions\n  show        display one saved report definition\n  search      save a search report definition\n  notes       save a notes/property report definition\n  bases       save a Bases report definition\n  run         execute one saved report\n\nNotes:\n  Saved report definitions live under .vulcan/reports.\n  `saved run` uses the same execution path as the one-shot commands and supports the same export options.\n  Use `automation run` when you want saved reports plus health checks in one non-interactive step.\n\nExamples:\n  vulcan saved search weekly dashboard --where 'reviewed = true' --description 'weekly dashboard'\n  vulcan saved list\n  vulcan saved run weekly --export jsonl --export-path exports/weekly.jsonl\n  vulcan automation run weekly --scan --doctor",
         "name": "saved",
         "options": [],
         "subcommands": [
@@ -4701,6 +4702,7 @@
       },
       {
         "about": "Run checks, repairs, and saved reports for CI and scripts",
+        "after_help": "Subcommands:\n  run         execute saved reports plus optional checks and repairs\n\nNotes:\n  `automation run` is intended for CI, cron jobs, and other non-interactive workflows.\n  Pass saved report names positionally, or use --all-reports to run everything in .vulcan/reports.\n  `--fail-on-issues` returns exit code 2 when checks complete but still report problems.\n\nExamples:\n  vulcan automation run weekly --scan --doctor\n  vulcan automation run --all-reports --verify-cache --repair-fts --fail-on-issues",
         "name": "automation",
         "options": [],
         "subcommands": [
