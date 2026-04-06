@@ -733,7 +733,7 @@ Investigate and apply remaining SQLite tuning for bulk insert workloads.
 
 ## Phase 9: CLI Refinements
 
-**Goal:** Improve the interactive CLI experience with direct note editing, a persistent browser TUI, auto-commit integration, and quality-of-life commands. Later sub-phases (9.18) restructure the entire command surface into a two-level hierarchy, add single-note CRUD, a general-purpose JS runtime with REPL, web/git tools for agent use, and integrated documentation. These features make vulcan a practical daily-driver tool for vault maintenance and the foundation for the AI assistant's tool interface.
+**Goal:** Improve the interactive CLI experience with direct note editing, a persistent browser TUI, auto-commit integration, and quality-of-life commands. Later sub-phases (9.18) restructure the entire command surface into a two-level hierarchy, add single-note CRUD, a general-purpose JS runtime with REPL, web/git tools for agent use, and integrated documentation. These features make vulcan a practical daily-driver tool for vault maintenance and the foundation for AI integrations.
 
 **Depends on:** Phase 7 complete.
 **Design refs:** Existing `note_picker.rs` (fuzzy picker), `bases_tui.rs` (TUI infrastructure + `open_in_editor` + `with_terminal_suspended`), `serve.rs` (watcher integration).
@@ -1665,150 +1665,70 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 - [x] Browse TUI: `o` hotkey on Kanban `.md` files opens a board view with columns displayed side-by-side
 - [-] WebUI: Kanban board rendered as interactive drag-and-drop columns (moved to Phase 13.3 Vault browser / WebUI work)
 
-### 9.12 AI assistant
+### 9.12 External agent integration (pi first)
 
-**Goal:** A vault-aware AI assistant that can search, read, write, and analyze notes using an LLM inference backend (e.g., OpenRouter, local models via OpenAI-compatible API). This is a CLI-first feature — the assistant runs in the terminal and has full access to the vault through Vulcan's existing query and mutation infrastructure.
+**Status:** Re-scoped from an in-process Rust assistant to an external-runtime integration layer. Vulcan remains the source of truth for vault semantics, tools, prompts, and skills; an external runtime such as `pi` owns inference, session state, and chat UX.
 
-**Builds on:** Phase 5 (vectors/embeddings for semantic search), Phase 7.12 (query model), Phase 9.6 (search).
+**Goal:** Make Vulcan feel native inside an external agent runtime, with `pi` as the first-class target. The model should read vault `AGENTS.md`, discover commands through `describe` and `help`, load `AI/Skills/*.md` on demand, and perform all vault reads and writes through Vulcan's JSON CLI instead of direct filesystem edits.
 
-#### 9.12.1 Inference backend
+**Builds on:** Phase 5 (vectors/embeddings for semantic search), Phase 7.12 (query model), Phase 9.6 (search), Phase 9.18.2 (note CRUD), Phase 9.18.6 (web tools), Phase 9.18.7 (help/describe polish), Phase 9.18.8 (git ops).
 
-- [ ] `AssistantProvider` trait: `chat(messages, tools?) -> Response`, `stream_chat(messages, tools?) -> Stream<Token>`
-- [ ] `OpenAICompatibleProvider`: HTTP client for `/v1/chat/completions` endpoint (covers OpenRouter, local Ollama/vLLM, OpenAI, Anthropic via proxy)
-- [ ] Config in `.vulcan/config.toml`:
-  ```toml
-  [assistant]
-  provider = "openrouter"  # or "openai", "local", custom URL
-  base_url = "https://openrouter.ai/api/v1"
-  api_key_env = "OPENROUTER_API_KEY"  # env var name, not the key itself
-  model = "anthropic/claude-sonnet-4"
-  max_tokens = 4096
-  temperature = 0.7
-  ```
-- [ ] Model selection via `--model` flag override
-- [ ] Streaming output for interactive use
+#### 9.12.1 pi package / extension contract
 
-#### 9.12.2 Tool interface
+- [ ] Define the integration contract in `docs/assistant/pi_integration.md`
+- [ ] Recommend a `pi` package/extension that shells out to `vulcan` in `--output json` mode; no direct SQLite access, parser duplication, or note mutation outside Vulcan
+- [ ] Startup flow: locate vault root, load `AGENTS.md`, enumerate bundled/user skills, and call `vulcan describe --format openai-tools`
+- [ ] Tool registration modes:
+  - static wrappers for the core note/search/query/property/inbox tools
+  - dynamic discovery for the rest of the command surface via `help --output json`
+- [ ] Normalize stdout/stderr parsing, exit-code handling, and timeout errors so `pi` sees stable tool failures
+- [ ] Support both read-only and write-enabled profiles
 
-The assistant uses a tiered tool exposure model: core tools are always available with full schemas in the system prompt, while the full command surface is accessible via gradual discovery. See §17b in the design document for the full rationale.
+#### 9.12.2 Tool boundary and trust model
 
-**Core tools (always in system prompt, ~10):**
+- [ ] Default recommendation: run `pi` without generic file-edit and shell-write tools for vault operations; all vault mutations should go through Vulcan commands
+- [ ] All note mutations flow through `vulcan note *`, `update`, `unset`, `inbox`, and `refactor *`
+- [ ] All vault reads flow through `note get`, `search`, `query`, graph tools, daily tools, git tools, and web tools as appropriate
+- [ ] Preserve CLI-to-tool 1:1 mapping; the `pi` layer must not invent a second vault API
+- [ ] Document how `--dry-run`, `--check`, and git auto-commit fit into the agent workflow
+- [ ] Document a recommended least-privilege profile for read-only browsing, note editing, and high-trust refactoring
 
-These tools have full schemas included in the system prompt. They cover the vast majority of vault interactions:
+#### 9.12.3 Prompts, skills, and vault context
 
-- [ ] `note_get(path, opts?)` — read note content with selectors: heading, block-ref, lines, match/regex, no-frontmatter (`vulcan note get`)
-- [ ] `note_create(path, content?, template?, frontmatter?)` — create a new note (`vulcan note create`)
-- [ ] `note_set(path, content)` — replace note content (`vulcan note set`)
-- [ ] `note_append(path, text, heading?)` — append text to a note (`vulcan note append`)
-- [ ] `note_patch(path, find, replace)` — find & replace in a note, fails on multiple matches (`vulcan note patch`)
-- [ ] `search(query)` — full-text, semantic, and hybrid search (`vulcan search`)
-- [ ] `query(dsl)` — structured vault query (`vulcan query`)
-- [ ] `update_property(path, key, value)` — set a frontmatter property (`vulcan update`)
-- [ ] `unset_property(path, key)` — remove a frontmatter property (`vulcan unset`)
-- [ ] `inbox(text)` — append to configured inbox note (`vulcan inbox`)
+- [ ] Treat vault `AGENTS.md` plus `AI/Skills/*.md` as the primary durable prompt surface
+- [ ] Keep bundled default skills written by `vulcan init`; user-defined skills remain plain vault files
+- [ ] `pi` integration injects only a compact tool summary up front; detailed schemas and skill content stay on-demand through `describe`, `help`, and skill files
+- [ ] Publish a `pi` usage guide: install path, launch flags, recommended permission profile, and common pitfalls
+- [ ] Optional follow-up wrapper command: `vulcan agent pi print-config` or similar to emit a ready-to-paste setup snippet once the contract is stable
 
-Mutation tools require `--allow-write` flag (read-only by default).
+#### 9.12.4 Sessions and persistence boundary
 
-**Discovery meta-tools (always available):**
+- [ ] `pi` owns live chat/session state, compaction, and transcript storage by default
+- [ ] Vulcan does not initially implement gemini-scribe conversation files, assistant-specific memory notes, or a built-in `vulcan assistant --chat` runtime
+- [ ] Durable artifacts that matter to the user should be written as normal vault notes through the existing tool surface
+- [ ] Revisit session export/import only if `pi`'s native session model proves insufficient for vault workflows
 
-- [ ] `describe()` — compact listing of all commands with one-line descriptions. The LLM calls this to see what tools exist beyond the core set.
-- [ ] `help(command)` — full schema for a specific command: parameters, types, defaults, examples. The LLM reads this right before calling an unfamiliar tool.
-- [ ] `run_js(code, sandbox?)` — execute JavaScript in the sandboxed QuickJS runtime with the full vault API. Escape hatch for complex multi-step operations, loops, conditionals, and batch work.
-- [ ] `skill_list()` — returns all available skills with names and descriptions.
-- [ ] `skill_get(name)` — returns the full skill content (prompt, tool list, examples, patterns).
+#### 9.12.5 Exit criteria and revisit triggers
 
-**Discoverable tools (callable by name after discovery via describe/help):**
+- [ ] Daily-driver workflows succeed in `pi` without direct file editing: read note, patch note, search/query vault, run refactors, inspect git state, and consult skills
+- [ ] Reassess a native embedded runtime only if one of these remains unsolved:
+  - vault-native session transcripts become essential
+  - confirmation and permission UX must be enforced inside Vulcan itself
+  - mobile/chat transports need tight in-process control
+  - external runtimes cannot express the required tool discovery or sandboxing model
 
-All remaining CLI commands are callable by the agent but their schemas are not in the initial system prompt. The LLM discovers them via `describe` → `help` → call:
+#### 9.12.6 Prompts and skills remain vault-native
 
-- [ ] `note_links(path)`, `note_backlinks(path)`, `note_doctor(path)` — single-note inspection
-- [ ] `similar(path)` — find semantically similar notes (requires vectors)
-- [ ] `daily_list(from?, to?)`, `daily_append(text, heading?, date?)` — periodic notes
-- [ ] `git_status()`, `git_log(limit?)`, `git_diff(path?)`, `git_blame(path)`, `git_commit(message)` — sandboxed git
-- [ ] `web_search(query)`, `web_fetch(url, mode?)` — external data
-- [ ] Graph tools: `graph_path`, `graph_hubs`, `graph_components`, `graph_dead_ends`
-- [ ] Refactoring: `rename_alias`, `rename_heading`, `merge_tags`, `rewrite`, `move`, `link_mentions`
-
-**Discovery flow:** LLM needs something not in core tools → calls `describe` to see categories → calls `help("graph path")` for full schema → calls the tool. Alternatively, the LLM calls `skill_get("graph-exploration")` to learn patterns and common usage, then uses the tools or `run_js` directly.
-
-Tool calls dispatch to the same command handlers as the CLI, ensuring consistent behavior and output formats.
-
-#### 9.12.3 CLI surface
-
-- [ ] `vulcan assistant <prompt>` — one-shot prompt with vault context
-- [ ] `vulcan assistant --chat` — interactive multi-turn conversation
-- [ ] `vulcan assistant --file <note> <prompt>` — prompt about a specific note (note content injected as context)
-- [ ] `vulcan assistant --summarize <note>` — summarize a note
-- [ ] `vulcan assistant --ask <question>` — RAG-style question answering against the vault (semantic search → context → answer)
-- [ ] `vulcan assistant --prompt <name>` — use a named prompt file (see 9.12.6)
-- [ ] `vulcan assistant --skill <name>` — invoke a named skill (see 9.12.7)
-- [ ] `--output json` for structured output
-- [ ] `--dry-run` on write operations shows planned changes without applying
-- [ ] `--require-confirmation` — require user confirmation before tool calls that mutate the vault (default: true for write operations)
-
-#### 9.12.4 System prompt and vault awareness
-
-The system prompt is auto-generated and composed from multiple layers to give the LLM full vault awareness without overwhelming the context budget.
-
-**System prompt layers:**
-- [ ] **Vault context:** vault name, note count, tag summary (top N tags with counts), property catalog summary (common property keys and types)
-- [ ] **Core tool schemas:** full parameter definitions for the ~10 core tools (note CRUD, search, query, properties, inbox)
-- [ ] **Discovery meta-tool schemas:** schemas for `describe`, `help`, `run_js`, `skill_list`, `skill_get`
-- [ ] **Tool category summary:** one-liner per command group (graph, daily, git, web, refactor, etc.) so the LLM knows what's discoverable without seeing full schemas — e.g., "Graph tools: find paths between notes, identify hubs, dead ends, connected components. Use `help('graph path')` for details."
-- [ ] **Skill directory:** list of all available skills with names and one-line descriptions. The LLM can call `skill_get(name)` to load any skill as executable knowledge.
-- [ ] **`AGENTS.md` context file:** if present in vault root, included as additional system context (vault-specific metadata, conventions, instructions for the assistant)
-- [ ] **Active prompt/skill context:** if invoked with `--prompt` or `--skill`, the prompt/skill content is appended
-
-**Context injection and management:**
-- [ ] Vault context injection: relevant notes retrieved via search and injected into context window
-- [ ] Context window management: truncate long note contents, prioritize recent/relevant sections
-- [ ] `vulcan assistant --context <dql>` — pre-filter vault context with a DQL query before prompting
-
-#### 9.12.5 Conversation persistence (gemini-scribe format)
-
-Conversations are saved as Markdown files in a configurable folder, using Obsidian callouts for message formatting. This makes sessions browseable and searchable as regular vault notes.
-
-- [ ] Configurable session folder: `assistant.sessions_folder` in `.vulcan/config.toml` (default: `AI/Sessions/`)
-- [ ] Session file format — YAML frontmatter:
-  ```yaml
-  ---
-  session_id: <ULID>
-  type: conversation
-  title: <auto-generated or user-provided>
-  created: <ISO 8601>
-  last_active: <ISO 8601>
-  model: <model name used>
-  context_files:
-    - <paths of notes used as context>
-  enabled_tools:
-    - search
-    - read_note
-    - query
-  require_confirmation: true
-  ---
-  ```
-- [ ] Message format using Obsidian callouts:
-  - `> [!user]+ User` — user messages (collapsible, expanded by default)
-  - `> [!assistant]+ Assistant` — assistant responses
-  - `> [!metadata]- Metadata` — tool calls, context retrieval, timestamps (collapsed by default)
-  - Each message block separated by `## User` / `## Assistant` headings for readability
-- [ ] Auto-save after each exchange in `--chat` mode
-- [ ] Resume sessions: `vulcan assistant --resume <session-id-or-title>` — load conversation history from file
-- [ ] `vulcan assistant sessions` — list saved sessions (title, date, message count)
-- [ ] Session auto-titling: use LLM to generate a short title after the first exchange if none provided
-
-#### 9.12.6 Prompts system
-
-Prompts are reusable Markdown files that define pre-configured assistant behaviors, stored in a configurable prompts folder.
+Prompts and skills stay as Markdown files in the vault. External runtimes consume them as reference material; Vulcan stays responsible for scaffolding defaults and documenting conventions.
 
 - [ ] Configurable prompts folder: `assistant.prompts_folder` in `.vulcan/config.toml` (default: `AI/Prompts/`)
+- [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `AI/Skills/`)
 - [ ] Prompt file format — Markdown with YAML frontmatter:
   ```yaml
   ---
   name: summarize-meeting
   description: Summarize meeting notes into action items
   version: 1
-  override_system_prompt: false  # true = replace default system prompt; false = append
   tags:
     - productivity
     - meetings
@@ -1819,18 +1739,6 @@ Prompts are reusable Markdown files that define pre-configured assistant behavio
   2. Action items with owners
   3. Follow-up questions
   ```
-- [ ] `vulcan assistant --prompt <name>` — load prompt by name (filename without `.md`, or `name` frontmatter field)
-- [ ] `vulcan assistant prompts` — list available prompts (name, description, tags)
-- [ ] Prompt variables: `{{context_files}}`, `{{vault_name}}`, `{{current_date}}` expanded at runtime
-- [ ] Prompts can specify `context_files` in frontmatter to auto-load specific notes as context
-
-#### 9.12.7 Skills system
-
-Skills are executable knowledge — Markdown files that teach the LLM how to use Vulcan effectively. They combine reference documentation, usage patterns, examples, and tool permissions. Skills serve double duty: the embedded agent loads them via `skill_get`, and external harnesses (Claude Code, Codex) read them as reference material from the vault.
-
-**Skill infrastructure:**
-
-- [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `AI/Skills/`)
 - [ ] Skill file format — Markdown with YAML frontmatter:
   ```yaml
   ---
@@ -1842,35 +1750,17 @@ Skills are executable knowledge — Markdown files that teach the LLM how to use
     - note_create
     - query
     - daily_list
-  require_confirmation: false
   output_file: "Reviews/{{date}}-daily-review.md"
   ---
 
   ## When to use
   Use this skill to review and summarize the day's work...
-
-  ## Core patterns
-  ...examples and tool call sequences...
-
-  ## Common mistakes
-  - Don't forget to check daily notes, not just modified notes
-  - Always use --dry-run before creating summary notes in new locations
   ```
-- [ ] `vulcan assistant --skill <name>` — invoke a skill (loads prompt + tool config + runs to completion)
-- [ ] `vulcan assistant skills` — list available skills (name, description, tools used)
-- [ ] Skills can define `output_file` to automatically save results to a vault note
-- [ ] Skills can be chained: a skill's output can reference another skill
-- [ ] The `tools` field in frontmatter tells the agent which tools are relevant — it can call `help` on them for full schemas
-- [ ] Skill directory included in system prompt (names + one-line descriptions only, not full content)
-
-**Skill tools for the agent:**
-
-- [ ] `skill_list()` — returns all available skills (default + user-defined) with names and descriptions
-- [ ] `skill_get(name)` — returns the full skill content: frontmatter metadata + markdown body
+- [ ] `skill_list()` and `skill_get(name)` remain part of the discoverable tool surface for external runtimes
 
 **Default skills (shipped with Vulcan):**
 
-Vulcan ships a standard library of skills that teach the LLM to use the tool surface effectively. These are bundled in the binary (via `include_str!`) and optionally written to the vault on `vulcan init` or `vulcan assistant init`.
+Vulcan ships a standard library of skills that teach any external runtime how to use the tool surface effectively. These are bundled in the binary (via `include_str!`) and written to the vault on `vulcan init`.
 
 - [ ] **note-operations** — reading, creating, editing notes. Covers `note get` selectors (heading, block-ref, lines, match), `note append` under headings, `note patch` find/replace safety (fails on multiple matches), frontmatter conventions. Common mistake: using `note set` when `note patch` or `note append` is safer.
 - [ ] **vault-query** — query DSL usage, filter expressions, property operators, sorting, `search` vs `query` guidance (search for content, query for metadata). Common mistake: using search when a property query is more precise.
@@ -1901,168 +1791,21 @@ console.log(JSON.stringify({ npcs: npcs.map(n => n.name), locations: locations.m
 
 This makes skill scripts runnable by external agent harnesses (Claude Code, Codex, Gemini CLI) as plain executables — the harness does not need to know about Vulcan's JS runtime. The same shebang pattern works for user scripts in `.vulcan/scripts/` and general CLI integration.
 
-#### 9.12.8 Chat platform integrations (personal assistant mode)
+#### 9.12.8 Deferred native chat integrations
 
-**Goal:** Expose the AI assistant as a conversational personal assistant over messaging platforms. Telegram first, modular for future platforms (Signal, Matrix, Discord, Slack, etc.). The assistant has full vault tool access with per-user/per-platform permission limits, persistent memory per user/group, and integrates with git versioning for all vault mutations.
+**Status:** `[-]` Deferred under the `pi`-first strategy. Native Telegram/Signal/Matrix/Discord adapters are no longer on the immediate critical path.
 
-**Depends on:** 9.12.1–9.12.7 (core assistant infrastructure must exist first). Does not require the daemon (Phase 10) — runs as a long-lived `vulcan assistant serve` process.
+**Rationale:** External runtimes already provide the terminal/chat loop, session management, and model integration. Vulcan should only absorb that complexity later if external runtimes cannot satisfy the workflow.
 
-**Integration model:** Chat platform adapters are internal to Vulcan, not separate projects. This is deliberate — in-process integration provides granular tool sandboxing (per-user/per-platform permissions enforced by the same code that dispatches tools), eliminates the need for an IPC protocol, and simplifies distribution (single binary). Platform-specific dependencies are behind cargo feature flags (e.g., `feature = "telegram"`, `feature = "discord"`) so they don't increase binary size for users who don't need them. User identities use platform-scoped IDs (e.g., `telegram/123456`, `discord/789012`) for permissions, memory paths, and audit trails.
+- [-] Do not implement `vulcan assistant serve` or in-process chat adapters in the current Phase 9 plan
+- [-] Revisit only after Phase 9.19.13 (permissions) and Phase 10 (daemon) are mature enough to support a safe long-lived service model
+- [-] If revived later, keep the same rule: memory and durable artifacts live in the vault, and all mutations still go through the normal Vulcan command surface
 
-**Design principles:**
-- **The assistant core is platform-agnostic.** Chat platforms are transport adapters, not separate assistant implementations. A `ChatPlatform` trait defines how messages arrive and responses are sent; the assistant loop (system prompt → user message → tool calls → response) is shared.
-- **Memory is stored in the vault as notes.** Per-user and per-group memory files are regular vault notes that the assistant reads/writes via its existing tools. No separate memory database — everything is searchable, versioned, and backed up with the vault.
-- **Context is managed aggressively.** Chat messages are typically short and frequent. The assistant must stay within context limits without losing continuity. Strategy: summarize older turns, rely on memory files for long-term state, inject only relevant vault context per turn.
+#### 9.12.9 Agent asset import
 
-**`ChatPlatform` trait:**
-
-- [ ] Platform adapter trait in `vulcan-core::assistant`:
-  ```rust
-  trait ChatPlatform {
-      fn name(&self) -> &str;
-      fn poll_messages(&mut self) -> Result<Vec<IncomingMessage>>;
-      fn send_response(&self, chat_id: &str, response: AssistantResponse) -> Result<()>;
-      fn platform_user_id(&self, msg: &IncomingMessage) -> String;
-  }
-  ```
-- [ ] `IncomingMessage` struct: `chat_id`, `user_id`, `user_display_name`, `text`, `reply_to_message_id` (for threading), `platform_metadata` (JSON)
-- [ ] `AssistantResponse` struct: `text`, `format` (plain/markdown), `reply_to` (optional)
-- [ ] Platform adapters registered at startup based on config
-
-**Telegram adapter (first implementation):**
-
-- [ ] Uses `teloxide` or `frankenstein` crate for Telegram Bot API
-- [x] Configuration in `.vulcan/config.toml`:
-  ```toml
-  [assistant.platforms.telegram]
-  enabled = true
-  bot_token_env = "TELEGRAM_BOT_TOKEN"    # env var, not the token itself
-  allowed_users = [123456789, 987654321]  # Telegram user IDs (allowlist)
-  allowed_groups = [-100123456]           # group chat IDs (optional)
-  admin_users = [123456789]              # users who can change assistant config
-  max_response_length = 4096             # Telegram message limit
-  ```
-- [ ] Bot commands: `/start`, `/new` (new session), `/memory` (show memory summary), `/status` (vault stats)
-- [ ] All other messages are treated as assistant prompts
-- [ ] Support Telegram's reply-to-message for threading context
-- [ ] Markdown formatting in responses (Telegram MarkdownV2)
-- [ ] Long responses split across multiple messages
-- [ ] File attachments: images/documents sent to the bot can be fetched and saved to vault via `web fetch` → `note create`
-
-**Session and context management:**
-
-- [ ] **Reply chains as sessions:** A reply to a bot message continues the same session. A new message (not a reply) starts a new session. `/new` explicitly starts a fresh session.
-- [ ] **Session storage:** Sessions are persisted as vault notes using the gemini-scribe format from 9.12.5, stored in a platform-specific subfolder:
-  ```
-  AI/Sessions/telegram/<chat_id>/<session_ulid>.md
-  ```
-- [ ] **Context window strategy** (aggressive, for high-frequency chat):
-  1. System prompt (compact: vault name, user identity, memory summary, tool list)
-  2. Memory file content for the current user (injected once, refreshed on change)
-  3. Last N messages from the current session (configurable, default: 20 turns)
-  4. Older messages summarized by the assistant into a "session context" block
-  5. Vault context only injected on-demand (when assistant uses search/query tools)
-- [ ] **Auto-summarization:** When a session exceeds the context budget, the assistant is asked to summarize older turns into a concise context block. The full history remains in the session file but only the summary is loaded into context.
-- [ ] **Session timeout:** Sessions expire after configurable inactivity (default: 4 hours). Next message starts a new session with memory carried over.
-
-**Per-user memory (vault-native):**
-
-- [ ] Memory stored as vault notes in a configurable folder:
-  ```
-  AI/Memory/users/<platform>/<user_id>.md
-  AI/Memory/groups/<platform>/<group_id>.md
-  ```
-- [ ] Memory file format — Markdown with YAML frontmatter:
-  ```yaml
-  ---
-  type: assistant_memory
-  platform: telegram
-  user_id: "123456789"
-  display_name: "Alice"
-  last_updated: <ISO 8601>
-  ---
-
-  ## Facts
-  - Prefers short responses
-  - Works on Project Alpha (deadline: 2026-05-01)
-  - Timezone: Europe/Berlin
-
-  ## Preferences
-  - Wants daily standup summaries at 09:00
-  - Interested in #research tagged notes
-  ```
-- [ ] The system prompt instructs the assistant to:
-  - Read the user's memory file at session start
-  - Use `note_patch` / `note_append` to update memory when learning new facts
-  - Use `note_create` to create the memory file on first interaction
-  - Distinguish between ephemeral conversation context and durable facts worth remembering
-- [ ] Memory files are regular vault notes — searchable, linkable, versioned by git, visible in the graph
-- [ ] Group memory files track group-level context (shared projects, group conventions, active topics)
-
-**Group chat support:**
-
-- [ ] In group chats, the bot responds when:
-  - Mentioned by name or `@botname`
-  - Replying to a bot message
-  - A message starts with a configurable trigger prefix (default: `/ask`)
-- [ ] Each group member has their own user memory file; the group also has a shared memory file
-- [ ] The assistant sees: `[Alice] message text` format for multi-user context
-- [ ] Group-level tool permissions can be more restrictive than DM permissions:
-  ```toml
-  [assistant.platforms.telegram.group_permissions]
-  allow_write = false         # read-only in groups by default
-  allowed_tools = ["search", "query", "note_get", "daily_list"]
-  ```
-- [ ] Per-user overrides possible for admin users even in group context
-
-**Tool permissions and security:**
-
-- [ ] Per-platform tool permission configuration:
-  ```toml
-  [assistant.platforms.telegram.permissions]
-  allow_write = true                    # master switch for mutation tools
-  allowed_tools = ["*"]                 # all tools, or explicit list
-  denied_tools = ["git_commit"]         # deny specific tools
-  require_confirmation = false          # no interactive confirmation in chat
-  max_daily_mutations = 100             # rate limit on write operations per user
-  max_daily_messages = 500              # rate limit on total messages per user
-  ```
-- [ ] User allowlist is mandatory — the bot ignores messages from unknown users/groups
-- [ ] Tool calls logged to session files (metadata callouts) for auditability
-- [ ] Sensitive operations (git commit, note delete) can require admin-user approval
-
-**Git integration:**
-
-- [ ] Vault mutations from chat platforms auto-commit with descriptive messages:
-  ```
-  assistant(telegram/alice): Update Project Alpha status
-  ```
-- [ ] Commit author set to the platform user identity where possible
-- [ ] Batch commits: rapid sequences of tool calls within a single response are grouped into one commit
-- [ ] `git_commit` tool available for explicit commits with custom messages
-
-**CLI surface:**
-
-- [ ] `vulcan assistant serve [--platform telegram|all]` — start the chat platform listener(s)
-- [ ] `vulcan assistant serve --dry-run` — validate config, connect to platforms, but don't process messages
-- [ ] `vulcan assistant platforms` — list configured platforms and their status
-- [ ] `vulcan assistant memory <platform> <user-id>` — show a user's memory file
-- [ ] Runs as a long-lived process; can be managed by systemd/launchd/supervisor
-- [ ] Graceful shutdown: finish processing in-flight messages, flush sessions
-
-**Future platforms (modular via `ChatPlatform` trait):**
-
-- [ ] Signal (via signal-cli or linked device API)
-- [ ] Matrix (matrix-rust-sdk)
-- [ ] Discord (serenity crate)
-- [ ] Slack (Slack Events API)
-- [ ] Each platform adapter implements `ChatPlatform` and adds a `[assistant.platforms.<name>]` config section
-- [ ] Platform-specific quirks (message length limits, formatting dialects, threading models) are handled in the adapter, not the core
-
-#### 9.12.9 Settings import
-
-- [ ] No direct plugin equivalent to import — this is a Vulcan-native feature
-- [ ] Migration helper: if `AGENTS.md` or prompt/skill-like files are detected in common locations (e.g., gemini-scribe folders), offer to import/symlink them into Vulcan's configured folders
+- [ ] No direct plugin equivalent to import — this is Vulcan-native scaffolding for external runtimes
+- [ ] Migration helper: if `AGENTS.md`, prompt files, or skill-like files are detected in common locations for external harnesses, offer to import or symlink them into Vulcan's configured folders
+- [ ] Do not import session histories by default; session storage belongs to the external runtime unless explicitly exported as vault notes
 
 ### 9.13 QuickAdd compatibility
 
@@ -2093,7 +1836,7 @@ QuickAdd's capture and template features use a format syntax for variable expans
   | `choices` | Array of choice definitions — import Template and Capture choices as note templates / capture configs; report Macro and Multi choices as requiring manual conversion to JS scripts |
   | `templateFolderPath` | Template discovery path (cross-reference with Templater settings) |
   | `globalVariables` | Global variable definitions for format syntax expansion |
-  | `ai` | AI provider config (model, API key env, system prompt) — cross-reference with 9.12 assistant config |
+  | `ai` | AI provider config (model, API key env, system prompt) — cross-reference with 9.12 external agent integration docs |
 - [x] `vulcan config import quickadd` — import QuickAdd settings, convert capture/template choices, report unmappable choices with migration guidance (implement as `PluginImporter` per 9.17.1)
 
 ### 9.14 Plugin compatibility notes
@@ -2592,7 +2335,7 @@ Parity with the other plugin importers. Dataview settings are currently auto-loa
 
 **Goal:** Restructure the CLI command surface into a clean two-level hierarchy, add single-note CRUD operations, extend the query system, implement a general-purpose JS runtime with REPL, add web/git tools for agent use, and embed integrated documentation. The public help/describe surface now follows the grouped hierarchy; hidden migration aliases may remain temporarily while the cutover finishes.
 
-**Design principle:** The CLI is simultaneously a human-facing tool and the tool interface for the AI assistant (9.12). Every command should have clean `--output json` support, deterministic behavior, and stable output contracts. The reorganization groups related commands under two-level subcommand namespaces for discoverability without sacrificing ergonomics.
+**Design principle:** The CLI is simultaneously a human-facing tool and the tool interface for AI integrations (9.12 external runtimes now, any future native runtime later). Every command should have clean `--output json` support, deterministic behavior, and stable output contracts. The reorganization groups related commands under two-level subcommand namespaces for discoverability without sacrificing ergonomics.
 
 #### 9.18.1 Command tree reorganization
 
@@ -2903,7 +2646,7 @@ scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
 
 #### 9.18.6 Web tools (`web` group)
 
-**Depends on:** None (standalone HTTP client functionality). Primarily consumed by the AI assistant (9.12) and JS runtime (9.18.5).
+**Depends on:** None (standalone HTTP client functionality). Primarily consumed by 9.12 external agent integrations and the JS runtime (9.18.5).
 
 **`web search`**
 
@@ -2959,18 +2702,18 @@ This sub-phase covers three related concerns: human-facing documentation (`help`
 - [x] `vulcan describe --format openai-tools` — export as OpenAI function-calling tool definitions (name, description, parameters as JSON Schema)
 - [x] `vulcan describe --format mcp` — export as MCP tool definitions for direct integration with Claude Code, Cursor, etc.
 - [x] Each format includes: command name, description, parameters with types/defaults/required flags, and examples
-- [x] External harnesses can call `describe` to auto-generate tool configs. Embedded-agent consumption is tracked in Phase 9.12.
+- [x] External harnesses can call `describe` to auto-generate tool configs. `pi`-first integration work is tracked in Phase 9.12.
 
 **External LLM harness support**
 
-For LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) that use Vulcan as a tool provider without the embedded agent:
+For LLM harnesses (Claude Code, Codex, Gemini CLI, `pi`, etc.) that use Vulcan as a tool provider:
 
 - [x] **Vault AGENTS.md template** — shipped with Vulcan, optionally written on `vulcan init`. Contents:
   - Available Vulcan commands organized by category with brief descriptions
   - Key conventions: always use `--output json`, `--dry-run` before mutations, note names may be ambiguous
   - Pointers to the skills directory: "Read `AI/Skills/*.md` for detailed usage patterns and examples"
   - Common pitfalls: `note patch` fails on multiple matches (safety), property types are lenient, etc.
-- [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault on `vulcan init` or `vulcan assistant init`. See 9.12.7 for the full skill list. These serve external harnesses identically: Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API.
+- [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault on `vulcan init`. See 9.12.6 for the full skill list. These serve external harnesses identically: Claude Code or `pi` reads `AI/Skills/js-api-guide.md` and learns the vault JS API.
 - [x] **Consistent JSON error output** — all commands in `--output json` mode return structured errors: `{"error": "<message>", "code": "<error_code>"}` rather than unstructured stderr text. Error codes are stable and documented.
 - [x] **Non-interactive guarantee** — all commands detect non-TTY mode and never prompt. Ambiguous note matches return an error with candidates rather than opening a picker.
 
@@ -3027,7 +2770,7 @@ Example:
 
 #### 9.18.8 Git operations (`git` group)
 
-**Depends on:** Phase 9.3 (git module). Provides sandboxed git access for the AI assistant (9.12) without requiring full shell access.
+**Depends on:** Phase 9.3 (git module). Provides sandboxed git access for 9.12 external agent integrations without requiring full shell access.
 
 - [x] `vulcan git status` — working tree status (staged, modified, untracked)
 - [x] `vulcan git log [--limit <n>]` — recent commit history (default: 10)
@@ -3090,7 +2833,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.17.6 (batch commands)  ← 9.17.1      │── Wave 3
 9.17.7 (init integration)← 9.17.6      │── Wave 3+
                                         │
---- AI path (CLI first, then agent, then chat) ---
+--- AI path (CLI first, then external runtime, then native chat only if needed) ---
 9.18.2 (note CRUD)       ← 7, 2        │── Wave 5 (CLI for LLMs)
 9.18.3 (query enhance)   ← 7.12        │── Wave 5
 9.18.6 (web tools)       ← standalone  │── Wave 5
@@ -3098,9 +2841,9 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.18.8 (git ops)         ← 9.3         │── Wave 5
 + default skills, vault AGENTS.md      │── Wave 5 deliverables
                                         │
-9.12.1-7 (embedded agent)← 9.18.2,5,9.6│── Wave 6 (after CLI tools)
+9.12.1-6 (pi integration) ← 9.18.2,6,7,8│── Wave 6 (after CLI tools)
                                         │
-9.12.8 (chat platforms)  ← 9.12.1-7    │── Wave 7 (after agent)
+9.12.8 (native chat, deferred)← 9.19.13,10│── revisit later only if needed
                                         │
 9.18.4 (refactor group)  ← 7           │── Wave 6+ (with 9.18.1)
 9.18.5 (JS runtime/REPL) ← 9.8.8       │── Wave 6+ (after DataviewJS)
@@ -3125,21 +2868,21 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 
 **Recommended implementation order:**
 
-The key sequencing principle for AI-related work: **CLI tool surface first** (usable by external harnesses immediately), **then the embedded agent** (full vault-native experience), **then chat platforms** (mobile/messaging interface). Each phase is independently valuable.
+The key sequencing principle for AI-related work: **CLI tool surface first** (usable by external harnesses immediately), **then external-runtime integration** (`pi` first), **then native runtimes or chat adapters only if they solve a proven gap**. Each phase is independently valuable.
 
 1. **Wave 1 (parallel):** 9.1–9.5 — CLI foundation. These are largely complete and independent.
 2. **Wave 2 (parallel):** 9.6 (search), 9.7 (templates), **9.17.1–9.17.4 (import infrastructure + core importer)** — the import infrastructure only depends on 9.5 (already complete). Core importer depends only on 9.17.1.
 3. **Wave 3 (sequential + parallel):** 9.8.1 → 9.8.2 → 9.8.3 → 9.8.4 → 9.8.5 → 9.8.6 → 9.8.7 → 9.8.8 → 9.8.9 — Dataview, the largest sub-phase. Internal ordering is sequential. **9.17.5 (dataview importer) slots in after 9.8.9. 9.17.6 (batch commands) can proceed as soon as 9.17.4 + any existing importer are on the trait.** Refactor existing importers (9.9.4, 9.10.5, 9.11.4) to `PluginImporter` trait.
 4. **Wave 4 (parallel):** 9.9 (Templater), 9.10 (Tasks), 9.11 (Kanban), 9.16 (Periodic notes) — all have their prerequisites met after Wave 3. Can proceed in parallel. Each plugin's settings import uses `PluginImporter` from the start.
-5. **Wave 5 — CLI for LLMs (parallel):** **9.18.2 (note CRUD)**, **9.18.3 (query enhancements)**, **9.18.6 (web tools)**, **9.18.7 (help/describe polish)**, **9.18.8 (git ops)**, 9.15 (TaskNotes). This wave makes the CLI usable as a tool surface by any LLM harness (Claude Code, Codex, Gemini CLI, etc.) without the embedded agent. Deliverables include: note CRUD commands, `describe --format` for tool schema export, `help --output json` for structured command docs, default skills (bundled), vault AGENTS.md template, and consistent JSON error output. Can proceed in parallel with Wave 4.
-6. **Wave 6 — Embedded agent (sequential):** **9.12.1–9.12.7 as one coherent deliverable.** Inference backend → tool dispatch (full set, tiered exposure) → vault-aware system prompt + context injection → conversation persistence as vault notes → context budgeting → prompts → skills. Each step makes the agent incrementally more useful during development. Depends on Wave 5 for the tool surface.
+5. **Wave 5 — CLI for LLMs (parallel):** **9.18.2 (note CRUD)**, **9.18.3 (query enhancements)**, **9.18.6 (web tools)**, **9.18.7 (help/describe polish)**, **9.18.8 (git ops)**, 9.15 (TaskNotes). This wave makes the CLI usable as a tool surface by any LLM harness (Claude Code, Codex, Gemini CLI, `pi`, etc.) without a Vulcan-native runtime. Deliverables include: note CRUD commands, `describe --format` for tool schema export, `help --output json` for structured command docs, default skills (bundled), vault AGENTS.md template, and consistent JSON error output. Can proceed in parallel with Wave 4.
+6. **Wave 6 — External agent integration (sequential):** **9.12.1–9.12.6 as one coherent deliverable.** `pi` package/extension contract → tool boundary and trust model → AGENTS/skills-driven prompting → session/persistence boundary → rollout guidance and revisit criteria. Depends on Wave 5 for the tool surface.
 7. **Wave 6+ (sequential after prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10; **9.18.4 (refactor group)** ← with 9.18.1.
-8. **Wave 7 — Chat platforms:** **9.12.8 (Telegram first, then other platforms)** ← requires 9.12.1–9.12.7 core assistant from Wave 6. Internal to Vulcan, behind cargo feature flags.
+8. **Wave 7 — Deferred native/chat runtimes:** revisit **9.12.8** only if external runtimes cannot cover the workflow and after permissions + daemon foundations are mature.
 9. **Wave 8:** 9.13 (QuickAdd) — capture format compatibility and settings import. Benefits from 9.7 (template variables) and 9.16 (periodic notes) being in place. QuickAdd importer (9.13.2) uses `PluginImporter`.
 10. **9.17.7 (init integration)** can land anytime after 9.17.6.
 11. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
 
-**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the AI path, the critical chain is: 9.18.2 (note CRUD) → 9.12.1–9.12.7 (embedded agent) → 9.12.8 (chat platforms). For JS runtime: 9.8.8 → 9.18.5.
+**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the AI path, the critical chain is: 9.18.2/9.18.7/9.18.8 → 9.12.1–9.12.6 (`pi` integration). Native chat adapters are explicitly off the current critical path. For JS runtime: 9.8.8 → 9.18.5.
 
 **Note on 9.8.3 and 9.16:** The `file.day` metadata field in 9.8.3 depends on periodic note configuration from 9.16. However, `file.day` can be stubbed initially (return null when no periodic config exists) and filled in when 9.16 lands. This avoids blocking all of 9.8 on 9.16.
 
@@ -3758,7 +3501,7 @@ If both `--sandbox` and `--permissions` are specified, the more restrictive of t
 - [ ] **`index serve` / MCP server:** `--permissions <profile>` — all requests gated by this profile. Auth-token remains for authentication; permissions for authorization.
 - [ ] **JS runtime:** permission guard is threaded into the runtime context. All vault API calls (`vault.note()`, `vault.set()`, `web.fetch()`, etc.) check the active guard before executing. Resource limits (CPU, memory, stack) are applied via rquickjs `Runtime::set_memory_limit()`, `set_max_stack_size()`, and `set_interrupt_handler()`.
 - [ ] **Plugin system (9.19.12):** each plugin declares required permissions in its manifest. Execution is denied if requirements exceed the active profile. Plugins can request a *subset* of the active profile's permissions.
-- [ ] **AI assistant (9.12):** the assistant operates under a configurable permission profile (default: `agent`). Tool dispatch checks permissions before executing. This is the primary consumer.
+- [ ] **AI integrations (9.12):** external runtimes and any future native assistant operate under a configurable permission profile (default: `agent`). Tool dispatch checks permissions before executing. This is the primary consumer.
 - [ ] **Phase 17 integration point:** Phase 17 implements `PermissionGuard` with a `UserPermissionGuard` that resolves user → vault role → ACL rules → `PermissionGrant`. The guard trait, resource specifiers, grant type, and `PermissionFilter` from 9.19.13 are reused without modification.
 
 **Implementation:**
@@ -3829,10 +3572,10 @@ Calendar integration should not be a TaskNotes-specific feature. It needs a holi
 - OAuth2 flows for Google Calendar and Microsoft Calendar
 - ICS import/export and subscription feeds
 - Bidirectional sync semantics (vault-as-source-of-truth vs calendar-as-source-of-truth)
-- How the AI assistant (9.12) and chat integrations (9.12.8) should interact with calendar data
+- How 9.12 external agent integrations should interact with calendar data, and whether any later native/chat runtime needs additional hooks
 - Timeblocking: creating calendar blocks from task schedules
 
-**Depends on:** Phase 9.15 (task data model), Phase 9.12 (AI assistant), Phase 10 (daemon for background sync)
+**Depends on:** Phase 9.15 (task data model), Phase 9.12 (external agent integration), Phase 10 (daemon for background sync)
 
 ### <a id="deferred-time-tracking-gui"></a>Time tracking GUI
 
@@ -3854,12 +3597,12 @@ Core time tracking and a simple CLI pomodoro timer ship in 9.15.6. Visual elemen
 Core reminder parsing and evaluation ship in 9.15.7. *Delivery* of reminders — actually notifying the user — is deferred because it depends on the available delivery channels:
 
 - Desktop notifications (daemon phase, platform-dependent)
-- Telegram bot messages (9.12.8 chat integration)
-- Other chat platform integrations
+- External runtime notifications or message bridges
+- Any future native chat platform integrations
 - Email delivery (future)
 - WebUI notification center (Phase 13/14)
 
-**Depends on:** Phase 9.12.8 (chat platforms), Phase 10 (daemon for background evaluation)
+**Depends on:** Phase 10 (daemon for background evaluation). Native chat adapters are optional future consumers rather than prerequisites.
 
 ### <a id="deferred-task-daemon-api"></a>Task operations in daemon API
 
@@ -4205,7 +3948,7 @@ trait SyncBackend: Send + Sync {
 
 ### 15.2 Telegram bot integration
 
-**Note:** The full conversational AI assistant over Telegram (with memory, group chats, tool access) is defined in Phase 9.12.8 and runs independently of the daemon. Phase 15.2 covers the daemon-hosted webhook variant for simpler notification/command use cases that benefit from the daemon's event system.
+**Note:** Phase 9.12 no longer assumes a built-in conversational Telegram assistant. Phase 15.2 covers a daemon-hosted webhook/integration variant for simpler notification and command use cases; a richer native chat runtime can be revisited later if external runtimes prove insufficient.
 
 - [ ] Per-vault Telegram bot configuration (daemon mode):
   ```toml
@@ -4219,7 +3962,7 @@ trait SyncBackend: Send + Sync {
 - [ ] `/daily` — create or open today's daily note
 - [ ] Implemented as a daemon plugin module
 - [ ] Webhook-driven notifications: vault events (note changed, scan complete) pushed to Telegram chat
-- [ ] Coexistence: daemon webhook bot and 9.12.8 assistant bot can use the same or different bot tokens
+- [ ] Coexistence: daemon webhook bot and any future richer chat runtime can use the same or different bot tokens
 
 ### 15.3 Custom API endpoints
 
@@ -4802,7 +4545,7 @@ Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and provides the parsing and query layer for inline checkbox tasks: Tasks DSL parser, recurring task expansion (RRULE), dependency graph, and custom status types. This shared infrastructure is reused by 9.15 (TaskNotes). The CLI surface is unified under `vulcan tasks` (defined in 9.15.9).
 Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.
-Phase 9.12 (AI assistant) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. Requires an external inference API. The tool interface (9.12.2) is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands. Phase 9.12.8 (chat platform integrations) depends on 9.12.1–9.12.7 being complete and adds Telegram (first) with a modular `ChatPlatform` trait for future platforms. It runs independently of the daemon (Phase 10) as `vulcan assistant serve`. Memory is stored as vault notes, sessions use gemini-scribe format, and group chats have per-user + per-group memory files.
+Phase 9.12 (external agent integration, `pi` first) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. The tool interface is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands, and external runtimes consume them through `describe`/`help` plus vault `AGENTS.md` and skills. Session history and compaction stay in the external runtime by default. Phase 9.12.8 remains a deferred native chat/runtime sketch rather than part of the current critical path.
 Phase 9.18 (CLI redesign) has varying sub-phase dependencies: 9.18.1 (reorg) and 9.18.2 (note CRUD) can start after Phase 7; 9.18.3 (query enhancements) after 7.12; 9.18.5 (JS runtime) after 9.8.8; 9.18.6 (web tools) is standalone; 9.18.7 (docs) is standalone; 9.18.8 (git) after 9.3; 9.18.9 (task mutations) after 9.10 and 9.15. The command tree reorganization (9.18.1) should land last — build new commands first, then rename in one pass.
 Phase 9.13 (QuickAdd) provides Obsidian-compatible capture format syntax and settings import. Macro/scripting functionality is handled by the JS runtime (9.18.5) and existing CLI commands rather than a separate automation DSL.
 Phase 9.15 (TaskNotes) is Vulcan's primary task management model. Builds on Phase 4 (properties/Bases, including 4.5.1 custom source types) and Phase 9.8 (Dataview metadata). Reuses shared task infrastructure from 9.10 (recurring tasks, dependencies, custom statuses). The unified `vulcan tasks` CLI (9.15.9) covers both TaskNotes file-based tasks and inline checkbox tasks. Calendar sync (9.15.10), HTTP API (9.15.12), and calendar Bases views are deferred to post-Phase 9. Time tracking (9.15.6) ships core+CLI only; GUI deferred to post-WebUI. Reminders (9.15.7) ship core evaluation only; delivery channels deferred to chat/daemon phases.
@@ -4838,7 +4581,7 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `automerge` | CRDT document model for collaborative editing | 14 |
 | `rust-embed` or `include_dir` | Embed static WebUI assets | 13 |
 | `openidconnect` | OIDC client for SSO integration | 17.6 |
-| `teloxide` or `frankenstein` | Telegram Bot API client | 9.12.8 |
+| `teloxide` or `frankenstein` | Telegram Bot API client | 9.12.8 (deferred native chat runtime) |
 | `regex` | Regex matching in note patch and query predicates | 9.18.2, 9.18.3 |
 | `rquickjs` | QuickJS JS engine bindings (sandboxed runtime) | 9.18.5 (also 9.8.8) |
 | `reqwest` | HTTP client for web search/fetch | 9.18.6 |
