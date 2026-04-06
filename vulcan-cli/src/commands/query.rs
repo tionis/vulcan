@@ -65,6 +65,7 @@ pub(crate) fn handle_query_command(
     format: crate::QueryFormatArg,
     glob: Option<&str>,
     explain: bool,
+    exit_code: bool,
     export: &crate::ExportArgs,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
@@ -106,9 +107,13 @@ pub(crate) fn handle_query_command(
             explain,
             stdout_is_tty,
             use_color: use_stdout_color,
+            no_header: cli.no_header,
             export: export.as_ref(),
         },
     )?;
+    if exit_code && report.notes.is_empty() {
+        return Err(CliError::no_results());
+    }
     Ok(())
 }
 
@@ -150,6 +155,7 @@ pub(crate) fn handle_ls_command(
             explain: false,
             stdout_is_tty,
             use_color: use_stdout_color,
+            no_header: cli.no_header,
             export: export.as_ref(),
         },
     )?;
@@ -166,7 +172,7 @@ pub(crate) fn handle_update_command(
     no_commit: bool,
 ) -> Result<(), CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit);
+    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
     let report = bulk_set_property(paths, filters, key, Some(value), dry_run)
         .map_err(CliError::operation)?;
     if !dry_run {
@@ -190,7 +196,7 @@ pub(crate) fn handle_unset_command(
     no_commit: bool,
 ) -> Result<(), CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit);
+    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
     let report =
         bulk_set_property(paths, filters, key, None, dry_run).map_err(CliError::operation)?;
     if !dry_run {
@@ -250,6 +256,7 @@ pub(crate) fn handle_search_command(
     raw_query: bool,
     fuzzy: bool,
     explain: bool,
+    exit_code: bool,
     export: &crate::ExportArgs,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
@@ -298,5 +305,8 @@ pub(crate) fn handle_search_command(
         use_stdout_color,
         export.as_ref(),
     )?;
+    if exit_code && report.hits.is_empty() {
+        return Err(CliError::no_results());
+    }
     Ok(())
 }

@@ -20,9 +20,10 @@ pub use cli::{
     GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg,
     NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryFormatArg,
     RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
-    SuggestCommand, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    SearchBackendArg, SuggestCommand, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand,
+    WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -136,6 +137,15 @@ impl CliError {
             exit_code: 2,
             code: "issues_detected",
             message: message.into(),
+        }
+    }
+
+    /// Exit code 2, no message — used by `--exit-code` when query/search returns zero results.
+    pub(crate) fn no_results() -> Self {
+        Self {
+            exit_code: 2,
+            code: "no_results",
+            message: String::new(),
         }
     }
 
@@ -1671,9 +1681,10 @@ fn run_incremental_scan(
     paths: &VaultPaths,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<ScanSummary, CliError> {
     let mut progress =
-        (output == OutputFormat::Human).then(|| ScanProgressReporter::new(use_stderr_color));
+        (output == OutputFormat::Human && !quiet).then(|| ScanProgressReporter::new(use_stderr_color));
     scan_vault_with_progress(paths, ScanMode::Incremental, |event| {
         if let Some(progress) = progress.as_mut() {
             progress.record(&event);
@@ -1775,15 +1786,17 @@ fn maybe_auto_refresh_command_cache(
     match refresh_mode_for_target(paths, cli, RefreshTarget::Command) {
         AutoScanMode::Off => Ok(()),
         AutoScanMode::Blocking | AutoScanMode::Background => {
-            run_incremental_scan(paths, cli.output, use_stderr_color)?;
+            run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
             Ok(())
         }
     }
 }
 
-fn warn_auto_commit_if_needed(policy: &AutoCommitPolicy) {
-    if let Some(message) = policy.warning() {
-        eprintln!("warning: {message}");
+fn warn_auto_commit_if_needed(policy: &AutoCommitPolicy, quiet: bool) {
+    if !quiet {
+        if let Some(message) = policy.warning() {
+            eprintln!("warning: {message}");
+        }
     }
 }
 
@@ -1828,7 +1841,7 @@ fn resolve_edit_path(
     }
 
     if !paths.cache_db().exists() {
-        run_incremental_scan(paths, cli.output, use_stderr_color)?;
+        run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
     }
 
     let interactive = interactive_note_selection_allowed(cli, stdout_is_tty);
@@ -1864,7 +1877,7 @@ fn run_edit_command(
     }
 
     open_in_editor(&absolute_path).map_err(CliError::operation)?;
-    run_incremental_scan(paths, cli.output, use_stderr_color)?;
+    run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
 
     Ok(EditReport {
         path: relative_path,
@@ -2077,34 +2090,263 @@ impl SearchBackend for KagiSearchBackend {
     }
 }
 
+struct ExaSearchBackend {
+    client: Client,
+    base_url: String,
+    api_key: String,
+}
+
+impl SearchBackend for ExaSearchBackend {
+    fn name(&self) -> &'static str {
+        "exa"
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
+        let body = serde_json::json!({
+            "query": query,
+            "numResults": limit.max(1),
+            "type": "neural",
+            "useAutoprompt": true,
+            "contents": { "text": { "maxCharacters": 500 } }
+        });
+        let response = self
+            .client
+            .post(&self.base_url)
+            .header("x-api-key", &self.api_key)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&body)
+            .send()
+            .map_err(CliError::operation)?;
+        if !response.status().is_success() {
+            return Err(CliError::operation(format!(
+                "Exa search failed with status {}",
+                response.status()
+            )));
+        }
+        let payload = response.json::<Value>().map_err(CliError::operation)?;
+        // Exa returns {"results": [{title, url, text, ...}]}
+        let results = payload
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or_else(|| CliError::operation("unexpected Exa response shape"))?;
+        Ok(results
+            .iter()
+            .filter_map(|item| {
+                let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+                let url = item.get("url").and_then(Value::as_str)?;
+                let snippet = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| item.get("snippet").and_then(Value::as_str))
+                    .unwrap_or_default();
+                Some(WebSearchResult {
+                    title: title.to_string(),
+                    url: url.to_string(),
+                    snippet: snippet.to_string(),
+                })
+            })
+            .collect())
+    }
+}
+
+struct TavilySearchBackend {
+    client: Client,
+    base_url: String,
+    api_key: String,
+}
+
+impl SearchBackend for TavilySearchBackend {
+    fn name(&self) -> &'static str {
+        "tavily"
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
+        let body = serde_json::json!({
+            "api_key": self.api_key,
+            "query": query,
+            "max_results": limit.max(1),
+            "search_depth": "basic"
+        });
+        let response = self
+            .client
+            .post(&self.base_url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&body)
+            .send()
+            .map_err(CliError::operation)?;
+        if !response.status().is_success() {
+            return Err(CliError::operation(format!(
+                "Tavily search failed with status {}",
+                response.status()
+            )));
+        }
+        let payload = response.json::<Value>().map_err(CliError::operation)?;
+        // Tavily returns {"results": [{title, url, content, ...}]}
+        let results = payload
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or_else(|| CliError::operation("unexpected Tavily response shape"))?;
+        Ok(results
+            .iter()
+            .filter_map(|item| {
+                let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+                let url = item.get("url").and_then(Value::as_str)?;
+                let snippet = item
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                Some(WebSearchResult {
+                    title: title.to_string(),
+                    url: url.to_string(),
+                    snippet: snippet.to_string(),
+                })
+            })
+            .collect())
+    }
+}
+
+struct BraveSearchBackend {
+    client: Client,
+    base_url: String,
+    api_key: String,
+}
+
+impl SearchBackend for BraveSearchBackend {
+    fn name(&self) -> &'static str {
+        "brave"
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
+        let count = limit.max(1).min(20).to_string();
+        let response = self
+            .client
+            .get(&self.base_url)
+            .header("Accept", "application/json")
+            .header("Accept-Encoding", "gzip")
+            .header("X-Subscription-Token", &self.api_key)
+            .query(&[("q", query), ("count", count.as_str())])
+            .send()
+            .map_err(CliError::operation)?;
+        if !response.status().is_success() {
+            return Err(CliError::operation(format!(
+                "Brave search failed with status {}",
+                response.status()
+            )));
+        }
+        let payload = response.json::<Value>().map_err(CliError::operation)?;
+        // Brave returns {"web": {"results": [{title, url, description, ...}]}}
+        let results = payload
+            .get("web")
+            .and_then(|web| web.get("results"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| CliError::operation("unexpected Brave response shape"))?;
+        Ok(results
+            .iter()
+            .filter_map(|item| {
+                let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+                let url = item.get("url").and_then(Value::as_str)?;
+                let snippet = item
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                Some(WebSearchResult {
+                    title: title.to_string(),
+                    url: url.to_string(),
+                    snippet: snippet.to_string(),
+                })
+            })
+            .collect())
+    }
+}
+
+/// Candidates for auto-detection in priority order.
+const AUTO_DETECT_ORDER: &[(SearchBackendArg, &str, &str)] = &[
+    (SearchBackendArg::Kagi, "KAGI_API_KEY", "https://kagi.com/api/v0/search"),
+    (SearchBackendArg::Exa, "EXA_API_KEY", "https://api.exa.ai/search"),
+    (SearchBackendArg::Tavily, "TAVILY_API_KEY", "https://api.tavily.com/search"),
+    (SearchBackendArg::Brave, "BRAVE_API_KEY", "https://api.search.brave.com/res/v1/web/search"),
+];
+
+fn build_search_backend(
+    client: Client,
+    kind: SearchBackendArg,
+    api_key_env: &str,
+    base_url: &str,
+) -> Result<Box<dyn SearchBackend>, CliError> {
+    let api_key = std::env::var(api_key_env).map_err(|_| {
+        CliError::operation(format!(
+            "missing web search API key env var {api_key_env}"
+        ))
+    })?;
+    let base_url = base_url.to_string();
+    Ok(match kind {
+        SearchBackendArg::Kagi | SearchBackendArg::Auto => {
+            Box::new(KagiSearchBackend { client, base_url, api_key })
+        }
+        SearchBackendArg::Exa => Box::new(ExaSearchBackend { client, base_url, api_key }),
+        SearchBackendArg::Tavily => Box::new(TavilySearchBackend { client, base_url, api_key }),
+        SearchBackendArg::Brave => Box::new(BraveSearchBackend { client, base_url, api_key }),
+    })
+}
+
 fn run_web_search_command(
     paths: &VaultPaths,
     query: &str,
-    backend_override: Option<&str>,
+    backend_override: Option<SearchBackendArg>,
     limit: usize,
 ) -> Result<WebSearchReport, CliError> {
+    use vulcan_core::SearchBackendKind;
+
     let config = load_vault_config(paths).config.web;
-    let backend_name = backend_override.unwrap_or(config.search.backend.as_str());
     let client = build_web_client(&config.user_agent)?;
-    let backend: Box<dyn SearchBackend> = match backend_name {
-        "kagi" => {
-            let api_key = std::env::var(&config.search.api_key_env).map_err(|_| {
-                CliError::operation(format!(
-                    "missing web search API key env var {}",
-                    config.search.api_key_env
-                ))
-            })?;
-            Box::new(KagiSearchBackend {
-                client,
-                base_url: config.search.base_url,
-                api_key,
-            })
+
+    // Determine effective backend kind from override → config → auto-detect.
+    let effective_kind = backend_override.unwrap_or_else(|| match config.search.backend {
+        SearchBackendKind::Auto => SearchBackendArg::Auto,
+        SearchBackendKind::Kagi => SearchBackendArg::Kagi,
+        SearchBackendKind::Exa => SearchBackendArg::Exa,
+        SearchBackendKind::Tavily => SearchBackendArg::Tavily,
+        SearchBackendKind::Brave => SearchBackendArg::Brave,
+    });
+
+    let backend: Box<dyn SearchBackend> = if effective_kind == SearchBackendArg::Auto {
+        // Auto-detect: use first backend whose API key env var is set.
+        let mut found: Option<Box<dyn SearchBackend>> = None;
+        for &(kind, env_var, base_url) in AUTO_DETECT_ORDER {
+            if std::env::var(env_var).is_ok() {
+                found = Some(build_search_backend(client, kind, env_var, base_url)?);
+                break;
+            }
         }
-        other => {
-            return Err(CliError::operation(format!(
-                "unsupported web search backend: {other}"
-            )));
-        }
+        found.ok_or_else(|| {
+            CliError::operation(
+                "no web search API key found; set one of: KAGI_API_KEY, EXA_API_KEY, TAVILY_API_KEY, BRAVE_API_KEY",
+            )
+        })?
+    } else {
+        let api_key_env = config
+            .search
+            .api_key_env
+            .as_deref()
+            .unwrap_or_else(|| match effective_kind {
+                SearchBackendArg::Kagi => "KAGI_API_KEY",
+                SearchBackendArg::Exa => "EXA_API_KEY",
+                SearchBackendArg::Tavily => "TAVILY_API_KEY",
+                SearchBackendArg::Brave => "BRAVE_API_KEY",
+                SearchBackendArg::Auto => "KAGI_API_KEY",
+            });
+        let base_url = config
+            .search
+            .base_url
+            .as_deref()
+            .unwrap_or_else(|| match effective_kind {
+                SearchBackendArg::Kagi => "https://kagi.com/api/v0/search",
+                SearchBackendArg::Exa => "https://api.exa.ai/search",
+                SearchBackendArg::Tavily => "https://api.tavily.com/search",
+                SearchBackendArg::Brave => "https://api.search.brave.com/res/v1/web/search",
+                SearchBackendArg::Auto => "https://kagi.com/api/v0/search",
+            });
+        build_search_backend(client, effective_kind, api_key_env, base_url)?
     };
 
     let results = backend.search(query, limit)?;
@@ -3864,6 +4106,7 @@ fn apply_note_frontmatter_mutation<F>(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
     mutate: F,
 ) -> Result<TaskMutationReport, CliError>
 where
@@ -3888,7 +4131,7 @@ where
             fs::create_dir_all(parent).map_err(CliError::operation)?;
         }
         fs::write(&absolute_path, rendered).map_err(CliError::operation)?;
-        run_incremental_scan(paths, output, use_stderr_color)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
 
     if loaded.created {
@@ -4150,6 +4393,7 @@ fn process_due_tasknote_pomodoros(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<Vec<String>, CliError> {
     let now_ms = current_utc_timestamp_ms();
     let config = load_vault_config(paths).config;
@@ -4177,6 +4421,7 @@ fn process_due_tasknote_pomodoros(
                 dry_run,
                 output,
                 use_stderr_color,
+                quiet,
                 |frontmatter, loaded| {
                     let mut changes = Vec::new();
                     if let Some(change) = update_pomodoro_session_sequence(
@@ -4230,6 +4475,7 @@ fn process_due_tasknote_pomodoros(
                 dry_run,
                 output,
                 use_stderr_color,
+                quiet,
                 |frontmatter, _loaded| {
                     let mut changes = Vec::new();
                     if let Some(change) = update_pomodoro_session_sequence(
@@ -5297,6 +5543,7 @@ fn run_tasks_add_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskAddReport, CliError> {
     let config = load_vault_config(paths).config;
     let reference_ms = tasknote_reference_ms();
@@ -5555,7 +5802,7 @@ fn run_tasks_add_command(
             fs::create_dir_all(parent).map_err(CliError::operation)?;
         }
         fs::write(&absolute_path, rendered).map_err(CliError::operation)?;
-        run_incremental_scan(paths, output, use_stderr_color)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
 
     Ok(TaskAddReport {
@@ -5600,6 +5847,7 @@ fn run_tasks_create_command(
     options: TasksCreateOptions<'_>,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskCreateReport, CliError> {
     let TasksCreateOptions {
         text,
@@ -5633,7 +5881,7 @@ fn run_tasks_create_command(
             fs::create_dir_all(parent).map_err(CliError::operation)?;
         }
         fs::write(&absolute_path, insertion.updated).map_err(CliError::operation)?;
-        run_incremental_scan(paths, output, use_stderr_color)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
 
     Ok(TaskCreateReport {
@@ -5664,6 +5912,7 @@ fn run_tasks_reschedule_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskMutationReport, CliError> {
     if let Ok(loaded) = load_tasknote_note(paths, task) {
         let due_value = resolve_tasknote_date_input(&loaded.config, due, false)?;
@@ -5674,6 +5923,7 @@ fn run_tasks_reschedule_command(
             dry_run,
             output,
             use_stderr_color,
+            quiet,
             |frontmatter, loaded| {
                 let mut changes = Vec::new();
                 let due_key = &loaded.config.tasknotes.field_mapping.due;
@@ -5702,7 +5952,7 @@ fn run_tasks_reschedule_command(
         );
     }
 
-    run_inline_task_reschedule_command(paths, task, due, dry_run, output, use_stderr_color)
+    run_inline_task_reschedule_command(paths, task, due, dry_run, output, use_stderr_color, quiet)
 }
 
 fn run_tasks_convert_command(
@@ -5712,6 +5962,7 @@ fn run_tasks_convert_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskConvertReport, CliError> {
     if let Some(line_number) = line {
         return run_tasks_convert_line_command(
@@ -5721,6 +5972,7 @@ fn run_tasks_convert_command(
             dry_run,
             output,
             use_stderr_color,
+            quiet,
         );
     }
 
@@ -5765,7 +6017,7 @@ fn run_tasks_convert_command(
     if !dry_run && !task_changes.is_empty() {
         fs::write(paths.vault_root().join(&relative_path), rendered)
             .map_err(CliError::operation)?;
-        run_incremental_scan(paths, output, use_stderr_color)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
 
     Ok(TaskConvertReport {
@@ -5792,6 +6044,7 @@ fn run_tasks_convert_line_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskConvertReport, CliError> {
     let config = load_vault_config(paths).config;
     let (source_path, source) = read_existing_note_source(paths, file)?;
@@ -5827,7 +6080,7 @@ fn run_tasks_convert_line_command(
         fs::write(&task_path, rendered_task).map_err(CliError::operation)?;
         fs::write(paths.vault_root().join(&source_path), updated_source)
             .map_err(CliError::operation)?;
-        run_incremental_scan(paths, output, use_stderr_color)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
 
     Ok(TaskConvertReport {
@@ -5854,6 +6107,7 @@ fn apply_tasknote_mutation<F>(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
     mutate: F,
 ) -> Result<TaskMutationReport, CliError>
 where
@@ -5867,6 +6121,7 @@ where
         dry_run,
         output,
         use_stderr_color,
+        quiet,
         mutate,
     )
 }
@@ -5878,6 +6133,7 @@ fn apply_loaded_tasknote_mutation<F>(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
     mutate: F,
 ) -> Result<TaskMutationReport, CliError>
 where
@@ -5922,7 +6178,7 @@ where
             fs::rename(&source_path, &destination_path).map_err(CliError::operation)?;
         }
 
-        run_incremental_scan(paths, output, use_stderr_color)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
 
     if changes.is_empty() && moved_to.is_some() {
@@ -5990,6 +6246,7 @@ fn run_tasks_track_start_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskTrackReport, CliError> {
     let loaded = load_tasknote_note(paths, task)?;
     let now_ms = current_utc_timestamp_ms();
@@ -6014,6 +6271,7 @@ fn run_tasks_track_start_command(
         dry_run,
         output,
         use_stderr_color,
+        quiet,
         |frontmatter, loaded| {
             let key = &loaded.config.tasknotes.field_mapping.time_entries;
             let yaml_key = YamlValue::String(key.clone());
@@ -6113,6 +6371,7 @@ fn run_tasks_track_stop_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskTrackReport, CliError> {
     let now_ms = current_utc_timestamp_ms();
     let record = resolve_active_tasknote_record(paths, task, now_ms)?;
@@ -6128,6 +6387,7 @@ fn run_tasks_track_stop_command(
         dry_run,
         output,
         use_stderr_color,
+        quiet,
         |frontmatter, loaded| {
             let key = &loaded.config.tasknotes.field_mapping.time_entries;
             let yaml_key = YamlValue::String(key.clone());
@@ -6372,11 +6632,12 @@ fn run_tasks_pomodoro_start_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskPomodoroReport, CliError> {
     let mut changed_paths = if dry_run {
         Vec::new()
     } else {
-        process_due_tasknote_pomodoros(paths, false, output, use_stderr_color)?
+        process_due_tasknote_pomodoros(paths, false, output, use_stderr_color, quiet)?
     };
     if resolve_active_task_pomodoro_session(paths, None)?.is_some() {
         return Err(CliError::operation(
@@ -6416,6 +6677,7 @@ fn run_tasks_pomodoro_start_command(
             dry_run,
             output,
             use_stderr_color,
+            quiet,
             |frontmatter, loaded| {
                 let mut changes = Vec::new();
                 if let Some(change) = update_pomodoro_session_sequence(
@@ -6450,6 +6712,7 @@ fn run_tasks_pomodoro_start_command(
             dry_run,
             output,
             use_stderr_color,
+            quiet,
             |frontmatter, _loaded| {
                 let mut changes = Vec::new();
                 if let Some(change) = update_pomodoro_session_sequence(
@@ -6497,11 +6760,12 @@ fn run_tasks_pomodoro_stop_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskPomodoroReport, CliError> {
     let mut changed_paths = if dry_run {
         Vec::new()
     } else {
-        process_due_tasknote_pomodoros(paths, false, output, use_stderr_color)?
+        process_due_tasknote_pomodoros(paths, false, output, use_stderr_color, quiet)?
     };
     let active = resolve_active_task_pomodoro_session(paths, task)?
         .ok_or_else(|| CliError::operation("no active TaskNotes pomodoro session"))?;
@@ -6528,6 +6792,7 @@ fn run_tasks_pomodoro_stop_command(
             dry_run,
             output,
             use_stderr_color,
+            quiet,
             |frontmatter, loaded| {
                 let mut changes = Vec::new();
                 if let Some(change) = update_pomodoro_session_sequence(
@@ -6574,6 +6839,7 @@ fn run_tasks_pomodoro_stop_command(
             dry_run,
             output,
             use_stderr_color,
+            quiet,
             |frontmatter, _loaded| {
                 let mut changes = Vec::new();
                 if let Some(change) = update_pomodoro_session_sequence(
@@ -6629,8 +6895,9 @@ fn run_tasks_pomodoro_status_command(
     paths: &VaultPaths,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskPomodoroStatusReport, CliError> {
-    process_due_tasknote_pomodoros(paths, false, output, use_stderr_color)?;
+    process_due_tasknote_pomodoros(paths, false, output, use_stderr_color, quiet)?;
     let config = load_vault_config(paths).config;
     let sessions = collect_tasknotes_pomodoro_sessions(paths)?;
     let completed_work_sessions = completed_work_task_pomodoros(&sessions);
@@ -6755,11 +7022,12 @@ fn run_tasks_edit_command(
     task: &str,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<EditReport, CliError> {
     let loaded = load_tasknote_note(paths, task)?;
     let absolute_path = paths.vault_root().join(&loaded.path);
     open_in_editor(&absolute_path).map_err(CliError::operation)?;
-    run_incremental_scan(paths, output, use_stderr_color)?;
+    run_incremental_scan(paths, output, use_stderr_color, quiet)?;
 
     Ok(EditReport {
         path: loaded.path,
@@ -6776,6 +7044,7 @@ fn run_tasks_set_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskMutationReport, CliError> {
     apply_tasknote_mutation(
         paths,
@@ -6784,6 +7053,7 @@ fn run_tasks_set_command(
         dry_run,
         output,
         use_stderr_color,
+        quiet,
         |frontmatter, loaded| {
             let key = tasknote_frontmatter_key(&loaded.config, property);
             let parsed = parse_tasknote_cli_value(value);
@@ -6835,6 +7105,7 @@ fn run_tasks_complete_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskMutationReport, CliError> {
     if let Ok(loaded) = load_tasknote_note(paths, task) {
         return apply_loaded_tasknote_mutation(
@@ -6844,6 +7115,7 @@ fn run_tasks_complete_command(
             dry_run,
             output,
             use_stderr_color,
+            quiet,
             |frontmatter, loaded| {
                 let mut changes = Vec::new();
                 if loaded.indexed.recurrence.is_some() {
@@ -6940,7 +7212,7 @@ fn run_tasks_complete_command(
         );
     }
 
-    run_inline_task_complete_command(paths, task, date, dry_run, output, use_stderr_color)
+    run_inline_task_complete_command(paths, task, date, dry_run, output, use_stderr_color, quiet)
 }
 
 fn run_inline_task_reschedule_command(
@@ -6950,6 +7222,7 @@ fn run_inline_task_reschedule_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskMutationReport, CliError> {
     let resolved = resolve_inline_task(paths, task)?;
     let config = load_vault_config(paths).config;
@@ -6967,7 +7240,7 @@ fn run_inline_task_reschedule_command(
 
     if !dry_run && !changes.is_empty() {
         fs::write(&absolute_path, rendered).map_err(CliError::operation)?;
-        run_incremental_scan(paths, output, use_stderr_color)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
 
     Ok(TaskMutationReport {
@@ -6988,6 +7261,7 @@ fn run_inline_task_complete_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskMutationReport, CliError> {
     let resolved = resolve_inline_task(paths, task)?;
     let config = load_vault_config(paths).config;
@@ -7010,7 +7284,7 @@ fn run_inline_task_complete_command(
 
     if !dry_run && !changes.is_empty() {
         fs::write(&absolute_path, rendered).map_err(CliError::operation)?;
-        run_incremental_scan(paths, output, use_stderr_color)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
 
     Ok(TaskMutationReport {
@@ -7199,6 +7473,7 @@ pub(crate) fn process_due_tasknote_auto_archives(
     exclude_task: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<Vec<String>, CliError> {
     let config = load_vault_config(paths).config;
     let now_ms = current_utc_timestamp_ms();
@@ -7222,6 +7497,7 @@ pub(crate) fn process_due_tasknote_auto_archives(
             false,
             output,
             use_stderr_color,
+            quiet,
             prepare_tasknote_archive_plan,
         )?;
         changed_paths.extend(report.changed_paths);
@@ -7238,6 +7514,7 @@ fn run_tasks_archive_command(
     dry_run: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<TaskMutationReport, CliError> {
     apply_tasknote_mutation(
         paths,
@@ -7246,6 +7523,7 @@ fn run_tasks_archive_command(
         dry_run,
         output,
         use_stderr_color,
+        quiet,
         prepare_tasknote_archive_plan,
     )
 }
@@ -8015,7 +8293,7 @@ fn run_inbox_command(
     no_commit: bool,
 ) -> Result<InboxReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit);
+    warn_auto_commit_if_needed(&auto_commit, false);
     let inbox_config = vulcan_core::load_vault_config(paths).config.inbox;
     let relative_path = normalize_relative_input_path(
         &inbox_config.path,
@@ -8046,7 +8324,7 @@ fn run_inbox_command(
         append_at_end(&existing, &entry)
     };
     fs::write(&absolute_path, updated).map_err(CliError::operation)?;
-    run_incremental_scan(paths, OutputFormat::Human, false)?;
+    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     auto_commit
         .commit(paths, "inbox", std::slice::from_ref(&relative_path))
         .map_err(CliError::operation)?;
@@ -8129,9 +8407,9 @@ fn run_template_command(
         opened_editor = true;
     }
 
-    run_incremental_scan(paths, OutputFormat::Human, false)?;
+    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit);
+    warn_auto_commit_if_needed(&auto_commit, false);
     let mut changed_paths = vec![rendered.target_path.clone()];
     changed_paths.extend(rendered.changed_paths.clone());
     changed_paths.sort();
@@ -8206,9 +8484,9 @@ fn run_template_insert_command(
     let updated = apply_template_insertion_mode(&prepared, mode).map_err(CliError::operation)?;
     fs::write(&final_target_absolute, updated).map_err(CliError::operation)?;
 
-    run_incremental_scan(paths, OutputFormat::Human, false)?;
+    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit);
+    warn_auto_commit_if_needed(&auto_commit, false);
     let mut changed_paths = vec![rendered_template.target_path.clone()];
     changed_paths.extend(rendered_template.changed_paths.clone());
     changed_paths.sort();
@@ -8458,7 +8736,7 @@ fn run_periodic_open_command(
     allow_editor: bool,
 ) -> Result<PeriodicOpenReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit);
+    warn_auto_commit_if_needed(&auto_commit, false);
 
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
@@ -8472,7 +8750,7 @@ fn run_periodic_open_command(
     }
 
     if created || opened_editor {
-        run_incremental_scan(paths, OutputFormat::Human, false)?;
+        run_incremental_scan(paths, OutputFormat::Human, false, false)?;
         commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path)?;
     }
 
@@ -8653,7 +8931,7 @@ fn run_daily_append_command(
     no_commit: bool,
 ) -> Result<DailyAppendReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit);
+    warn_auto_commit_if_needed(&auto_commit, false);
 
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, "daily", date, true)?;
@@ -8667,7 +8945,7 @@ fn run_daily_append_command(
     );
     fs::write(&absolute_path, updated).map_err(CliError::operation)?;
 
-    run_incremental_scan(paths, OutputFormat::Human, false)?;
+    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     commit_periodic_changes_if_needed(&auto_commit, paths, "daily", &target.path)?;
 
     Ok(DailyAppendReport {
@@ -9922,6 +10200,7 @@ fn run_note_set_command(
     check: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<NoteSetReport, CliError> {
     let (relative_path, existing) = read_existing_note_source(paths, note)?;
     let replacement = note_set_input_text(file)?;
@@ -9932,7 +10211,7 @@ fn run_note_set_command(
     };
     fs::write(paths.vault_root().join(&relative_path), &updated).map_err(CliError::operation)?;
     let diagnostics = maybe_check_note(paths, &relative_path, &updated, check)?;
-    run_incremental_scan(paths, output, use_stderr_color)?;
+    run_incremental_scan(paths, output, use_stderr_color, quiet)?;
 
     Ok(NoteSetReport {
         path: relative_path,
@@ -9950,6 +10229,7 @@ fn run_note_create_command(
     check: bool,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<NoteCreateReport, CliError> {
     let requested_path = normalize_note_path(path)?;
 
@@ -10010,7 +10290,7 @@ fn run_note_create_command(
     }
     fs::write(&absolute_path, &final_content).map_err(CliError::operation)?;
     let diagnostics = maybe_check_note(paths, &final_path, &final_content, check)?;
-    run_incremental_scan(paths, output, use_stderr_color)?;
+    run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     changed_paths.push(final_path.clone());
     changed_paths.sort();
     changed_paths.dedup();
@@ -10081,6 +10361,7 @@ fn run_note_append_command(
     options: NoteAppendOptions<'_>,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<NoteAppendReport, CliError> {
     let NoteAppendOptions {
         note,
@@ -10144,7 +10425,7 @@ fn run_note_append_command(
     fs::write(paths.vault_root().join(&relative_path), &insertion.updated)
         .map_err(CliError::operation)?;
     let diagnostics = maybe_check_note(paths, &relative_path, &insertion.updated, check)?;
-    run_incremental_scan(paths, output, use_stderr_color)?;
+    run_incremental_scan(paths, output, use_stderr_color, quiet)?;
 
     Ok(NoteAppendReport {
         path: relative_path,
@@ -10165,6 +10446,7 @@ fn run_note_patch_command(
     options: NotePatchOptions<'_>,
     output: OutputFormat,
     use_stderr_color: bool,
+    quiet: bool,
 ) -> Result<NotePatchReport, CliError> {
     let NotePatchOptions {
         note,
@@ -10183,7 +10465,7 @@ fn run_note_patch_command(
             &application.updated_content,
         )
         .map_err(CliError::operation)?;
-        run_incremental_scan(paths, output, use_stderr_color)?;
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
     let diagnostics = maybe_check_note(paths, &relative_path, &application.updated_content, check)?;
 
@@ -11619,7 +11901,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = run_edit_command(
                 &paths,
                 cli,
@@ -11747,7 +12029,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let summary = move_note(&paths, source, dest, dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
@@ -11764,7 +12046,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = rename_property(&paths, old, new, dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
@@ -11781,7 +12063,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = merge_tags(&paths, source, dest, dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
@@ -11799,7 +12081,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let note = resolve_note_argument(
                 &paths,
                 Some(note.as_str()),
@@ -11824,7 +12106,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let note = resolve_note_argument(
                 &paths,
                 Some(note.as_str()),
@@ -11849,7 +12131,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let note = resolve_note_argument(
                 &paths,
                 Some(note.as_str()),
@@ -11912,7 +12194,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             if cli.output == OutputFormat::Human && stdout_is_tty {
                 println!(
                     "Watching {} (debounce {}ms)",
@@ -11952,6 +12234,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             format,
             ref glob,
             explain,
+            exit_code,
             ref export,
         } => commands::query::handle_query_command(
             cli,
@@ -11961,6 +12244,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             format,
             glob.as_deref(),
             explain,
+            exit_code,
             export,
             &list_controls,
             stdout_is_tty,
@@ -12049,6 +12333,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             raw_query,
             fuzzy,
             explain,
+            exit_code,
             ref export,
         } => commands::query::handle_search_command(
             cli,
@@ -12066,6 +12351,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             raw_query,
             fuzzy,
             explain,
+            exit_code,
             export,
             &list_controls,
             stdout_is_tty,
@@ -12444,7 +12730,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
                 link_mentions(&paths, note.as_deref(), dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -12462,7 +12748,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = bulk_replace(&paths, filters, find, replace, dry_run)
                 .map_err(CliError::operation)?;
             if !dry_run {
@@ -12526,7 +12812,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         ),
         Command::Scan { full, no_commit } => {
             let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let mut progress = (cli.output == OutputFormat::Human)
                 .then(|| ScanProgressReporter::new(use_stderr_color));
             let summary = scan_vault_with_progress(
@@ -13051,6 +13337,7 @@ struct QueryReportRenderOptions<'a> {
     explain: bool,
     stdout_is_tty: bool,
     use_color: bool,
+    no_header: bool,
     export: Option<&'a ResolvedExport>,
 }
 
@@ -13068,6 +13355,37 @@ fn print_query_report(
     });
     let visible_notes = &filtered_notes[start..end];
     let palette = AnsiPalette::new(options.use_color);
+
+    // TSV/CSV: write directly to stdout regardless of --output mode.
+    if matches!(options.format, QueryFormatArg::Tsv | QueryFormatArg::Csv) {
+        let rows = query_report_rows(report, visible_notes);
+        let fields = list_controls.fields.as_deref();
+        let headers = csv_headers(&rows, fields);
+        let delimiter = if matches!(options.format, QueryFormatArg::Tsv) {
+            b'\t'
+        } else {
+            b','
+        };
+        let mut writer = csv::WriterBuilder::new()
+            .delimiter(delimiter)
+            .from_writer(io::stdout().lock());
+        if !options.no_header {
+            writer
+                .write_record(headers.iter().map(String::as_str))
+                .map_err(CliError::operation)?;
+        }
+        for row in &rows {
+            let selected = select_fields(row.clone(), fields);
+            let record = headers
+                .iter()
+                .map(|h| csv_cell_for_value(selected.get(h)))
+                .collect::<Vec<_>>();
+            writer.write_record(record).map_err(CliError::operation)?;
+        }
+        writer.flush().map_err(CliError::operation)?;
+        export_rows(&rows, fields, options.export)?;
+        return Ok(());
+    }
 
     match output {
         OutputFormat::Human => {
@@ -13104,6 +13422,9 @@ fn print_query_report(
                     return Ok(());
                 }
                 QueryFormatArg::Table => {}
+                QueryFormatArg::Tsv | QueryFormatArg::Csv => {
+                    unreachable!("tsv/csv handled above")
+                }
             }
             let rows = query_report_rows(report, visible_notes);
             if visible_notes.is_empty() {
@@ -13137,6 +13458,9 @@ fn print_query_report(
                 QueryFormatArg::Paths => query_path_rows(visible_notes),
                 QueryFormatArg::Detail => query_detail_rows(paths, report, visible_notes),
                 QueryFormatArg::Count => unreachable!("count handled above"),
+                QueryFormatArg::Tsv | QueryFormatArg::Csv => {
+                    unreachable!("tsv/csv handled above")
+                }
             };
             if options.explain {
                 let payload = serde_json::json!({
@@ -14258,7 +14582,7 @@ fn run_config_import(
             .map_err(CliError::operation)?
     } else {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, args.no_commit);
-        warn_auto_commit_if_needed(&auto_commit);
+        warn_auto_commit_if_needed(&auto_commit, false);
         let had_gitignore = paths.gitignore_file().exists();
         let report = importer
             .import(paths, target)
@@ -14302,7 +14626,7 @@ fn run_config_import_batch(
         }
     } else {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, args.no_commit);
-        warn_auto_commit_if_needed(&auto_commit);
+        warn_auto_commit_if_needed(&auto_commit, false);
         let had_gitignore = paths.gitignore_file().exists();
         for importer in importers {
             reports.push(
@@ -17233,26 +17557,123 @@ fn resolve_help_topic(topic: &[String]) -> Result<HelpTopicReport, CliError> {
 }
 
 fn help_overview() -> HelpTopicReport {
-    let root = cli_command_tree();
-    let command_topics = collect_help_command_topics(&root);
-    let command_names = command_topics
-        .iter()
-        .map(|topic| topic.name.clone())
-        .collect::<Vec<_>>();
     let concept_names = builtin_help_topics()
         .into_iter()
         .map(|topic| topic.name)
         .collect::<Vec<_>>();
+
+    // Grouped command reference. Each tuple is (group_header, [(command, description)]).
+    let groups: &[(&str, &[(&str, &str)])] = &[
+        ("Notes", &[
+            ("note get",    "Open a note, resolve its path, or print frontmatter"),
+            ("note set",    "Replace a note's content from stdin or a file"),
+            ("note create", "Create a new note with optional template and frontmatter"),
+            ("note append", "Append text to a note or under a heading"),
+            ("note patch",  "Find-and-replace inside a note with match-count guard"),
+            ("note open",   "Open a note in $EDITOR"),
+            ("note move",   "Move a note and rewrite all inbound links"),
+            ("note links",  "List outgoing links for a note"),
+            ("note backlinks", "List notes that link to a note"),
+            ("note diff",   "Show a note's changes since git HEAD or a checkpoint"),
+            ("inbox",       "Append a quick capture entry to the inbox note"),
+        ]),
+        ("Query & Search", &[
+            ("query",    "Run a DQL query — `FROM notes WHERE ...` — and print results"),
+            ("search",   "Full-text and semantic search across the vault"),
+            ("ls",       "List notes filtered by tags, properties, or a path prefix"),
+            ("notes",    "List notes filtered by typed property expressions"),
+            ("backlinks","List notes that link to the given note"),
+            ("links",    "List outgoing links from the given note"),
+            ("changes",  "Report note/link/property changes since a baseline"),
+        ]),
+        ("Refactor", &[
+            ("refactor",         "Vault-wide rename, retag, rewrite, and suggest passes"),
+            ("move",             "Move a note and rewrite inbound links"),
+            ("rename-property",  "Rename a frontmatter property key across notes"),
+        ]),
+        ("Tasks", &[
+            ("tasks",  "Create, list, complete, and track TaskNotes tasks"),
+            ("kanban", "Inspect and move cards on Kanban boards"),
+        ]),
+        ("Daily Notes & Periodic", &[
+            ("daily",    "Open today's daily note; append text, list notes, or export as ICS"),
+            ("periodic", "List, gap-check, and open periodic notes of any cadence"),
+            ("template", "Render and insert Templater-compatible templates"),
+        ]),
+        ("Obsidian Plugin Views", &[
+            ("bases",    "Evaluate and interact with .base files"),
+            ("dataview", "Evaluate Dataview inline fields and blocks"),
+        ]),
+        ("Graph & Analysis", &[
+            ("graph",   "Shortest paths, hub notes, orphans, and vault analytics"),
+            ("suggest", "Surface plain-text mentions that could become links"),
+            ("cluster", "Cluster indexed vectors into topical groups"),
+            ("related", "Recommend semantically related notes"),
+            ("doctor",  "Inspect the vault for broken or suspicious state"),
+        ]),
+        ("Index Maintenance", &[
+            ("index",   "Scan, rebuild, repair, watch, and serve the cache"),
+            ("vectors", "Embed, query, and maintain the vector index"),
+            ("cache",   "Inspect and maintain the SQLite cache"),
+            ("repair",  "Repair derived indexes and cache structures"),
+        ]),
+        ("JavaScript & Web", &[
+            ("run", "Execute JavaScript in the Vulcan runtime sandbox; interactive REPL"),
+            ("web", "Fetch URLs and run web searches via configured backends"),
+        ]),
+        ("Git", &[
+            ("git", "Git status, log, diff, blame, and commit within the vault"),
+        ]),
+        ("Automation & Export", &[
+            ("saved",      "List, show, and run persisted query/report definitions"),
+            ("automation", "Run saved reports, checks, and repairs for CI workflows"),
+            ("batch",      "Run multiple saved reports sequentially"),
+            ("export",     "Write static export artifacts from the cache"),
+            ("checkpoint", "Create and list named cache-state checkpoints"),
+        ]),
+        ("Setup & Configuration", &[
+            ("init",   "Initialize .vulcan/ state for a vault"),
+            ("config", "Import Obsidian plugin settings into .vulcan/config.toml"),
+            ("trust",  "Manage vault trust for startup scripts and plugins"),
+        ]),
+        ("Help & Info", &[
+            ("help",     "Browse integrated docs (this page); `help <topic>` for details"),
+            ("describe", "Machine-readable command schema for LLM and tool harnesses"),
+            ("version",  "Print the Vulcan version"),
+        ]),
+    ];
+
+    let mut body = String::from(
+        "Vulcan is a headless CLI for Obsidian-style markdown vaults. \
+        It indexes your notes into a local SQLite cache and exposes them \
+        through DQL queries, full-text search, refactors, and a JavaScript runtime.\n\n\
+        **Common workflows:**\n\
+        - Query notes: `vulcan query 'FROM notes WHERE status = \"open\"'`\n\
+        - Search full-text: `vulcan search \"meeting notes\"`\n\
+        - Daily note: `vulcan daily`\n\
+        - Create a note: `vulcan note create Projects/new-idea.md`\n\
+        - Run JS REPL: `vulcan run`\n\n\
+        Run `vulcan help <command>` for details on any command.\n\
+        Run `vulcan help --search <keyword>` to search all help topics.\n\
+        Concept guides: ",
+    );
+    body.push_str(&concept_names.join(", "));
+    body.push_str("\n\n---\n");
+
+    for (group, commands) in groups {
+        body.push_str(&format!("\n## {group}\n\n"));
+        for (cmd, desc) in *commands {
+            body.push_str(&format!("- `{cmd}` — {desc}\n"));
+        }
+    }
+
     HelpTopicReport {
         name: "help".to_string(),
         kind: HelpTopicKind::Overview,
         summary: "Integrated documentation for commands and core concepts.".to_string(),
-        body: format!(
-            "Use `vulcan help <topic>` for one topic or `vulcan help --search <keyword>` to search.\n\nCommand topics include paths like `query`, `note get`, `refactor`, and `daily append`.\nConcept topics include: {}.",
-            concept_names.join(", ")
-        ),
+        body,
         options: Vec::new(),
-        subcommands: command_names,
+        subcommands: Vec::new(),
         related: concept_names,
     }
 }
@@ -21265,6 +21686,7 @@ mod tests {
                 raw_query: false,
                 fuzzy: true,
                 explain: true,
+                exit_code: false,
                 export: ExportArgs::default(),
             }
         );
@@ -21725,6 +22147,7 @@ mod tests {
                 format: QueryFormatArg::Paths,
                 glob: Some("Projects/**".to_string()),
                 explain: false,
+                exit_code: false,
                 export: ExportArgs::default(),
             }
         );

@@ -24,6 +24,7 @@ pub(crate) fn handle_tasks_command(
             auto_archive_excluded_task(command),
             cli.output,
             use_stderr_color,
+            cli.quiet,
         )?;
     }
 
@@ -43,7 +44,7 @@ pub(crate) fn handle_tasks_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_tasks_add_command(
                 paths,
                 text,
@@ -59,6 +60,7 @@ pub(crate) fn handle_tasks_command(
                 *dry_run,
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit
@@ -73,8 +75,8 @@ pub(crate) fn handle_tasks_command(
         }
         TasksCommand::Edit { task, no_commit } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
-            let report = crate::run_tasks_edit_command(paths, task, cli.output, use_stderr_color)?;
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let report = crate::run_tasks_edit_command(paths, task, cli.output, use_stderr_color, cli.quiet)?;
             auto_commit
                 .commit(paths, "tasks edit", std::slice::from_ref(&report.path))
                 .map_err(CliError::operation)?;
@@ -89,7 +91,7 @@ pub(crate) fn handle_tasks_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_tasks_set_command(
                 paths,
                 task,
@@ -98,6 +100,7 @@ pub(crate) fn handle_tasks_command(
                 *dry_run,
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit
@@ -113,7 +116,7 @@ pub(crate) fn handle_tasks_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_tasks_complete_command(
                 paths,
                 task,
@@ -121,6 +124,7 @@ pub(crate) fn handle_tasks_command(
                 *dry_run,
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit
@@ -135,13 +139,14 @@ pub(crate) fn handle_tasks_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_tasks_archive_command(
                 paths,
                 task,
                 *dry_run,
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit
@@ -157,7 +162,7 @@ pub(crate) fn handle_tasks_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_tasks_convert_command(
                 paths,
                 file,
@@ -165,6 +170,7 @@ pub(crate) fn handle_tasks_command(
                 *dry_run,
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit
@@ -182,7 +188,7 @@ pub(crate) fn handle_tasks_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_tasks_create_command(
                 paths,
                 crate::TasksCreateOptions {
@@ -194,6 +200,7 @@ pub(crate) fn handle_tasks_command(
                 },
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit
@@ -209,7 +216,7 @@ pub(crate) fn handle_tasks_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_tasks_reschedule_command(
                 paths,
                 task,
@@ -217,6 +224,7 @@ pub(crate) fn handle_tasks_command(
                 *dry_run,
                 cli.output,
                 use_stderr_color,
+                cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit
@@ -284,7 +292,7 @@ pub(crate) fn handle_tasks_command(
                 no_commit,
             } => {
                 let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
+                warn_auto_commit_if_needed(&auto_commit, cli.quiet);
                 let report = crate::run_tasks_track_start_command(
                     paths,
                     task,
@@ -292,6 +300,7 @@ pub(crate) fn handle_tasks_command(
                     *dry_run,
                     cli.output,
                     use_stderr_color,
+                    cli.quiet,
                 )?;
                 if !*dry_run {
                     auto_commit
@@ -306,13 +315,14 @@ pub(crate) fn handle_tasks_command(
                 no_commit,
             } => {
                 let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
+                warn_auto_commit_if_needed(&auto_commit, cli.quiet);
                 let report = crate::run_tasks_track_stop_command(
                     paths,
                     task.as_deref(),
                     *dry_run,
                     cli.output,
                     use_stderr_color,
+                    cli.quiet,
                 )?;
                 if !*dry_run {
                     auto_commit
@@ -341,13 +351,14 @@ pub(crate) fn handle_tasks_command(
                 no_commit,
             } => {
                 let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
+                warn_auto_commit_if_needed(&auto_commit, cli.quiet);
                 let report = crate::run_tasks_pomodoro_start_command(
                     paths,
                     task,
                     *dry_run,
                     cli.output,
                     use_stderr_color,
+                    cli.quiet,
                 )?;
                 if !*dry_run {
                     auto_commit
@@ -362,13 +373,14 @@ pub(crate) fn handle_tasks_command(
                 no_commit,
             } => {
                 let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-                warn_auto_commit_if_needed(&auto_commit);
+                warn_auto_commit_if_needed(&auto_commit, cli.quiet);
                 let report = crate::run_tasks_pomodoro_stop_command(
                     paths,
                     task.as_deref(),
                     *dry_run,
                     cli.output,
                     use_stderr_color,
+                    cli.quiet,
                 )?;
                 if !*dry_run {
                     auto_commit
@@ -379,7 +391,7 @@ pub(crate) fn handle_tasks_command(
             }
             TasksPomodoroCommand::Status => {
                 let report =
-                    crate::run_tasks_pomodoro_status_command(paths, cli.output, use_stderr_color)?;
+                    crate::run_tasks_pomodoro_status_command(paths, cli.output, use_stderr_color, cli.quiet)?;
                 crate::print_task_pomodoro_status_report(cli.output, &report)
             }
         },

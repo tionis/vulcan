@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Command Groups:\n  Indexing: index\n  Graph and Query: note, graph, search, notes, ls, browse, query, dataview, tasks, kanban, bases, diff\n  Journaling: daily, weekly, monthly, periodic, inbox, template\n  Semantic: vectors, cluster, related\n  Reports and Automation: saved, checkpoint, changes, batch, export, automation\n  Mutations: edit, update, unset, refactor\n  Maintenance: doctor, cache, config, git, run, web, open, help, describe, completions\n\nDocs:\n  User guide: docs/cli.md\n  Interactive help: vulcan edit --help and vulcan browse --help\n  Query/filter reference: vulcan query --help and vulcan search --help\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan daily                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox\n  Query:       query, search, ls, notes, backlinks, links, changes\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    daily, weekly, monthly, periodic, template\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, cluster, related, doctor\n  Index:       index, vectors, cache, repair\n  Runtime:     run, web\n  Git:         git\n  Automation:  saved, automation, batch, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -732,6 +732,20 @@
             "short": null,
             "value_names": [
               "EXPLAIN"
+            ]
+          },
+          {
+            "help": "Exit with code 1 when zero results are returned (useful in shell conditionals)",
+            "id": "exit_code",
+            "long": "exit-code",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXIT_CODE"
             ]
           },
           {
@@ -3846,6 +3860,7 @@
       },
       {
         "about": "Execute JavaScript inside the Vulcan runtime sandbox",
+        "after_help": "The JS runtime exposes the full vault API: query notes, search, read/write frontmatter,\ncall web APIs, and run DQL — all from a sandboxed rquickjs context.\n\nSandbox levels:\n  strict   default — no filesystem or network access beyond vault APIs\n  fs       allow filesystem access (read/write outside the vault)\n  net      allow outbound HTTP requests\n  none     no restrictions\n\nExamples:\n  vulcan run                                     Start interactive REPL\n  vulcan run -e 'dql(\"from notes limit 5\")'     Evaluate a DQL snippet\n  vulcan run -e 'notes({limit:3}).map(n=>n.path)' Inspect note paths\n  vulcan run script.js                           Execute a script file\n  vulcan run --eval-file prelude.js              Load a file then open REPL\n  vulcan run --sandbox net -e 'web.search(\"rust async\")'  Web search\n  vulcan run --no-startup                        Skip startup.js even if trusted\n  cat query.js | vulcan run                      Pipe a script via stdin",
         "name": "run",
         "options": [
           {
@@ -3961,10 +3976,16 @@
                 ]
               },
               {
-                "help": "Override the configured search backend",
+                "help": "Override the configured search backend (kagi, exa, tavily, brave, auto)",
                 "id": "backend",
                 "long": "backend",
-                "possible_values": [],
+                "possible_values": [
+                  "auto",
+                  "kagi",
+                  "exa",
+                  "tavily",
+                  "brave"
+                ],
                 "required": false,
                 "short": null,
                 "value_names": [
@@ -6135,7 +6156,9 @@
               "table",
               "paths",
               "detail",
-              "count"
+              "count",
+              "tsv",
+              "csv"
             ],
             "required": false,
             "short": null,
@@ -6166,6 +6189,20 @@
             "short": null,
             "value_names": [
               "EXPLAIN"
+            ]
+          },
+          {
+            "help": "Exit with code 1 when zero results are returned (useful in shell conditionals)",
+            "id": "exit_code",
+            "long": "exit-code",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EXIT_CODE"
             ]
           },
           {
@@ -6242,7 +6279,9 @@
               "table",
               "paths",
               "detail",
-              "count"
+              "count",
+              "tsv",
+              "csv"
             ],
             "required": false,
             "short": null,
@@ -6976,6 +7015,34 @@
         "short": null,
         "value_names": [
           "VERBOSE"
+        ]
+      },
+      {
+        "help": "Suppress scan progress, warnings, and non-essential stderr output",
+        "id": "quiet",
+        "long": "quiet",
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false,
+        "short": "q",
+        "value_names": [
+          "QUIET"
+        ]
+      },
+      {
+        "help": "Suppress column headers in table/TSV output (useful for piping)",
+        "id": "no_header",
+        "long": "no-header",
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "NO_HEADER"
         ]
       }
     ],

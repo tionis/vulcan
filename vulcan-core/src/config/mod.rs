@@ -615,19 +615,84 @@ pub struct QuickAddConfig {
     pub ai: Option<QuickAddAiConfig>,
 }
 
+/// Which HTTP-based search provider to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchBackendKind {
+    /// Auto-detect: try Kagi → Exa → Tavily → Brave based on available env vars.
+    Auto,
+    /// Kagi Search — requires `KAGI_API_KEY` (or configured `api_key_env`).
+    #[default]
+    Kagi,
+    /// Exa (formerly Metaphor) — requires `EXA_API_KEY`.
+    Exa,
+    /// Tavily Search — requires `TAVILY_API_KEY`.
+    Tavily,
+    /// Brave Search — requires `BRAVE_API_KEY`.
+    Brave,
+}
+
+impl SearchBackendKind {
+    /// The environment variable that holds the API key for this backend.
+    pub fn default_api_key_env(self) -> &'static str {
+        match self {
+            SearchBackendKind::Auto | SearchBackendKind::Kagi => "KAGI_API_KEY",
+            SearchBackendKind::Exa => "EXA_API_KEY",
+            SearchBackendKind::Tavily => "TAVILY_API_KEY",
+            SearchBackendKind::Brave => "BRAVE_API_KEY",
+        }
+    }
+
+    /// The canonical base URL for this backend's search endpoint.
+    pub fn default_base_url(self) -> &'static str {
+        match self {
+            SearchBackendKind::Auto | SearchBackendKind::Kagi => {
+                "https://kagi.com/api/v0/search"
+            }
+            SearchBackendKind::Exa => "https://api.exa.ai/search",
+            SearchBackendKind::Tavily => "https://api.tavily.com/search",
+            SearchBackendKind::Brave => {
+                "https://api.search.brave.com/res/v1/web/search"
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebSearchConfig {
-    pub backend: String,
-    pub api_key_env: String,
-    pub base_url: String,
+    /// Which backend to use. Defaults to `kagi`; set to `auto` for env-var detection.
+    #[serde(default)]
+    pub backend: SearchBackendKind,
+    /// Override the env var name that holds the API key (defaults to backend's `default_api_key_env`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    /// Override the search endpoint URL (defaults to backend's `default_base_url`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
+impl WebSearchConfig {
+    /// Effective env-var name for the API key, accounting for any override.
+    pub fn effective_api_key_env(&self) -> &str {
+        self.api_key_env
+            .as_deref()
+            .unwrap_or_else(|| self.backend.default_api_key_env())
+    }
+
+    /// Effective base URL for the search endpoint, accounting for any override.
+    pub fn effective_base_url(&self) -> &str {
+        self.base_url
+            .as_deref()
+            .unwrap_or_else(|| self.backend.default_base_url())
+    }
 }
 
 impl Default for WebSearchConfig {
     fn default() -> Self {
         Self {
-            backend: "kagi".to_string(),
-            api_key_env: "KAGI_API_KEY".to_string(),
-            base_url: "https://kagi.com/api/v0/search".to_string(),
+            backend: SearchBackendKind::Kagi,
+            api_key_env: None,
+            base_url: None,
         }
     }
 }
@@ -2087,7 +2152,7 @@ struct PartialWebConfig {
 
 #[derive(Debug, Deserialize, Default)]
 struct PartialWebSearchConfig {
-    backend: Option<String>,
+    backend: Option<SearchBackendKind>,
     api_key_env: Option<String>,
     base_url: Option<String>,
 }
@@ -6852,10 +6917,10 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
                 config.web.search.backend = backend;
             }
             if let Some(api_key_env) = search.api_key_env {
-                config.web.search.api_key_env = api_key_env;
+                config.web.search.api_key_env = Some(api_key_env);
             }
             if let Some(base_url) = search.base_url {
-                config.web.search.base_url = base_url;
+                config.web.search.base_url = Some(base_url);
             }
         }
     }

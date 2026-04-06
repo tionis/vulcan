@@ -40,11 +40,11 @@ pub(crate) fn handle_bases_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
                 crate::create_note_from_bases_view(paths, file, 0, title.as_deref(), *dry_run)?;
             if !*dry_run {
-                crate::run_incremental_scan(paths, cli.output, use_stderr_color)?;
+                crate::run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
                 auto_commit
                     .commit(paths, "bases-create", std::slice::from_ref(&report.path))
                     .map_err(CliError::operation)?;
@@ -79,7 +79,7 @@ pub(crate) fn handle_bases_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let spec = BaseViewSpec {
                 name: Some(name.clone()),
                 view_type: "table".to_string(),
@@ -108,7 +108,7 @@ pub(crate) fn handle_bases_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
                 bases_view_delete(paths, file, name, *dry_run).map_err(CliError::operation)?;
             if !*dry_run {
@@ -126,7 +126,7 @@ pub(crate) fn handle_bases_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = bases_view_rename(paths, file, old_name, new_name, *dry_run)
                 .map_err(CliError::operation)?;
             if !*dry_run {
@@ -150,7 +150,7 @@ pub(crate) fn handle_bases_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let patch = BaseViewPatch {
                 add_filters: add_filters.clone(),
                 remove_filters: remove_filters.clone(),

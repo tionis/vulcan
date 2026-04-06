@@ -6,16 +6,19 @@ fn main() -> ExitCode {
     match vulcan_cli::run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            if wants_json_output() {
-                println!(
-                    "{}",
-                    json!({
-                        "error": error.to_string(),
-                        "code": error.code(),
-                    })
-                );
-            } else {
-                eprintln!("{error}");
+            let message = error.to_string();
+            if !message.is_empty() {
+                if wants_json_output() {
+                    println!(
+                        "{}",
+                        json!({
+                            "error": message,
+                            "code": error.code(),
+                        })
+                    );
+                } else {
+                    eprintln!("{message}");
+                }
             }
             ExitCode::from(error.exit_code())
         }

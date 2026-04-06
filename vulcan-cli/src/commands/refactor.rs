@@ -26,7 +26,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
                 rename_alias(paths, note, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -48,7 +48,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
                 rename_heading(paths, note, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -70,7 +70,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
                 rename_block_ref(paths, note, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -91,7 +91,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = rename_property(paths, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
@@ -111,7 +111,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = merge_tags(paths, source, dest, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
@@ -128,7 +128,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = bulk_replace(paths, filters, find, replace, *dry_run)
                 .map_err(CliError::operation)?;
             if !dry_run {
@@ -145,7 +145,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let summary = move_note(paths, source, dest, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
@@ -160,7 +160,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
                 link_mentions(paths, note.as_deref(), *dry_run).map_err(CliError::operation)?;
             if !dry_run {

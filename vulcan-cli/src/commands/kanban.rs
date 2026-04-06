@@ -59,7 +59,7 @@ pub(crate) fn handle_kanban_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_kanban_archive_command(paths, board, card, *dry_run)?;
             if !*dry_run {
                 auto_commit
@@ -80,7 +80,7 @@ pub(crate) fn handle_kanban_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
                 crate::run_kanban_move_command(paths, board, card, target_column, *dry_run)?;
             if !*dry_run {
@@ -102,7 +102,7 @@ pub(crate) fn handle_kanban_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = crate::run_kanban_add_command(paths, board, column, text, *dry_run)?;
             if !*dry_run {
                 auto_commit

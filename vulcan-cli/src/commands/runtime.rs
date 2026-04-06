@@ -86,7 +86,7 @@ pub(crate) fn handle_web_command(
             backend,
             limit,
         } => {
-            let report = crate::run_web_search_command(paths, query, backend.as_deref(), *limit)?;
+            let report = crate::run_web_search_command(paths, query, *backend, *limit)?;
             crate::print_web_search_report(cli.output, &report)
         }
         WebCommand::Fetch {

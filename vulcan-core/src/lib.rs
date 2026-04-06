@@ -59,7 +59,7 @@ pub use config::{
     TaskNotesSavedViewOptionValue, TaskNotesSavedViewQuery, TaskNotesStatusConfig,
     TaskNotesTaskCreationDefaults, TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter,
     TemplaterCommandPairConfig, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
-    TemplaterImporter, TemplatesConfig, VaultConfig,
+    TemplaterImporter, TemplatesConfig, VaultConfig, SearchBackendKind,
 };
 pub use dataview_js::{
     evaluate_dataview_js, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
