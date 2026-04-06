@@ -3190,7 +3190,7 @@ The `resolve_template_file()` function (`vulcan-cli/src/lib.rs:8985`) matches th
 
 The command appears to hang on non-trivial vaults. Needs profiling to determine whether it's a quadratic similarity comparison, unbounded result set, or blocking I/O issue.
 
-- [ ] Profile `vector_duplicates()` in `vulcan-core` on a vault with >1000 embedded notes
+- [x] Profile `vector_duplicates()` in `vulcan-core` on a vault with >1000 embedded notes
 - [x] Tighten top-N pruning so the similarity cutoff tracks the current worst retained pair, not the just-evicted pair
 - [x] Add progress reporting (incremental output or progress bar) for long-running similarity scans
 - [x] Add `--limit` flag to cap result count and short-circuit early

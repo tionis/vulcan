@@ -2237,6 +2237,70 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "benchmark-style regression test; run manually with --ignored --nocapture"]
+    fn vector_duplicates_benchmark_large_vault() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("Bench")).expect("benchmark dir should be created");
+        let note_count = 1_200_usize;
+        let cluster_count = 12_usize;
+
+        for index in 0..note_count {
+            let cluster = index % cluster_count;
+            fs::write(
+                vault_root.join(format!("Bench/Doc{index:04}.md")),
+                format!("# Cluster {cluster}\n\nRepeated benchmark note for cluster {cluster}.\n"),
+            )
+            .expect("benchmark note should be written");
+        }
+
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+
+        let scan_started = Instant::now();
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        let scan_elapsed = scan_started.elapsed();
+
+        let index_started = Instant::now();
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+                verbose: false,
+            },
+        )
+        .expect("vector index should succeed");
+        let index_elapsed = index_started.elapsed();
+
+        let duplicate_started = Instant::now();
+        let report = vector_duplicates(
+            &paths,
+            &VectorDuplicatesQuery {
+                provider: None,
+                threshold: 0.99,
+                limit: 25,
+            },
+        )
+        .expect("duplicates query should succeed");
+        let duplicate_elapsed = duplicate_started.elapsed();
+
+        eprintln!(
+            "bench vault: {} notes, scan {:?}, index {:?}, duplicates {:?}, retained {} pairs",
+            note_count,
+            scan_elapsed,
+            index_elapsed,
+            duplicate_elapsed,
+            report.pairs.len()
+        );
+
+        assert!(!report.pairs.is_empty());
+        assert!(report.pairs.len() <= 25);
+        server.shutdown();
+    }
+
+    #[test]
     fn vector_duplicates_reports_high_similarity_pairs() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
