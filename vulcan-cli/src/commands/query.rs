@@ -2,16 +2,17 @@
 
 use crate::commit::AutoCommitPolicy;
 use crate::output::{
-    paginated_items, print_json_lines, print_selected_human_fields, ListOutputControls,
+    paginated_items, print_json_lines, print_selected_human_fields, render_human_value,
+    ListOutputControls,
 };
 use crate::resolve::resolve_note_argument;
 use crate::{warn_auto_commit_if_needed, Cli, CliError, QueryEngineArg};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use vulcan_core::{
-    bulk_set_property, evaluate_dql, execute_query_report, list_properties, load_vault_config,
-    query_backlinks, query_links, query_notes, search_vault, NamedCount, NoteQuery,
-    PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery, VaultPaths,
+    bulk_set_property, evaluate_dql, execute_query_report, list_properties, list_query_fields,
+    load_vault_config, query_backlinks, query_links, query_notes, search_vault, NamedCount,
+    NoteQuery, PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery, VaultPaths,
 };
 
 pub(crate) fn handle_backlinks_command(
@@ -67,6 +68,7 @@ pub(crate) fn handle_query_command(
     paths: &VaultPaths,
     dsl: Option<&str>,
     json: Option<&str>,
+    list_fields: bool,
     engine: QueryEngineArg,
     format: crate::QueryFormatArg,
     glob: Option<&str>,
@@ -77,6 +79,15 @@ pub(crate) fn handle_query_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    if list_fields {
+        if dsl.is_some() || json.is_some() {
+            return Err(CliError::operation(
+                "`query --list-fields` does not accept a query string or --json payload",
+            ));
+        }
+        return print_query_field_catalog(cli, paths, list_controls);
+    }
+
     let use_dql = match engine {
         QueryEngineArg::Dql => true,
         QueryEngineArg::Dsl => false,
@@ -510,6 +521,70 @@ fn print_property_catalog(
             Ok(())
         }
         crate::OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
+    }
+}
+
+fn print_query_field_catalog(
+    cli: &Cli,
+    paths: &VaultPaths,
+    list_controls: &ListOutputControls,
+) -> Result<(), CliError> {
+    let rows = list_query_fields(paths)
+        .map_err(CliError::operation)?
+        .into_iter()
+        .map(|entry| {
+            json!({
+                "field": entry.field,
+                "kind": entry.kind,
+                "supports": entry.supports,
+                "types": entry.types,
+                "example": entry.example,
+            })
+        })
+        .collect::<Vec<_>>();
+    let visible_rows = paginated_items(&rows, list_controls);
+
+    match cli.output {
+        crate::OutputFormat::Human => {
+            if visible_rows.is_empty() {
+                println!("No query fields discovered.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in visible_rows {
+                    print_selected_human_fields(row, fields);
+                }
+                return Ok(());
+            }
+            for row in visible_rows {
+                let supports = row["supports"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let types = row["types"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                println!(
+                    "- {} [{}] supports={} types={} example={}",
+                    row["field"].as_str().unwrap_or_default(),
+                    row["kind"].as_str().unwrap_or_default(),
+                    supports,
+                    types,
+                    render_human_value(&row["example"])
+                );
+            }
+            Ok(())
+        }
+        crate::OutputFormat::Json => {
+            print_json_lines(visible_rows.to_vec(), list_controls.fields.as_deref())
+        }
     }
 }
 

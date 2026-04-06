@@ -66,6 +66,15 @@ pub struct PropertyCatalogEntry {
     pub types: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct QueryFieldCatalogEntry {
+    pub field: String,
+    pub kind: String,
+    pub supports: Vec<String>,
+    pub types: Vec<String>,
+    pub example: Value,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertyValueOrigin {
     Frontmatter,
@@ -1562,6 +1571,84 @@ pub fn list_properties(paths: &VaultPaths) -> Result<Vec<PropertyCatalogEntry>, 
             PropertyCatalogEntry { key, count, types }
         })
         .collect())
+}
+
+pub fn list_query_fields(paths: &VaultPaths) -> Result<Vec<QueryFieldCatalogEntry>, PropertyError> {
+    let notes = query_notes(
+        paths,
+        &NoteQuery {
+            filters: Vec::new(),
+            sort_by: Some("file.path".to_string()),
+            sort_descending: false,
+        },
+    )?;
+    let properties = list_properties(paths)?;
+    let note_records = notes.notes;
+
+    let mut fields = builtin_query_fields(&note_records);
+    for property in properties {
+        fields.push(QueryFieldCatalogEntry {
+            field: property.key.clone(),
+            kind: "property".to_string(),
+            supports: vec![
+                "where".to_string(),
+                "sort".to_string(),
+                "fields".to_string(),
+            ],
+            types: property.types,
+            example: property_example_value(&note_records, &property.key),
+        });
+    }
+    Ok(fields)
+}
+
+fn builtin_query_fields(notes: &[NoteRecord]) -> Vec<QueryFieldCatalogEntry> {
+    [
+        ("file.path", vec!["where", "sort", "fields"], vec!["text"]),
+        ("file.name", vec!["where", "sort", "fields"], vec!["text"]),
+        ("file.ext", vec!["where", "sort", "fields"], vec!["text"]),
+        (
+            "file.mtime",
+            vec!["where", "sort", "fields"],
+            vec!["number"],
+        ),
+        ("file.tags", vec!["where", "fields"], vec!["list"]),
+        ("file.starred", vec!["where", "fields"], vec!["boolean"]),
+    ]
+    .into_iter()
+    .map(|(field, supports, types)| QueryFieldCatalogEntry {
+        field: field.to_string(),
+        kind: "builtin".to_string(),
+        supports: supports.into_iter().map(str::to_string).collect(),
+        types: types.into_iter().map(str::to_string).collect(),
+        example: builtin_field_example_value(notes, field),
+    })
+    .collect()
+}
+
+fn builtin_field_example_value(notes: &[NoteRecord], field: &str) -> Value {
+    notes
+        .iter()
+        .map(|note| match field {
+            "file.path" => Value::String(note.document_path.clone()),
+            "file.name" => Value::String(note.file_name.clone()),
+            "file.ext" => Value::String(note.file_ext.clone()),
+            "file.mtime" => Value::Number(note.file_mtime.into()),
+            "file.tags" => Value::Array(note.tags.iter().cloned().map(Value::String).collect()),
+            "file.starred" => Value::Bool(note.starred),
+            _ => Value::Null,
+        })
+        .find(|value| !value.is_null())
+        .unwrap_or(Value::Null)
+}
+
+fn property_example_value(notes: &[NoteRecord], key: &str) -> Value {
+    notes
+        .iter()
+        .filter_map(|note| note.properties.get(key))
+        .find(|value| !value.is_null())
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 fn open_existing_cache(paths: &VaultPaths) -> Result<CacheDatabase, PropertyError> {
@@ -3520,6 +3607,38 @@ completed = ["x", "v"]
                 },
             ]
         );
+    }
+
+    #[test]
+    fn list_query_fields_reports_builtin_supports_and_property_examples() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let fields = list_query_fields(&paths).expect("query field listing should succeed");
+
+        let path_field = fields
+            .iter()
+            .find(|entry| entry.field == "file.path")
+            .expect("file.path should be present");
+        assert_eq!(path_field.kind, "builtin");
+        assert_eq!(path_field.supports, vec!["where", "sort", "fields"]);
+        assert_eq!(path_field.types, vec!["text"]);
+        assert_eq!(path_field.example, Value::String("Backlog.md".to_string()));
+
+        let status_field = fields
+            .iter()
+            .find(|entry| entry.field == "status")
+            .expect("status should be present");
+        assert_eq!(status_field.kind, "property");
+        assert_eq!(status_field.supports, vec!["where", "sort", "fields"]);
+        assert_eq!(
+            status_field.types,
+            vec!["list".to_string(), "text".to_string()]
+        );
+        assert_eq!(status_field.example, Value::String("backlog".to_string()));
     }
 
     fn copy_fixture_vault(name: &str, destination: &Path) {

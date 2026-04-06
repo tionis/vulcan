@@ -66,11 +66,60 @@ pub(crate) fn select_fields(row: Value, fields: Option<&[String]>) -> Value {
     };
     let mut selected = Map::new();
     for field in fields {
-        if let Some(value) = object.get(field) {
-            selected.insert(field.clone(), value.clone());
+        if let Some(value) = selected_field_value(object, field) {
+            selected.insert(field.clone(), value);
         }
     }
     Value::Object(selected)
+}
+
+fn selected_field_value(object: &Map<String, Value>, field: &str) -> Option<Value> {
+    if let Some(value) = object.get(field) {
+        return Some(value.clone());
+    }
+
+    if field.contains('.') {
+        if let Some(value) = nested_field_value(object, field) {
+            return Some(value);
+        }
+        if let Some(value) = file_alias_field_value(object, field) {
+            return Some(value);
+        }
+    } else if let Some(Value::Object(properties)) = object.get("properties") {
+        if let Some(value) = properties.get(field) {
+            return Some(value.clone());
+        }
+    }
+
+    None
+}
+
+fn nested_field_value(object: &Map<String, Value>, field: &str) -> Option<Value> {
+    let mut segments = field.split('.');
+    let first = segments.next()?;
+    let mut current = object.get(first)?;
+
+    for segment in segments {
+        let Value::Object(map) = current else {
+            return None;
+        };
+        current = map.get(segment)?;
+    }
+
+    Some(current.clone())
+}
+
+fn file_alias_field_value(object: &Map<String, Value>, field: &str) -> Option<Value> {
+    let alias = match field {
+        "file.path" => "document_path",
+        "file.name" => "file_name",
+        "file.ext" => "file_ext",
+        "file.mtime" => "file_mtime",
+        "file.tags" => "tags",
+        "file.starred" => "starred",
+        _ => return None,
+    };
+    object.get(alias).cloned()
 }
 
 pub(crate) fn print_selected_human_fields(row: &Value, fields: &[String]) {
@@ -121,5 +170,47 @@ pub(crate) fn render_dataview_inline_value(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         _ => serde_json::to_string(value).expect("inline result should serialize"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_fields;
+    use serde_json::json;
+
+    #[test]
+    fn select_fields_supports_property_keys_and_file_aliases() {
+        let row = json!({
+            "document_path": "Projects/Alpha.md",
+            "file_name": "Alpha",
+            "file_ext": "md",
+            "file_mtime": 123,
+            "tags": ["#project"],
+            "starred": true,
+            "properties": {
+                "status": "done",
+                "owner": "alice"
+            }
+        });
+
+        let selected = select_fields(
+            row,
+            Some(&[
+                "file.path".to_string(),
+                "file.tags".to_string(),
+                "status".to_string(),
+                "properties.owner".to_string(),
+            ]),
+        );
+
+        assert_eq!(
+            selected,
+            json!({
+                "file.path": "Projects/Alpha.md",
+                "file.tags": ["#project"],
+                "status": "done",
+                "properties.owner": "alice"
+            })
+        );
     }
 }

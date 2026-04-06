@@ -10524,6 +10524,89 @@ fn query_command_rejects_both_dsl_and_json() {
 }
 
 #[test]
+fn query_command_lists_available_fields_with_examples() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "query",
+            "--list-fields",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    let path_field = rows
+        .iter()
+        .find(|row| row["field"] == "file.path")
+        .expect("file.path field should be present");
+    assert_eq!(path_field["kind"], "builtin");
+    assert_eq!(
+        path_field["supports"],
+        serde_json::json!(["where", "sort", "fields"])
+    );
+    assert_eq!(path_field["types"], serde_json::json!(["text"]));
+    assert_eq!(path_field["example"], "Backlog.md");
+
+    let status_field = rows
+        .iter()
+        .find(|row| row["field"] == "status")
+        .expect("status field should be present");
+    assert_eq!(status_field["kind"], "property");
+    assert_eq!(
+        status_field["supports"],
+        serde_json::json!(["where", "sort", "fields"])
+    );
+    assert_eq!(status_field["types"], serde_json::json!(["list", "text"]));
+    assert_eq!(status_field["example"], "backlog");
+}
+
+#[test]
+fn notes_command_fields_support_property_keys_and_file_aliases() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "file.path,status",
+            "notes",
+            "--sort",
+            "file.path",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+
+    assert_eq!(
+        rows.first().expect("notes output should include rows"),
+        &serde_json::json!({
+            "file.path": "Backlog.md",
+            "status": "backlog"
+        })
+    );
+}
+
+#[test]
 fn query_command_results_match_notes_command() {
     // Prove equivalence: query DSL and notes --where produce identical results
     let temp_dir = TempDir::new().expect("temp dir should be created");

@@ -289,6 +289,7 @@ Formats:
   count   matched row count only
 
 Examples:
+  vulcan query --list-fields
   vulcan query --format paths 'from notes where status = done'
   vulcan query --glob 'Projects/**' 'from notes'
   vulcan query 'from notes where file.name matches \"^2026-\"'
@@ -3085,13 +3086,18 @@ Examples:
         after_help = QUERY_COMMAND_AFTER_HELP
     )]
     Query {
-        #[arg(help = "Query string (DSL or DQL depending on --engine)")]
+        #[arg(help = "Query string (DSL or DQL depending on --engine); omit with --list-fields")]
         dsl: Option<String>,
         #[arg(
             long,
             help = "JSON query payload; mutually exclusive with the positional DSL argument"
         )]
         json: Option<String>,
+        #[arg(
+            long,
+            help = "List available property keys and file.* fields for filters, sorts, and --fields"
+        )]
+        list_fields: bool,
         #[arg(
             long,
             value_enum,
