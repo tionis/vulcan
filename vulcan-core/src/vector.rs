@@ -2204,8 +2204,10 @@ mod tests {
             .collect::<Vec<_>>();
         let embeddings = (0..1_200_usize)
             .map(|index| {
-                let cluster = (index % 12) as f32;
-                let offset = (index / 12) as f32 * 0.0001;
+                let cluster = f32::from(u8::try_from(index % 12).expect("cluster id fits in u8"));
+                let offset =
+                    f32::from(u16::try_from(index / 12).expect("offset bucket fits in u16"))
+                        * 0.0001;
                 vec![1.0, cluster * 0.01 + offset, offset, 0.5]
             })
             .collect::<Vec<_>>();
