@@ -998,14 +998,14 @@ The product should fail loud, explain clearly, and repair cheaply.
 
 ## 17b. CLI command hierarchy and agent tool surface
 
-The CLI serves three audiences simultaneously: human users in the terminal, the embedded AI assistant (9.12) calling commands as tools, and external LLM harnesses (Claude Code, Codex, Gemini CLI, etc.) using Vulcan as a tool provider. The design must satisfy all three.
+The CLI serves three audiences simultaneously: human users in the terminal, external agent runtimes such as `pi` using Vulcan as a tool provider, and any future Vulcan-native assistant that may be built later. The design must satisfy all three.
 
 ### Command hierarchy
 
 Commands are organized into a two-level hierarchy using clap nested subcommand enums. This is a pre-alpha clean break — no backwards compatibility aliases.
 
 **Grouping principles:**
-- **`note`** groups single-note CRUD operations (get, set, create, append, patch) and single-note inspection (doctor, links, backlinks, diff). These are the primary tools for the AI assistant.
+- **`note`** groups single-note CRUD operations (get, set, create, append, patch) and single-note inspection (doctor, links, backlinks, diff). These are the primary tools for AI integrations.
 - **`refactor`** groups cross-vault mutations (rename-*, merge-tags, rewrite, move, link-mentions, suggest). These are high-impact operations that benefit from `--dry-run`.
 - **`query`** and **`search`** remain top-level as the primary multi-note read operations. `query` is structural (metadata/properties), `search` is content-oriented (full-text/regex).
 - **`daily`** is top-level for ergonomics (frequent human use). It extends the periodic notes infrastructure (9.16) with structured event parsing.
@@ -1013,11 +1013,11 @@ Commands are organized into a two-level hierarchy using clap nested subcommand e
 
 **Output contracts:** Every command supports `--output json` for machine consumption. The `describe` command provides runtime-discoverable schema for all commands and their arguments. The `query` command adds `--format table|paths|detail|count` for output shape control.
 
-### Tool exposure model (embedded agent and external harnesses)
+### Tool exposure model (external runtimes and future native assistants)
 
 The CLI's tool surface is designed for gradual discovery rather than loading all tool definitions upfront. This keeps context budgets manageable while making the full command surface accessible.
 
-**Core tools (always in system prompt, ~10):** The embedded agent's system prompt includes full schemas for the most frequently used tools: `note_get`, `note_create`, `note_set`, `note_append`, `note_patch`, `search`, `query`, `update_property`, `unset_property`, `inbox`. These cover the vast majority of vault interactions.
+**Core tools (always in the runtime's initial prompt, ~10):** The initial prompt for an external runtime such as `pi` should include full schemas for the most frequently used tools: `note_get`, `note_create`, `note_set`, `note_append`, `note_patch`, `search`, `query`, `update_property`, `unset_property`, `inbox`. These cover the vast majority of vault interactions.
 
 **Discovery meta-tools (always available):**
 - **`describe`** — returns a compact listing of all commands with one-line descriptions. Cheap to call, gives the LLM a map of what exists.
@@ -1032,7 +1032,7 @@ The CLI's tool surface is designed for gradual discovery rather than loading all
 
 ### Skills as executable knowledge
 
-Skills (9.12.7) serve double duty: they teach the embedded agent how to use Vulcan effectively, and they serve as reference material for external harnesses. The system prompt includes a skill directory (names + one-line descriptions) so the LLM knows what knowledge is available.
+Skills serve double duty: they teach external runtimes how to use Vulcan effectively, and any future native assistant should consume the same files rather than invent a second prompt/skill system. The prompt includes a skill directory (names + one-line descriptions) so the LLM knows what knowledge is available.
 
 **Default skills shipped with Vulcan** (standard library):
 - **note-operations** — reading, creating, editing notes; `note get` selectors, frontmatter conventions, `note patch` safety
@@ -1050,14 +1050,14 @@ Each skill includes: when to use it, core patterns with examples, common mistake
 
 ### External harness support
 
-For LLM harnesses that use Vulcan as a tool provider (Claude Code via CLAUDE.md/AGENTS.md, Codex, Gemini CLI, etc.):
+For LLM harnesses and external runtimes that use Vulcan as a tool provider (`pi`, Claude Code via CLAUDE.md/AGENTS.md, Codex, Gemini CLI, etc.):
 
 - **`describe --format mcp|openai-tools|json-schema`** — exports tool definitions in standard formats for direct integration with harness tool-calling protocols.
 - **`help --output json <command>`** — structured help output that a harness can parse to build tool definitions dynamically.
 - **Vault AGENTS.md template** — shipped with Vulcan and optionally written on `vulcan init`. Teaches external harnesses: available commands, conventions, what not to do, and points to the skills directory for reference material.
 - **Consistent JSON error output** — all commands return structured errors in JSON mode (`{"error": "...", "code": "..."}`) rather than unstructured stderr text.
 
-The default skills serve external harnesses identically to the embedded agent — Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API the same way the embedded agent would call `skill_get("js-api-guide")`.
+The default skills serve external runtimes directly — `pi` or Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API. If a native assistant is added later, it should use `skill_get("js-api-guide")` to consume the same material.
 
 ### Single-note CRUD design
 
@@ -1111,74 +1111,15 @@ The JS API binds directly to vulcan-core structs (not CLI wrappers). The `vault`
 
 ## 17d. Web tools and external data
 
-Web search and fetch capabilities serve the AI assistant and JS runtime. Search uses a pluggable `SearchBackend` trait (Kagi first). Fetch supports multiple output modes (markdown, HTML, raw) with readability-style article extraction.
+Web search and fetch capabilities serve AI integrations and the JS runtime. Search uses a pluggable `SearchBackend` trait (Kagi first). Fetch supports multiple output modes (markdown, HTML, raw) with readability-style article extraction.
 
-## 17e. Chat platform integrations (personal assistant)
+## 17e. Deferred native chat integrations
 
-The AI assistant (Phase 9.12) extends to external chat platforms, starting with Telegram. The design prioritizes modularity so additional platforms (Discord, Slack, Matrix, etc.) can be added without changing the core assistant logic.
+Current recommendation: do not build in-process Telegram, Discord, Matrix, or similar chat adapters as part of Phase 9. Use an external runtime (`pi` first) for the conversation loop and keep Vulcan focused on the durable parts of the system: vault semantics, command contracts, permissions, `AGENTS.md`, and skill files.
 
-**Integration model:** Chat platform adapters are internal to Vulcan, not separate projects. This is deliberate — keeping adapters in-process provides granular sandboxing (per-user/per-platform tool permissions enforced by the same code that dispatches tools) and simplifies distribution (single binary). Platform-specific dependencies are behind cargo feature flags (e.g., `telegram`, `discord`) so they don't bloat the binary for users who don't need them.
+If native chat integrations are revisited later, they should be treated as a thin runtime layer on top of the same CLI tool surface used by external harnesses. They should not create a second mutation path or bypass the permission system.
 
-### Architecture
-
-A `ChatPlatform` trait abstracts platform-specific I/O:
-
-```
-trait ChatPlatform {
-    fn poll_messages(&mut self) -> Vec<IncomingMessage>;
-    fn send_response(&self, chat_id: &str, text: &str, reply_to: Option<&str>);
-    fn platform_id(&self) -> &str;  // "telegram", "discord", etc.
-}
-```
-
-The assistant core (prompt construction, tool dispatch, memory management) is platform-agnostic. Each adapter handles authentication, message polling, formatting, and platform-specific features (e.g., Telegram's reply chains, Discord's threads).
-
-### Session and context management
-
-Sessions map to reply chains (Telegram) or threads (Discord). A new top-level message starts a new session. Context is managed in 5 layers to avoid bloat:
-
-1. **Compact system prompt** — vault summary, available tools, user preferences
-2. **User memory** — loaded from vault note (`AI/Memory/users/<platform>/<user_id>.md`)
-3. **Recent turns** — last N messages from the session
-4. **Auto-summarized history** — older turns compressed to bullet points
-5. **On-demand vault context** — retrieved via query/search tools as needed
-
-Sessions are persisted as vault notes: `AI/Sessions/<platform>/<chat_id>/<session_ulid>.md`.
-
-### Per-user and per-group memory
-
-Memory files live in the vault as regular notes, making them searchable, versioned (git), and part of the graph:
-
-- **User memory:** `AI/Memory/users/<platform>/<user_id>.md` — preferences, context, history
-- **Group memory:** `AI/Memory/groups/<platform>/<group_id>.md` — shared context, conventions
-
-The LLM is instructed to read/update these files using the standard note CRUD tools.
-
-### Security and tool permissions
-
-Tool access is configured per-platform and per-chat type:
-
-```toml
-[assistant.telegram]
-token_env = "VULCAN_TELEGRAM_TOKEN"
-allowed_users = ["user_id_1"]
-dm_tools = ["note.*", "query", "search", "tasks.*", "daily.*"]
-group_tools = ["query", "search"]
-mutation_require_confirm = true
-```
-
-Group chats default to read-only tools. Direct messages allow the full configured tool set. Mutations can require explicit user confirmation.
-
-### Git integration
-
-Chat-driven mutations are auto-committed with metadata:
-
-```
-vulcan: append to "Inbox" via telegram/user_id
-Session: 01JQXYZ...
-```
-
-This provides an audit trail and easy rollback.
+The current boundary is documented in [`docs/assistant/pi_integration.md`](./assistant/pi_integration.md) and the re-scoped Phase 9.12 roadmap entries. Native chat adapters should only be reconsidered after the permission layer and daemon/service infrastructure are mature enough to support them safely.
 
 ## 18. Recommended phased delivery plan
 
@@ -1222,13 +1163,13 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), AI assistant with conversation persistence, prompts/skills, and chat platform integrations (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**
+- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), external agent integration with `pi` first plus vault-native prompts/skills and deferred native chat-runtime notes (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**
 - **Phase 10:** Multi-vault daemon with REST API (depends on Phase 9 foundation work being well-advanced)
 - **Phase 11:** Git auto-versioning at the daemon level
 - **Phase 12:** Sync integration
 - **Phase 13:** WebUI — admin panel and vault browser
 - **Phase 14:** WebUI — note editor with Automerge CRDT sessions, advanced table editing (Advanced Tables-style)
-- **Phase 15:** Extensibility and integrations (webhooks, custom endpoints; Telegram adapter bootstrapped in 9.12.8, Phase 15 adds advanced features)
+- **Phase 15:** Extensibility and integrations (webhooks, custom endpoints, optional notification/chat bridges after the daemon exists)
 - **Phase 16:** Wiki mode with live collaborative editing
 - **Phase 17:** User management, group-based ACLs, document-level secrets, share links
 - **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor) and Excalidraw support (18.8)
@@ -1264,7 +1205,7 @@ Maintain a set of test vaults in the repository (e.g., `tests/fixtures/vaults/`)
 - **`kanban/`**: Kanban board files with `kanban-plugin` frontmatter, heading-based columns, card items with inline dates and tags, YAML config blocks, and an archive section. Tests board detection, column/card extraction, configurable date triggers, and linked page metadata. See Roadmap Phase 9.11.
 - **`tasknotes/`**: TaskNotes task files with rich YAML frontmatter (status, priority, due, scheduled, contexts, projects, recurrence, blockedBy, timeEntries, reminders), custom user fields, and `.base` view files with filter/sort/group/formula configs. Tests task file parsing, field mapping, NLP input parsing, dependency graph construction, and Bases view evaluation with custom source types. See Roadmap Phase 9.15.
 - **`periodic/`**: Daily, weekly, and monthly note folders with date-formatted filenames, testing periodic note discovery, reverse date resolution, `file.day` integration, and gap detection. See Roadmap Phase 9.16.
-- **`ai-sessions/`**: Sample AI assistant conversation files in gemini-scribe callout format (YAML frontmatter with session metadata, `> [!user]+`/`> [!assistant]+`/`> [!metadata]-` callouts), prompt files, and skill files. Tests session parsing, resume, and prompt/skill discovery. See Roadmap Phase 9.12.
+- **`agent-assets/`**: Sample `AGENTS.md`, prompt files, and skill files for external runtime integration. If Vulcan later adds session export/import, extend this fixture with transcript examples. See Roadmap Phase 9.12.
 - **`daily-events/`**: Daily notes with structured event syntax under `## Schedule` headings (`- 09:00-10:00 Meeting @location(Zoom) #work`, `- all-day Holiday`). Tests event parsing, time range extraction, metadata (@key(value)) and tag parsing, lenient handling of non-event list items, and `events` cache table population. See Roadmap Phase 9.16.3.
 - **`note-crud/`**: Notes for testing single-note CRUD operations: `note get` with heading/block-ref/lines/match selectors, `note set` with frontmatter preservation, `note create` with templates, `note append` under headings, `note patch` with single-match safety and regex patterns, and `--check` post-write diagnostics. See Roadmap 9.18.2.
 - **`js-runtime/`**: JS scripts testing the vault API: `vault.note()` properties, `vault.graph` traversal, `vault.notes().where().sortBy()` collection operations, `vault.transaction()` atomicity, sandbox enforcement (memory/CPU limits, tier access restrictions), and `help()` introspection. See Roadmap 9.18.5.
@@ -1319,10 +1260,10 @@ The implementation agent should treat the following as mandatory:
 - **Backend abstraction for vector store** — **P1** — Necessary because `sqlite-vec` is still pre-v1.
 - **Doctor/verify command** — **P1** — Operational quality feature, not optional tooling.
 - **Two-level command hierarchy** — **P1** — Clean grouping (`note`, `refactor`, `daily`, `web`, `run`, `git`, `help`) for both human discoverability and agent tool mapping.
-- **Single-note CRUD (`note get/set/create/append/patch`)** — **P1** — Required for AI assistant to read/write individual notes without shell access.
+- **Single-note CRUD (`note get/set/create/append/patch`)** — **P1** — Required for AI integrations to read/write individual notes without shell access.
 - **`note patch` single-match safety** — **P1** — Fail on multiple matches by default to prevent unintended bulk edits from agent tool calls.
 - **JS runtime sandbox enforcement** — **P1** — Tiered sandbox (strict/fs/net/none) with resource limits must be correct and tested.
-- **CLI-to-tool 1:1 mapping** — **P1** — Every AI assistant tool (9.12.2) maps to a CLI command. Same behavior, same output format.
+- **CLI-to-tool 1:1 mapping** — **P1** — Every agent-facing tool maps to a CLI command. Same behavior, same output format.
 
 ## References
 
