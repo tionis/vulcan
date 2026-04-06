@@ -4183,7 +4183,7 @@
       },
       {
         "about": "Fetch and search external web content",
-        "after_help": "Subcommands:\n  search      query the configured web search backend\n  fetch       fetch one URL as markdown, html, or raw content\n\nNotes:\n  `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.\n  `web fetch --extract-article` prefers `<article>`/`<main>` content when present.\n  `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.\n\nExamples:\n  vulcan web search \"release notes\" --limit 5\n  vulcan web fetch https://example.com --mode markdown\n  vulcan web fetch https://example.com --mode raw --save page.bin",
+        "after_help": "Subcommands:\n  search      query the configured web search backend\n  fetch       fetch one URL as markdown, html, or raw content\n\nNotes:\n  `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.\n  `duckduckgo` is the default backend and works without an API key.\n  `auto` prefers Kagi, Exa, Tavily, then Brave when their API key env vars are set, and falls back to DuckDuckGo.\n  `web fetch --extract-article` prefers `<article>`/`<main>` content when present.\n  `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.\n\nExamples:\n  vulcan web search \"release notes\" --limit 5\n  vulcan web search \"release notes\" --backend duckduckgo\n  vulcan web fetch https://example.com --mode markdown\n  vulcan web fetch https://example.com --mode raw --save page.bin",
         "name": "web",
         "options": [],
         "subcommands": [
@@ -4203,11 +4203,12 @@
                 ]
               },
               {
-                "help": "Override the configured search backend (kagi, exa, tavily, brave, auto)",
+                "help": "Override the configured search backend (duckduckgo, kagi, exa, tavily, brave, auto)",
                 "id": "backend",
                 "long": "backend",
                 "possible_values": [
                   "auto",
+                  "duckduckgo",
                   "kagi",
                   "exa",
                   "tavily",

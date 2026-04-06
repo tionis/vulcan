@@ -2907,20 +2907,20 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 
 **Recommended priority order** (within the Wave 6+ window where most 9.19 items land):
 
-1. **9.19.1** (bug fixes) — broken things first
-2. **9.19.5** (DQL completeness) — core functionality gap blocking real queries
-3. **9.19.4** (help polish) — first impression for new users
-4. **9.19.2** (run improvements) — developer experience, `--eval` is quick win
-5. **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
-6. **9.19.6** (missing commands) — filling gaps, MCP server
-7. **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
-8. **9.19.9** (command clarity) — docs and naming, low effort
-9. **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
-10. **9.19.7** (reorg) — after everything above is built, reorganize in one pass
-11. **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
-12. **9.19.12** (plugins) — after permissions design is clear
-13. **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
-14. **9.19.14** (binary size) — informational, anytime
+1. [x] **9.19.1** (bug fixes) — broken things first
+2. [x] **9.19.5** (DQL completeness) — core functionality gap blocking real queries
+3. [-] **9.19.4** (help polish) — first impression for new users
+4. [ ] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
+5. [-] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
+6. [-] **9.19.6** (missing commands) — filling gaps, MCP server
+7. [ ] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
+8. [ ] **9.19.9** (command clarity) — docs and naming, low effort
+9. [ ] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
+10. [ ] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
+11. [ ] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
+12. [ ] **9.19.12** (plugins) — after permissions design is clear
+13. [ ] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
+14. [ ] **9.19.14** (binary size) — informational, anytime
 
 #### 9.19.1 Bug fixes
 
@@ -3337,10 +3337,11 @@ Make the search backend an explicit enum (`SearchBackend`) and add support for a
 - [x] Implement Tavily search backend: `api_key_env = "TAVILY_API_KEY"`
 - [x] Implement Brave Search backend: `api_key_env = "BRAVE_API_KEY"`
 - [x] Change default backend order: Kagi (if key present) → Exa (if key present) → Tavily (if key present) → Brave (if key present) → error with setup instructions
-- [ ] For `web fetch`, evaluate Tavily Extract and Firecrawl as alternatives to the current readability-based extraction
-- [ ] Add duckduckgo backend
-- [ ] Use duckduckgo backend as default backend as it can work without an api key
-- [ ] Update config documentation with backend options and per-provider examples
+- [x] For `web fetch`, evaluate Tavily Extract and Firecrawl as alternatives to the current readability-based extraction
+  See `docs/investigations/web_fetch_extract_backends.md`.
+- [x] Add duckduckgo backend
+- [x] Use duckduckgo backend as default backend as it can work without an api key
+- [x] Update config documentation with backend options and per-provider examples
 
 #### 9.19.11 Settings TUI
 

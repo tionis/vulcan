@@ -343,11 +343,14 @@ Subcommands:
 
 Notes:
   `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.
+  `duckduckgo` is the default backend and works without an API key.
+  `auto` prefers Kagi, Exa, Tavily, then Brave when their API key env vars are set, and falls back to DuckDuckGo.
   `web fetch --extract-article` prefers `<article>`/`<main>` content when present.
   `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.
 
 Examples:
   vulcan web search \"release notes\" --limit 5
+  vulcan web search \"release notes\" --backend duckduckgo
   vulcan web fetch https://example.com --mode markdown
   vulcan web fetch https://example.com --mode raw --save page.bin";
 
@@ -1455,7 +1458,7 @@ pub enum WebCommand {
         #[arg(
             long,
             value_enum,
-            help = "Override the configured search backend (kagi, exa, tavily, brave, auto)"
+            help = "Override the configured search backend (duckduckgo, kagi, exa, tavily, brave, auto)"
         )]
         backend: Option<SearchBackendArg>,
         #[arg(
@@ -1490,6 +1493,8 @@ pub enum WebFetchMode {
 pub enum SearchBackendArg {
     /// Auto-detect: use the first backend whose API key env var is set.
     Auto,
+    /// `DuckDuckGo` HTML search.
+    Duckduckgo,
     /// Kagi Search.
     Kagi,
     /// Exa (formerly Metaphor) neural search.
