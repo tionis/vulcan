@@ -70,17 +70,18 @@ use vulcan_core::{
     evaluate_base_file, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
     evaluate_dql, evaluate_note_inline_expressions, evaluate_tasks_query,
     expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index,
-    extract_tasknote, git_blame, git_diff, git_recent_log, git_status, initialize_vault,
+    extract_tasknote, git_blame, git_diff, git_log, git_recent_log, git_status, initialize_vault,
     inspect_base_file, inspect_cache, link_mentions, list_checkpoints, list_daily_note_events,
     list_saved_reports, load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
     load_saved_report, load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card,
     move_note, parse_dql_with_diagnostics, parse_tasknote_natural_language,
     parse_tasknote_reminders, parse_tasknote_time_entries, parse_tasks_query,
-    period_range_for_date, plan_base_note_create, query_change_report, query_notes,
-    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note, save_saved_report,
-    scan_vault_with_progress, search_vault, shape_tasks_query_result, step_period_start,
-    task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
+    period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
+    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, repair_fts, resolve_link, resolve_note_reference,
+    resolve_periodic_note, save_saved_report, scan_vault_with_progress, search_vault,
+    shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
+    tasknotes_default_date_value, tasknotes_default_recurrence_rule,
     tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
     tasknotes_status_state, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
     BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
@@ -94,18 +95,18 @@ use vulcan_core::{
     GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
     JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
     KanbanImporter, KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteQuery, NoteRecord,
-    NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
-    PeriodicNotesImporter, PluginImporter, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
-    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
-    WatchReport,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput,
+    PeriodicConfig, PeriodicNotesImporter, PluginImporter, QueryReport, RebuildQuery,
+    RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
+    TaskNotesImporter, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
+    TaskNotesSavedViewNode, TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig,
+    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -1526,6 +1527,32 @@ struct NotePatchReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteInfoReport {
+    path: String,
+    matched_by: NoteMatchKind,
+    word_count: usize,
+    heading_count: usize,
+    outgoing_link_count: usize,
+    backlink_count: usize,
+    alias_count: usize,
+    tag_count: usize,
+    file_size: i64,
+    tags: Vec<String>,
+    frontmatter_keys: Vec<String>,
+    created_at_ms: Option<i64>,
+    created_at: Option<String>,
+    modified_at_ms: Option<i64>,
+    modified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteHistoryReport {
+    path: String,
+    limit: usize,
+    entries: Vec<GitLogEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct NoteDoctorReport {
     path: String,
     diagnostics: Vec<DoctorDiagnosticIssue>,
@@ -1767,6 +1794,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
             command,
             NoteCommand::Links { .. }
                 | NoteCommand::Backlinks { .. }
+                | NoteCommand::Info { .. }
                 | NoteCommand::Doctor { .. }
                 | NoteCommand::Diff { .. }
         ),
@@ -10518,6 +10546,84 @@ fn run_note_patch_command(
     })
 }
 
+fn run_note_info_command(paths: &VaultPaths, note: &str) -> Result<NoteInfoReport, CliError> {
+    let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
+    let absolute_path = paths.vault_root().join(&resolved.path);
+    let source = fs::read_to_string(&absolute_path).map_err(CliError::operation)?;
+    let metadata = fs::metadata(&absolute_path).map_err(CliError::operation)?;
+    let config = load_vault_config(paths).config;
+    let parsed = vulcan_core::parse_document(&source, &config);
+    let outgoing = query_links(paths, &resolved.path).map_err(CliError::operation)?;
+    let backlinks = query_backlinks(paths, &resolved.path).map_err(CliError::operation)?;
+
+    let mut tags = parsed
+        .tags
+        .iter()
+        .map(|tag| tag.tag_text.clone())
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+
+    let mut frontmatter_keys = parsed
+        .frontmatter
+        .as_ref()
+        .and_then(YamlValue::as_mapping)
+        .map(|mapping| {
+            mapping
+                .keys()
+                .filter_map(YamlValue::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    frontmatter_keys.sort();
+
+    let modified_at_ms = metadata
+        .modified()
+        .ok()
+        .or_else(|| metadata.created().ok())
+        .and_then(system_time_to_millis);
+    let created_at_ms = metadata
+        .created()
+        .ok()
+        .or_else(|| metadata.modified().ok())
+        .and_then(system_time_to_millis)
+        .or(modified_at_ms);
+
+    Ok(NoteInfoReport {
+        path: resolved.path,
+        matched_by: resolved.matched_by,
+        word_count: note_word_count(&source),
+        heading_count: parsed.headings.len(),
+        outgoing_link_count: outgoing.links.len(),
+        backlink_count: backlinks.backlinks.len(),
+        alias_count: parsed.aliases.len(),
+        tag_count: tags.len(),
+        file_size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+        tags,
+        frontmatter_keys,
+        created_at_ms,
+        created_at: created_at_ms.map(format_utc_timestamp_ms),
+        modified_at_ms,
+        modified_at: modified_at_ms.map(format_utc_timestamp_ms),
+    })
+}
+
+fn run_note_history_command(
+    paths: &VaultPaths,
+    note: &str,
+    limit: usize,
+) -> Result<NoteHistoryReport, CliError> {
+    let relative_path = resolve_existing_note_path(paths, note)?;
+    let entries =
+        git_log(paths.vault_root(), &relative_path, limit).map_err(CliError::operation)?;
+    Ok(NoteHistoryReport {
+        path: relative_path,
+        limit,
+        entries,
+    })
+}
+
 fn run_note_doctor_command(paths: &VaultPaths, note: &str) -> Result<NoteDoctorReport, CliError> {
     let (relative_path, source) = read_existing_note_source(paths, note)?;
     let diagnostics = diagnose_note_contents(paths, &relative_path, &source)?;
@@ -10525,6 +10631,65 @@ fn run_note_doctor_command(paths: &VaultPaths, note: &str) -> Result<NoteDoctorR
         path: relative_path,
         diagnostics,
     })
+}
+
+fn note_word_count(source: &str) -> usize {
+    let body = note_body_without_frontmatter(source);
+    body.lines()
+        .filter_map(normalize_note_word_line)
+        .flat_map(str::split_whitespace)
+        .count()
+}
+
+fn note_body_without_frontmatter(source: &str) -> &str {
+    find_frontmatter_block(source).map_or(source, |(_, _, end)| &source[end..])
+}
+
+fn normalize_note_word_line(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || is_block_ref_only_line(trimmed) {
+        return None;
+    }
+
+    let trimmed = if let Some(level) = markdown_heading_level(trimmed) {
+        trimmed[level..].trim()
+    } else {
+        trimmed
+    };
+    let trimmed = strip_markdown_list_marker(trimmed).trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn is_block_ref_only_line(line: &str) -> bool {
+    line.starts_with('^')
+        && line.len() > 1
+        && line[1..]
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
+fn strip_markdown_list_marker(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    for prefix in ["- ", "* ", "+ "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest;
+        }
+    }
+
+    let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 {
+        let rest = &trimmed[digits..];
+        if let Some(rest) = rest.strip_prefix(". ") {
+            return rest;
+        }
+    }
+
+    trimmed
+}
+
+fn system_time_to_millis(time: std::time::SystemTime) -> Option<i64> {
+    let duration = time.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(duration.as_millis()).ok()
 }
 
 fn read_existing_note_source(paths: &VaultPaths, note: &str) -> Result<(String, String), CliError> {
@@ -14532,6 +14697,88 @@ fn print_note_patch_report(output: OutputFormat, report: &NotePatchReport) -> Re
                 println!("- {} -> {}", change.before, change.after);
             }
             print_note_check_warnings(&report.path, &report.diagnostics);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_note_info_report(output: OutputFormat, report: &NoteInfoReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            println!("{}", report.path);
+            println!("Matched by: {}", note_match_kind_label(&report.matched_by));
+            println!("Words: {}", report.word_count);
+            println!("Headings: {}", report.heading_count);
+            println!(
+                "Links: {} outgoing, {} backlinks",
+                report.outgoing_link_count, report.backlink_count
+            );
+            println!("Aliases: {}", report.alias_count);
+            println!("Size: {} bytes", report.file_size);
+            println!(
+                "Tags: {}",
+                if report.tags.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    report
+                        .tags
+                        .iter()
+                        .map(|tag| format!("#{tag}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            );
+            println!(
+                "Frontmatter: {}",
+                if report.frontmatter_keys.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    report.frontmatter_keys.join(", ")
+                }
+            );
+            println!(
+                "Created: {}",
+                report.created_at.as_deref().unwrap_or("unknown")
+            );
+            println!(
+                "Modified: {}",
+                report.modified_at.as_deref().unwrap_or("unknown")
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn note_match_kind_label(kind: &NoteMatchKind) -> &'static str {
+    match kind {
+        NoteMatchKind::Path => "path",
+        NoteMatchKind::Filename => "filename",
+        NoteMatchKind::Alias => "alias",
+    }
+}
+
+fn print_note_history_report(
+    output: OutputFormat,
+    report: &NoteHistoryReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            if report.entries.is_empty() {
+                println!("No commits for {}.", report.path);
+                return Ok(());
+            }
+            println!("History for {}:", report.path);
+            for entry in &report.entries {
+                println!(
+                    "- {} {} ({}, {})",
+                    entry.commit.chars().take(8).collect::<String>(),
+                    entry.summary,
+                    entry.author_name,
+                    entry.committed_at
+                );
+            }
             Ok(())
         }
         OutputFormat::Json => print_json(report),
@@ -20425,6 +20672,37 @@ mod tests {
                     check: true,
                     dry_run: true,
                     no_commit: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_info_command() {
+        let cli =
+            Cli::try_parse_from(["vulcan", "note", "info", "Dashboard"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::Info {
+                    note: "Dashboard".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_history_command() {
+        let cli = Cli::try_parse_from(["vulcan", "note", "history", "Dashboard", "--limit", "5"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::History {
+                    note: "Dashboard".to_string(),
+                    limit: 5,
                 },
             }
         );

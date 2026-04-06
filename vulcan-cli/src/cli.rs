@@ -245,6 +245,8 @@ Subcommands:
   create      create a new note, optionally from a template and extra frontmatter
   append      append text to the end of a note, at the top, or under a heading
   patch       perform a guarded single-note find/replace
+  info        show one note's summary metadata and graph stats
+  history     show git history scoped to one note
 
 Notes:
   `--check` runs non-blocking doctor-like diagnostics for the resulting note.
@@ -255,6 +257,8 @@ Notes:
 
 Examples:
   vulcan note get Projects/Alpha --heading Status
+  vulcan note info Projects/Alpha
+  vulcan note history Projects/Alpha --limit 5
   vulcan note set Projects/Alpha --no-frontmatter < body.md
   vulcan note create Inbox/Idea --template daily --frontmatter status=idea
   vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"
@@ -2150,6 +2154,22 @@ pub enum NoteCommand {
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
+    },
+    #[command(about = "Show summary metadata and graph stats for one note")]
+    Info {
+        #[arg(help = "Note path, filename, or alias to inspect")]
+        note: String,
+    },
+    #[command(about = "Show git history scoped to one note")]
+    History {
+        #[arg(help = "Note path, filename, or alias to inspect")]
+        note: String,
+        #[arg(
+            long,
+            default_value_t = 10,
+            help = "Maximum number of commits to return"
+        )]
+        limit: usize,
     },
     #[command(about = "List outgoing links for one note")]
     Links {
