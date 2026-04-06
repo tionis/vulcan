@@ -3194,7 +3194,7 @@ The command appears to hang on non-trivial vaults. Needs profiling to determine 
 - [x] Tighten top-N pruning so the similarity cutoff tracks the current worst retained pair, not the just-evicted pair
 - [x] Add progress reporting (incremental output or progress bar) for long-running similarity scans
 - [x] Add `--limit` flag to cap result count and short-circuit early
-- [ ] Consider approximate nearest-neighbor indexing (e.g., HNSW) if brute-force is the bottleneck
+- [x] Consider approximate nearest-neighbor indexing (e.g., HNSW) if brute-force is the bottleneck — deferred for now; the 1.2k-note benchmark keeps the duplicate phase under 1s and the current `VectorStore`/`sqlite-vec` stack does not yet expose ANN-specific capabilities. See `docs/investigations/vector_duplicates_ann.md`.
 
 #### 9.19.2 `vulcan run` improvements
 
