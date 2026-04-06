@@ -531,6 +531,7 @@ const CONFIG_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   show [section] print effective Vulcan config as TOML or JSON
   get <key>      read a single effective config value
+  set <key> <value> write one shared config value with type validation
   import core    import Obsidian core settings into Vulcan config
   import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml
   import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
@@ -542,16 +543,19 @@ Subcommands:
 
 Notes:
   `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.
+  `config set` writes `.vulcan/config.toml`; quote strings when the shell would otherwise strip them.
   Import commands preserve unrelated config sections and overwrite the mapped target keys.
-  Shared flags: --dry-run, --target <shared|local>, --no-commit
+  Import flags: --dry-run, --target <shared|local>, --no-commit
   Use `config import --all` to apply every detected importer in registry order.
   Use `config import --list` to inspect detectable sources without writing.
-  When git auto-commit is enabled for mutations, config imports participate like other mutating commands.
+  When git auto-commit is enabled for mutations, `config set` and config imports participate like other mutating commands.
 
 Examples:
   vulcan config show
   vulcan config show periodic.daily
   vulcan config get periodic.daily.template
+  vulcan config set periodic.daily.template \"Templates/Daily\"
+  vulcan config set web.search.backend brave --dry-run
   vulcan config import core
   vulcan config import dataview
   vulcan config import kanban
@@ -1312,6 +1316,17 @@ pub enum ConfigCommand {
     Get {
         #[arg(help = "Dot-notation config key such as `periodic.daily.template`")]
         key: String,
+    },
+    #[command(about = "Write a single shared config value")]
+    Set {
+        #[arg(help = "Dot-notation config key such as `periodic.daily.template`")]
+        key: String,
+        #[arg(help = "TOML literal or bare string value to write")]
+        value: String,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Import compatible Obsidian plugin settings")]
     Import(ConfigImportSelection),

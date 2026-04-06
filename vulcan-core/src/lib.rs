@@ -45,14 +45,14 @@ pub use config::{
     import_core_plugin_config, import_dataview_plugin_config, import_kanban_plugin_config,
     import_periodic_notes_plugin_config, import_tasknotes_plugin_config,
     import_tasks_plugin_config, import_templater_plugin_config, load_vault_config,
-    AttachmentExtractionConfig, AutoScanMode, ChunkingConfig, ChunkingStrategy, ConfigDiagnostic,
-    ConfigImportError, ConfigImportMapping, ConfigImportReport, ConfigLoadResult, CoreImporter,
-    DataviewConfig, DataviewImporter, EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger,
-    ImportConflict, ImportMigratedFile, ImportMigratedFileAction, ImportSkippedSetting,
-    ImportTarget, InboxConfig, JsRuntimeConfig, JsRuntimeSandbox, KanbanConfig, KanbanImporter,
-    LinkResolutionMode, LinkStylePreference, PeriodicCadenceUnit, PeriodicConfig,
-    PeriodicNoteConfig, PeriodicNotesImporter, PeriodicStartOfWeek, PluginImporter, ScanConfig,
-    SearchBackendKind, TaskNotesConfig, TaskNotesDateDefault, TaskNotesFieldMapping,
+    validate_vulcan_overrides_toml, AttachmentExtractionConfig, AutoScanMode, ChunkingConfig,
+    ChunkingStrategy, ConfigDiagnostic, ConfigImportError, ConfigImportMapping, ConfigImportReport,
+    ConfigLoadResult, CoreImporter, DataviewConfig, DataviewImporter, EmbeddingProviderConfig,
+    GitConfig, GitScope, GitTrigger, ImportConflict, ImportMigratedFile, ImportMigratedFileAction,
+    ImportSkippedSetting, ImportTarget, InboxConfig, JsRuntimeConfig, JsRuntimeSandbox,
+    KanbanConfig, KanbanImporter, LinkResolutionMode, LinkStylePreference, PeriodicCadenceUnit,
+    PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter, PeriodicStartOfWeek, PluginImporter,
+    ScanConfig, SearchBackendKind, TaskNotesConfig, TaskNotesDateDefault, TaskNotesFieldMapping,
     TaskNotesIdentificationMethod, TaskNotesImporter, TaskNotesNlpTriggerConfig,
     TaskNotesPriorityConfig, TaskNotesRecurrenceDefault, TaskNotesSavedViewCondition,
     TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewGroup,
@@ -110,8 +110,8 @@ pub use parser::{
     RawLink, RawListItem, RawTag, RawTask, RawTaskField, RawTasksBlock,
 };
 pub use paths::{
-    VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER, LOCAL_CONFIG_FILE_NAME,
-    REPORTS_DIR_NAME, VULCAN_DIR_NAME,
+    ensure_vulcan_dir, VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER,
+    LOCAL_CONFIG_FILE_NAME, REPORTS_DIR_NAME, VULCAN_DIR_NAME,
 };
 pub use periodic::{
     expected_periodic_note_path, export_daily_events_to_ics, list_daily_note_events,

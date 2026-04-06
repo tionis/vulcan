@@ -68,46 +68,47 @@ use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, add_kanban_card, all_importers, annotate_import_conflicts,
     archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint, doctor_fix, doctor_vault,
-    evaluate_base_file, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
-    evaluate_dql, evaluate_note_inline_expressions, evaluate_tasks_query,
-    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index,
-    extract_tasknote, git_blame, git_diff, git_log, git_recent_log, git_status, initialize_vault,
-    inspect_base_file, inspect_cache, link_mentions, list_checkpoints, list_daily_note_events,
-    list_saved_reports, load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
-    load_saved_report, load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card,
-    move_note, parse_dql_with_diagnostics, parse_tasknote_natural_language,
-    parse_tasknote_reminders, parse_tasknote_time_entries, parse_tasks_query,
-    period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
-    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, repair_fts, resolve_link, resolve_note_reference,
-    resolve_periodic_note, save_saved_report, scan_vault_with_progress, search_vault,
-    shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
+    ensure_vulcan_dir, evaluate_base_file, evaluate_dataview_js_query,
+    evaluate_dataview_js_with_options, evaluate_dql, evaluate_note_inline_expressions,
+    evaluate_tasks_query, expected_periodic_note_path, export_daily_events_to_ics,
+    export_static_search_index, extract_tasknote, git_blame, git_diff, git_log, git_recent_log,
+    git_status, initialize_vault, inspect_base_file, inspect_cache, link_mentions,
+    list_checkpoints, list_daily_note_events, list_saved_reports, load_dataview_blocks,
+    load_events_for_periodic_note, load_kanban_board, load_saved_report, load_tasks_blocks,
+    load_vault_config, merge_tags, move_kanban_card, move_note, parse_dql_with_diagnostics,
+    parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
+    parse_tasks_query, period_range_for_date, plan_base_note_create, query_backlinks,
+    query_change_report, query_links, query_notes, rebuild_vault_with_progress, rename_alias,
+    rename_block_ref, rename_heading, rename_property, repair_fts, resolve_link,
+    resolve_note_reference, resolve_periodic_note, save_saved_report, scan_vault_with_progress,
+    search_vault, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
     tasknotes_default_date_value, tasknotes_default_recurrence_rule,
     tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
-    tasknotes_status_state, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
-    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
-    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
-    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
-    ClusterReport, ConfigDiagnostic, ConfigImportReport, CoreImporter, DataviewImporter,
-    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
-    PluginImporter, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
-    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
-    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
-    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
+    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
+    BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
+    ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic, ConfigImportReport,
+    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
+    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
+    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
+    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
+    KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
+    PeriodicNotesImporter, PluginImporter, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
+    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 
 #[derive(Debug)]
@@ -1592,6 +1593,17 @@ struct ConfigShowReport {
 struct ConfigGetReport {
     key: String,
     value: Value,
+    diagnostics: Vec<ConfigDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ConfigSetReport {
+    key: String,
+    value: Value,
+    config_path: PathBuf,
+    created_config: bool,
+    updated: bool,
+    dry_run: bool,
     diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -12813,6 +12825,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 run_config_show(&paths, cli.output, section.as_deref())
             }
             ConfigCommand::Get { key } => run_config_get(&paths, cli.output, key),
+            ConfigCommand::Set {
+                key,
+                value,
+                dry_run,
+                no_commit,
+            } => run_config_set(&paths, cli.output, key, value, *dry_run, *no_commit),
             ConfigCommand::Import(selection) => {
                 if selection.command.is_some() && (selection.all || selection.list) {
                     return Err(CliError::operation(
@@ -14940,6 +14958,64 @@ fn run_config_get(paths: &VaultPaths, output: OutputFormat, key: &str) -> Result
     print_config_get_report(output, &report)
 }
 
+fn run_config_set(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    key: &str,
+    raw_value: &str,
+    dry_run: bool,
+    no_commit: bool,
+) -> Result<(), CliError> {
+    let loaded = load_vault_config(paths);
+    let json_config = serde_json::to_value(&loaded.config).map_err(CliError::operation)?;
+    select_config_json_value(&json_config, key)?;
+
+    let key_path = parse_config_path(key, "key")?;
+    let storage_path = writable_config_storage_path(&key_path, key)?;
+    let value = parse_config_set_value(raw_value);
+    let value_json = serde_json::to_value(&value).map_err(CliError::operation)?;
+
+    let config_path = paths.config_file().to_path_buf();
+    let created_config = !config_path.exists();
+    let had_gitignore = paths.gitignore_file().exists();
+    let existing_contents = fs::read_to_string(&config_path).ok();
+    let mut config_value = load_config_file_toml(&config_path)?;
+    set_config_toml_value(&mut config_value, &storage_path, value.clone())?;
+    let rendered = toml::to_string_pretty(&config_value).map_err(CliError::operation)?;
+    validate_vulcan_overrides_toml(&rendered).map_err(CliError::operation)?;
+    let updated = existing_contents.as_deref() != Some(rendered.as_str());
+
+    if !dry_run && updated {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+        warn_auto_commit_if_needed(&auto_commit, false);
+        ensure_vulcan_dir(paths).map_err(CliError::operation)?;
+        fs::write(&config_path, rendered).map_err(CliError::operation)?;
+        auto_commit
+            .commit(
+                paths,
+                "config-set",
+                &config_set_changed_files(paths, had_gitignore),
+            )
+            .map_err(CliError::operation)?;
+    }
+
+    let diagnostics = if dry_run || !updated {
+        normalize_config_diagnostics(paths, &loaded.diagnostics)
+    } else {
+        normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics)
+    };
+    let report = ConfigSetReport {
+        key: key.to_string(),
+        value: value_json,
+        config_path: relativize_config_import_path(paths, &config_path),
+        created_config,
+        updated,
+        dry_run,
+        diagnostics,
+    };
+    print_config_set_report(output, &report)
+}
+
 fn select_config_json_section(config: &Value, section: Option<&str>) -> Result<Value, CliError> {
     let Some(section) = section else {
         return Ok(config.clone());
@@ -14985,6 +15061,21 @@ fn select_config_toml_section(
     Ok(current.clone())
 }
 
+fn writable_config_storage_path<'a>(
+    key_path: &[&'a str],
+    key: &str,
+) -> Result<Vec<&'a str>, CliError> {
+    match key_path {
+        ["link_resolution"] => Ok(vec!["links", "resolution"]),
+        ["link_style"] => Ok(vec!["links", "style"]),
+        ["attachment_folder"] => Ok(vec!["links", "attachment_folder"]),
+        ["strict_line_breaks"] | ["property_types", ..] => Err(CliError::operation(format!(
+            "config key `{key}` is not writable via `config set`"
+        ))),
+        _ => Ok(key_path.to_vec()),
+    }
+}
+
 fn parse_config_path<'a>(path: &'a str, kind: &str) -> Result<Vec<&'a str>, CliError> {
     if path.is_empty() || path.starts_with('.') || path.ends_with('.') {
         return Err(CliError::operation(format!(
@@ -14998,6 +15089,80 @@ fn parse_config_path<'a>(path: &'a str, kind: &str) -> Result<Vec<&'a str>, CliE
         )));
     }
     Ok(parts)
+}
+
+fn parse_config_set_value(raw_value: &str) -> TomlValue {
+    raw_value
+        .parse::<TomlValue>()
+        .unwrap_or_else(|_| TomlValue::String(raw_value.to_string()))
+}
+
+fn load_config_file_toml(path: &Path) -> Result<TomlValue, CliError> {
+    if !path.exists() {
+        return Ok(TomlValue::Table(toml::map::Map::new()));
+    }
+
+    let contents = fs::read_to_string(path).map_err(CliError::operation)?;
+    if contents.trim().is_empty() {
+        return Ok(TomlValue::Table(toml::map::Map::new()));
+    }
+
+    let value = contents.parse::<TomlValue>().map_err(|error| {
+        CliError::operation(format!("failed to parse {}: {error}", path.display()))
+    })?;
+    if !value.is_table() {
+        return Err(CliError::operation(format!(
+            "expected {} to contain a TOML table",
+            path.display()
+        )));
+    }
+    Ok(value)
+}
+
+fn set_config_toml_value(
+    config: &mut TomlValue,
+    path: &[&str],
+    value: TomlValue,
+) -> Result<(), CliError> {
+    let Some(root) = config.as_table_mut() else {
+        return Err(CliError::operation(
+            "expected config file to contain a TOML table".to_string(),
+        ));
+    };
+
+    set_config_toml_value_in_table(root, path, value)
+}
+
+fn set_config_toml_value_in_table(
+    table: &mut toml::map::Map<String, TomlValue>,
+    path: &[&str],
+    value: TomlValue,
+) -> Result<(), CliError> {
+    let Some((segment, rest)) = path.split_first() else {
+        return Err(CliError::operation(
+            "config key cannot be empty".to_string(),
+        ));
+    };
+
+    if rest.is_empty() {
+        table.insert((*segment).to_string(), value);
+        return Ok(());
+    }
+
+    let entry = table
+        .entry((*segment).to_string())
+        .or_insert_with(|| TomlValue::Table(toml::map::Map::new()));
+    if !entry.is_table() {
+        *entry = TomlValue::Table(toml::map::Map::new());
+    }
+    let Some(child_table) = entry.as_table_mut() else {
+        return Err(CliError::operation(format!(
+            "expected config key `{}` to contain a table",
+            path[..path.len() - rest.len()].join(".")
+        )));
+    };
+
+    set_config_toml_value_in_table(child_table, rest, value)
 }
 
 fn normalize_config_diagnostics(
@@ -15056,6 +15221,53 @@ fn print_config_get_report(output: OutputFormat, report: &ConfigGetReport) -> Re
     }
 }
 
+fn print_config_set_report(output: OutputFormat, report: &ConfigSetReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human => {
+            let rendered_value =
+                serde_json::to_string(&report.value).map_err(CliError::operation)?;
+            if report.dry_run {
+                if report.updated {
+                    println!(
+                        "Would set {} = {} in {}",
+                        report.key,
+                        rendered_value,
+                        report.config_path.display()
+                    );
+                } else {
+                    println!(
+                        "No changes for {} in {}",
+                        report.key,
+                        report.config_path.display()
+                    );
+                }
+            } else if report.updated {
+                println!(
+                    "Set {} = {} in {}",
+                    report.key,
+                    rendered_value,
+                    report.config_path.display()
+                );
+            } else {
+                println!(
+                    "No changes for {} in {}",
+                    report.key,
+                    report.config_path.display()
+                );
+            }
+            for diagnostic in &report.diagnostics {
+                eprintln!(
+                    "warning: {}: {}",
+                    diagnostic.path.display(),
+                    diagnostic.message
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
 fn print_config_value_human(value: &Value) -> Result<(), CliError> {
     match value {
         Value::Null => println!("null"),
@@ -15083,6 +15295,14 @@ fn wrap_config_section_toml(section: &str, value: TomlValue) -> Result<TomlValue
         wrapped = TomlValue::Table(table);
     }
     Ok(wrapped)
+}
+
+fn config_set_changed_files(paths: &VaultPaths, had_gitignore: bool) -> Vec<String> {
+    let mut changed = vec![".vulcan/config.toml".to_string()];
+    if !had_gitignore && paths.gitignore_file().exists() {
+        changed.push(".vulcan/.gitignore".to_string());
+    }
+    changed
 }
 
 fn config_import_target(target: ConfigImportTargetArg) -> ImportTarget {
@@ -21310,6 +21530,32 @@ mod tests {
             Command::Config {
                 command: ConfigCommand::Get {
                     key: "periodic.daily.template".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_set_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "config",
+            "set",
+            "periodic.daily.template",
+            "Templates/Daily",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Set {
+                    key: "periodic.daily.template".to_string(),
+                    value: "Templates/Daily".to_string(),
+                    dry_run: true,
+                    no_commit: true,
                 },
             }
         );
