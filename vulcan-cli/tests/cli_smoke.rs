@@ -70,6 +70,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("checkpoint"))
             .and(predicate::str::contains("changes"))
             .and(predicate::str::contains("diff"))
+            .and(predicate::str::contains("today"))
             .and(predicate::str::contains("daily"))
             .and(predicate::str::contains("weekly"))
             .and(predicate::str::contains("monthly"))
@@ -1036,6 +1037,36 @@ fn note_append_periodic_creates_note_and_renders_quickadd_tokens() {
     assert_eq!(json["reference_date"], "2026-04-03");
     assert!(json["created"].as_bool().is_some_and(|created| created));
     assert!(rendered.contains("- release-planning due 2026-04-05\n"));
+}
+
+#[test]
+fn today_alias_json_output_opens_daily_note() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+
+    let assert = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "today",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["period_type"], "daily");
+    assert_eq!(json["reference_date"], "2026-04-04");
+    assert_eq!(json["path"], "Journal/Daily/2026-04-04.md");
+    assert!(json["created"].as_bool().is_some_and(|created| created));
+    assert!(json["opened_editor"]
+        .as_bool()
+        .is_some_and(|opened| !opened));
+    assert!(vault_root.join("Journal/Daily/2026-04-04.md").exists());
 }
 
 #[test]

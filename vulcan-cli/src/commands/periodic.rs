@@ -79,6 +79,24 @@ pub(crate) fn handle_daily_command(
     }
 }
 
+pub(crate) fn handle_today_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    no_edit: bool,
+    no_commit: bool,
+    interactive_note_selection: bool,
+) -> Result<(), CliError> {
+    let report = crate::run_periodic_open_command(
+        paths,
+        "daily",
+        None,
+        no_edit,
+        no_commit,
+        interactive_note_selection,
+    )?;
+    crate::print_periodic_open_report(cli.output, &report)
+}
+
 pub(crate) fn handle_weekly_command(
     cli: &Cli,
     paths: &VaultPaths,
