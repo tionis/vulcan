@@ -3314,8 +3314,8 @@ Most commands show only flags in their `--help` output. Add 2–3 concrete usage
 
 Evaluate whether `describe` is still needed as a user-facing command or should be hidden/internal-only, given the improved `help` system.
 
-- [ ] If `describe` is only useful for LLM harness integration, move it to `vulcan describe` (keep it but remove from the main help listing, mark as `hide = true` in clap)
-- [ ] Ensure `help` covers all use cases that a human user would have used `describe` for
+- [x] If `describe` is only useful for LLM harness integration, move it to `vulcan describe` (keep it but remove from the main help listing, mark as `hide = true` in clap)
+- [x] Ensure `help` covers all use cases that a human user would have used `describe` for
 
 #### 9.19.5 DQL completeness
 

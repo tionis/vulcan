@@ -6943,29 +6943,6 @@
         "subcommands": []
       },
       {
-        "about": "Describe the CLI schema and command surface",
-        "after_help": "Output:\n  json-schema    runtime CLI schema with commands, options, defaults, and after-help text\n  openai-tools   OpenAI function-calling tool definitions\n  mcp            MCP-style tool definitions\n\nExamples:\n  vulcan describe\n  vulcan describe --format openai-tools\n  vulcan describe --format mcp\n  vulcan --output json describe > vulcan-schema.json",
-        "name": "describe",
-        "options": [
-          {
-            "help": null,
-            "id": "format",
-            "long": "format",
-            "possible_values": [
-              "json-schema",
-              "openai-tools",
-              "mcp"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "FORMAT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
         "about": "Generate shell completion scripts",
         "after_help": "Examples:\n  vulcan completions bash > ~/.local/share/bash-completion/completions/vulcan\n  vulcan completions fish > ~/.config/fish/completions/vulcan.fish",
         "name": "completions",
