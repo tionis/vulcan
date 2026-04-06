@@ -1016,6 +1016,93 @@ impl PartialOrd for DuplicatesHeapEntry {
     }
 }
 
+struct DuplicateScanRow<'a> {
+    document_path: &'a str,
+    chunk_id: &'a str,
+    embedding: &'a [f32],
+}
+
+fn tracked_duplicate_similarity_floor(
+    heap: &BinaryHeap<DuplicatesHeapEntry>,
+    threshold: f32,
+    limit: usize,
+) -> f32 {
+    if heap.len() < limit {
+        threshold
+    } else {
+        heap.peek()
+            .map_or(threshold, |entry| f32::from_bits(!entry.neg_sim_bits))
+            .max(threshold)
+    }
+}
+
+fn push_duplicate_candidate(
+    heap: &mut BinaryHeap<DuplicatesHeapEntry>,
+    pair: VectorDuplicatePair,
+    threshold: f32,
+    limit: usize,
+) -> f32 {
+    heap.push(DuplicatesHeapEntry {
+        neg_sim_bits: (!pair.similarity.to_bits()),
+        pair,
+    });
+
+    if heap.len() > limit {
+        heap.pop();
+    }
+
+    tracked_duplicate_similarity_floor(heap, threshold, limit)
+}
+
+fn collect_vector_duplicate_pairs<F>(
+    rows: &[DuplicateScanRow<'_>],
+    threshold: f32,
+    limit: usize,
+    progress: F,
+) -> Vec<VectorDuplicatePair>
+where
+    F: Fn(usize, usize),
+{
+    let n = rows.len();
+    let mut heap: BinaryHeap<DuplicatesHeapEntry> = BinaryHeap::with_capacity(limit + 1);
+    let mut min_tracked = threshold;
+
+    for (left_index, left) in rows.iter().enumerate() {
+        progress(left_index, n);
+        for right in rows.iter().skip(left_index + 1) {
+            let similarity = cosine_similarity(left.embedding, right.embedding);
+            if similarity < min_tracked {
+                continue;
+            }
+
+            min_tracked = push_duplicate_candidate(
+                &mut heap,
+                VectorDuplicatePair {
+                    left_document_path: left.document_path.to_string(),
+                    left_chunk_id: left.chunk_id.to_string(),
+                    right_document_path: right.document_path.to_string(),
+                    right_chunk_id: right.chunk_id.to_string(),
+                    similarity,
+                },
+                threshold,
+                limit,
+            );
+        }
+    }
+    progress(n, n);
+
+    let mut pairs: Vec<VectorDuplicatePair> = heap.into_iter().map(|entry| entry.pair).collect();
+    pairs.sort_by(|left, right| {
+        right
+            .similarity
+            .partial_cmp(&left.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.left_chunk_id.cmp(&right.left_chunk_id))
+            .then_with(|| left.right_chunk_id.cmp(&right.right_chunk_id))
+    });
+    pairs
+}
+
 pub fn vector_duplicates(
     paths: &VaultPaths,
     query: &VectorDuplicatesQuery,
@@ -1052,65 +1139,18 @@ where
             .map(|vector| vector.chunk_id.clone())
             .collect::<Vec<_>>(),
     )?;
-
-    let n = vectors.len();
     let limit = query.limit.max(1);
-
-    // Use a bounded min-heap of size `limit` to keep the top-N pairs without collecting all
-    // O(n²) of them. Once the heap is full we raise the similarity floor so inner-loop
-    // candidates below the current worst are skipped early.
-    let mut heap: BinaryHeap<DuplicatesHeapEntry> = BinaryHeap::with_capacity(limit + 1);
-    // The minimum similarity currently tracked. Starts at threshold so we never go below it.
-    let mut min_tracked = query.threshold;
-
-    for (left_index, left) in vectors.iter().enumerate() {
-        progress(left_index, n);
-        for right in vectors.iter().skip(left_index + 1) {
-            let similarity = cosine_similarity(&left.embedding, &right.embedding);
-            if similarity < min_tracked {
-                continue;
-            }
-
-            let Some(left_chunk) = chunks.get(&left.chunk_id) else {
-                continue;
-            };
-            let Some(right_chunk) = chunks.get(&right.chunk_id) else {
-                continue;
-            };
-
-            let pair = VectorDuplicatePair {
-                left_document_path: left_chunk.document_path.clone(),
-                left_chunk_id: left.chunk_id.clone(),
-                right_document_path: right_chunk.document_path.clone(),
-                right_chunk_id: right.chunk_id.clone(),
-                similarity,
-            };
-            heap.push(DuplicatesHeapEntry {
-                neg_sim_bits: (!similarity.to_bits()),
-                pair,
-            });
-
-            // Once the heap exceeds the limit, pop the worst entry and raise the bar.
-            if heap.len() > limit {
-                if let Some(evicted) = heap.pop() {
-                    // The evicted entry had the lowest similarity; raise the cutoff.
-                    let evicted_sim = f32::from_bits(!evicted.neg_sim_bits);
-                    min_tracked = min_tracked.max(evicted_sim);
-                }
-            }
-        }
-    }
-    progress(n, n);
-
-    let mut pairs: Vec<VectorDuplicatePair> = heap.into_iter().map(|e| e.pair).collect();
-    pairs.sort_by(|left, right| {
-        right
-            .similarity
-            .partial_cmp(&left.similarity)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.left_chunk_id.cmp(&right.left_chunk_id))
-            .then_with(|| left.right_chunk_id.cmp(&right.right_chunk_id))
-    });
+    let rows = vectors
+        .iter()
+        .filter_map(|vector| {
+            chunks.get(&vector.chunk_id).map(|chunk| DuplicateScanRow {
+                document_path: chunk.document_path.as_str(),
+                chunk_id: vector.chunk_id.as_str(),
+                embedding: &vector.embedding,
+            })
+        })
+        .collect::<Vec<_>>();
+    let pairs = collect_vector_duplicate_pairs(&rows, query.threshold, limit, progress);
 
     Ok(VectorDuplicatesReport {
         provider_name: active_model.provider_name,
@@ -2097,6 +2137,103 @@ mod tests {
             .iter()
             .any(|hit| hit.document_path == "assets/logo.png"));
         server.shutdown();
+    }
+
+    #[test]
+    fn duplicate_scan_floor_tracks_current_worst_retained_pair() {
+        let mut heap = BinaryHeap::new();
+        let threshold = 0.5;
+        let limit = 2;
+
+        let floor = push_duplicate_candidate(
+            &mut heap,
+            VectorDuplicatePair {
+                left_document_path: "DocA.md".to_string(),
+                left_chunk_id: "chunk-a".to_string(),
+                right_document_path: "DocB.md".to_string(),
+                right_chunk_id: "chunk-b".to_string(),
+                similarity: 0.6,
+            },
+            threshold,
+            limit,
+        );
+        assert!((floor - 0.5).abs() < f32::EPSILON);
+
+        let floor = push_duplicate_candidate(
+            &mut heap,
+            VectorDuplicatePair {
+                left_document_path: "DocC.md".to_string(),
+                left_chunk_id: "chunk-c".to_string(),
+                right_document_path: "DocD.md".to_string(),
+                right_chunk_id: "chunk-d".to_string(),
+                similarity: 0.8,
+            },
+            threshold,
+            limit,
+        );
+        assert!((floor - 0.6).abs() < f32::EPSILON);
+
+        let floor = push_duplicate_candidate(
+            &mut heap,
+            VectorDuplicatePair {
+                left_document_path: "DocE.md".to_string(),
+                left_chunk_id: "chunk-e".to_string(),
+                right_document_path: "DocF.md".to_string(),
+                right_chunk_id: "chunk-f".to_string(),
+                similarity: 0.9,
+            },
+            threshold,
+            limit,
+        );
+        assert!((floor - 0.8).abs() < f32::EPSILON);
+        assert_eq!(heap.len(), 2);
+        assert!(
+            (tracked_duplicate_similarity_floor(&heap, threshold, limit) - 0.8).abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark-style regression test; run manually with --ignored --nocapture"]
+    fn vector_duplicates_benchmark_large_synthetic_scan() {
+        let document_paths = (0..1_200_usize)
+            .map(|index| format!("Bench/Doc{index:04}.md"))
+            .collect::<Vec<_>>();
+        let chunk_ids = (0..1_200_usize)
+            .map(|index| format!("chunk-{index:04}"))
+            .collect::<Vec<_>>();
+        let embeddings = (0..1_200_usize)
+            .map(|index| {
+                let cluster = (index % 12) as f32;
+                let offset = (index / 12) as f32 * 0.0001;
+                vec![1.0, cluster * 0.01 + offset, offset, 0.5]
+            })
+            .collect::<Vec<_>>();
+        let rows = document_paths
+            .iter()
+            .zip(chunk_ids.iter())
+            .zip(embeddings.iter())
+            .map(|((document_path, chunk_id), embedding)| DuplicateScanRow {
+                document_path: document_path.as_str(),
+                chunk_id: chunk_id.as_str(),
+                embedding,
+            })
+            .collect::<Vec<_>>();
+
+        let started = Instant::now();
+        let pairs = collect_vector_duplicate_pairs(&rows, 0.99, 25, |_, _| {});
+        eprintln!(
+            "scanned {} synthetic vectors in {:?}, retained {} pairs",
+            rows.len(),
+            started.elapsed(),
+            pairs.len()
+        );
+
+        assert!(!pairs.is_empty());
+        assert!(pairs.len() <= 25);
+        assert!(pairs
+            .windows(2)
+            .all(|window| window[0].similarity >= window[1].similarity));
     }
 
     #[test]
