@@ -745,6 +745,68 @@ fn note_get_human_output_adds_line_numbers_unless_raw() {
 }
 
 #[test]
+fn note_info_json_output_reports_summary_metadata() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    fs::write(vault_root.join("Reference.md"), "# Reference\n")
+        .expect("reference note should exist");
+    fs::write(vault_root.join("Inbox.md"), "[[Dashboard]]\n").expect("backlink note should exist");
+    let dashboard = fs::read_to_string(vault_root.join("Dashboard.md"))
+        .expect("dashboard note should be readable");
+    fs::write(
+        vault_root.join("Dashboard.md"),
+        format!("{dashboard}\n[[Reference]]\n"),
+    )
+    .expect("dashboard note should be updated");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "info",
+            "Dashboard.md",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["path"], "Dashboard.md");
+    assert_eq!(json["matched_by"], "path");
+    assert_eq!(json["heading_count"], 4);
+    assert_eq!(json["outgoing_link_count"], 1);
+    assert_eq!(json["backlink_count"], 1);
+    assert_eq!(json["alias_count"], 0);
+    assert_eq!(json["tag_count"], 1);
+    assert_eq!(json["tags"], serde_json::json!(["project"]));
+    assert_eq!(
+        json["frontmatter_keys"],
+        serde_json::json!(["status", "tags"])
+    );
+    assert!(json["file_size"].as_i64().is_some_and(|size| size > 0));
+    assert!(json["word_count"].as_u64().is_some_and(|count| count > 0));
+    assert!(json["created_at_ms"]
+        .as_i64()
+        .is_some_and(|value| value > 0));
+    assert!(json["modified_at_ms"]
+        .as_i64()
+        .is_some_and(|value| value > 0));
+    assert!(json["created_at"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+    assert!(json["modified_at"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+}
+
+#[test]
 fn note_set_preserves_frontmatter_and_reports_check_diagnostics() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -1084,6 +1146,55 @@ fn note_patch_enforces_match_safety_and_supports_regex_dry_runs() {
     assert_eq!(json["changes"][0]["before"], "2026-04-03");
     assert_eq!(json["changes"][0]["after"], "DATE");
     assert_eq!(rendered, "TODO 2026-04-03\nTODO 2026-05-01\n");
+}
+
+#[test]
+fn note_history_json_output_filters_commits_to_one_note() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    init_git_repo(&vault_root);
+    fs::write(vault_root.join("Dashboard.md"), "# Dashboard\n")
+        .expect("dashboard note should exist");
+    fs::write(vault_root.join("Other.md"), "# Other\n").expect("other note should exist");
+    commit_all(&vault_root, "Initial");
+
+    fs::write(vault_root.join("Dashboard.md"), "# Dashboard\nUpdated\n")
+        .expect("dashboard note should update");
+    run_git_ok(&vault_root, &["add", "Dashboard.md"]);
+    run_git_ok(&vault_root, &["commit", "-m", "Update dashboard"]);
+
+    fs::write(vault_root.join("Other.md"), "# Other\nUpdated\n").expect("other note should update");
+    run_git_ok(&vault_root, &["add", "Other.md"]);
+    run_git_ok(&vault_root, &["commit", "-m", "Update other"]);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "history",
+            "Dashboard.md",
+            "--limit",
+            "10",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let entries = json["entries"]
+        .as_array()
+        .expect("entries should be an array");
+
+    assert_eq!(json["path"], "Dashboard.md");
+    assert_eq!(json["limit"], 10);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["summary"], "Update dashboard");
+    assert_eq!(entries[1]["summary"], "Initial");
 }
 
 #[test]

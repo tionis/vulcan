@@ -184,6 +184,14 @@ pub(crate) fn handle_note_command(
             }
             crate::print_note_patch_report(cli.output, &report)
         }
+        NoteCommand::Info { note } => {
+            let report = crate::run_note_info_command(paths, note)?;
+            crate::print_note_info_report(cli.output, &report)
+        }
+        NoteCommand::History { note, limit } => {
+            let report = crate::run_note_history_command(paths, note, *limit)?;
+            crate::print_note_history_report(cli.output, &report)
+        }
         NoteCommand::Links { note, export } => {
             let note =
                 resolve_note_argument(paths, note.as_deref(), interactive_note_selection, "note")?;
