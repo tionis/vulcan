@@ -18,7 +18,7 @@ pub use cli::{
     ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
     DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs, ExportCommand, ExportFormat,
     GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg,
-    NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryFormatArg,
+    NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryEngineArg, QueryFormatArg,
     RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchMode, SearchSortArg,
     SearchBackendArg, SuggestCommand, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
     TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
@@ -12231,6 +12231,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Query {
             ref dsl,
             ref json,
+            engine,
             format,
             ref glob,
             explain,
@@ -12241,6 +12242,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             &paths,
             dsl.as_deref(),
             json.as_deref(),
+            engine,
             format,
             glob.as_deref(),
             explain,
@@ -22144,6 +22146,7 @@ mod tests {
             Command::Query {
                 dsl: Some("from notes where file.name matches \"^2026-\"".to_string()),
                 json: None,
+                engine: QueryEngineArg::Auto,
                 format: QueryFormatArg::Paths,
                 glob: Some("Projects/**".to_string()),
                 explain: false,

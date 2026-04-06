@@ -3,10 +3,11 @@
 use crate::commit::AutoCommitPolicy;
 use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
-use crate::{warn_auto_commit_if_needed, Cli, CliError};
+use crate::{warn_auto_commit_if_needed, Cli, CliError, QueryEngineArg};
 use vulcan_core::{
-    bulk_set_property, execute_query_report, query_backlinks, query_links, query_notes,
-    search_vault, NoteQuery, QueryAst, QueryReport, SearchQuery, VaultPaths,
+    bulk_set_property, evaluate_dql, execute_query_report, load_vault_config, query_backlinks,
+    query_links, query_notes, search_vault, NoteQuery, QueryAst, QueryReport, SearchQuery,
+    VaultPaths,
 };
 
 pub(crate) fn handle_backlinks_command(
@@ -62,6 +63,7 @@ pub(crate) fn handle_query_command(
     paths: &VaultPaths,
     dsl: Option<&str>,
     json: Option<&str>,
+    engine: QueryEngineArg,
     format: crate::QueryFormatArg,
     glob: Option<&str>,
     explain: bool,
@@ -71,6 +73,24 @@ pub(crate) fn handle_query_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let use_dql = match engine {
+        QueryEngineArg::Dql => true,
+        QueryEngineArg::Dsl => false,
+        QueryEngineArg::Auto => dsl.map_or(false, looks_like_dql),
+    };
+
+    if use_dql {
+        let dql = dsl.ok_or_else(|| {
+            CliError::operation("DQL engine requires a positional query string, not --json")
+        })?;
+        let result = evaluate_dql(paths, dql, None).map_err(CliError::operation)?;
+        let display_result_count = load_vault_config(paths)
+            .config
+            .dataview
+            .display_result_count;
+        return crate::print_dql_query_result(cli.output, &result, display_result_count);
+    }
+
     let ast = match (dsl, json) {
         (Some(_), Some(_)) => {
             return Err(CliError::operation(
@@ -310,3 +330,14 @@ pub(crate) fn handle_search_command(
     }
     Ok(())
 }
+
+/// Returns `true` when `input` looks like a Dataview Query Language (DQL) query rather than
+/// vulcan's native query DSL.  DQL queries start with TABLE, LIST, TASK, or CALENDAR.
+fn looks_like_dql(input: &str) -> bool {
+    let first_word = input.split_whitespace().next().unwrap_or("");
+    matches!(
+        first_word.to_ascii_uppercase().as_str(),
+        "TABLE" | "LIST" | "TASK" | "CALENDAR"
+    )
+}
+

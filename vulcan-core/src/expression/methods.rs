@@ -519,6 +519,7 @@ pub(crate) fn evaluate_callback(
         locals: ctx.locals.clone(),
         note_lookup: ctx.note_lookup,
         this_note: ctx.this_note,
+        this_null_when_missing: ctx.this_null_when_missing,
     };
 
     if let Expr::Lambda(params, body) = expr {
