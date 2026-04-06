@@ -199,7 +199,8 @@ mod runtime {
 
     use super::{DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult};
     use crate::config::{
-        load_vault_config, JsRuntimeConfig, JsRuntimeSandbox, VaultConfig, WebConfig,
+        load_vault_config, JsRuntimeConfig, JsRuntimeSandbox, SearchBackendKind, VaultConfig,
+        WebConfig,
     };
     use crate::dql::{evaluate_dql, DqlQueryResult};
     use crate::expression::eval::{compare_values, value_to_display};
@@ -3914,6 +3915,7 @@ globalThis.Function = undefined;
         (year, month, day)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn run_js_web_search(
         state: &JsEvalState,
         query: &str,
@@ -3922,32 +3924,231 @@ globalThis.Function = undefined;
         ensure_network_access(state, "web.search()")?;
         let client = build_web_client(&state.web_config.user_agent)?;
         let search_cfg = &state.web_config.search;
-        let api_key_env = search_cfg.effective_api_key_env();
         let base_url = search_cfg.effective_base_url();
-        let api_key = std::env::var(api_key_env).map_err(|_| {
-            DataviewJsError::Message(format!("missing web search API key env var {api_key_env}"))
-        })?;
-        let limit_value = limit.max(1).to_string();
-        let response = client
-            .get(base_url)
-            .header(AUTHORIZATION, format!("Bot {api_key}"))
-            .query(&[("q", query), ("limit", limit_value.as_str())])
-            .send()
-            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(DataviewJsError::Message(format!(
-                "web search failed with status {}",
-                response.status()
-            )));
-        }
-        let payload = response
-            .json::<Value>()
-            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        let results = parse_search_results(&payload).ok_or_else(|| {
-            DataviewJsError::Message(
-                "web search backend returned an unexpected payload shape".to_string(),
-            )
-        })?;
+        let results = match search_cfg.backend {
+            SearchBackendKind::Duckduckgo | SearchBackendKind::Auto => {
+                let response = client
+                    .get(base_url)
+                    .query(&[("q", query)])
+                    .send()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                if !response.status().is_success() {
+                    return Err(DataviewJsError::Message(format!(
+                        "DuckDuckGo search failed with status {}",
+                        response.status()
+                    )));
+                }
+                let html = response
+                    .text()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                let results = parse_duckduckgo_search_results(&html, limit.max(1));
+                if results.is_empty() {
+                    return Err(DataviewJsError::Message(
+                        "unexpected DuckDuckGo response shape".to_string(),
+                    ));
+                }
+                results
+            }
+            SearchBackendKind::Kagi => {
+                let api_key_env = search_cfg.effective_api_key_env().ok_or_else(|| {
+                    DataviewJsError::Message(
+                        "configured web search backend requires an API key env var".to_string(),
+                    )
+                })?;
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    DataviewJsError::Message(format!(
+                        "missing web search API key env var {api_key_env}"
+                    ))
+                })?;
+                let limit_value = limit.max(1).to_string();
+                let response = client
+                    .get(base_url)
+                    .header(AUTHORIZATION, format!("Bot {api_key}"))
+                    .query(&[("q", query), ("limit", limit_value.as_str())])
+                    .send()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                if !response.status().is_success() {
+                    return Err(DataviewJsError::Message(format!(
+                        "web search failed with status {}",
+                        response.status()
+                    )));
+                }
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                parse_search_results(&payload).ok_or_else(|| {
+                    DataviewJsError::Message(
+                        "web search backend returned an unexpected payload shape".to_string(),
+                    )
+                })?
+            }
+            SearchBackendKind::Exa => {
+                let api_key_env = search_cfg.effective_api_key_env().ok_or_else(|| {
+                    DataviewJsError::Message(
+                        "configured web search backend requires an API key env var".to_string(),
+                    )
+                })?;
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    DataviewJsError::Message(format!(
+                        "missing web search API key env var {api_key_env}"
+                    ))
+                })?;
+                let body = serde_json::json!({
+                    "query": query,
+                    "numResults": limit.max(1),
+                    "type": "neural",
+                    "useAutoprompt": true,
+                    "contents": { "text": { "maxCharacters": 500 } }
+                });
+                let response = client
+                    .post(base_url)
+                    .header("x-api-key", api_key)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .json(&body)
+                    .send()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                if !response.status().is_success() {
+                    return Err(DataviewJsError::Message(format!(
+                        "Exa search failed with status {}",
+                        response.status()
+                    )));
+                }
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                let results = payload
+                    .get("results")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        DataviewJsError::Message("unexpected Exa response shape".to_string())
+                    })?;
+                results
+                    .iter()
+                    .filter_map(|item| {
+                        let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+                        let url = item.get("url").and_then(Value::as_str)?;
+                        let snippet = item
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .or_else(|| item.get("snippet").and_then(Value::as_str))
+                            .unwrap_or_default();
+                        Some(WebSearchResult {
+                            title: title.to_string(),
+                            url: url.to_string(),
+                            snippet: snippet.to_string(),
+                        })
+                    })
+                    .collect()
+            }
+            SearchBackendKind::Tavily => {
+                let api_key_env = search_cfg.effective_api_key_env().ok_or_else(|| {
+                    DataviewJsError::Message(
+                        "configured web search backend requires an API key env var".to_string(),
+                    )
+                })?;
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    DataviewJsError::Message(format!(
+                        "missing web search API key env var {api_key_env}"
+                    ))
+                })?;
+                let body = serde_json::json!({
+                    "api_key": api_key,
+                    "query": query,
+                    "max_results": limit.max(1),
+                    "search_depth": "basic"
+                });
+                let response = client
+                    .post(base_url)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .json(&body)
+                    .send()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                if !response.status().is_success() {
+                    return Err(DataviewJsError::Message(format!(
+                        "Tavily search failed with status {}",
+                        response.status()
+                    )));
+                }
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                let results = payload
+                    .get("results")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        DataviewJsError::Message("unexpected Tavily response shape".to_string())
+                    })?;
+                results
+                    .iter()
+                    .filter_map(|item| {
+                        let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+                        let url = item.get("url").and_then(Value::as_str)?;
+                        let snippet = item
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        Some(WebSearchResult {
+                            title: title.to_string(),
+                            url: url.to_string(),
+                            snippet: snippet.to_string(),
+                        })
+                    })
+                    .collect()
+            }
+            SearchBackendKind::Brave => {
+                let api_key_env = search_cfg.effective_api_key_env().ok_or_else(|| {
+                    DataviewJsError::Message(
+                        "configured web search backend requires an API key env var".to_string(),
+                    )
+                })?;
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    DataviewJsError::Message(format!(
+                        "missing web search API key env var {api_key_env}"
+                    ))
+                })?;
+                let count = limit.clamp(1, 20).to_string();
+                let response = client
+                    .get(base_url)
+                    .header("Accept", "application/json")
+                    .header("Accept-Encoding", "gzip")
+                    .header("X-Subscription-Token", api_key)
+                    .query(&[("q", query), ("count", count.as_str())])
+                    .send()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                if !response.status().is_success() {
+                    return Err(DataviewJsError::Message(format!(
+                        "Brave search failed with status {}",
+                        response.status()
+                    )));
+                }
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                let results = payload
+                    .get("web")
+                    .and_then(|web| web.get("results"))
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        DataviewJsError::Message("unexpected Brave response shape".to_string())
+                    })?;
+                results
+                    .iter()
+                    .filter_map(|item| {
+                        let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+                        let url = item.get("url").and_then(Value::as_str)?;
+                        let snippet = item
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        Some(WebSearchResult {
+                            title: title.to_string(),
+                            url: url.to_string(),
+                            snippet: snippet.to_string(),
+                        })
+                    })
+                    .collect()
+            }
+        };
         Ok(WebSearchReport {
             backend: format!("{:?}", search_cfg.backend).to_lowercase(),
             query: query.to_string(),
@@ -4030,6 +4231,63 @@ globalThis.Function = undefined;
                 })
                 .collect(),
         )
+    }
+
+    fn parse_duckduckgo_search_results(html: &str, limit: usize) -> Vec<WebSearchResult> {
+        let title_regex = Regex::new(
+            r#"(?is)<a[^>]*class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
+        )
+        .expect("regex should compile");
+        let snippet_regex = Regex::new(
+            r#"(?is)<(?:a|div)[^>]*class="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</(?:a|div)>"#,
+        )
+        .expect("regex should compile");
+        let snippets = snippet_regex
+            .captures_iter(html)
+            .filter_map(|captures| {
+                captures
+                    .get(1)
+                    .map(|value| strip_html_fragment(value.as_str()))
+            })
+            .collect::<Vec<_>>();
+
+        title_regex
+            .captures_iter(html)
+            .enumerate()
+            .take(limit)
+            .filter_map(|(index, captures)| {
+                let url = captures.get(1)?.as_str();
+                let title = captures.get(2)?.as_str();
+                Some(WebSearchResult {
+                    title: strip_html_fragment(title),
+                    url: normalize_duckduckgo_result_url(url),
+                    snippet: snippets.get(index).cloned().unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
+    fn strip_html_fragment(fragment: &str) -> String {
+        let stripped = Regex::new(r"(?is)<[^>]+>")
+            .expect("regex should compile")
+            .replace_all(fragment, "")
+            .into_owned();
+        decode_html_entities(stripped.trim())
+    }
+
+    fn normalize_duckduckgo_result_url(url: &str) -> String {
+        if let Ok(parsed) = reqwest::Url::parse(url) {
+            if let Some(target) = parsed
+                .query_pairs()
+                .find_map(|(key, value)| (key == "uddg").then(|| value.into_owned()))
+            {
+                return target;
+            }
+        }
+        if let Some(url) = url.strip_prefix("//") {
+            return format!("https://{url}");
+        }
+        url.to_string()
     }
 
     fn render_fetched_content(
@@ -5137,8 +5395,13 @@ globalThis.Function = undefined;
                     let (content_type, body) = match path {
                         "/robots.txt" => ("text/plain", "User-agent: *\nAllow: /\n".to_string()),
                         path if path.starts_with("/search") => (
-                            "application/json",
-                            r#"{"data":[{"title":"Alpha","url":"https://example.test/alpha","snippet":"Alpha result"}]}"#
+                            "text/html",
+                            r#"<!doctype html><html><body>
+<div class="result">
+  <a class="result__a" href="https://example.test/alpha">Alpha</a>
+  <a class="result__snippet">Alpha result</a>
+</div>
+</body></html>"#
                                 .to_string(),
                         ),
                         _ => (
@@ -5158,12 +5421,9 @@ globalThis.Function = undefined;
             });
             fs::write(
                 vault_root.join(".vulcan/config.toml"),
-                format!(
-                    "[web.search]\nbase_url = \"{base_url}/search\"\napi_key_env = \"VULCAN_JS_TEST_KAGI_KEY\"\n"
-                ),
+                format!("[web.search]\nbase_url = \"{base_url}/search\"\n"),
             )
             .expect("config should be written");
-            std::env::set_var("VULCAN_JS_TEST_KAGI_KEY", "test-key");
 
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");

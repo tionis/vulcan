@@ -255,6 +255,10 @@ fn config_import_templater_json_output_reports_mappings() {
 
     let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env_remove("KAGI_API_KEY")
+        .env_remove("EXA_API_KEY")
+        .env_remove("TAVILY_API_KEY")
+        .env_remove("BRAVE_API_KEY")
         .args([
             "--vault",
             vault_root
@@ -329,6 +333,10 @@ fn config_import_core_json_output_reports_sources_and_target_file() {
 
     let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env_remove("KAGI_API_KEY")
+        .env_remove("EXA_API_KEY")
+        .env_remove("TAVILY_API_KEY")
+        .env_remove("BRAVE_API_KEY")
         .args([
             "--vault",
             vault_root
@@ -406,6 +414,10 @@ fn config_import_dataview_json_output_reports_mappings() {
 
     let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env_remove("KAGI_API_KEY")
+        .env_remove("EXA_API_KEY")
+        .env_remove("TAVILY_API_KEY")
+        .env_remove("BRAVE_API_KEY")
         .args([
             "--vault",
             vault_root
@@ -1937,6 +1949,87 @@ fn web_search_json_output_uses_configured_backend_and_env_key() {
 }
 
 #[test]
+fn web_search_defaults_to_duckduckgo_without_api_key() {
+    let server = MockWebServer::spawn();
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!("[web.search]\nbase_url = \"{}\"\n", server.url("/html/")),
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "web",
+            "search",
+            "release notes",
+            "--limit",
+            "2",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    server.shutdown();
+
+    assert_eq!(json["backend"], "duckduckgo");
+    assert_eq!(json["results"][0]["title"], "Release Notes");
+    assert_eq!(json["results"][1]["url"], "https://example.com/status");
+}
+
+#[test]
+fn web_search_auto_falls_back_to_duckduckgo_without_api_keys() {
+    let server = MockWebServer::spawn();
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            "[web.search]\nbackend = \"auto\"\nbase_url = \"{}\"\n",
+            server.url("/html/")
+        ),
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env_remove("KAGI_API_KEY")
+        .env_remove("EXA_API_KEY")
+        .env_remove("TAVILY_API_KEY")
+        .env_remove("BRAVE_API_KEY")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "web",
+            "search",
+            "release notes",
+            "--limit",
+            "2",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    server.shutdown();
+
+    assert_eq!(json["backend"], "duckduckgo");
+    assert_eq!(json["results"][0]["title"], "Release Notes");
+    assert_eq!(json["results"][1]["snippet"], "Current project status.");
+}
+
+#[test]
 fn web_fetch_markdown_json_output_extracts_article_content() {
     let server = MockWebServer::spawn();
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -2020,6 +2113,8 @@ fn web_help_documents_modes_and_backends() {
         .stdout(
             predicate::str::contains("search")
                 .and(predicate::str::contains("fetch"))
+                .and(predicate::str::contains("duckduckgo"))
+                .and(predicate::str::contains("auto"))
                 .and(predicate::str::contains("robots.txt"))
                 .and(predicate::str::contains("[web.search]")),
         );
@@ -11948,6 +12043,22 @@ impl MockWebServer {
                             status_line,
                             "application/json",
                             body.as_bytes(),
+                        );
+                    } else if request.path.starts_with("/html/") {
+                        write_http_response(
+                            &mut stream,
+                            "HTTP/1.1 200 OK",
+                            "text/html",
+                            br#"<!doctype html><html><body>
+<div class="result">
+  <a class="result__a" href="https://example.com/release">Release Notes</a>
+  <a class="result__snippet">Everything that shipped this week.</a>
+</div>
+<div class="result">
+  <a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fstatus">Status Update</a>
+  <div class="result__snippet">Current project status.</div>
+</div>
+</body></html>"#,
                         );
                     } else if request.path == "/robots.txt" {
                         write_http_response(

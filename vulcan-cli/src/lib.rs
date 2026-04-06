@@ -2326,6 +2326,38 @@ impl SearchBackend for BraveSearchBackend {
     }
 }
 
+struct DuckduckgoSearchBackend {
+    client: Client,
+    base_url: String,
+}
+
+impl SearchBackend for DuckduckgoSearchBackend {
+    fn name(&self) -> &'static str {
+        "duckduckgo"
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
+        let response = self
+            .client
+            .get(&self.base_url)
+            .query(&[("q", query)])
+            .send()
+            .map_err(CliError::operation)?;
+        if !response.status().is_success() {
+            return Err(CliError::operation(format!(
+                "DuckDuckGo search failed with status {}",
+                response.status()
+            )));
+        }
+        let html = response.text().map_err(CliError::operation)?;
+        let results = parse_duckduckgo_search_results(&html, limit.max(1));
+        if results.is_empty() {
+            return Err(CliError::operation("unexpected DuckDuckGo response shape"));
+        }
+        Ok(results)
+    }
+}
+
 /// Candidates for auto-detection in priority order.
 const AUTO_DETECT_ORDER: &[(SearchBackendArg, &str, &str)] = &[
     (
@@ -2350,36 +2382,42 @@ const AUTO_DETECT_ORDER: &[(SearchBackendArg, &str, &str)] = &[
     ),
 ];
 
+const DUCKDUCKGO_SEARCH_URL: &str = "https://html.duckduckgo.com/html/";
+
 fn build_search_backend(
     client: Client,
     kind: SearchBackendArg,
-    api_key_env: &str,
+    api_key_env: Option<&str>,
     base_url: &str,
 ) -> Result<Box<dyn SearchBackend>, CliError> {
-    let api_key = std::env::var(api_key_env).map_err(|_| {
-        CliError::operation(format!("missing web search API key env var {api_key_env}"))
-    })?;
     let base_url = base_url.to_string();
+    let api_key = match api_key_env {
+        Some(api_key_env) => Some(std::env::var(api_key_env).map_err(|_| {
+            CliError::operation(format!("missing web search API key env var {api_key_env}"))
+        })?),
+        None => None,
+    };
     Ok(match kind {
+        SearchBackendArg::Duckduckgo => Box::new(DuckduckgoSearchBackend { client, base_url }),
         SearchBackendArg::Kagi | SearchBackendArg::Auto => Box::new(KagiSearchBackend {
             client,
             base_url,
-            api_key,
+            api_key: api_key.expect("kagi backend should have an API key"),
         }),
         SearchBackendArg::Exa => Box::new(ExaSearchBackend {
             client,
             base_url,
-            api_key,
+            api_key: api_key.expect("exa backend should have an API key"),
         }),
         SearchBackendArg::Tavily => Box::new(TavilySearchBackend {
             client,
             base_url,
-            api_key,
+            api_key: api_key.expect("tavily backend should have an API key"),
         }),
         SearchBackendArg::Brave => Box::new(BraveSearchBackend {
             client,
             base_url,
-            api_key,
+            api_key: api_key.expect("brave backend should have an API key"),
         }),
     })
 }
@@ -2398,6 +2436,7 @@ fn run_web_search_command(
     // Determine effective backend kind from override → config → auto-detect.
     let effective_kind = backend_override.unwrap_or(match config.search.backend {
         SearchBackendKind::Auto => SearchBackendArg::Auto,
+        SearchBackendKind::Duckduckgo => SearchBackendArg::Duckduckgo,
         SearchBackendKind::Kagi => SearchBackendArg::Kagi,
         SearchBackendKind::Exa => SearchBackendArg::Exa,
         SearchBackendKind::Tavily => SearchBackendArg::Tavily,
@@ -2405,40 +2444,78 @@ fn run_web_search_command(
     });
 
     let backend: Box<dyn SearchBackend> = if effective_kind == SearchBackendArg::Auto {
-        // Auto-detect: use first backend whose API key env var is set.
+        // Auto-detect: use first configured API-key backend, then fall back to DuckDuckGo.
         let mut found: Option<Box<dyn SearchBackend>> = None;
         for &(kind, env_var, base_url) in AUTO_DETECT_ORDER {
             if std::env::var(env_var).is_ok() {
-                found = Some(build_search_backend(client, kind, env_var, base_url)?);
+                found = Some(build_search_backend(
+                    client.clone(),
+                    kind,
+                    Some(env_var),
+                    base_url,
+                )?);
                 break;
             }
         }
-        found.ok_or_else(|| {
-            CliError::operation(
-                "no web search API key found; set one of: KAGI_API_KEY, EXA_API_KEY, TAVILY_API_KEY, BRAVE_API_KEY",
-            )
-        })?
+        if let Some(found) = found {
+            found
+        } else {
+            build_search_backend(
+                client,
+                SearchBackendArg::Duckduckgo,
+                None,
+                config
+                    .search
+                    .base_url
+                    .as_deref()
+                    .unwrap_or(DUCKDUCKGO_SEARCH_URL),
+            )?
+        }
     } else {
-        let api_key_env = config
-            .search
-            .api_key_env
-            .as_deref()
-            .unwrap_or(match effective_kind {
-                SearchBackendArg::Exa => "EXA_API_KEY",
-                SearchBackendArg::Tavily => "TAVILY_API_KEY",
-                SearchBackendArg::Brave => "BRAVE_API_KEY",
-                SearchBackendArg::Kagi | SearchBackendArg::Auto => "KAGI_API_KEY",
-            });
-        let base_url = config
-            .search
-            .base_url
-            .as_deref()
-            .unwrap_or(match effective_kind {
+        let api_key_env = if backend_override.is_none() {
+            config
+                .search
+                .api_key_env
+                .as_deref()
+                .or(match effective_kind {
+                    SearchBackendArg::Duckduckgo => None,
+                    SearchBackendArg::Kagi | SearchBackendArg::Auto => Some("KAGI_API_KEY"),
+                    SearchBackendArg::Exa => Some("EXA_API_KEY"),
+                    SearchBackendArg::Tavily => Some("TAVILY_API_KEY"),
+                    SearchBackendArg::Brave => Some("BRAVE_API_KEY"),
+                })
+        } else {
+            match effective_kind {
+                SearchBackendArg::Duckduckgo => None,
+                SearchBackendArg::Kagi | SearchBackendArg::Auto => Some("KAGI_API_KEY"),
+                SearchBackendArg::Exa => Some("EXA_API_KEY"),
+                SearchBackendArg::Tavily => Some("TAVILY_API_KEY"),
+                SearchBackendArg::Brave => Some("BRAVE_API_KEY"),
+            }
+        };
+        let base_url = if backend_override.is_none() {
+            config
+                .search
+                .base_url
+                .as_deref()
+                .unwrap_or(match effective_kind {
+                    SearchBackendArg::Duckduckgo => DUCKDUCKGO_SEARCH_URL,
+                    SearchBackendArg::Exa => "https://api.exa.ai/search",
+                    SearchBackendArg::Tavily => "https://api.tavily.com/search",
+                    SearchBackendArg::Brave => "https://api.search.brave.com/res/v1/web/search",
+                    SearchBackendArg::Kagi | SearchBackendArg::Auto => {
+                        "https://kagi.com/api/v0/search"
+                    }
+                })
+        } else {
+            match effective_kind {
+                SearchBackendArg::Duckduckgo => DUCKDUCKGO_SEARCH_URL,
                 SearchBackendArg::Exa => "https://api.exa.ai/search",
                 SearchBackendArg::Tavily => "https://api.tavily.com/search",
                 SearchBackendArg::Brave => "https://api.search.brave.com/res/v1/web/search",
                 SearchBackendArg::Kagi | SearchBackendArg::Auto => "https://kagi.com/api/v0/search",
-            });
+            }
+        };
         build_search_backend(client, effective_kind, api_key_env, base_url)?
     };
 
@@ -2448,6 +2525,63 @@ fn run_web_search_command(
         query: query.to_string(),
         results,
     })
+}
+
+fn parse_duckduckgo_search_results(html: &str, limit: usize) -> Vec<WebSearchResult> {
+    let title_regex = Regex::new(
+        r#"(?is)<a[^>]*class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
+    )
+    .expect("regex should compile");
+    let snippet_regex = Regex::new(
+        r#"(?is)<(?:a|div)[^>]*class="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</(?:a|div)>"#,
+    )
+    .expect("regex should compile");
+    let snippets = snippet_regex
+        .captures_iter(html)
+        .filter_map(|captures| {
+            captures
+                .get(1)
+                .map(|value| strip_html_fragment(value.as_str()))
+        })
+        .collect::<Vec<_>>();
+
+    title_regex
+        .captures_iter(html)
+        .enumerate()
+        .take(limit)
+        .filter_map(|(index, captures)| {
+            let url = captures.get(1)?.as_str();
+            let title = captures.get(2)?.as_str();
+            Some(WebSearchResult {
+                title: strip_html_fragment(title),
+                url: normalize_duckduckgo_result_url(url),
+                snippet: snippets.get(index).cloned().unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+fn strip_html_fragment(fragment: &str) -> String {
+    let stripped = Regex::new(r"(?is)<[^>]+>")
+        .expect("regex should compile")
+        .replace_all(fragment, "")
+        .into_owned();
+    decode_html_entities(stripped.trim())
+}
+
+fn normalize_duckduckgo_result_url(url: &str) -> String {
+    if let Ok(parsed) = reqwest::Url::parse(url) {
+        if let Some(target) = parsed
+            .query_pairs()
+            .find_map(|(key, value)| (key == "uddg").then(|| value.into_owned()))
+        {
+            return target;
+        }
+    }
+    if let Some(url) = url.strip_prefix("//") {
+        return format!("https://{url}");
+    }
+    url.to_string()
 }
 
 fn run_web_fetch_command(
