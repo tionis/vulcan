@@ -60,6 +60,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("bases"))
             .and(predicate::str::contains("search"))
             .and(predicate::str::contains("tags"))
+            .and(predicate::str::contains("properties"))
             .and(predicate::str::contains("vectors"))
             .and(predicate::str::contains("cluster"))
             .and(predicate::str::contains("related"))
@@ -166,6 +167,68 @@ fn tags_command_lists_and_filters_indexed_tags() {
             predicate::str::contains("dashboard (1)")
                 .and(predicate::str::contains("people/team (1)"))
                 .and(predicate::str::contains("work (1)")),
+        );
+}
+
+#[test]
+fn properties_command_lists_counts_and_types() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    run_scan(&vault_root);
+
+    let json_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "properties",
+            "--sort",
+            "name",
+            "--type",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&json_assert);
+
+    assert!(rows.iter().any(|row| {
+        row == &serde_json::json!({
+            "property": "due",
+            "count": 3,
+            "types": ["date", "text"],
+        })
+    }));
+    assert!(rows.iter().any(|row| {
+        row == &serde_json::json!({
+            "property": "status",
+            "count": 3,
+            "types": ["list", "text"],
+        })
+    }));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "properties",
+            "--count",
+            "--type",
+            "--sort",
+            "name",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("due (3) [date, text]")
+                .and(predicate::str::contains("reviewed (3) [boolean, text]"))
+                .and(predicate::str::contains("status (3) [list, text]")),
         );
 }
 

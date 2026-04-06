@@ -685,6 +685,19 @@ Examples:
   vulcan tags --where 'file.path starts_with \"Projects/\"'
   vulcan --output json tags --count --where 'status = active'";
 
+const PROPERTIES_COMMAND_AFTER_HELP: &str = "\
+Notes:
+  `properties` reads the indexed property catalog built during scans.
+  `--type` includes the observed value types for each property key.
+  Use global `--fields`, `--limit`, and `--offset` to shape list output.
+
+Examples:
+  vulcan properties
+  vulcan properties --count
+  vulcan properties --type
+  vulcan properties --count --type --sort name
+  vulcan --output json properties --type";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
     Human,
@@ -706,6 +719,12 @@ pub enum RefreshMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TagSortArg {
+    Count,
+    Name,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PropertySortArg {
     Count,
     Name,
 }
@@ -2527,6 +2546,23 @@ pub enum Command {
             help = "Filter notes before aggregating tags; repeatable"
         )]
         filters: Vec<String>,
+    },
+    #[command(
+        about = "List indexed property keys",
+        after_help = PROPERTIES_COMMAND_AFTER_HELP
+    )]
+    Properties {
+        #[arg(long, help = "Include counts in human output")]
+        count: bool,
+        #[arg(long, help = "Include observed value types in human output")]
+        r#type: bool,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = PropertySortArg::Count,
+            help = "Sort by property usage count or by property name"
+        )]
+        sort: PropertySortArg,
     },
     #[command(
         about = "Evaluate Dataview-compatible metadata and inline expressions",

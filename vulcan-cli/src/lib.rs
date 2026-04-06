@@ -18,12 +18,12 @@ pub use cli::{
     ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
     DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs, ExportCommand, ExportFormat,
     GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg,
-    NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, QueryEngineArg,
-    QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchBackendArg,
-    SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg,
-    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
-    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand,
-    VectorsCommand, WebCommand, WebFetchMode,
+    NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PropertySortArg,
+    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand,
+    SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
+    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
+    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -1776,6 +1776,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Links { .. }
         | Command::Ls { .. }
         | Command::Tags { .. }
+        | Command::Properties { .. }
         | Command::Query { .. }
         | Command::Dataview { .. }
         | Command::Tasks { .. }
@@ -12563,6 +12564,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         } => {
             commands::query::handle_tags_command(cli, &paths, filters, sort, count, &list_controls)
         }
+        Command::Properties {
+            count,
+            r#type,
+            sort,
+        } => commands::query::handle_properties_command(
+            cli,
+            &paths,
+            sort,
+            count,
+            r#type,
+            &list_controls,
+        ),
         Command::Dataview { ref command } => {
             commands::dataview::handle_dataview_command(cli, &paths, command)
         }
@@ -18171,6 +18184,10 @@ fn help_overview() -> HelpTopicReport {
                     "ls",
                     "List notes filtered by tags, properties, or a path prefix",
                 ),
+                (
+                    "properties",
+                    "List indexed property keys with usage counts and observed types",
+                ),
                 ("notes", "List notes filtered by typed property expressions"),
                 ("backlinks", "List notes that link to the given note"),
                 ("links", "List outgoing links from the given note"),
@@ -21317,6 +21334,28 @@ mod tests {
                 count: true,
                 sort: TagSortArg::Name,
                 filters: vec!["status = active".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn parses_properties_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "properties",
+            "--count",
+            "--type",
+            "--sort",
+            "name",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Properties {
+                count: true,
+                r#type: true,
+                sort: PropertySortArg::Name,
             }
         );
     }
