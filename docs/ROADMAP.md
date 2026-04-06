@@ -3369,7 +3369,7 @@ Commands that are absent from the CLI but expected based on the existing surface
 **Vault discovery commands**
 
 - [ ] **`vulcan status`** — vault overview: root path, note count, last scan time, cache size, config summary (enabled features, template/periodic settings), git branch and dirty status. The "dashboard" a user checks first.
-- [ ] **`vulcan tags [--count] [--sort count|name] [--where <filter>]`** — list all tags in the vault with occurrence counts. Filterable to a path prefix or property condition. `--output json` returns `[{ tag, count }]`.
+- [x] **`vulcan tags [--count] [--sort count|name] [--where <filter>]`** — list all tags in the vault with occurrence counts. Filterable to a path prefix or property condition. `--output json` returns `[{ tag, count }]`.
 - [ ] **`vulcan properties [--count] [--sort count|name] [--type]`** — list all frontmatter property keys used across the vault with occurrence counts and inferred types. Essential for discovering available `--where` filter fields.
 
 **Graph export**

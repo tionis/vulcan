@@ -1,13 +1,17 @@
 #![allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 
 use crate::commit::AutoCommitPolicy;
-use crate::output::ListOutputControls;
+use crate::output::{
+    paginated_items, print_json_lines, print_selected_human_fields, ListOutputControls,
+};
 use crate::resolve::resolve_note_argument;
 use crate::{warn_auto_commit_if_needed, Cli, CliError, QueryEngineArg};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use vulcan_core::{
     bulk_set_property, evaluate_dql, execute_query_report, load_vault_config, query_backlinks,
-    query_links, query_notes, search_vault, NoteQuery, QueryAst, QueryReport, SearchQuery,
-    VaultPaths,
+    query_links, query_notes, search_vault, NamedCount, NoteQuery, QueryAst, QueryReport,
+    SearchQuery, VaultPaths,
 };
 
 pub(crate) fn handle_backlinks_command(
@@ -182,6 +186,42 @@ pub(crate) fn handle_ls_command(
     Ok(())
 }
 
+pub(crate) fn handle_tags_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    filters: &[String],
+    sort: crate::TagSortArg,
+    show_count: bool,
+    list_controls: &ListOutputControls,
+) -> Result<(), CliError> {
+    let report = query_notes(
+        paths,
+        &NoteQuery {
+            filters: filters.to_vec(),
+            sort_by: None,
+            sort_descending: false,
+        },
+    )
+    .map_err(CliError::operation)?;
+
+    let mut counts = BTreeMap::<String, usize>::new();
+    for note in report.notes {
+        let mut seen = BTreeSet::new();
+        for tag in note.tags {
+            if seen.insert(tag.clone()) {
+                *counts.entry(tag).or_default() += 1;
+            }
+        }
+    }
+
+    let mut tags = counts
+        .into_iter()
+        .map(|(name, count)| NamedCount { name, count })
+        .collect::<Vec<_>>();
+    sort_tag_counts(&mut tags, sort);
+    print_tag_counts(cli.output, &tags, show_count, list_controls)
+}
+
 pub(crate) fn handle_update_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -339,4 +379,59 @@ fn looks_like_dql(input: &str) -> bool {
         first_word.to_ascii_uppercase().as_str(),
         "TABLE" | "LIST" | "TASK" | "CALENDAR"
     )
+}
+
+fn sort_tag_counts(tags: &mut [NamedCount], sort: crate::TagSortArg) {
+    match sort {
+        crate::TagSortArg::Count => tags.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.name.cmp(&right.name))
+        }),
+        crate::TagSortArg::Name => tags.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| right.count.cmp(&left.count))
+        }),
+    }
+}
+
+fn print_tag_counts(
+    output: crate::OutputFormat,
+    tags: &[NamedCount],
+    show_count: bool,
+    list_controls: &ListOutputControls,
+) -> Result<(), CliError> {
+    let visible = paginated_items(tags, list_controls);
+    let rows = tag_rows(visible);
+    match output {
+        crate::OutputFormat::Human => {
+            if visible.is_empty() {
+                println!("No tags found.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+                return Ok(());
+            }
+            for tag in visible {
+                if show_count {
+                    println!("{} ({})", tag.name, tag.count);
+                } else {
+                    println!("{}", tag.name);
+                }
+            }
+            Ok(())
+        }
+        crate::OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
+    }
+}
+
+fn tag_rows(tags: &[NamedCount]) -> Vec<Value> {
+    tags.iter()
+        .map(|tag| json!({ "tag": tag.name, "count": tag.count }))
+        .collect()
 }
