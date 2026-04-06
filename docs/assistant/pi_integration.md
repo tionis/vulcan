@@ -2,6 +2,8 @@
 
 Current recommendation for Phase 9.12: use an external agent runtime, with `pi` as the first-class target, instead of building an in-process Rust assistant.
 
+The older native assistant and chat-runtime steering was not discarded; it was moved to [`native_runtime_deferred.md`](./native_runtime_deferred.md) so the `pi`-first decision does not erase those ideas.
+
 Vulcan remains responsible for:
 
 - vault semantics
