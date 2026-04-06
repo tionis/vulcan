@@ -5139,7 +5139,7 @@
       },
       {
         "about": "Read and mutate one note with selector-aware CRUD commands",
-        "after_help": "Subcommands:\n  get         read one note, optionally with heading, block, line, or regex selectors\n  set         replace one note's contents from stdin or --file\n  create      create a new note, optionally from a template and extra frontmatter\n  append      append text to the end of a note, at the top, or under a heading\n  patch       perform a guarded single-note find/replace\n  delete      delete a note and report inbound links that would become unresolved\n  rename      rename a note in place and rewrite inbound links\n  info        show one note's summary metadata and graph stats\n  history     show git history scoped to one note\n\nNotes:\n  `--check` runs non-blocking doctor-like diagnostics for the resulting note.\n  Mutating note commands support --no-commit; `patch` also supports --dry-run.\n  `note get --output json` returns content, parsed frontmatter, and selection metadata.\n  `note append --periodic <daily|weekly|monthly>` creates the target periodic note first when missing.\n  Repeat `--var key=value` to satisfy QuickAdd-style `{{VALUE}}` / `{{VDATE:...}}` prompts in automation.\n\nExamples:\n  vulcan note get Projects/Alpha --heading Status\n  vulcan note info Projects/Alpha\n  vulcan note history Projects/Alpha --limit 5\n  vulcan note set Projects/Alpha --no-frontmatter < body.md\n  vulcan note create Inbox/Idea --template daily --frontmatter status=idea\n  vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"\n  vulcan note append Projects/Alpha \"Pinned\" --prepend\n  vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"\n  vulcan note delete Projects/Alpha --dry-run\n  vulcan note rename Projects/Alpha Beta\n  vulcan note patch Projects/Alpha --find TODO --replace DONE",
+        "after_help": "Subcommands:\n  get         read one note, optionally with heading, block, line, or regex selectors\n  set         replace one note's contents from stdin or --file\n  create      create a new note, optionally from a template and extra frontmatter\n  append      append text to the end of a note, at the top, or under a heading\n  update      bulk-set a frontmatter property across filtered or piped notes\n  unset       bulk-remove a frontmatter property across filtered or piped notes\n  patch       perform a guarded single-note find/replace\n  delete      delete a note and report inbound links that would become unresolved\n  rename      rename a note in place and rewrite inbound links\n  info        show one note's summary metadata and graph stats\n  history     show git history scoped to one note\n\nNotes:\n  `--check` runs non-blocking doctor-like diagnostics for the resulting note.\n  Mutating note commands support --no-commit; `patch` also supports --dry-run.\n  `note get --output json` returns content, parsed frontmatter, and selection metadata.\n  `note append --periodic <daily|weekly|monthly>` creates the target periodic note first when missing.\n  Repeat `--var key=value` to satisfy QuickAdd-style `{{VALUE}}` / `{{VDATE:...}}` prompts in automation.\n\nExamples:\n  vulcan note get Projects/Alpha --heading Status\n  vulcan note info Projects/Alpha\n  vulcan note history Projects/Alpha --limit 5\n  vulcan note set Projects/Alpha --no-frontmatter < body.md\n  vulcan note create Inbox/Idea --template daily --frontmatter status=idea\n  vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"\n  vulcan note append Projects/Alpha \"Pinned\" --prepend\n  vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"\n  vulcan ls --tag project | vulcan note update --stdin --key status --value done\n  vulcan ls --tag project | vulcan note unset --stdin --key due\n  vulcan note delete Projects/Alpha --dry-run\n  vulcan note rename Projects/Alpha Beta\n  vulcan note patch Projects/Alpha --find TODO --replace DONE",
         "name": "note",
         "options": [],
         "subcommands": [
@@ -5498,6 +5498,159 @@
                 "short": null,
                 "value_names": [
                   "CHECK"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Bulk-set a frontmatter property on filtered notes or stdin-selected note paths",
+            "name": "update",
+            "options": [
+              {
+                "help": "Filter expression such as `status = draft`; repeatable and combined with AND",
+                "id": "filters",
+                "long": "where",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILTERS"
+                ]
+              },
+              {
+                "help": "Read note paths from stdin (one per line) instead of using --where filters",
+                "id": "stdin",
+                "long": "stdin",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "STDIN"
+                ]
+              },
+              {
+                "help": "Frontmatter property key to set",
+                "id": "key",
+                "long": "key",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "KEY"
+                ]
+              },
+              {
+                "help": "New value for the property (YAML scalar or quoted string)",
+                "id": "value",
+                "long": "value",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "VALUE"
+                ]
+              },
+              {
+                "help": "Report planned changes without modifying files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Bulk-remove a frontmatter property from filtered notes or stdin-selected note paths",
+            "name": "unset",
+            "options": [
+              {
+                "help": "Filter expression such as `status = draft`; repeatable and combined with AND",
+                "id": "filters",
+                "long": "where",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILTERS"
+                ]
+              },
+              {
+                "help": "Read note paths from stdin (one per line) instead of using --where filters",
+                "id": "stdin",
+                "long": "stdin",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "STDIN"
+                ]
+              },
+              {
+                "help": "Frontmatter property key to remove",
+                "id": "key",
+                "long": "key",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "KEY"
+                ]
+              },
+              {
+                "help": "Report planned removals without modifying files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
                 ]
               },
               {
@@ -6320,7 +6473,7 @@
       },
       {
         "about": "Set a frontmatter property on notes selected by query filters",
-        "after_help": "Filter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n\nExamples:\n  vulcan update --where 'status = draft' --key status --value done --dry-run\n  vulcan update --where 'tags contains wip' --key reviewed --value true\n  vulcan update --where 'file.path starts_with \"Archive/\"' --key archived --value true",
+        "after_help": "Filter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n\nExamples:\n  vulcan update --where 'status = draft' --key status --value done --dry-run\n  vulcan ls --tag project | vulcan update --stdin --key status --value done\n  vulcan update --where 'tags contains wip' --key reviewed --value true\n  vulcan update --where 'file.path starts_with \"Archive/\"' --key archived --value true",
         "name": "update",
         "options": [
           {
@@ -6332,6 +6485,20 @@
             "short": null,
             "value_names": [
               "FILTERS"
+            ]
+          },
+          {
+            "help": "Read note paths from stdin (one per line) instead of using --where filters",
+            "id": "stdin",
+            "long": "stdin",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "STDIN"
             ]
           },
           {
@@ -6389,7 +6556,7 @@
       },
       {
         "about": "Remove a frontmatter property from notes selected by query filters",
-        "after_help": "Filter syntax:\n  Repeat --where to combine filters with AND.\n\nExamples:\n  vulcan unset --where 'status = draft' --key draft_notes --dry-run\n  vulcan unset --where 'file.path starts_with \"Archive/\"' --key due",
+        "after_help": "Filter syntax:\n  Repeat --where to combine filters with AND.\n\nExamples:\n  vulcan unset --where 'status = draft' --key draft_notes --dry-run\n  vulcan ls --tag project | vulcan unset --stdin --key due\n  vulcan unset --where 'file.path starts_with \"Archive/\"' --key due",
         "name": "unset",
         "options": [
           {
@@ -6401,6 +6568,20 @@
             "short": null,
             "value_names": [
               "FILTERS"
+            ]
+          },
+          {
+            "help": "Read note paths from stdin (one per line) instead of using --where filters",
+            "id": "stdin",
+            "long": "stdin",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "STDIN"
             ]
           },
           {
@@ -7050,7 +7231,7 @@
           },
           {
             "about": "Apply a literal find/replace across notes selected by filters",
-            "after_help": "Scope selection:\n  rewrite does a literal find/replace over notes selected by --where filters.\n  Repeat --where to combine filters with AND.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan rewrite --where 'status = draft' --find TODO --replace DONE --dry-run\n  vulcan rewrite --where 'file.path starts_with \"Projects/\"' --find alpha --replace beta",
+            "after_help": "Scope selection:\n  rewrite does a literal find/replace over notes selected by --where filters.\n  Repeat --where to combine filters with AND.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan rewrite --where 'status = draft' --find TODO --replace DONE --dry-run\n  vulcan ls --tag project | vulcan refactor rewrite --stdin --find TODO --replace DONE\n  vulcan rewrite --where 'file.path starts_with \"Projects/\"' --find alpha --replace beta",
             "name": "rewrite",
             "options": [
               {
@@ -7062,6 +7243,20 @@
                 "short": null,
                 "value_names": [
                   "FILTERS"
+                ]
+              },
+              {
+                "help": "Read note paths from stdin (one per line) instead of using --where filters",
+                "id": "stdin",
+                "long": "stdin",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "STDIN"
                 ]
               },
               {

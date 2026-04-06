@@ -185,6 +185,25 @@ pub(crate) fn handle_note_command(
             }
             crate::print_note_patch_report(cli.output, &report)
         }
+        NoteCommand::Update {
+            filters,
+            stdin,
+            key,
+            value,
+            dry_run,
+            no_commit,
+        } => crate::commands::query::handle_update_command(
+            cli, paths, filters, *stdin, key, value, *dry_run, *no_commit,
+        ),
+        NoteCommand::Unset {
+            filters,
+            stdin,
+            key,
+            dry_run,
+            no_commit,
+        } => crate::commands::query::handle_unset_command(
+            cli, paths, filters, *stdin, key, *dry_run, *no_commit,
+        ),
         NoteCommand::Delete {
             note,
             dry_run,

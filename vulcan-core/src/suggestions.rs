@@ -385,10 +385,44 @@ pub fn bulk_replace(
         },
     )
     .map_err(|error| SuggestionError::InvalidRewrite(error.to_string()))?;
+    let note_paths = notes
+        .notes
+        .into_iter()
+        .map(|note| note.document_path)
+        .collect::<Vec<_>>();
+    let plans = bulk_replace_plans(paths, &note_paths, find, replace)?;
+
+    finalize_refactor(paths, dry_run, "bulk_replace", plans)
+}
+
+pub fn bulk_replace_on_paths(
+    paths: &VaultPaths,
+    note_paths: &[String],
+    find: &str,
+    replace: &str,
+    dry_run: bool,
+) -> Result<RefactorReport, SuggestionError> {
+    if find.is_empty() {
+        return Err(SuggestionError::InvalidRewrite(
+            "`rewrite --find` must not be empty".to_string(),
+        ));
+    }
+
+    let _lock = acquire_write_lock(paths)?;
+    let plans = bulk_replace_plans(paths, note_paths, find, replace)?;
+    finalize_refactor(paths, dry_run, "bulk_replace", plans)
+}
+
+fn bulk_replace_plans(
+    paths: &VaultPaths,
+    note_paths: &[String],
+    find: &str,
+    replace: &str,
+) -> Result<Vec<FilePlan>, SuggestionError> {
     let mut plans = Vec::new();
 
-    for note in notes.notes {
-        let source = fs::read_to_string(paths.vault_root().join(&note.document_path))?;
+    for path in note_paths {
+        let source = fs::read_to_string(paths.vault_root().join(path))?;
         let mut edits = Vec::new();
         let mut changes = Vec::new();
 
@@ -405,12 +439,12 @@ pub fn bulk_replace(
             });
         }
 
-        if let Some(plan) = build_file_plan(&note.document_path, &source, &edits, changes) {
+        if let Some(plan) = build_file_plan(path, &source, &edits, changes) {
             plans.push(plan);
         }
     }
 
-    finalize_refactor(paths, dry_run, "bulk_replace", plans)
+    Ok(plans)
 }
 
 fn open_existing_cache(paths: &VaultPaths) -> Result<Connection, SuggestionError> {

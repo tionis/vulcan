@@ -166,6 +166,7 @@ Values:
 
 Examples:
   vulcan rewrite --where 'status = draft' --find TODO --replace DONE --dry-run
+  vulcan ls --tag project | vulcan refactor rewrite --stdin --find TODO --replace DONE
   vulcan rewrite --where 'file.path starts_with \"Projects/\"' --find alpha --replace beta";
 
 const BASES_COMMAND_AFTER_HELP: &str = "\
@@ -244,6 +245,8 @@ Subcommands:
   set         replace one note's contents from stdin or --file
   create      create a new note, optionally from a template and extra frontmatter
   append      append text to the end of a note, at the top, or under a heading
+  update      bulk-set a frontmatter property across filtered or piped notes
+  unset       bulk-remove a frontmatter property across filtered or piped notes
   patch       perform a guarded single-note find/replace
   delete      delete a note and report inbound links that would become unresolved
   rename      rename a note in place and rewrite inbound links
@@ -266,6 +269,8 @@ Examples:
   vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"
   vulcan note append Projects/Alpha \"Pinned\" --prepend
   vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"
+  vulcan ls --tag project | vulcan note update --stdin --key status --value done
+  vulcan ls --tag project | vulcan note unset --stdin --key due
   vulcan note delete Projects/Alpha --dry-run
   vulcan note rename Projects/Alpha Beta
   vulcan note patch Projects/Alpha --find TODO --replace DONE";
@@ -2040,6 +2045,12 @@ pub enum RefactorCommand {
             help = "Typed property filter such as `status = done`; repeatable and combined with AND"
         )]
         filters: Vec<String>,
+        #[arg(
+            long,
+            conflicts_with = "filters",
+            help = "Read note paths from stdin (one per line) instead of using --where filters"
+        )]
+        stdin: bool,
         #[arg(long, help = "Literal text to find")]
         find: String,
         #[arg(long, help = "Replacement text")]
@@ -2258,6 +2269,55 @@ pub enum NoteCommand {
         vars: Vec<String>,
         #[arg(long, help = "Run non-blocking doctor-like diagnostics after append")]
         check: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(
+        about = "Bulk-set a frontmatter property on filtered notes or stdin-selected note paths"
+    )]
+    Update {
+        #[arg(
+            long = "where",
+            help = "Filter expression such as `status = draft`; repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(
+            long,
+            conflicts_with = "filters",
+            help = "Read note paths from stdin (one per line) instead of using --where filters"
+        )]
+        stdin: bool,
+        #[arg(long, help = "Frontmatter property key to set")]
+        key: String,
+        #[arg(
+            long,
+            help = "New value for the property (YAML scalar or quoted string)"
+        )]
+        value: String,
+        #[arg(long, help = "Report planned changes without modifying files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(
+        about = "Bulk-remove a frontmatter property from filtered notes or stdin-selected note paths"
+    )]
+    Unset {
+        #[arg(
+            long = "where",
+            help = "Filter expression such as `status = draft`; repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(
+            long,
+            conflicts_with = "filters",
+            help = "Read note paths from stdin (one per line) instead of using --where filters"
+        )]
+        stdin: bool,
+        #[arg(long, help = "Frontmatter property key to remove")]
+        key: String,
+        #[arg(long, help = "Report planned removals without modifying files")]
+        dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
@@ -2929,6 +2989,12 @@ pub enum Command {
             help = "Typed property filter such as `status = done`; repeatable and combined with AND"
         )]
         filters: Vec<String>,
+        #[arg(
+            long,
+            conflicts_with = "filters",
+            help = "Read note paths from stdin (one per line) instead of using --where filters"
+        )]
+        stdin: bool,
         #[arg(long, help = "Literal text to find")]
         find: String,
         #[arg(long, help = "Replacement text")]
@@ -2962,6 +3028,7 @@ Filter syntax:
 
 Examples:
   vulcan update --where 'status = draft' --key status --value done --dry-run
+  vulcan ls --tag project | vulcan update --stdin --key status --value done
   vulcan update --where 'tags contains wip' --key reviewed --value true
   vulcan update --where 'file.path starts_with \"Archive/\"' --key archived --value true"
     )]
@@ -2971,6 +3038,12 @@ Examples:
             help = "Filter expression such as `status = draft`; repeatable and combined with AND"
         )]
         filters: Vec<String>,
+        #[arg(
+            long,
+            conflicts_with = "filters",
+            help = "Read note paths from stdin (one per line) instead of using --where filters"
+        )]
+        stdin: bool,
         #[arg(long, help = "Frontmatter property key to set")]
         key: String,
         #[arg(
@@ -2991,6 +3064,7 @@ Filter syntax:
 
 Examples:
   vulcan unset --where 'status = draft' --key draft_notes --dry-run
+  vulcan ls --tag project | vulcan unset --stdin --key due
   vulcan unset --where 'file.path starts_with \"Archive/\"' --key due"
     )]
     Unset {
@@ -2999,6 +3073,12 @@ Examples:
             help = "Filter expression such as `status = draft`; repeatable and combined with AND"
         )]
         filters: Vec<String>,
+        #[arg(
+            long,
+            conflicts_with = "filters",
+            help = "Read note paths from stdin (one per line) instead of using --where filters"
+        )]
+        stdin: bool,
         #[arg(long, help = "Frontmatter property key to remove")]
         key: String,
         #[arg(long, help = "Report planned removals without modifying files")]

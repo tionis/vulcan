@@ -6,13 +6,17 @@ use crate::output::{
     ListOutputControls,
 };
 use crate::resolve::resolve_note_argument;
-use crate::{warn_auto_commit_if_needed, Cli, CliError, QueryEngineArg};
+use crate::{
+    resolve_bulk_note_selection, warn_auto_commit_if_needed, BulkNoteSelection, Cli, CliError,
+    QueryEngineArg,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use vulcan_core::{
-    bulk_set_property, evaluate_dql, execute_query_report, list_properties, list_query_fields,
-    load_vault_config, query_backlinks, query_links, query_notes, search_vault, NamedCount,
-    NoteQuery, PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery, VaultPaths,
+    bulk_set_property, bulk_set_property_on_paths, evaluate_dql, execute_query_report,
+    list_properties, list_query_fields, load_vault_config, query_backlinks, query_links,
+    query_notes, search_vault, NamedCount, NoteQuery, PropertyCatalogEntry, QueryAst, QueryReport,
+    SearchQuery, VaultPaths,
 };
 
 pub(crate) fn handle_backlinks_command(
@@ -256,6 +260,7 @@ pub(crate) fn handle_update_command(
     cli: &Cli,
     paths: &VaultPaths,
     filters: &[String],
+    stdin: bool,
     key: &str,
     value: &str,
     dry_run: bool,
@@ -263,8 +268,16 @@ pub(crate) fn handle_update_command(
 ) -> Result<(), CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, cli.quiet);
-    let report = bulk_set_property(paths, filters, key, Some(value), dry_run)
-        .map_err(CliError::operation)?;
+    let selection = resolve_bulk_note_selection(filters, stdin)?;
+    let report = match &selection {
+        BulkNoteSelection::Filters(filters) => {
+            bulk_set_property(paths, filters, key, Some(value), dry_run)
+        }
+        BulkNoteSelection::Paths(note_paths) => {
+            bulk_set_property_on_paths(paths, note_paths, key, Some(value), dry_run)
+        }
+    }
+    .map_err(CliError::operation)?;
     if !dry_run {
         auto_commit
             .commit(
@@ -281,14 +294,23 @@ pub(crate) fn handle_unset_command(
     cli: &Cli,
     paths: &VaultPaths,
     filters: &[String],
+    stdin: bool,
     key: &str,
     dry_run: bool,
     no_commit: bool,
 ) -> Result<(), CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, cli.quiet);
-    let report =
-        bulk_set_property(paths, filters, key, None, dry_run).map_err(CliError::operation)?;
+    let selection = resolve_bulk_note_selection(filters, stdin)?;
+    let report = match &selection {
+        BulkNoteSelection::Filters(filters) => {
+            bulk_set_property(paths, filters, key, None, dry_run)
+        }
+        BulkNoteSelection::Paths(note_paths) => {
+            bulk_set_property_on_paths(paths, note_paths, key, None, dry_run)
+        }
+    }
+    .map_err(CliError::operation)?;
     if !dry_run {
         auto_commit
             .commit(paths, "unset", &crate::bulk_mutation_changed_files(&report))

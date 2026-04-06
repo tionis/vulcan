@@ -3,10 +3,14 @@
 use crate::commit::AutoCommitPolicy;
 use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
-use crate::{warn_auto_commit_if_needed, Cli, CliError, RefactorCommand, SuggestCommand};
+use crate::{
+    resolve_bulk_note_selection, warn_auto_commit_if_needed, BulkNoteSelection, Cli, CliError,
+    RefactorCommand, SuggestCommand,
+};
 use vulcan_core::{
-    bulk_replace, link_mentions, merge_tags, move_note, rename_alias, rename_block_ref,
-    rename_heading, rename_property, suggest_duplicates, suggest_mentions, VaultPaths,
+    bulk_replace, bulk_replace_on_paths, link_mentions, merge_tags, move_note, rename_alias,
+    rename_block_ref, rename_heading, rename_property, suggest_duplicates, suggest_mentions,
+    VaultPaths,
 };
 
 pub(crate) fn handle_refactor_command(
@@ -122,6 +126,7 @@ pub(crate) fn handle_refactor_command(
         }
         RefactorCommand::Rewrite {
             filters,
+            stdin,
             find,
             replace,
             dry_run,
@@ -129,8 +134,16 @@ pub(crate) fn handle_refactor_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
-            let report = bulk_replace(paths, filters, find, replace, *dry_run)
-                .map_err(CliError::operation)?;
+            let selection = resolve_bulk_note_selection(filters, *stdin)?;
+            let report = match &selection {
+                BulkNoteSelection::Filters(filters) => {
+                    bulk_replace(paths, filters, find, replace, *dry_run)
+                }
+                BulkNoteSelection::Paths(note_paths) => {
+                    bulk_replace_on_paths(paths, note_paths, find, replace, *dry_run)
+                }
+            }
+            .map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
                     .commit(paths, "rewrite", &crate::refactor_changed_files(&report))
