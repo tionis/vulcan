@@ -44,6 +44,7 @@ use clap_complete::generate;
 use regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::header::AUTHORIZATION;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -53,12 +54,12 @@ use std::ffi::OsString;
 use std::fmt::{Display, Formatter, Write as FmtWrite};
 use std::fs;
 use std::io;
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
-use vulcan_core::config::QuickAddImporter;
+use vulcan_core::config::{QuickAddImporter, TasksDefaultSource};
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
 use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
@@ -71,47 +72,48 @@ use vulcan_core::{
     archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint, doctor_fix, doctor_vault,
     ensure_vulcan_dir, evaluate_base_file, evaluate_dataview_js_query,
     evaluate_dataview_js_with_options, evaluate_dql, evaluate_note_inline_expressions,
-    evaluate_tasks_query, expected_periodic_note_path, export_daily_events_to_ics,
-    export_static_search_index, extract_tasknote, git_blame, git_diff, git_log, git_recent_log,
-    git_status, initialize_vault, inspect_base_file, inspect_cache, link_mentions,
-    list_checkpoints, list_daily_note_events, list_saved_reports, load_dataview_blocks,
-    load_events_for_periodic_note, load_kanban_board, load_permission_profiles, load_saved_report,
-    load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card, move_note,
-    parse_dql_with_diagnostics, parse_tasknote_natural_language, parse_tasknote_reminders,
-    parse_tasknote_time_entries, parse_tasks_query, period_range_for_date, plan_base_note_create,
-    query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
-    render_markdown_html, repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note,
-    save_saved_report, scan_vault_with_progress, search_vault, shape_tasks_query_result,
-    step_period_start, task_upcoming_occurrences, tasknotes_default_date_value,
-    tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
-    tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
-    validate_vulcan_overrides_toml, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
-    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
-    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
-    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
-    ClusterReport, ConfigDiagnostic, ConfigImportReport, ConfigPermissionMode, CoreImporter,
-    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
-    PermissionMode, PermissionProfile, PluginImporter, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
-    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
-    WatchReport,
+    evaluate_tasks_query, execute_query_report, expected_periodic_note_path,
+    export_daily_events_to_ics, export_static_search_index, extract_tasknote, git_blame, git_diff,
+    git_log, git_recent_log, git_status, initialize_vault, inspect_base_file, inspect_cache,
+    link_mentions, list_checkpoints, list_daily_note_events, list_saved_reports,
+    load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
+    load_permission_profiles, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
+    move_kanban_card, move_note, parse_dql_with_diagnostics, parse_tasknote_natural_language,
+    parse_tasknote_reminders, parse_tasknote_time_entries, parse_tasks_query,
+    period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
+    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, render_markdown_fragment_html, render_markdown_html,
+    repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note, save_saved_report,
+    scan_vault_with_progress, search_vault, shape_tasks_query_result, step_period_start,
+    task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
+    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
+    tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
+    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
+    BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
+    ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic, ConfigImportReport,
+    ConfigPermissionMode, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
+    DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
+    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression,
+    GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport,
+    GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport,
+    GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox,
+    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
+    KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput,
+    PeriodicConfig, PeriodicNotesImporter, PermissionMode, PermissionProfile, PluginImporter,
+    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
+    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
+    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
+use zip::write::FileOptions;
 
 #[derive(Debug)]
 pub struct CliError {
@@ -1821,7 +1823,8 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Related { .. }
         | Command::Suggest { .. }
         | Command::Refactor { .. }
-        | Command::Checkpoint { .. } => true,
+        | Command::Checkpoint { .. }
+        | Command::Export { .. } => true,
         Command::Daily { command } => matches!(
             command,
             DailyCommand::Show { .. } | DailyCommand::List { .. } | DailyCommand::ExportIcs { .. }
@@ -1835,7 +1838,6 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
             BasesCommand::Eval { .. } | BasesCommand::Tui { .. }
         ),
         Command::Saved { command } => matches!(command, SavedCommand::Run { .. }),
-        Command::Export { command } => matches!(command, ExportCommand::SearchIndex { .. }),
         Command::Vectors { command } => matches!(
             command,
             VectorsCommand::Related { .. }
@@ -7831,7 +7833,8 @@ fn run_tasks_list_command(
         .filter
         .map(str::trim)
         .filter(|filter| !filter.is_empty());
-    let prefilter_source = tasks_list_prefilter_source(&options);
+    let effective_source = options.source.map_or(config.default_source, Into::into);
+    let prefilter_source = tasks_list_prefilter_source(&options, effective_source);
     let layout_source = tasks_list_layout_source(&options);
 
     match filter {
@@ -8026,7 +8029,7 @@ fn tasks_query_source(
 #[derive(Debug, Clone, Copy)]
 struct TasksListOptions<'a> {
     filter: Option<&'a str>,
-    source: TasksListSourceArg,
+    source: Option<TasksListSourceArg>,
     status: Option<&'a str>,
     priority: Option<&'a str>,
     due_before: Option<&'a str>,
@@ -8038,15 +8041,18 @@ struct TasksListOptions<'a> {
     include_archived: bool,
 }
 
-fn tasks_list_prefilter_source(options: &TasksListOptions<'_>) -> String {
+fn tasks_list_prefilter_source(
+    options: &TasksListOptions<'_>,
+    source: TasksDefaultSource,
+) -> String {
     let mut sections = Vec::new();
     if !options.include_archived {
         sections.push("is not archived".to_string());
     }
-    match options.source {
-        TasksListSourceArg::File => sections.push("source is file".to_string()),
-        TasksListSourceArg::Inline => sections.push("source is inline".to_string()),
-        TasksListSourceArg::All => {}
+    match source {
+        TasksDefaultSource::Tasknotes => sections.push("source is file".to_string()),
+        TasksDefaultSource::Inline => sections.push("source is inline".to_string()),
+        TasksDefaultSource::All => {}
     }
     if let Some(status) = tasks_query_value(options.status) {
         sections.push(format!("status is {}", quote_tasks_query_value(status)));
@@ -8076,6 +8082,16 @@ fn tasks_list_prefilter_source(options: &TasksListOptions<'_>) -> String {
         ));
     }
     sections.join("\n")
+}
+
+impl From<TasksListSourceArg> for TasksDefaultSource {
+    fn from(value: TasksListSourceArg) -> Self {
+        match value {
+            TasksListSourceArg::Tasknotes => Self::Tasknotes,
+            TasksListSourceArg::Inline => Self::Inline,
+            TasksListSourceArg::All => Self::All,
+        }
+    }
 }
 
 fn tasks_list_layout_source(options: &TasksListOptions<'_>) -> String {
@@ -13171,6 +13187,97 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
         },
         Command::Export { ref command } => match command {
+            ExportCommand::Markdown { query, path, title } => {
+                let report = execute_export_query(
+                    &paths,
+                    query.query.as_deref(),
+                    query.query_json.as_deref(),
+                )?;
+                let notes = load_exported_notes(&paths, &report)?;
+                let payload = render_markdown_export_payload(&report, &notes, title.as_deref());
+                let summary = MarkdownExportSummary {
+                    path: path
+                        .as_ref()
+                        .map_or_else(String::new, |path| path.display().to_string()),
+                    result_count: notes.len(),
+                };
+                write_text_export(cli.output, path.as_ref(), &payload, &summary)
+            }
+            ExportCommand::Json {
+                query,
+                path,
+                pretty,
+            } => {
+                let report = execute_export_query(
+                    &paths,
+                    query.query.as_deref(),
+                    query.query_json.as_deref(),
+                )?;
+                let notes = load_exported_notes(&paths, &report)?;
+                let payload = render_json_export_payload(&report, &notes, *pretty)?;
+                let summary = JsonExportSummary {
+                    path: path
+                        .as_ref()
+                        .map_or_else(String::new, |path| path.display().to_string()),
+                    result_count: notes.len(),
+                };
+                write_text_export(cli.output, path.as_ref(), &payload, &summary)
+            }
+            ExportCommand::Csv { query, path } => {
+                let report = execute_export_query(
+                    &paths,
+                    query.query.as_deref(),
+                    query.query_json.as_deref(),
+                )?;
+                let rows = query_export_rows(&report);
+                let fields = query_export_fields();
+                let payload = render_csv_export_payload(&rows, &fields)?;
+                let summary = CsvExportSummary {
+                    path: path
+                        .as_ref()
+                        .map_or_else(String::new, |path| path.display().to_string()),
+                    result_count: report.notes.len(),
+                };
+                write_text_export(cli.output, path.as_ref(), &payload, &summary)
+            }
+            ExportCommand::Graph { format, path } => {
+                let report = vulcan_core::export_graph(&paths).map_err(CliError::operation)?;
+                write_graph_export(cli.output, &report, *format, path.as_ref())
+            }
+            ExportCommand::Zip { query, path } => {
+                let report = execute_export_query(
+                    &paths,
+                    query.query.as_deref(),
+                    query.query_json.as_deref(),
+                )?;
+                let notes = load_exported_notes(&paths, &report)?;
+                let links = load_export_links(&paths, &notes)?;
+                let summary = write_zip_export(&paths, path, &report, &notes, &links)?;
+                match cli.output {
+                    OutputFormat::Human => {
+                        println!("{}", summary.path);
+                        Ok(())
+                    }
+                    OutputFormat::Json => print_json(&summary),
+                }
+            }
+            ExportCommand::Sqlite { query, path } => {
+                let report = execute_export_query(
+                    &paths,
+                    query.query.as_deref(),
+                    query.query_json.as_deref(),
+                )?;
+                let notes = load_exported_notes(&paths, &report)?;
+                let links = load_export_links(&paths, &notes)?;
+                let summary = write_sqlite_export(path, &report, &notes, &links)?;
+                match cli.output {
+                    OutputFormat::Human => {
+                        println!("{}", summary.path);
+                        Ok(())
+                    }
+                    OutputFormat::Json => print_json(&summary),
+                }
+            }
             ExportCommand::SearchIndex { path, pretty } => {
                 let report = export_static_search_index(&paths).map_err(CliError::operation)?;
                 print_static_search_index_report(cli.output, &report, path.as_ref(), *pretty)
@@ -18434,6 +18541,728 @@ fn print_static_search_index_report(
     }
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// export targets
+// ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct ExportedNoteDocument {
+    note: NoteRecord,
+    content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct JsonNoteExportDocument {
+    document_path: String,
+    file_name: String,
+    file_ext: String,
+    file_mtime: i64,
+    file_size: i64,
+    tags: Vec<String>,
+    links: Vec<String>,
+    inlinks: Vec<String>,
+    aliases: Vec<String>,
+    frontmatter: Value,
+    properties: Value,
+    inline_expressions: Vec<EvaluatedInlineExpression>,
+    content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct JsonNotesExportReport {
+    query: QueryAst,
+    result_count: usize,
+    notes: Vec<JsonNoteExportDocument>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GraphExportSummary {
+    path: String,
+    format: String,
+    nodes: usize,
+    edges: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MarkdownExportSummary {
+    path: String,
+    result_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CsvExportSummary {
+    path: String,
+    result_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct JsonExportSummary {
+    path: String,
+    result_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ZipExportSummary {
+    path: String,
+    result_count: usize,
+    attachment_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SqliteExportSummary {
+    path: String,
+    result_count: usize,
+    link_count: usize,
+    tag_count: usize,
+    task_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ZipExportManifest {
+    query: QueryAst,
+    result_count: usize,
+    notes: Vec<String>,
+    attachments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExportLinkRecord {
+    source_document_path: String,
+    raw_text: String,
+    link_kind: String,
+    display_text: Option<String>,
+    target_path_candidate: Option<String>,
+    target_heading: Option<String>,
+    target_block: Option<String>,
+    resolved_target_path: Option<String>,
+    origin_context: String,
+    byte_offset: i64,
+    #[serde(skip_serializing)]
+    resolved_target_extension: Option<String>,
+}
+
+fn resolve_export_query_ast(
+    query: Option<&str>,
+    query_json: Option<&str>,
+) -> Result<QueryAst, CliError> {
+    match (query, query_json) {
+        (Some(_), Some(_)) => Err(CliError::operation(
+            "provide either a note query DSL argument or --query-json, not both",
+        )),
+        (Some(query), None) => QueryAst::from_dsl(query).map_err(CliError::operation),
+        (None, Some(query_json)) => QueryAst::from_json(query_json).map_err(CliError::operation),
+        (None, None) => Err(CliError::operation(
+            "provide a note query DSL argument or --query-json payload",
+        )),
+    }
+}
+
+fn execute_export_query(
+    paths: &VaultPaths,
+    query: Option<&str>,
+    query_json: Option<&str>,
+) -> Result<QueryReport, CliError> {
+    let ast = resolve_export_query_ast(query, query_json)?;
+    execute_query_report(paths, ast).map_err(CliError::operation)
+}
+
+fn load_exported_notes(
+    paths: &VaultPaths,
+    report: &QueryReport,
+) -> Result<Vec<ExportedNoteDocument>, CliError> {
+    report
+        .notes
+        .iter()
+        .map(|note| {
+            let content = fs::read_to_string(paths.vault_root().join(&note.document_path))
+                .map_err(CliError::operation)?;
+            Ok(ExportedNoteDocument {
+                note: note.clone(),
+                content,
+            })
+        })
+        .collect()
+}
+
+fn json_note_export_report(
+    report: &QueryReport,
+    notes: &[ExportedNoteDocument],
+) -> JsonNotesExportReport {
+    JsonNotesExportReport {
+        query: report.query.clone(),
+        result_count: notes.len(),
+        notes: notes
+            .iter()
+            .map(|entry| JsonNoteExportDocument {
+                document_path: entry.note.document_path.clone(),
+                file_name: entry.note.file_name.clone(),
+                file_ext: entry.note.file_ext.clone(),
+                file_mtime: entry.note.file_mtime,
+                file_size: entry.note.file_size,
+                tags: entry.note.tags.clone(),
+                links: entry.note.links.clone(),
+                inlinks: entry.note.inlinks.clone(),
+                aliases: entry.note.aliases.clone(),
+                frontmatter: entry.note.frontmatter.clone(),
+                properties: entry.note.properties.clone(),
+                inline_expressions: entry.note.inline_expressions.clone(),
+                content: entry.content.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn render_json_export_payload(
+    report: &QueryReport,
+    notes: &[ExportedNoteDocument],
+    pretty: bool,
+) -> Result<String, CliError> {
+    let payload = json_note_export_report(report, notes);
+    if pretty {
+        serde_json::to_string_pretty(&payload).map_err(CliError::operation)
+    } else {
+        serde_json::to_string(&payload).map_err(CliError::operation)
+    }
+}
+
+fn render_markdown_export_payload(
+    _report: &QueryReport,
+    notes: &[ExportedNoteDocument],
+    title: Option<&str>,
+) -> String {
+    if notes.len() == 1 && title.is_none() {
+        let mut rendered = notes[0].content.clone();
+        if !rendered.ends_with('\n') {
+            rendered.push('\n');
+        }
+        return rendered;
+    }
+
+    let mut rendered = String::new();
+    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+        rendered.push_str("# ");
+        rendered.push_str(title);
+        rendered.push_str("\n\n");
+    }
+
+    for (index, note) in notes.iter().enumerate() {
+        if index > 0 {
+            rendered.push_str("\n\n---\n\n");
+        }
+        rendered.push_str("## ");
+        rendered.push_str(&note.note.document_path);
+        rendered.push_str("\n\n");
+        rendered.push_str(&note.content);
+        if !note.content.ends_with('\n') {
+            rendered.push('\n');
+        }
+    }
+
+    rendered
+}
+
+fn query_export_rows(report: &QueryReport) -> Vec<Value> {
+    let notes = report.notes.iter().collect::<Vec<_>>();
+    query_report_rows(report, &notes)
+}
+
+fn query_export_fields() -> Vec<String> {
+    [
+        "document_path",
+        "file_name",
+        "file_ext",
+        "file_mtime",
+        "tags",
+        "starred",
+        "properties",
+        "inline_expressions",
+        "query",
+    ]
+    .into_iter()
+    .map(ToOwned::to_owned)
+    .collect()
+}
+
+fn render_csv_export_payload(rows: &[Value], fields: &[String]) -> Result<String, CliError> {
+    let mut writer = csv::Writer::from_writer(Vec::new());
+    writer
+        .write_record(fields.iter().map(String::as_str))
+        .map_err(CliError::operation)?;
+    for row in rows {
+        let selected = select_fields(row.clone(), Some(fields));
+        let record = fields
+            .iter()
+            .map(|field| csv_cell_for_value(selected.get(field)))
+            .collect::<Vec<_>>();
+        writer.write_record(record).map_err(CliError::operation)?;
+    }
+    writer.flush().map_err(CliError::operation)?;
+    let bytes = writer.into_inner().map_err(CliError::operation)?;
+    String::from_utf8(bytes)
+        .map_err(|error| CliError::operation(format!("csv export was not valid UTF-8: {error}")))
+}
+
+fn load_export_links(
+    paths: &VaultPaths,
+    notes: &[ExportedNoteDocument],
+) -> Result<Vec<ExportLinkRecord>, CliError> {
+    if notes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let document_ids = notes
+        .iter()
+        .map(|entry| entry.note.document_id.as_str())
+        .collect::<Vec<_>>();
+    let placeholders = document_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT
+            source.path,
+            links.raw_text,
+            links.link_kind,
+            links.display_text,
+            links.target_path_candidate,
+            links.target_heading,
+            links.target_block,
+            target.path,
+            links.origin_context,
+            links.byte_offset,
+            target.extension
+         FROM links
+         JOIN documents AS source ON source.id = links.source_document_id
+         LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+         WHERE links.source_document_id IN ({placeholders})
+         ORDER BY source.path ASC, links.byte_offset ASC"
+    );
+
+    let connection = Connection::open(paths.cache_db()).map_err(CliError::operation)?;
+    let mut statement = connection.prepare(&sql).map_err(CliError::operation)?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(document_ids.iter()), |row| {
+            Ok(ExportLinkRecord {
+                source_document_path: row.get(0)?,
+                raw_text: row.get(1)?,
+                link_kind: row.get(2)?,
+                display_text: row.get(3)?,
+                target_path_candidate: row.get(4)?,
+                target_heading: row.get(5)?,
+                target_block: row.get(6)?,
+                resolved_target_path: row.get(7)?,
+                origin_context: row.get(8)?,
+                byte_offset: row.get(9)?,
+                resolved_target_extension: row.get(10)?,
+            })
+        })
+        .map_err(CliError::operation)?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(CliError::operation)
+}
+
+fn collect_export_attachment_paths(links: &[ExportLinkRecord]) -> Vec<String> {
+    let mut attachments = links
+        .iter()
+        .filter_map(|link| {
+            let extension = link.resolved_target_extension.as_deref()?;
+            (!matches!(extension, "md" | "base"))
+                .then(|| link.resolved_target_path.clone())
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    attachments.retain(|path| !path.trim().is_empty());
+    attachments.into_iter().collect()
+}
+
+fn write_text_export(
+    output: OutputFormat,
+    path: Option<&PathBuf>,
+    payload: &str,
+    summary: &impl Serialize,
+) -> Result<(), CliError> {
+    if let Some(path) = path {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(CliError::operation)?;
+        }
+        fs::write(path, payload).map_err(CliError::operation)?;
+        match output {
+            OutputFormat::Human => {
+                println!("{}", path.display());
+                Ok(())
+            }
+            OutputFormat::Json => print_json(summary),
+        }
+    } else {
+        print!("{payload}");
+        if !payload.ends_with('\n') {
+            println!();
+        }
+        Ok(())
+    }
+}
+
+fn render_graph_export_payload(
+    report: &vulcan_core::GraphExportReport,
+    format: GraphExportFormat,
+) -> Result<String, CliError> {
+    match format {
+        GraphExportFormat::Json => serde_json::to_string(report).map_err(CliError::operation),
+        GraphExportFormat::Dot => {
+            let mut rendered = String::from("digraph vault {\n");
+            for node in &report.nodes {
+                let label = node.path.trim_end_matches(".md").replace('"', "\\\"");
+                let id = node.path.replace('"', "\\\"");
+                writeln!(rendered, "  \"{id}\" [label=\"{label}\"];")
+                    .expect("writing to string cannot fail");
+            }
+            for edge in &report.edges {
+                let source = edge.source.replace('"', "\\\"");
+                let target = edge.target.replace('"', "\\\"");
+                writeln!(rendered, "  \"{source}\" -> \"{target}\";")
+                    .expect("writing to string cannot fail");
+            }
+            rendered.push_str("}\n");
+            Ok(rendered)
+        }
+        GraphExportFormat::Graphml => {
+            let mut rendered = String::from(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<graphml xmlns=\"http://graphml.graphdrawing.org/graphml\">\n  <graph id=\"vault\" edgedefault=\"directed\">\n",
+            );
+            for node in &report.nodes {
+                let id = node.path.replace('"', "&quot;");
+                writeln!(rendered, "    <node id=\"{id}\"/>")
+                    .expect("writing to string cannot fail");
+            }
+            for (index, edge) in report.edges.iter().enumerate() {
+                let source = edge.source.replace('"', "&quot;");
+                let target = edge.target.replace('"', "&quot;");
+                writeln!(
+                    rendered,
+                    "    <edge id=\"e{index}\" source=\"{source}\" target=\"{target}\"/>"
+                )
+                .expect("writing to string cannot fail");
+            }
+            rendered.push_str("  </graph>\n</graphml>\n");
+            Ok(rendered)
+        }
+    }
+}
+
+fn prepare_export_output_path(output_path: &Path) -> Result<(), CliError> {
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    if output_path.exists() {
+        fs::remove_file(output_path).map_err(CliError::operation)?;
+    }
+    Ok(())
+}
+
+fn write_graph_export(
+    output: OutputFormat,
+    report: &vulcan_core::GraphExportReport,
+    format: GraphExportFormat,
+    path: Option<&PathBuf>,
+) -> Result<(), CliError> {
+    let payload = render_graph_export_payload(report, format)?;
+    let summary = path.map(|path| GraphExportSummary {
+        path: path.display().to_string(),
+        format: match format {
+            GraphExportFormat::Json => "json",
+            GraphExportFormat::Dot => "dot",
+            GraphExportFormat::Graphml => "graphml",
+        }
+        .to_string(),
+        nodes: report.nodes.len(),
+        edges: report.edges.len(),
+    });
+    match summary.as_ref() {
+        Some(summary) => write_text_export(output, path, &payload, summary),
+        None => write_text_export(output, path, &payload, &serde_json::json!({})),
+    }
+}
+
+fn write_zip_export(
+    paths: &VaultPaths,
+    output_path: &Path,
+    report: &QueryReport,
+    notes: &[ExportedNoteDocument],
+    links: &[ExportLinkRecord],
+) -> Result<ZipExportSummary, CliError> {
+    prepare_export_output_path(output_path)?;
+
+    let attachments = collect_export_attachment_paths(links);
+    let file = fs::File::create(output_path).map_err(CliError::operation)?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    for note in notes {
+        writer
+            .start_file(&note.note.document_path, options)
+            .map_err(CliError::operation)?;
+        writer
+            .write_all(note.content.as_bytes())
+            .map_err(CliError::operation)?;
+    }
+
+    for attachment in &attachments {
+        writer
+            .start_file(attachment, options)
+            .map_err(CliError::operation)?;
+        let bytes = fs::read(paths.vault_root().join(attachment)).map_err(CliError::operation)?;
+        writer.write_all(&bytes).map_err(CliError::operation)?;
+    }
+
+    let notes_json = render_json_export_payload(report, notes, true)?;
+    writer
+        .start_file(".vulcan-export/notes.json", options)
+        .map_err(CliError::operation)?;
+    writer
+        .write_all(notes_json.as_bytes())
+        .map_err(CliError::operation)?;
+
+    let manifest = ZipExportManifest {
+        query: report.query.clone(),
+        result_count: notes.len(),
+        notes: notes
+            .iter()
+            .map(|entry| entry.note.document_path.clone())
+            .collect(),
+        attachments,
+    };
+    let manifest_json = serde_json::to_string_pretty(&manifest).map_err(CliError::operation)?;
+    writer
+        .start_file(".vulcan-export/manifest.json", options)
+        .map_err(CliError::operation)?;
+    writer
+        .write_all(manifest_json.as_bytes())
+        .map_err(CliError::operation)?;
+
+    writer.finish().map_err(CliError::operation)?;
+
+    Ok(ZipExportSummary {
+        path: output_path.display().to_string(),
+        result_count: notes.len(),
+        attachment_count: manifest.attachments.len(),
+    })
+}
+
+fn initialize_sqlite_export(connection: &Connection) -> Result<(), CliError> {
+    connection
+        .execute_batch(
+            "
+            PRAGMA user_version = 1;
+
+            CREATE TABLE meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE notes (
+                document_path TEXT PRIMARY KEY,
+                file_name TEXT NOT NULL,
+                file_ext TEXT NOT NULL,
+                file_mtime INTEGER NOT NULL,
+                file_size INTEGER NOT NULL,
+                tags_json TEXT NOT NULL,
+                aliases_json TEXT NOT NULL,
+                frontmatter_json TEXT NOT NULL,
+                properties_json TEXT NOT NULL,
+                content TEXT NOT NULL
+            );
+
+            CREATE TABLE links (
+                source_document_path TEXT NOT NULL,
+                raw_text TEXT NOT NULL,
+                link_kind TEXT NOT NULL,
+                display_text TEXT,
+                target_path_candidate TEXT,
+                target_heading TEXT,
+                target_block TEXT,
+                resolved_target_path TEXT,
+                origin_context TEXT NOT NULL,
+                byte_offset INTEGER NOT NULL
+            );
+
+            CREATE TABLE tags (
+                document_path TEXT NOT NULL,
+                tag_text TEXT NOT NULL
+            );
+
+            CREATE TABLE tasks (
+                task_id TEXT PRIMARY KEY,
+                document_path TEXT NOT NULL,
+                task_source TEXT NOT NULL,
+                text TEXT NOT NULL,
+                status_char TEXT NOT NULL,
+                status_name TEXT NOT NULL,
+                status_type TEXT NOT NULL,
+                line_number INTEGER NOT NULL,
+                byte_offset INTEGER NOT NULL,
+                section_heading TEXT,
+                properties_json TEXT NOT NULL
+            );
+
+            CREATE INDEX idx_links_source_document_path ON links(source_document_path);
+            CREATE INDEX idx_tags_document_path ON tags(document_path);
+            CREATE INDEX idx_tasks_document_path ON tasks(document_path);
+            ",
+        )
+        .map_err(CliError::operation)
+}
+
+fn insert_sqlite_export_meta(
+    connection: &Connection,
+    report: &QueryReport,
+    result_count: usize,
+) -> Result<(), CliError> {
+    let query_json = serde_json::to_string(&report.query).map_err(CliError::operation)?;
+    let timestamp = TemplateTimestamp::current().default_strings().datetime;
+    connection
+        .execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2), (?3, ?4), (?5, ?6)",
+            rusqlite::params![
+                "query_json",
+                query_json,
+                "result_count",
+                result_count.to_string(),
+                "generated_at",
+                timestamp
+            ],
+        )
+        .map_err(CliError::operation)?;
+    Ok(())
+}
+
+fn insert_sqlite_export_notes(
+    transaction: &rusqlite::Transaction<'_>,
+    notes: &[ExportedNoteDocument],
+) -> Result<(usize, usize), CliError> {
+    let mut tag_count = 0;
+    let mut task_count = 0;
+
+    for note in notes {
+        transaction
+            .execute(
+                "INSERT INTO notes (
+                    document_path, file_name, file_ext, file_mtime, file_size,
+                    tags_json, aliases_json, frontmatter_json, properties_json, content
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    &note.note.document_path,
+                    &note.note.file_name,
+                    &note.note.file_ext,
+                    note.note.file_mtime,
+                    note.note.file_size,
+                    serde_json::to_string(&note.note.tags).map_err(CliError::operation)?,
+                    serde_json::to_string(&note.note.aliases).map_err(CliError::operation)?,
+                    serde_json::to_string(&note.note.frontmatter).map_err(CliError::operation)?,
+                    serde_json::to_string(&note.note.properties).map_err(CliError::operation)?,
+                    &note.content,
+                ],
+            )
+            .map_err(CliError::operation)?;
+
+        for tag in &note.note.tags {
+            transaction
+                .execute(
+                    "INSERT INTO tags (document_path, tag_text) VALUES (?1, ?2)",
+                    rusqlite::params![&note.note.document_path, tag],
+                )
+                .map_err(CliError::operation)?;
+            tag_count += 1;
+        }
+
+        for task in &note.note.tasks {
+            let task_source = task
+                .properties
+                .get("taskSource")
+                .and_then(Value::as_str)
+                .unwrap_or("inline");
+            transaction
+                .execute(
+                    "INSERT INTO tasks (
+                        task_id, document_path, task_source, text, status_char, status_name,
+                        status_type, line_number, byte_offset, section_heading, properties_json
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    rusqlite::params![
+                        &task.id,
+                        &note.note.document_path,
+                        task_source,
+                        &task.text,
+                        &task.status_char,
+                        &task.status_name,
+                        &task.status_type,
+                        task.line_number,
+                        task.byte_offset,
+                        &task.section_heading,
+                        serde_json::to_string(&task.properties).map_err(CliError::operation)?,
+                    ],
+                )
+                .map_err(CliError::operation)?;
+            task_count += 1;
+        }
+    }
+
+    Ok((tag_count, task_count))
+}
+
+fn insert_sqlite_export_links(
+    transaction: &rusqlite::Transaction<'_>,
+    links: &[ExportLinkRecord],
+) -> Result<(), CliError> {
+    for link in links {
+        transaction
+            .execute(
+                "INSERT INTO links (
+                    source_document_path, raw_text, link_kind, display_text, target_path_candidate,
+                    target_heading, target_block, resolved_target_path, origin_context, byte_offset
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    &link.source_document_path,
+                    &link.raw_text,
+                    &link.link_kind,
+                    &link.display_text,
+                    &link.target_path_candidate,
+                    &link.target_heading,
+                    &link.target_block,
+                    &link.resolved_target_path,
+                    &link.origin_context,
+                    link.byte_offset,
+                ],
+            )
+            .map_err(CliError::operation)?;
+    }
+    Ok(())
+}
+
+fn write_sqlite_export(
+    output_path: &Path,
+    report: &QueryReport,
+    notes: &[ExportedNoteDocument],
+    links: &[ExportLinkRecord],
+) -> Result<SqliteExportSummary, CliError> {
+    prepare_export_output_path(output_path)?;
+    let mut connection = Connection::open(output_path).map_err(CliError::operation)?;
+    initialize_sqlite_export(&connection)?;
+    insert_sqlite_export_meta(&connection, report, notes.len())?;
+    let transaction = connection.transaction().map_err(CliError::operation)?;
+    let (tag_count, task_count) = insert_sqlite_export_notes(&transaction, notes)?;
+    insert_sqlite_export_links(&transaction, links)?;
+    transaction.commit().map_err(CliError::operation)?;
+
+    Ok(SqliteExportSummary {
+        path: output_path.display().to_string(),
+        result_count: notes.len(),
+        link_count: links.len(),
+        tag_count,
+        task_count,
+    })
+}
+
 fn print_automation_run_report(
     output: OutputFormat,
     report: &AutomationRunReport,
@@ -22485,7 +23314,7 @@ mod tests {
             Command::Tasks {
                 command: TasksCommand::List {
                     filter: Some("completed".to_string()),
-                    source: TasksListSourceArg::File,
+                    source: Some(TasksListSourceArg::Tasknotes),
                     status: Some("in-progress".to_string()),
                     priority: Some("high".to_string()),
                     due_before: Some("2026-04-11".to_string()),

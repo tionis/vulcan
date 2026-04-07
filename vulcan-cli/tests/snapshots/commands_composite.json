@@ -1069,7 +1069,7 @@
       },
       {
         "about": "Evaluate and list Tasks plugin queries against indexed tasks",
-        "after_help": "Subcommands:\n  add         create one TaskNotes task file\n  show        display one TaskNotes task with structured properties\n  edit        open one TaskNotes task in $EDITOR\n  set         update one TaskNotes task property\n  complete    mark one task as completed\n  archive     archive one completed TaskNotes task\n  convert     convert a note, line, or heading into a TaskNotes task\n  create      append one inline task to a note\n  reschedule  change one task's due date\n  query       evaluate a Tasks plugin query string directly\n  eval        evaluate indexed ```tasks``` blocks from one note\n  list        list indexed tasks, optionally filtered\n  next        show upcoming recurring task instances\n  blocked     list currently blocked tasks with their blockers\n  graph       show the task dependency graph\n\nNotes:\n  `tasks query` uses the Tasks DSL.\n  `tasks list --filter` accepts either the Tasks DSL or a Dataview expression.\n  `tasks list` excludes archived TaskNotes by default; pass `--include-archived` to include them.\n  Vault task defaults under [tasks] in .vulcan/config.toml apply to Tasks queries.\n\nExamples:\n  vulcan tasks add \"Buy groceries tomorrow @home\"\n  vulcan tasks create \"Call Alice tomorrow\" --in Inbox\n  vulcan tasks reschedule Write\\ Docs --due 2026-04-12\n  vulcan tasks query 'not done'\n  vulcan tasks eval Dashboard --block 0\n  vulcan tasks list\n  vulcan tasks list --source file --status in-progress --sort-by due\n  vulcan tasks list --filter 'completed && file.name = \"Alpha\"'\n  vulcan tasks next 5 --from 2026-03-29\n  vulcan tasks blocked\n  vulcan tasks graph",
+        "after_help": "Subcommands:\n  add         create one TaskNotes task file\n  show        display one TaskNotes task with structured properties\n  edit        open one TaskNotes task in $EDITOR\n  set         update one TaskNotes task property\n  complete    mark one task as completed\n  archive     archive one completed TaskNotes task\n  convert     convert a note, line, or heading into a TaskNotes task\n  create      append one inline task to a note\n  reschedule  change one task's due date\n  query       evaluate a Tasks plugin query string directly\n  eval        evaluate indexed ```tasks``` blocks from one note\n  list        list indexed tasks, optionally filtered\n  next        show upcoming recurring task instances\n  blocked     list currently blocked tasks with their blockers\n  graph       show the task dependency graph\n\nNotes:\n  `tasks query` uses the Tasks DSL.\n  `tasks list --filter` accepts either the Tasks DSL or a Dataview expression.\n  `tasks list --source tasknotes` limits results to file-backed TaskNotes; `inline` keeps embedded checklist tasks only.\n  `tasks list` excludes archived TaskNotes by default; pass `--include-archived` to include them.\n  `tasks list` defaults `--source` from `[tasks] default_source` in `.vulcan/config.toml`.\n  Vault task defaults under [tasks] in `.vulcan/config.toml` also apply to Tasks queries.\n\nExamples:\n  vulcan tasks add \"Buy groceries tomorrow @home\"\n  vulcan tasks create \"Call Alice tomorrow\" --in Inbox\n  vulcan tasks reschedule Write\\ Docs --due 2026-04-12\n  vulcan tasks query 'not done'\n  vulcan tasks eval Dashboard --block 0\n  vulcan tasks list\n  vulcan tasks list --source tasknotes --status in-progress --sort-by due\n  vulcan tasks list --filter 'completed && file.name = \"Alpha\"'\n  vulcan tasks next 5 --from 2026-03-29\n  vulcan tasks blocked\n  vulcan tasks graph",
         "name": "tasks",
         "options": [],
         "subcommands": [
@@ -1698,11 +1698,11 @@
                 ]
               },
               {
-                "help": "Restrict results to TaskNotes file tasks, inline tasks, or both",
+                "help": "Restrict results to TaskNotes file tasks, inline tasks, or both; defaults to [tasks] default_source",
                 "id": "source",
                 "long": "source",
                 "possible_values": [
-                  "file",
+                  "tasknotes",
                   "inline",
                   "all"
                 ],
@@ -3514,10 +3514,268 @@
       },
       {
         "about": "Write static export artifacts derived from the cache",
-        "after_help": "Subcommands:\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
+        "after_help": "Subcommands:\n  markdown      Export matched notes as one combined Markdown document\n  json          Export matched notes with metadata and raw content as JSON\n  csv           Export note query results as CSV\n  graph         Export the resolved link graph for external tools\n  zip           Export matched notes and linked attachments as a ZIP archive\n  sqlite        Export matched notes into a standalone SQLite database\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  `markdown`, `json`, `csv`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.\n  Text exports print to stdout by default; pass `-o/--path` to write a file instead.\n  Archive exports require `-o/--path` because they produce binary or database files.\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'\n  vulcan export json 'from notes where status = done' --pretty -o exports/done.json\n  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv\n  vulcan export graph --format dot -o exports/graph.dot\n  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip\n  vulcan export sqlite 'from notes where status = done' -o exports/done.db\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
         "name": "export",
         "options": [],
         "subcommands": [
+          {
+            "about": "Export matched notes as one combined Markdown document",
+            "name": "markdown",
+            "options": [
+              {
+                "help": "Native note query DSL string; omit with --query-json",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "JSON note query payload; mutually exclusive with the positional query",
+                "id": "query_json",
+                "long": "query-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Destination Markdown file; omit to print the combined document to stdout",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": "o",
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Optional top-level heading for the combined document",
+                "id": "title",
+                "long": "title",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TITLE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Export matched notes with metadata and raw content as JSON",
+            "name": "json",
+            "options": [
+              {
+                "help": "Native note query DSL string; omit with --query-json",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "JSON note query payload; mutually exclusive with the positional query",
+                "id": "query_json",
+                "long": "query-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Destination JSON file; omit to print the payload to stdout",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": "o",
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Pretty-print the JSON payload",
+                "id": "pretty",
+                "long": "pretty",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PRETTY"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Export note query results as CSV",
+            "name": "csv",
+            "options": [
+              {
+                "help": "Native note query DSL string; omit with --query-json",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "JSON note query payload; mutually exclusive with the positional query",
+                "id": "query_json",
+                "long": "query-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Destination CSV file; omit to print the rows to stdout",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": "o",
+                "value_names": [
+                  "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Export the resolved link graph for external tools",
+            "name": "graph",
+            "options": [
+              {
+                "help": "Output format: json ({nodes,edges}), dot (Graphviz), or graphml (XML)",
+                "id": "format",
+                "long": "format",
+                "possible_values": [
+                  "json",
+                  "dot",
+                  "graphml"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FORMAT"
+                ]
+              },
+              {
+                "help": "Destination export file; omit to print the graph to stdout",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": "o",
+                "value_names": [
+                  "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Export matched notes and linked attachments as a ZIP archive",
+            "name": "zip",
+            "options": [
+              {
+                "help": "Native note query DSL string; omit with --query-json",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "JSON note query payload; mutually exclusive with the positional query",
+                "id": "query_json",
+                "long": "query-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Destination ZIP archive",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": true,
+                "short": "o",
+                "value_names": [
+                  "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Export matched notes into a standalone SQLite database",
+            "name": "sqlite",
+            "options": [
+              {
+                "help": "Native note query DSL string; omit with --query-json",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "JSON note query payload; mutually exclusive with the positional query",
+                "id": "query_json",
+                "long": "query-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Destination SQLite database file",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": true,
+                "short": "o",
+                "value_names": [
+                  "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
           {
             "about": "Write the cached search corpus as a static JSON index",
             "name": "search-index",

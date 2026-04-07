@@ -537,8 +537,10 @@ Subcommands:
 Notes:
   `tasks query` uses the Tasks DSL.
   `tasks list --filter` accepts either the Tasks DSL or a Dataview expression.
+  `tasks list --source tasknotes` limits results to file-backed TaskNotes; `inline` keeps embedded checklist tasks only.
   `tasks list` excludes archived TaskNotes by default; pass `--include-archived` to include them.
-  Vault task defaults under [tasks] in .vulcan/config.toml apply to Tasks queries.
+  `tasks list` defaults `--source` from `[tasks] default_source` in `.vulcan/config.toml`.
+  Vault task defaults under [tasks] in `.vulcan/config.toml` also apply to Tasks queries.
 
 Examples:
   vulcan tasks add \"Buy groceries tomorrow @home\"
@@ -547,7 +549,7 @@ Examples:
   vulcan tasks query 'not done'
   vulcan tasks eval Dashboard --block 0
   vulcan tasks list
-  vulcan tasks list --source file --status in-progress --sort-by due
+  vulcan tasks list --source tasknotes --status in-progress --sort-by due
   vulcan tasks list --filter 'completed && file.name = \"Alpha\"'
   vulcan tasks next 5 --from 2026-03-29
   vulcan tasks blocked
@@ -792,13 +794,28 @@ Examples:
 
 const EXPORT_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  markdown      Export matched notes as one combined Markdown document
+  json          Export matched notes with metadata and raw content as JSON
+  csv           Export note query results as CSV
+  graph         Export the resolved link graph for external tools
+  zip           Export matched notes and linked attachments as a ZIP archive
+  sqlite        Export matched notes into a standalone SQLite database
   search-index  Write the cached search corpus as a static JSON index
 
 Notes:
+  `markdown`, `json`, `csv`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
+  Text exports print to stdout by default; pass `-o/--path` to write a file instead.
+  Archive exports require `-o/--path` because they produce binary or database files.
   The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).
   Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.
 
 Examples:
+  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'
+  vulcan export json 'from notes where status = done' --pretty -o exports/done.json
+  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv
+  vulcan export graph --format dot -o exports/graph.dot
+  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip
+  vulcan export sqlite 'from notes where status = done' -o exports/done.db
   vulcan export search-index --path public/search-index.json
   vulcan export search-index --pretty > /tmp/search.json";
 
@@ -1543,6 +1560,83 @@ pub enum CheckpointCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ExportCommand {
+    #[command(about = "Export matched notes as one combined Markdown document")]
+    Markdown {
+        #[command(flatten)]
+        query: ExportQueryArgs,
+        #[arg(
+            short = 'o',
+            long = "path",
+            help = "Destination Markdown file; omit to print the combined document to stdout"
+        )]
+        path: Option<PathBuf>,
+        #[arg(long, help = "Optional top-level heading for the combined document")]
+        title: Option<String>,
+    },
+    #[command(about = "Export matched notes with metadata and raw content as JSON")]
+    Json {
+        #[command(flatten)]
+        query: ExportQueryArgs,
+        #[arg(
+            short = 'o',
+            long = "path",
+            help = "Destination JSON file; omit to print the payload to stdout"
+        )]
+        path: Option<PathBuf>,
+        #[arg(long, help = "Pretty-print the JSON payload")]
+        pretty: bool,
+    },
+    #[command(about = "Export note query results as CSV")]
+    Csv {
+        #[command(flatten)]
+        query: ExportQueryArgs,
+        #[arg(
+            short = 'o',
+            long = "path",
+            help = "Destination CSV file; omit to print the rows to stdout"
+        )]
+        path: Option<PathBuf>,
+    },
+    #[command(about = "Export the resolved link graph for external tools")]
+    Graph {
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = GraphExportFormat::Json,
+            help = "Output format: json ({nodes,edges}), dot (Graphviz), or graphml (XML)"
+        )]
+        format: GraphExportFormat,
+        #[arg(
+            short = 'o',
+            long = "path",
+            help = "Destination export file; omit to print the graph to stdout"
+        )]
+        path: Option<PathBuf>,
+    },
+    #[command(about = "Export matched notes and linked attachments as a ZIP archive")]
+    Zip {
+        #[command(flatten)]
+        query: ExportQueryArgs,
+        #[arg(
+            short = 'o',
+            long = "path",
+            required = true,
+            help = "Destination ZIP archive"
+        )]
+        path: PathBuf,
+    },
+    #[command(about = "Export matched notes into a standalone SQLite database")]
+    Sqlite {
+        #[command(flatten)]
+        query: ExportQueryArgs,
+        #[arg(
+            short = 'o',
+            long = "path",
+            required = true,
+            help = "Destination SQLite database file"
+        )]
+        path: PathBuf,
+    },
     #[command(about = "Write the cached search corpus as a static JSON index")]
     SearchIndex {
         #[arg(
@@ -1553,6 +1647,17 @@ pub enum ExportCommand {
         #[arg(long, help = "Pretty-print the generated JSON payload")]
         pretty: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct ExportQueryArgs {
+    #[arg(help = "Native note query DSL string; omit with --query-json")]
+    pub query: Option<String>,
+    #[arg(
+        long = "query-json",
+        help = "JSON note query payload; mutually exclusive with the positional query"
+    )]
+    pub query_json: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -2077,10 +2182,9 @@ pub enum TasksCommand {
         #[arg(
             long,
             value_enum,
-            default_value_t = TasksListSourceArg::All,
-            help = "Restrict results to TaskNotes file tasks, inline tasks, or both"
+            help = "Restrict results to TaskNotes file tasks, inline tasks, or both; defaults to [tasks] default_source"
         )]
-        source: TasksListSourceArg,
+        source: Option<TasksListSourceArg>,
         #[arg(
             long,
             help = "Match a status symbol, name, type, or TaskNotes status string"
@@ -2246,7 +2350,8 @@ pub enum TasksTrackSummaryPeriodArg {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TasksListSourceArg {
-    File,
+    #[value(name = "tasknotes", alias = "file")]
+    Tasknotes,
     Inline,
     All,
 }
