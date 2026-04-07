@@ -3588,6 +3588,14 @@ Examples:
         #[arg(help = "Shell to generate completions for")]
         shell: Shell,
     },
+    /// Return dynamic completion candidates for a given context (newline-separated).
+    ///
+    /// Contexts: note, kanban-board, bases-view, daily-date, script, task-view
+    #[command(hide = true)]
+    Complete {
+        #[arg(help = "Completion context")]
+        context: String,
+    },
     #[command(
         about = "Manage vault trust for startup scripts and plugin execution",
         after_help = TRUST_COMMAND_AFTER_HELP

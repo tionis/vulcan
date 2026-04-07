@@ -12414,10 +12414,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             use_stderr_color,
         ),
         Command::Completions { shell } => {
+            let mut buf = Vec::new();
             let mut command = Cli::command();
-            generate(shell, &mut command, "vulcan", &mut io::stdout());
+            generate(shell, &mut command, "vulcan", &mut buf);
+            let static_script = String::from_utf8_lossy(&buf);
+            let dynamic = generate_dynamic_completions(&shell);
+            print!("{static_script}");
+            if !dynamic.is_empty() {
+                println!("{dynamic}");
+            }
             Ok(())
         }
+        Command::Complete { ref context } => run_complete_command(&paths, context),
         Command::Status => {
             let report = run_status_command(&paths)?;
             print_status_report(cli.output, &report, use_stdout_color)
@@ -21041,6 +21049,241 @@ fn mcp_value_to_string(val: &Value) -> String {
         Value::Null => String::new(),
         Value::Object(_) => serde_json::to_string(val).unwrap_or_default(),
     }
+}
+
+fn run_complete_command(paths: &VaultPaths, context: &str) -> Result<(), CliError> {
+    let candidates = collect_complete_candidates(paths, context);
+    for candidate in &candidates {
+        println!("{candidate}");
+    }
+    Ok(())
+}
+
+fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String> {
+    match context {
+        "note" => {
+            // Note names and vault-relative paths from the cache.
+            use vulcan_core::CacheDatabase;
+            let Ok(db) = CacheDatabase::open(paths) else {
+                return Vec::new();
+            };
+            let conn = db.connection();
+            let mut stmt = match conn.prepare(
+                "SELECT path, filename FROM documents ORDER BY path",
+            ) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0).unwrap_or_default(),
+                    row.get::<_, String>(1).unwrap_or_default(),
+                ))
+            });
+            match rows {
+                Ok(iter) => {
+                    let mut out = Vec::new();
+                    for row in iter.flatten() {
+                        let (path, name) = row;
+                        if !name.is_empty() && name != path {
+                            out.push(name);
+                        }
+                        out.push(path);
+                    }
+                    out
+                }
+                Err(_) => Vec::new(),
+            }
+        }
+        "kanban-board" => {
+            use vulcan_core::list_kanban_boards;
+            list_kanban_boards(paths)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| b.path)
+                .collect()
+        }
+        "bases-view" => {
+            // Load bases configs and return view names.
+            use vulcan_core::CacheDatabase;
+            let Ok(db) = CacheDatabase::open(paths) else {
+                return Vec::new();
+            };
+            let conn = db.connection();
+            let mut stmt = match conn
+                .prepare("SELECT filename FROM documents WHERE path LIKE '%.base'")
+            {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0));
+            match rows {
+                Ok(iter) => iter
+                    .flatten()
+                    .map(|name| name.trim_end_matches(".base").to_string())
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        }
+        "daily-date" => {
+            let mut dates = vec![
+                "today".to_string(),
+                "yesterday".to_string(),
+                "tomorrow".to_string(),
+            ];
+            // Last 14 ISO dates using seconds since epoch arithmetic
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            for offset in 1..=14i64 {
+                let past_secs = now_secs - offset * 86400;
+                let ms = past_secs * 1000;
+                let (year, month, day, _, _, _, _) = date_components(ms);
+                dates.push(format!("{year:04}-{month:02}-{day:02}"));
+            }
+            dates
+        }
+        "script" => {
+            let scripts_dir = paths.vulcan_dir().join("scripts");
+            if !scripts_dir.is_dir() {
+                return Vec::new();
+            }
+            fs::read_dir(&scripts_dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter_map(|e| {
+                            let name = e.file_name();
+                            let s = name.to_string_lossy();
+                            if s.ends_with(".js") {
+                                Some(s.trim_end_matches(".js").to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        "task-view" => {
+            use vulcan_core::load_vault_config;
+            let config = load_vault_config(paths).config;
+            config
+                .tasknotes
+                .saved_views
+                .iter()
+                .map(|v| v.id.clone())
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn generate_dynamic_completions(shell: &clap_complete::Shell) -> String {
+    match shell {
+        clap_complete::Shell::Fish => generate_fish_dynamic_completions(),
+        clap_complete::Shell::Bash => generate_bash_dynamic_completions(),
+        clap_complete::Shell::Zsh => generate_zsh_dynamic_completions(),
+        _ => String::new(),
+    }
+}
+
+fn generate_fish_dynamic_completions() -> String {
+    r#"
+# Dynamic completions — generated by vulcan completions fish
+# Note names for note subcommands
+complete -c vulcan -n "__fish_vulcan_using_subcommand note; and __fish_seen_subcommand_from get set append update unset patch delete rename info history links backlinks diff" -f -a "(vulcan complete note 2>/dev/null)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand links" -f -a "(vulcan complete note 2>/dev/null)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand backlinks" -f -a "(vulcan complete note 2>/dev/null)" -d "Note"
+
+# Kanban board names
+complete -c vulcan -n "__fish_vulcan_using_subcommand kanban; and __fish_seen_subcommand_from show add move archive" -f -a "(vulcan complete kanban-board 2>/dev/null)" -d "Board"
+
+# Bases view names
+complete -c vulcan -n "__fish_vulcan_using_subcommand bases; and __fish_seen_subcommand_from eval" -f -a "(vulcan complete bases-view 2>/dev/null)" -d "View"
+
+# Daily date patterns
+complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_subcommand_from show" -f -a "(vulcan complete daily-date 2>/dev/null)" -d "Date"
+
+# Script names for vulcan run
+complete -c vulcan -n "__fish_vulcan_using_subcommand run" -f -a "(vulcan complete script 2>/dev/null)" -d "Script"
+
+# Task view names for tasks view
+complete -c vulcan -n "__fish_vulcan_using_subcommand tasks; and __fish_seen_subcommand_from view" -f -a "(vulcan complete task-view 2>/dev/null)" -d "View"
+"#
+    .trim()
+    .to_string()
+}
+
+fn generate_bash_dynamic_completions() -> String {
+    r#"
+# Dynamic completions patch — generated by vulcan completions bash
+__vulcan_dynamic_complete() {
+    local context="$1"
+    local -a candidates
+    mapfile -t candidates < <(vulcan complete "$context" 2>/dev/null)
+    COMPREPLY=($(compgen -W "${candidates[*]}" -- "${COMP_WORDS[COMP_CWORD]}"))
+}
+
+# Override completion for specific subcommand contexts
+_vulcan_complete_note_arg() {
+    if [[ "${COMP_WORDS[1]}" == "note" || "${COMP_WORDS[1]}" == "links" || "${COMP_WORDS[1]}" == "backlinks" ]]; then
+        __vulcan_dynamic_complete note
+    fi
+}
+
+_vulcan_complete_kanban_arg() {
+    if [[ "${COMP_WORDS[1]}" == "kanban" ]]; then
+        __vulcan_dynamic_complete kanban-board
+    fi
+}
+"#
+    .trim()
+    .to_string()
+}
+
+fn generate_zsh_dynamic_completions() -> String {
+    r#"
+# Dynamic completions patch — generated by vulcan completions zsh
+_vulcan_complete_note() {
+    local -a notes
+    notes=(${(f)"$(vulcan complete note 2>/dev/null)"})
+    _describe 'note' notes
+}
+
+_vulcan_complete_kanban_board() {
+    local -a boards
+    boards=(${(f)"$(vulcan complete kanban-board 2>/dev/null)"})
+    _describe 'board' boards
+}
+
+_vulcan_complete_bases_view() {
+    local -a views
+    views=(${(f)"$(vulcan complete bases-view 2>/dev/null)"})
+    _describe 'view' views
+}
+
+_vulcan_complete_daily_date() {
+    local -a dates
+    dates=(${(f)"$(vulcan complete daily-date 2>/dev/null)"})
+    _describe 'date' dates
+}
+
+_vulcan_complete_script() {
+    local -a scripts
+    scripts=(${(f)"$(vulcan complete script 2>/dev/null)"})
+    _describe 'script' scripts
+}
+
+_vulcan_complete_task_view() {
+    local -a views
+    views=(${(f)"$(vulcan complete task-view 2>/dev/null)"})
+    _describe 'view' views
+}
+"#
+    .trim()
+    .to_string()
 }
 
 #[cfg(test)]
