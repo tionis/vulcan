@@ -242,7 +242,7 @@ Behavior:
 
 Behavior:
 
-- `web search` reads `[web.search]` from `.vulcan/config.toml`; the default backend is `kagi`, using `KAGI_API_KEY` unless overridden.
+- `web search` reads `[web.search]` from `.vulcan/config.toml`. The default backend is `duckduckgo` (no API key required). Setting `backend = "auto"` auto-selects the first available keyed backend (Kagi → Exa → Tavily → Brave) and falls back to DuckDuckGo. Supported backends: `duckduckgo`, `kagi` (`KAGI_API_KEY`), `exa` (`EXA_API_KEY`), `tavily` (`TAVILY_API_KEY`), `brave` (`BRAVE_API_KEY`).
 - `web fetch` uses the configured Vulcan user-agent and performs a best-effort `robots.txt` check before requesting the target URL.
 - `web fetch --mode markdown` converts HTML into readable markdown-like text; `--extract-article` prefers `<article>` or `<main>` content when present.
 - `web fetch --save` writes the fetched output to disk and still reports metadata in JSON mode.
