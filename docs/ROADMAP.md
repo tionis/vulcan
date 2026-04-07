@@ -3627,6 +3627,7 @@ This is the foundation. Do this before building site chrome, templates, or previ
 - [ ] Add `vulcan site profiles` (list available site profiles with effective settings)
 - [ ] Add `vulcan site doctor [--profile <name>]` for publish-specific diagnostics: unpublished link targets, slug collisions, unsupported embeds, missing assets, SEO metadata gaps
 - [ ] Land `vault.note(path).html` and `vulcan note get --mode html` on the same renderer used by site generation
+- [ ] Add HTML output to `vulcan render` so users can quickly convert markdown from stdin or files using the same shared render pipeline rather than a separate converter
 - [ ] Define shared render structs in Rust (`RenderContext`, `RenderedNote`, `RenderedEmbed`, `SiteRoute`, etc.) so CLI/site/WebUI reuse the same contracts
 - [ ] Define deterministic route/slug planning with diagnostics on collisions and stable defaults derived from note path/frontmatter
 - [ ] Add JSON output for `site build`, `site profiles`, and `site doctor` for automation/LLM use
