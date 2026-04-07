@@ -173,9 +173,51 @@ pub(crate) fn render_dataview_inline_value(value: &Value) -> String {
     }
 }
 
+pub(crate) fn markdown_table_column_count(
+    header_count: usize,
+    row_widths: impl IntoIterator<Item = usize>,
+) -> usize {
+    row_widths.into_iter().fold(header_count, usize::max)
+}
+
+pub(crate) fn markdown_table_header_lines(headers: &[String], column_count: usize) -> [String; 2] {
+    [
+        markdown_table_row(headers.iter().map(String::as_str), column_count),
+        markdown_table_row((0..column_count).map(|_| "---"), column_count),
+    ]
+}
+
+pub(crate) fn markdown_table_row<I, S>(cells: I, column_count: usize) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    if column_count == 0 {
+        return String::new();
+    }
+
+    let mut rendered = cells
+        .into_iter()
+        .take(column_count)
+        .map(|cell| escape_markdown_table_cell(cell.as_ref()))
+        .collect::<Vec<_>>();
+    rendered.resize(column_count, String::new());
+    format!("| {} |", rendered.join(" | "))
+}
+
+fn escape_markdown_table_cell(value: &str) -> String {
+    value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('|', "\\|")
+        .replace('\n', "<br>")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::select_fields;
+    use super::{
+        markdown_table_column_count, markdown_table_header_lines, markdown_table_row, select_fields,
+    };
     use serde_json::json;
 
     #[test]
@@ -212,5 +254,24 @@ mod tests {
                 "properties.owner": "alice"
             })
         );
+    }
+
+    #[test]
+    fn markdown_table_rows_escape_pipes_and_newlines() {
+        assert_eq!(
+            markdown_table_row(["[[Projects/Alpha|Alias]]", "line 1\nline 2"], 2),
+            "| [[Projects/Alpha\\|Alias]] | line 1<br>line 2 |"
+        );
+    }
+
+    #[test]
+    fn markdown_table_headers_pad_to_the_widest_row() {
+        let column_count = markdown_table_column_count(1, [3]);
+        let [header, separator] =
+            markdown_table_header_lines(&["Status".to_string()], column_count);
+
+        assert_eq!(column_count, 3);
+        assert_eq!(header, "| Status |  |  |");
+        assert_eq!(separator, "| --- | --- | --- |");
     }
 }
