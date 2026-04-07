@@ -5766,10 +5766,7 @@ globalThis.Function = undefined;
                 text.contains("vault"),
                 "help() should mention vault, got: {text}"
             );
-            assert!(
-                text.contains("dv"),
-                "help() should mention dv, got: {text}"
-            );
+            assert!(text.contains("dv"), "help() should mention dv, got: {text}");
         }
 
         #[test]
@@ -5874,9 +5871,15 @@ globalThis.Function = undefined;
             .expect("app.vault.getMarkdownFiles() should succeed");
             let value = result.value.expect("should have a value");
             let files = value.as_array().expect("should be an array");
-            assert!(!files.is_empty(), "vault should have at least one markdown file");
+            assert!(
+                !files.is_empty(),
+                "vault should have at least one markdown file"
+            );
             let first = &files[0];
-            assert!(first.get("path").is_some(), "each file should have a path field");
+            assert!(
+                first.get("path").is_some(),
+                "each file should have a path field"
+            );
         }
 
         #[test]

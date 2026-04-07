@@ -374,9 +374,7 @@ fn try_dot_command(
             if !errored {
                 let total_ms = start.elapsed().as_secs_f64() * 1000.0;
                 let avg_ms = total_ms / f64::from(n);
-                eprintln!(
-                    "{n} iterations: total {total_ms:.3}ms, avg {avg_ms:.3}ms/iter"
-                );
+                eprintln!("{n} iterations: total {total_ms:.3}ms, avg {avg_ms:.3}ms/iter");
                 if let Some(r) = last_result {
                     print_repl_result(output, &r)?;
                 }
@@ -596,10 +594,41 @@ fn highlight_js_line(line: &str) -> String {
     const COMMENT_COLOR: &str = "\x1b[2m"; // dim
     const RESET: &str = "\x1b[0m";
     const KEYWORDS: &[&str] = &[
-        "const", "let", "var", "function", "return", "if", "else", "for", "while", "new",
-        "typeof", "instanceof", "null", "undefined", "true", "false", "class", "this", "import",
-        "export", "await", "async", "throw", "try", "catch", "finally", "break", "continue",
-        "delete", "in", "of", "switch", "case", "default", "void",
+        "const",
+        "let",
+        "var",
+        "function",
+        "return",
+        "if",
+        "else",
+        "for",
+        "while",
+        "new",
+        "typeof",
+        "instanceof",
+        "null",
+        "undefined",
+        "true",
+        "false",
+        "class",
+        "this",
+        "import",
+        "export",
+        "await",
+        "async",
+        "throw",
+        "try",
+        "catch",
+        "finally",
+        "break",
+        "continue",
+        "delete",
+        "in",
+        "of",
+        "switch",
+        "case",
+        "default",
+        "void",
     ];
 
     let chars: Vec<char> = line.chars().collect();
@@ -1102,6 +1131,9 @@ mod tests {
     fn friendly_repl_error_passes_through_normal_errors() {
         let raw = "ReferenceError: x is not defined";
         let friendly = friendly_repl_error(raw);
-        assert_eq!(friendly, raw, "unrelated errors should pass through unchanged");
+        assert_eq!(
+            friendly, raw,
+            "unrelated errors should pass through unchanged"
+        );
     }
 }
