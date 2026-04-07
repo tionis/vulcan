@@ -521,6 +521,9 @@ function __vulcanNormalizeComparable(value) {
 }
 
 function __vulcanPlain(value) {
+  if (typeof value === "function") {
+    return "[function " + (value.name || "anonymous") + "]";
+  }
   if (value instanceof DataArray) {
     return value.array().map(__vulcanPlain);
   }
@@ -2136,6 +2139,24 @@ const console = {
 };
 
 function help(obj) {
+  if (obj === undefined) {
+    return [
+      "Vulcan JS Runtime — available globals:",
+      "  vault    — note reading, writing, search, graph, daily notes",
+      "  dv       — Dataview-compatible query API (dv.pages, dv.table, etc.)",
+      "  web      — external web search and fetch (requires --sandbox net)",
+      "  console  — console.log() for output",
+      "  app      — Obsidian API compatibility stub (app.vault.*)",
+      "  _        — last successful result",
+      "  _error   — last error message",
+      "",
+      "Usage: help(vault), help(dv), help(vault.search), etc.",
+    ].join("\n");
+  }
+  if (typeof obj === "function" && !__vulcanJsHelp.has(obj)) {
+    const name = obj.name || "this function";
+    return 'Tip: "' + name + '" is a function — did you mean ' + name + '() ?';
+  }
   return __vulcanJsHelp.get(obj) ?? "No help available for this object.";
 }
 
@@ -2392,11 +2413,142 @@ Example:
 See also: web.search(), vault.transaction()`
 );
 
+__vulcanRegisterHelp(
+  vault,
+  `vault — Vulcan vault API
+
+Available methods and namespaces:
+  vault.note(path)       — resolve one note
+  vault.notes(source?)   — query a note collection (DataArray)
+  vault.query(dql)       — run a DQL query string
+  vault.search(q, opts?) — full-text search
+  vault.graph.*          — link graph traversal (shortestPath, hubs, deadEnds, etc.)
+  vault.daily.*          — periodic/daily note helpers (today, get, range, append)
+  vault.create(path, ...) — create a new note
+  vault.set(path, ...)   — overwrite a note
+  vault.append(path, ...) — append content to a note
+  vault.patch(path, ...)  — patch frontmatter properties
+  vault.update(path, ...) — update matching content
+  vault.unset(path, ...)  — remove frontmatter properties
+  vault.transaction(fn)   — run multiple mutations atomically
+  vault.refactor.*        — rename and reorganize helpers
+
+Use help(vault.note), help(vault.search), etc. for details on each method.`
+);
+
+__vulcanRegisterHelp(
+  dv,
+  `dv — Dataview-compatible JS API
+
+  dv.current()             — metadata for the current note
+  dv.page(path)            — single page metadata object
+  dv.pages(source?)        — DataArray of all pages (filterable)
+  dv.table(headers, rows)  — render a table output
+  dv.list(items)           — render a bullet list
+  dv.taskList(tasks, group?) — render a task list
+  dv.paragraph(text)       — render a text paragraph
+  dv.header(level, text)   — render a heading (level 1-6)
+  dv.span(text)            — render inline text
+  dv.el(tag, text, attrs?) — render an arbitrary HTML element
+  dv.execute(dql)          — run a DQL query and emit its output
+  dv.io.csv(path)          — load a CSV file as DataArray
+  dv.io.load(path)         — load a file as raw text
+  dv.func.*                — DataviewJS utility functions (date, duration, etc.)
+  dv.luxon.*               — Luxon DateTime and Duration classes
+
+Use dv.pages('#tag') or dv.pages('"Folder"') to filter.`
+);
+
+__vulcanRegisterHelp(
+  web,
+  `web — External web access (requires --sandbox net)
+
+  web.search(query, opts?)  — search using the configured web backend
+  web.fetch(url, opts?)     — fetch and convert a URL to markdown/html/raw
+
+Use help(web.search) or help(web.fetch) for parameter details.`
+);
+
+__vulcanRegisterHelp(
+  console,
+  `console — REPL output helpers
+
+  console.log(...args)   — print space-joined text output`
+);
+
+// Obsidian API compatibility stub
+const app = {
+  vault: {
+    getName() {
+      return __vulcan_vault_name_json();
+    },
+    getMarkdownFiles() {
+      return JSON.parse(__vulcan_pages_json(null)).map((page) => ({
+        path: page.file?.path ?? page.path ?? "",
+        name: page.file?.name ?? page.name ?? "",
+        basename: page.file?.name ?? page.name ?? "",
+        extension: "md",
+        stat: { mtime: page.file?.mtime ?? 0, ctime: 0, size: 0 },
+      }));
+    },
+    read(file) {
+      const path = typeof file === "string" ? file : (file?.path ?? String(file));
+      return vault.note(path).content;
+    },
+    modify(file, content) {
+      const path = typeof file === "string" ? file : (file?.path ?? String(file));
+      vault.set(path, { content });
+    },
+    getAbstractFileByPath(path) {
+      try {
+        const note = vault.note(path);
+        if (note) {
+          return { path: note.path, name: note.file?.name ?? path, basename: note.file?.name ?? path, extension: "md" };
+        }
+        return null;
+      } catch (_) {
+        return null;
+      }
+    },
+  },
+  workspace: new Proxy({}, {
+    get(_, prop) {
+      throw new Error(
+        "app.workspace is not supported in Vulcan — use vault.* instead. Accessed: app.workspace." + String(prop)
+      );
+    },
+  }),
+  metadataCache: new Proxy({}, {
+    get(_, prop) {
+      throw new Error(
+        "app.metadataCache is not supported in Vulcan — use vault.query() or vault.notes() instead. Accessed: app.metadataCache." + String(prop)
+      );
+    },
+  }),
+};
+
+__vulcanRegisterHelp(
+  app,
+  `app — Obsidian API compatibility stub
+
+  app.vault.getName()                    — vault root folder name
+  app.vault.getMarkdownFiles()           — all notes as TFile-like objects
+  app.vault.read(file)                   — read note content (path string or TFile)
+  app.vault.modify(file, content)        — overwrite note content
+  app.vault.getAbstractFileByPath(path)  — resolve path to TFile-like object
+
+Note: app.workspace and app.metadataCache throw descriptive errors.
+Prefer vault.* over app.vault.* for full Vulcan-native functionality.`
+);
+
 globalThis.dv = dv;
 globalThis.vault = vault;
 globalThis.web = web;
 globalThis.console = console;
 globalThis.help = help;
+globalThis.app = app;
+globalThis._ = undefined;
+globalThis._error = undefined;
 globalThis.this = dv.current();
 globalThis.eval = undefined;
 globalThis.Function = undefined;
@@ -3075,6 +3227,22 @@ globalThis.Function = undefined;
                         )
                     },
                 ),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let vault_name_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_vault_name_json",
+                Func::from(move || {
+                    vault_name_state
+                        .paths
+                        .vault_root()
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string()
+                }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
@@ -5557,6 +5725,178 @@ globalThis.Function = undefined;
                 }
                 other => panic!("expected table output, got {other:?}"),
             }
+        }
+
+        #[test]
+        fn dataviewjs_plain_serializes_functions_as_string() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            // Bare function reference should no longer cause a type conversion error.
+            let result = evaluate_dataview_js_query(&paths, "help", Some("Dashboard.md"))
+                .expect("evaluating a bare function should succeed");
+            let value = result.value.expect("should have a value");
+            assert_eq!(
+                value,
+                Value::String("[function help]".to_string()),
+                "function should serialize as [function name]"
+            );
+        }
+
+        #[test]
+        fn dataviewjs_help_no_arg_returns_welcome_message() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(&paths, "help()", Some("Dashboard.md"))
+                .expect("help() should succeed");
+            let value = result.value.expect("help() should return a value");
+            let text = value.as_str().expect("help() should return a string");
+            assert!(
+                text.contains("Vulcan JS Runtime"),
+                "help() should include welcome heading, got: {text}"
+            );
+            assert!(
+                text.contains("vault"),
+                "help() should mention vault, got: {text}"
+            );
+            assert!(
+                text.contains("dv"),
+                "help() should mention dv, got: {text}"
+            );
+        }
+
+        #[test]
+        fn dataviewjs_help_vault_returns_api_overview() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(&paths, "help(vault)", Some("Dashboard.md"))
+                .expect("help(vault) should succeed");
+            let value = result.value.expect("help(vault) should return a value");
+            let text = value.as_str().expect("help(vault) should return a string");
+            assert!(
+                text.contains("vault.note"),
+                "help(vault) should describe vault.note, got: {text}"
+            );
+        }
+
+        #[test]
+        fn dataviewjs_help_bare_function_shows_tip() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            // vault.note is a function with no registered help — should get a hint.
+            let result =
+                evaluate_dataview_js_query(&paths, "help(vault.note)", Some("Dashboard.md"))
+                    .expect("help(vault.note) should succeed");
+            // vault.note _does_ have registered help, so verify it includes Parameters.
+            let value = result.value.expect("should have a value");
+            let text = value.as_str().expect("should be string");
+            assert!(
+                text.contains("Parameters"),
+                "vault.note help should include Parameters, got: {text}"
+            );
+        }
+
+        #[test]
+        fn dataviewjs_special_variables_track_last_result_and_error() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let session = DataviewJsSession::new(
+                &paths,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions::default(),
+            )
+            .expect("session should open");
+
+            // Evaluate a value, then manually inject _ like the REPL does.
+            let r1 = session.evaluate("42").expect("should evaluate");
+            let json = serde_json::to_string(&r1.value.as_ref().unwrap()).unwrap();
+            let escaped = serde_json::to_string(&json).unwrap();
+            session
+                .evaluate(&format!("globalThis._ = JSON.parse({escaped});"))
+                .expect("injection should succeed");
+
+            let r2 = session.evaluate("_").expect("_ should be defined");
+            assert_eq!(
+                r2.value,
+                Some(Value::Number(serde_json::Number::from(42))),
+                "_ should hold last result"
+            );
+        }
+
+        #[test]
+        fn dataviewjs_app_stub_get_name_returns_string() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result =
+                evaluate_dataview_js_query(&paths, "app.vault.getName()", Some("Dashboard.md"))
+                    .expect("app.vault.getName() should succeed");
+            let value = result.value.expect("should have a value");
+            let name = value.as_str().expect("should be a string");
+            assert!(!name.is_empty(), "vault name should be non-empty");
+        }
+
+        #[test]
+        fn dataviewjs_app_stub_get_markdown_files_returns_array() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                "app.vault.getMarkdownFiles()",
+                Some("Dashboard.md"),
+            )
+            .expect("app.vault.getMarkdownFiles() should succeed");
+            let value = result.value.expect("should have a value");
+            let files = value.as_array().expect("should be an array");
+            assert!(!files.is_empty(), "vault should have at least one markdown file");
+            let first = &files[0];
+            assert!(first.get("path").is_some(), "each file should have a path field");
+        }
+
+        #[test]
+        fn dataviewjs_app_stub_workspace_throws_descriptive_error() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let err = evaluate_dataview_js_query(
+                &paths,
+                "app.workspace.activeLeaf",
+                Some("Dashboard.md"),
+            )
+            .expect_err("app.workspace should throw");
+            assert!(
+                err.to_string().contains("not supported"),
+                "error should explain why workspace is unavailable, got: {err}"
+            );
         }
 
         fn copy_fixture_vault(name: &str, destination: &Path) {

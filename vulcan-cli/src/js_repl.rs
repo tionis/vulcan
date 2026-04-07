@@ -1,6 +1,6 @@
 use crate::{render_dataview_inline_value, trust, CliError, OutputFormat};
 use rustyline::completion::{Completer, Pair};
-use rustyline::config::{CompletionType, Config};
+use rustyline::config::{CompletionType, Config, EditMode};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
@@ -9,11 +9,12 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Editor, Helper};
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use vulcan_core::{
     DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DataviewJsSession, JsRuntimeSandbox,
     VaultPaths,
@@ -21,12 +22,27 @@ use vulcan_core::{
 
 const PRIMARY_PROMPT: &str = "vulcan> ";
 const CONTINUATION_PROMPT: &str = "......> ";
-const MAX_HISTORY_ENTRIES: usize = 200;
+const MAX_HISTORY_ENTRIES: usize = 10_000;
 const REPL_COMPLETIONS: &[&str] = &[
+    // Dot commands
     ".exit",
     ".quit",
+    ".type ",
+    ".keys ",
+    ".inspect ",
+    ".time ",
+    ".bench ",
+    ".source ",
+    // console
     "console.log(",
+    // help
     "help(",
+    "help(vault)",
+    "help(dv)",
+    "help(web)",
+    "help(console)",
+    "help(app)",
+    // vault
     "vault.",
     "vault.note(",
     "vault.notes(",
@@ -61,8 +77,35 @@ const REPL_COMPLETIONS: &[&str] = &[
     "vault.refactor.renameProperty(",
     "vault.refactor.mergeTags(",
     "vault.refactor.move(",
+    // dv (DataView)
+    "dv.",
+    "dv.current(",
+    "dv.page(",
+    "dv.pages(",
+    "dv.table(",
+    "dv.list(",
+    "dv.taskList(",
+    "dv.paragraph(",
+    "dv.header(",
+    "dv.span(",
+    "dv.el(",
+    "dv.execute(",
+    "dv.io.",
+    "dv.io.load(",
+    "dv.io.csv(",
+    "dv.io.normalize(",
+    "dv.func.",
+    // web
     "web.search(",
     "web.fetch(",
+    // app (Obsidian compat)
+    "app.",
+    "app.vault.",
+    "app.vault.getName(",
+    "app.vault.getMarkdownFiles(",
+    "app.vault.read(",
+    "app.vault.modify(",
+    "app.vault.getAbstractFileByPath(",
 ];
 
 pub(crate) fn run_js_repl(
@@ -84,8 +127,15 @@ pub(crate) fn run_js_repl(
                 eprintln!("Loading {}...", startup_path.display());
                 let source = fs::read_to_string(&startup_path).map_err(CliError::operation)?;
                 match session.evaluate(&source).map_err(CliError::operation) {
-                    Ok(result) => print_repl_result(output, &result)?,
-                    Err(error) => print_repl_error(output, &error.to_string())?,
+                    Ok(result) => {
+                        inject_last_result(&session, &result);
+                        print_repl_result(output, &result)?;
+                    }
+                    Err(error) => {
+                        let msg = friendly_repl_error(&error.to_string());
+                        inject_last_error(&session, &msg);
+                        print_repl_error(output, &msg)?;
+                    }
                 }
             } else {
                 eprintln!(
@@ -96,6 +146,46 @@ pub(crate) fn run_js_repl(
         }
     }
 
+    run_repl_loop(&session, paths, output)
+}
+
+/// Start the REPL after pre-loading a JS file.  The file is evaluated in the session and its
+/// result is printed before entering the interactive loop.
+pub(crate) fn run_js_repl_with_preload(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    timeout: Option<Duration>,
+    sandbox: Option<JsRuntimeSandbox>,
+    preload_path: &str,
+) -> Result<(), CliError> {
+    let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout, sandbox })
+        .map_err(CliError::operation)?;
+
+    // Load and evaluate the preload file before entering the REPL.
+    let source = std::fs::read_to_string(preload_path).map_err(|error| {
+        CliError::operation(format!("failed to read eval-file {preload_path}: {error}"))
+    })?;
+    eprintln!("Loading {preload_path}...");
+    match session.evaluate(&source).map_err(CliError::operation) {
+        Ok(result) => {
+            inject_last_result(&session, &result);
+            print_repl_result(output, &result)?;
+        }
+        Err(error) => {
+            let msg = friendly_repl_error(&error.to_string());
+            inject_last_error(&session, &msg);
+            print_repl_error(output, &msg)?;
+        }
+    }
+
+    run_repl_loop(&session, paths, output)
+}
+
+fn run_repl_loop(
+    session: &DataviewJsSession,
+    paths: &VaultPaths,
+    output: OutputFormat,
+) -> Result<(), CliError> {
     let history_path = paths.vulcan_dir().join("repl_history");
     let mut history = load_history(&history_path)?;
     let mut editor = build_repl_editor(&history, REPL_COMPLETIONS)?;
@@ -131,9 +221,18 @@ pub(crate) fn run_js_repl(
                     break;
                 }
 
-                match session.evaluate(&source).map_err(CliError::operation) {
-                    Ok(result) => print_repl_result(output, &result)?,
-                    Err(error) => print_repl_error(output, &error.to_string())?,
+                if !try_dot_command(session, trimmed, output)? {
+                    match session.evaluate(&source).map_err(CliError::operation) {
+                        Ok(result) => {
+                            print_repl_result(output, &result)?;
+                            inject_last_result(session, &result);
+                        }
+                        Err(error) => {
+                            let msg = friendly_repl_error(&error.to_string());
+                            print_repl_error(output, &msg)?;
+                            inject_last_error(session, &msg);
+                        }
+                    }
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -150,77 +249,161 @@ pub(crate) fn run_js_repl(
     Ok(())
 }
 
-/// Start the REPL after pre-loading a JS file.  The file is evaluated in the session and its
-/// result is printed before entering the interactive loop.
-pub(crate) fn run_js_repl_with_preload(
-    paths: &VaultPaths,
-    output: OutputFormat,
-    timeout: Option<Duration>,
-    sandbox: Option<JsRuntimeSandbox>,
-    preload_path: &str,
-) -> Result<(), CliError> {
-    let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout, sandbox })
-        .map_err(CliError::operation)?;
-
-    // Load and evaluate the preload file before entering the REPL.
-    let source = std::fs::read_to_string(preload_path).map_err(|error| {
-        CliError::operation(format!("failed to read eval-file {preload_path}: {error}"))
-    })?;
-    eprintln!("Loading {preload_path}...");
-    match session.evaluate(&source).map_err(CliError::operation) {
-        Ok(result) => print_repl_result(output, &result)?,
-        Err(error) => print_repl_error(output, &error.to_string())?,
-    }
-
-    // Now hand off to the regular REPL loop using the same session.
-    let history_path = paths.vulcan_dir().join("repl_history");
-    let mut history = load_history(&history_path)?;
-    let mut editor = build_repl_editor(&history, REPL_COMPLETIONS)?;
-    let mut pending = String::new();
-
-    loop {
-        let prompt = if pending.is_empty() {
-            PRIMARY_PROMPT
-        } else {
-            CONTINUATION_PROMPT
-        };
-        match editor.readline(prompt) {
-            Ok(line) => {
-                if !pending.is_empty() {
-                    pending.push('\n');
-                }
-                pending.push_str(&line);
-                if repl_input_needs_continuation(&pending) {
-                    continue;
-                }
-                let src = std::mem::take(&mut pending);
-                let trimmed = src.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if record_submission(&mut history, &src) {
-                    let _ = editor
-                        .add_history_entry(src.as_str())
-                        .map_err(|error| CliError::operation(&error))?;
-                }
-                if matches!(trimmed, ".exit" | ".quit") {
-                    break;
-                }
-                match session.evaluate(&src).map_err(CliError::operation) {
-                    Ok(result) => print_repl_result(output, &result)?,
-                    Err(error) => print_repl_error(output, &error.to_string())?,
-                }
+fn inject_last_result(session: &DataviewJsSession, result: &DataviewJsResult) {
+    if let Some(value) = &result.value {
+        if let Ok(json) = serde_json::to_string(value) {
+            // Escape the JSON string itself so it can be embedded as a JS string literal.
+            if let Ok(escaped) = serde_json::to_string(&json) {
+                let _ = session.evaluate(&format!("globalThis._ = JSON.parse({escaped});"));
             }
-            Err(ReadlineError::Interrupted) => {
-                pending.clear();
-            }
-            Err(ReadlineError::Eof) => break,
-            Err(error) => return Err(CliError::operation(&error)),
         }
+    } else {
+        let _ = session.evaluate("globalThis._ = undefined;");
     }
+}
 
-    save_history(&history_path, &history)?;
-    Ok(())
+fn inject_last_error(session: &DataviewJsSession, msg: &str) {
+    if let Ok(escaped) = serde_json::to_string(msg) {
+        let _ = session.evaluate(&format!("globalThis._error = {escaped};"));
+    }
+}
+
+fn friendly_repl_error(raw: &str) -> String {
+    if raw.contains("Error converting from js 'undefined' into type 'string'")
+        || raw.contains("Error converting from js")
+    {
+        return format!(
+            "{raw}\n\
+             Tip: if you typed a function name like `help` or `vault` without parentheses, \
+             add them: `help()`, `vault.note(\"path\")`"
+        );
+    }
+    raw.to_string()
+}
+
+fn try_dot_command(
+    session: &DataviewJsSession,
+    trimmed: &str,
+    output: OutputFormat,
+) -> Result<bool, CliError> {
+    let Some(rest) = trimmed.strip_prefix('.') else {
+        return Ok(false);
+    };
+    // Distinguish from known exit commands (already handled by caller)
+    let (cmd, arg) = rest
+        .split_once(' ')
+        .map(|(c, a)| (c, a.trim()))
+        .unwrap_or((rest, ""));
+
+    match cmd {
+        "type" => {
+            if arg.is_empty() {
+                eprintln!("usage: .type <expr>");
+                return Ok(true);
+            }
+            let js = format!("typeof ({arg})");
+            run_dot_expr(session, &js, output)?;
+        }
+        "keys" => {
+            if arg.is_empty() {
+                eprintln!("usage: .keys <expr>");
+                return Ok(true);
+            }
+            let js = format!("Object.keys({arg})");
+            run_dot_expr(session, &js, output)?;
+        }
+        "inspect" => {
+            if arg.is_empty() {
+                eprintln!("usage: .inspect <expr>");
+                return Ok(true);
+            }
+            let js = format!(
+                r#"(function(v) {{
+                  if (v === null) return "null";
+                  if (typeof v !== "object" && typeof v !== "function") return typeof v + ": " + JSON.stringify(v);
+                  const keys = Object.keys(v);
+                  return keys.map(k => k + ": " + typeof v[k]).join("\n");
+                }})({arg})"#
+            );
+            run_dot_expr(session, &js, output)?;
+        }
+        "time" => {
+            if arg.is_empty() {
+                eprintln!("usage: .time <expr>");
+                return Ok(true);
+            }
+            let start = Instant::now();
+            match session.evaluate(arg).map_err(CliError::operation) {
+                Ok(result) => {
+                    eprintln!("Elapsed: {:.3}ms", start.elapsed().as_secs_f64() * 1000.0);
+                    print_repl_result(output, &result)?;
+                }
+                Err(error) => print_repl_error(output, &friendly_repl_error(&error.to_string()))?,
+            }
+        }
+        "bench" => {
+            let (expr, n) = if let Some(space_pos) = arg.rfind(' ') {
+                let potential_n = &arg[space_pos + 1..];
+                if let Ok(count) = potential_n.parse::<u32>() {
+                    (&arg[..space_pos], count)
+                } else {
+                    (arg, 100u32)
+                }
+            } else {
+                (arg, 100u32)
+            };
+            if expr.is_empty() {
+                eprintln!("usage: .bench <expr> [n]");
+                return Ok(true);
+            }
+            let start = Instant::now();
+            let mut last_result: Option<DataviewJsResult> = None;
+            let mut errored = false;
+            for _ in 0..n {
+                match session.evaluate(expr).map_err(CliError::operation) {
+                    Ok(r) => {
+                        last_result = Some(r);
+                    }
+                    Err(error) => {
+                        print_repl_error(output, &friendly_repl_error(&error.to_string()))?;
+                        errored = true;
+                        break;
+                    }
+                }
+            }
+            if !errored {
+                let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let avg_ms = total_ms / f64::from(n);
+                eprintln!(
+                    "{n} iterations: total {total_ms:.3}ms, avg {avg_ms:.3}ms/iter"
+                );
+                if let Some(r) = last_result {
+                    print_repl_result(output, &r)?;
+                }
+            }
+        }
+        "source" => {
+            if arg.is_empty() {
+                eprintln!("usage: .source <fn>");
+                return Ok(true);
+            }
+            let js = format!("({arg}).toString()");
+            run_dot_expr(session, &js, output)?;
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn run_dot_expr(
+    session: &DataviewJsSession,
+    js: &str,
+    output: OutputFormat,
+) -> Result<(), CliError> {
+    match session.evaluate(js).map_err(CliError::operation) {
+        Ok(result) => print_repl_result(output, &result),
+        Err(error) => print_repl_error(output, &friendly_repl_error(&error.to_string())),
+    }
 }
 
 fn print_repl_result(output: OutputFormat, result: &DataviewJsResult) -> Result<(), CliError> {
@@ -406,6 +589,94 @@ fn colorize_json_line(line: &str) -> String {
     line.to_string()
 }
 
+fn highlight_js_line(line: &str) -> String {
+    const KEYWORD_COLOR: &str = "\x1b[35m"; // magenta
+    const STRING_COLOR: &str = "\x1b[32m"; // green
+    const NUMBER_COLOR: &str = "\x1b[33m"; // yellow
+    const COMMENT_COLOR: &str = "\x1b[2m"; // dim
+    const RESET: &str = "\x1b[0m";
+    const KEYWORDS: &[&str] = &[
+        "const", "let", "var", "function", "return", "if", "else", "for", "while", "new",
+        "typeof", "instanceof", "null", "undefined", "true", "false", "class", "this", "import",
+        "export", "await", "async", "throw", "try", "catch", "finally", "break", "continue",
+        "delete", "in", "of", "switch", "case", "default", "void",
+    ];
+
+    let chars: Vec<char> = line.chars().collect();
+    let len = chars.len();
+    let mut out = String::with_capacity(line.len() * 2);
+    let mut i = 0;
+
+    while i < len {
+        // Line comment
+        if i + 1 < len && chars[i] == '/' && chars[i + 1] == '/' {
+            out.push_str(COMMENT_COLOR);
+            while i < len {
+                out.push(chars[i]);
+                i += 1;
+            }
+            out.push_str(RESET);
+            break;
+        }
+
+        // String literals
+        if matches!(chars[i], '\'' | '"' | '`') {
+            let delim = chars[i];
+            out.push_str(STRING_COLOR);
+            out.push(chars[i]);
+            i += 1;
+            while i < len {
+                let ch = chars[i];
+                out.push(ch);
+                i += 1;
+                if ch == '\\' && i < len {
+                    out.push(chars[i]);
+                    i += 1;
+                    continue;
+                }
+                if ch == delim {
+                    break;
+                }
+            }
+            out.push_str(RESET);
+            continue;
+        }
+
+        // Numbers
+        if chars[i].is_ascii_digit() {
+            out.push_str(NUMBER_COLOR);
+            while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '.') {
+                out.push(chars[i]);
+                i += 1;
+            }
+            out.push_str(RESET);
+            continue;
+        }
+
+        // Keywords / identifiers
+        if chars[i].is_alphabetic() || chars[i] == '_' || chars[i] == '$' {
+            let start = i;
+            while i < len && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            if KEYWORDS.contains(&word.as_str()) {
+                out.push_str(KEYWORD_COLOR);
+                out.push_str(&word);
+                out.push_str(RESET);
+            } else {
+                out.push_str(&word);
+            }
+            continue;
+        }
+
+        out.push(chars[i]);
+        i += 1;
+    }
+
+    out
+}
+
 fn print_json<T: Serialize>(value: &T) -> Result<(), CliError> {
     println!(
         "{}",
@@ -451,7 +722,31 @@ impl Hinter for ReplHelper {
     type Hint = String;
 }
 
-impl Highlighter for ReplHelper {}
+impl Highlighter for ReplHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        if io::stdout().is_terminal() {
+            Cow::Owned(highlight_js_line(line))
+        } else {
+            Cow::Borrowed(line)
+        }
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        io::stdout().is_terminal()
+    }
+
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        default: bool,
+    ) -> Cow<'b, str> {
+        if default && io::stdout().is_terminal() {
+            Cow::Owned(format!("\x1b[2m{prompt}\x1b[0m"))
+        } else {
+            Cow::Borrowed(prompt)
+        }
+    }
+}
 
 impl Validator for ReplHelper {}
 
@@ -483,6 +778,7 @@ impl Completer for ReplHelper {
 fn build_repl_editor(history: &[String], completions: &[&str]) -> Result<ReplEditor, CliError> {
     let config = Config::builder()
         .completion_type(CompletionType::List)
+        .edit_mode(EditMode::Emacs)
         .build();
     let mut editor = Editor::<ReplHelper, DefaultHistory>::with_config(config)
         .map_err(|error| CliError::operation(&error))?;
@@ -715,5 +1011,97 @@ mod tests {
             history.last().map(String::as_str),
             Some(expected_last.as_str())
         );
+    }
+
+    #[test]
+    fn max_history_entries_is_ten_thousand() {
+        assert_eq!(MAX_HISTORY_ENTRIES, 10_000);
+    }
+
+    #[test]
+    fn completion_includes_dv_and_app_prefixes() {
+        let helper = ReplHelper::new(REPL_COMPLETIONS);
+
+        let (_, dv_matches) = helper
+            .completion_candidates("dv.", "dv.".len())
+            .expect("dv. should have completions");
+        assert!(
+            dv_matches.iter().any(|m| m.starts_with("dv.pages")),
+            "dv. completions should include dv.pages(, got: {dv_matches:?}"
+        );
+
+        let (_, app_matches) = helper
+            .completion_candidates("app.", "app.".len())
+            .expect("app. should have completions");
+        assert!(
+            app_matches.iter().any(|m| m.starts_with("app.vault")),
+            "app. completions should include app.vault., got: {app_matches:?}"
+        );
+    }
+
+    #[test]
+    fn completion_includes_dot_commands() {
+        let helper = ReplHelper::new(REPL_COMPLETIONS);
+        let (_, matches) = helper
+            .completion_candidates(".t", ".t".len())
+            .expect(".t should have completions");
+        assert!(
+            matches.iter().any(|m| m.starts_with(".type")),
+            ".type should be a completion candidate, got: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn highlight_js_line_colors_keywords_and_strings() {
+        let output = highlight_js_line("const x = \"hello\";");
+        // Keywords colored in magenta
+        assert!(
+            output.contains("\x1b[35mconst\x1b[0m"),
+            "const should be highlighted in magenta, got: {output:?}"
+        );
+        // String in green
+        assert!(
+            output.contains("\x1b[32m\"hello\"\x1b[0m"),
+            "string literal should be highlighted in green, got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn highlight_js_line_colors_line_comments() {
+        let output = highlight_js_line("x + 1 // side effect");
+        assert!(
+            output.contains("\x1b[2m// side effect\x1b[0m"),
+            "line comments should be highlighted as dim, got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn highlight_js_line_colors_numbers() {
+        let output = highlight_js_line("return 42;");
+        assert!(
+            output.contains("\x1b[33m42\x1b[0m"),
+            "numbers should be highlighted in yellow, got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn friendly_repl_error_rewrites_undefined_conversion() {
+        let raw = "error: Error converting from js 'undefined' into type 'string'";
+        let friendly = friendly_repl_error(raw);
+        assert!(
+            friendly.contains("Tip:"),
+            "should include a tip, got: {friendly}"
+        );
+        assert!(
+            friendly.contains("parentheses"),
+            "should mention parentheses, got: {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_repl_error_passes_through_normal_errors() {
+        let raw = "ReferenceError: x is not defined";
+        let friendly = friendly_repl_error(raw);
+        assert_eq!(friendly, raw, "unrelated errors should pass through unchanged");
     }
 }

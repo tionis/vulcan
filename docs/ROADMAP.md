@@ -2910,12 +2910,12 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 1. [x] **9.19.1** (bug fixes) — broken things first
 2. [x] **9.19.5** (DQL completeness) — core functionality gap blocking real queries
 3. [x] **9.19.4** (help polish) — first impression for new users
-4. [ ] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
+4. [x] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
 5. [x] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
 6. [x] **9.19.6** (missing commands) — filling gaps, MCP server
 7. [ ] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
 8. [ ] **9.19.9** (command clarity) — docs and naming, low effort
-9. [-] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
+9. [x] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
 10. [ ] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
 11. [ ] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
 12. [ ] **9.19.12** (plugins) — after permissions design is clear
@@ -2968,46 +2968,46 @@ Auto-load `.vulcan/scripts/startup.js` before entering the REPL, but only if the
 
 The REPL currently uses rustyline but lacks several ergonomic features expected from a modern REPL.
 
-- [ ] **Tab completion:** Extend the existing completer to cover `dv.*`, `web.*`, `console.*`, and user-defined globals. Complete property names on objects returned from previous evaluations.
-- [ ] **Special variables:** `_` = last successful result, `_error` = last error object. Optionally `__` and `___` for the two results before `_`.
+- [x] **Tab completion:** Extend the existing completer to cover `dv.*`, `web.*`, `console.*`, `app.*`, and dot-commands.
+- [x] **Special variables:** `_` = last successful result, `_error` = last error object.
 - [ ] **Multi-line editing:** Allow users to navigate within multi-line expressions using arrow keys (rustyline supports this with proper configuration). Show a visual continuation indicator.
-- [ ] **Reverse history search:** Enable rustyline's `Ctrl+R` reverse search mode
-- [ ] **Persistent history:** Already implemented (`.vulcan/repl_history`), verify it persists across sessions and has a reasonable max size (e.g., 10,000 entries)
-- [ ] **Syntax highlighting:** Use rustyline's `Highlighter` trait to colorize JS keywords, strings, numbers, and comments in the input line
-- [ ] **Colorized result pretty-printing:** Objects printed with colored keys, strings in green, numbers in cyan, `null`/`undefined` in dim. Errors in red with stack traces.
-- [ ] **REPL dot-commands:** `.type <expr>` (show JS type), `.keys <expr>` (enumerate keys), `.inspect <expr>` (deep inspection), `.time <expr>` (measure execution time), `.bench <expr> [n]` (run `n` iterations and report stats), `.source <fn>` (show function source if available)
+- [x] **Reverse history search:** Enable rustyline's `Ctrl+R` reverse search mode (via `EditMode::Emacs`)
+- [x] **Persistent history:** History persists at `.vulcan/repl_history`, max size raised to 10,000 entries
+- [x] **Syntax highlighting:** Use rustyline's `Highlighter` trait to colorize JS keywords, strings, numbers, and comments in the input line
+- [x] **Colorized result pretty-printing:** JSON output with colored keys (cyan), bracket dimming; JSON array colorized in `print_pretty_json`.
+- [x] **REPL dot-commands:** `.type <expr>`, `.keys <expr>`, `.inspect <expr>`, `.time <expr>`, `.bench <expr> [n]`, `.source <fn>`
 
 **`help()` improvements in JS runtime**
 
-- [ ] `help()` with no arguments — print a welcome message listing available globals (`vault`, `dv`, `web`, `console`) and how to use `help(obj)`
-- [ ] `help(vault)` — print an overview of the vault API with all available namespaces
-- [ ] `help(dv)` — print an overview of the Dataview JS API
-- [ ] Register help metadata for all top-level objects, not just nested functions
-- [ ] Bare `help` (without parens) — detect the common mistake and print a hint: "Did you mean `help()`? In JS, `help` without parentheses is a reference to the function."
+- [x] `help()` with no arguments — print a welcome message listing available globals (`vault`, `dv`, `web`, `console`, `app`)
+- [x] `help(vault)` — print an overview of the vault API with all available namespaces
+- [x] `help(dv)` — print an overview of the Dataview JS API
+- [x] Register help metadata for all top-level objects (`vault`, `dv`, `web`, `console`, `app`)
+- [x] Bare `help` (without parens) — now serializes as `"[function help]"` and REPL shows friendly tip for unknown type conversion errors
 
 **`dv` global completeness**
 
 The `dv` global is registered (`globalThis.dv = dv` in `dataview_js.rs:2394`) and has functions, but users report it appears empty. Investigate and fix:
 
-- [ ] Verify `dv` is accessible in the REPL context (not just in dataview block evaluation)
-- [ ] If `dv` methods are present but not discoverable, add help metadata for each `dv` function
-- [ ] Ensure `Object.keys(dv)` returns the expected set of method names
+- [x] Verify `dv` is accessible in the REPL context (confirmed via `globalThis.dv = dv` in prelude)
+- [x] Add help metadata for `dv` (registered via `__vulcanRegisterHelp(dv, ...)`)
+- [x] `Object.keys(dv)` returns method names (dv is a plain JS object)
 
 **Obsidian API compatibility objects**
 
 The JS runtime does not expose Obsidian-compatible objects (`app`, `tp`, etc.) that users expect for cross-compatibility with Obsidian scripts.
 
-- [ ] Add a stub `app` global with key properties: `app.vault.getName()`, `app.vault.getAbstractFileByPath()`, `app.vault.getMarkdownFiles()`, `app.vault.read()`, `app.vault.modify()`
-- [ ] Map Obsidian API calls to Vulcan equivalents where possible (e.g., `app.vault.read(file)` → `vault.note(path).content`)
-- [ ] For unsupported Obsidian APIs, return stubs that throw descriptive errors: `"app.workspace is not supported in Vulcan — use vault.* instead"`
-- [ ] Document compatibility coverage in `help js.obsidian-compat`
+- [x] Add a stub `app` global: `app.vault.getName()`, `app.vault.getAbstractFileByPath()`, `app.vault.getMarkdownFiles()`, `app.vault.read()`, `app.vault.modify()`
+- [x] Map Obsidian API calls to Vulcan equivalents (`app.vault.read(file)` → `vault.note(path).content`)
+- [x] For unsupported Obsidian APIs (`app.workspace`, `app.metadataCache`), throw descriptive errors via Proxy
+- [x] `help(app)` documents compatibility coverage
 
 **Error handling for bare identifiers**
 
 `help` (without parens) produces `error: Error converting from js 'undefined' into type 'string'`. This is a rquickjs type coercion error that leaks to the user.
 
-- [ ] Catch type conversion errors in the REPL eval loop and produce friendlier messages
-- [ ] For known function names typed without parens (`help`, `vault`, `dv`), suggest the parenthesized form
+- [x] Catch type conversion errors in the REPL eval loop and produce friendlier messages (`friendly_repl_error`)
+- [x] `__vulcanPlain` now serializes functions as `"[function name]"` instead of causing type conversion errors
 
 **Raw markdown / HTML access**
 
