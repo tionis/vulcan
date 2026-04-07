@@ -13290,3 +13290,94 @@ fn mcp_server_responds_to_initialize_request() {
         "initialize should return a result, got: {stdout}"
     );
 }
+
+#[test]
+fn complete_note_context_returns_note_paths() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be valid utf-8"),
+            "complete",
+            "note",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8_lossy(&output);
+    assert!(
+        text.lines().count() > 0,
+        "complete note should return at least one candidate"
+    );
+    // All output lines should look like filenames or paths
+    for line in text.lines() {
+        assert!(!line.is_empty(), "no blank lines in completion output");
+    }
+}
+
+#[test]
+fn complete_daily_date_context_returns_keywords_and_dates() {
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["complete", "daily-date"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8_lossy(&output);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines.contains(&"today"),
+        "daily-date completions should include 'today'"
+    );
+    assert!(
+        lines.contains(&"yesterday"),
+        "daily-date completions should include 'yesterday'"
+    );
+    assert!(
+        lines.contains(&"tomorrow"),
+        "daily-date completions should include 'tomorrow'"
+    );
+    // Should have 14 ISO date entries plus the 3 keywords
+    let iso_dates: Vec<_> = lines
+        .iter()
+        .filter(|l| l.len() == 10 && l.chars().nth(4) == Some('-'))
+        .collect();
+    assert_eq!(iso_dates.len(), 14, "should have 14 past ISO dates");
+}
+
+#[test]
+fn complete_unknown_context_returns_empty() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["complete", "nonexistent-context-xyz"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn fish_completions_include_dynamic_hook() {
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["completions", "fish"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8_lossy(&output);
+    // Dynamic completions appended after static script should include vulcan complete calls
+    assert!(
+        text.contains("vulcan complete"),
+        "fish completions should include dynamic vulcan complete hook"
+    );
+}
