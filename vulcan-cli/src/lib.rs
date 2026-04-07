@@ -12335,6 +12335,26 @@ where
 
 #[allow(clippy::too_many_lines)]
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
+    // Handle `complete` before vault resolution: vault-independent contexts (e.g.
+    // daily-date) must work when invoked from outside a vault by shell completion
+    // hooks.  Vault-dependent contexts silently return empty output rather than
+    // erroring so the shell gets a clean exit.
+    if let Command::Complete { ref context } = cli.command {
+        if context == "daily-date" {
+            // Pure date arithmetic — no vault needed.
+            for candidate in collect_complete_candidates_no_vault(context) {
+                println!("{candidate}");
+            }
+            return Ok(());
+        }
+        // All other contexts need a vault; if we can't find one, return empty.
+        let paths = match resolve_vault_root(&cli.vault).map(VaultPaths::new) {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        };
+        return run_complete_command(&paths, context);
+    }
+
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
@@ -21059,7 +21079,37 @@ fn run_complete_command(paths: &VaultPaths, context: &str) -> Result<(), CliErro
     Ok(())
 }
 
+/// Candidates for contexts that require no vault (safe to call before path resolution).
+fn collect_complete_candidates_no_vault(context: &str) -> Vec<String> {
+    match context {
+        "daily-date" => {
+            let mut dates = vec![
+                "today".to_string(),
+                "yesterday".to_string(),
+                "tomorrow".to_string(),
+            ];
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            for offset in 1..=14i64 {
+                let past_secs = now_secs - offset * 86400;
+                let ms = past_secs * 1000;
+                let (year, month, day, _, _, _, _) = date_components(ms);
+                dates.push(format!("{year:04}-{month:02}-{day:02}"));
+            }
+            dates
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String> {
+    // Delegate vault-free contexts so they always work.
+    let vault_free = collect_complete_candidates_no_vault(context);
+    if !vault_free.is_empty() {
+        return vault_free;
+    }
     match context {
         "note" => {
             // Note names and vault-relative paths from the cache.
@@ -21121,25 +21171,6 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
                 Ok(iter) => iter.flatten().collect(),
                 Err(_) => Vec::new(),
             }
-        }
-        "daily-date" => {
-            let mut dates = vec![
-                "today".to_string(),
-                "yesterday".to_string(),
-                "tomorrow".to_string(),
-            ];
-            // Last 14 ISO dates using seconds since epoch arithmetic
-            let now_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            for offset in 1..=14i64 {
-                let past_secs = now_secs - offset * 86400;
-                let ms = past_secs * 1000;
-                let (year, month, day, _, _, _, _) = date_components(ms);
-                dates.push(format!("{year:04}-{month:02}-{day:02}"));
-            }
-            dates
         }
         "script" => {
             let scripts_dir = paths.vulcan_dir().join("scripts");
@@ -21206,8 +21237,8 @@ complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_sub
 # Script names for vulcan run
 complete -c vulcan -n "__fish_vulcan_using_subcommand run" -f -a "(vulcan complete script 2>/dev/null)" -d "Script"
 
-# Task view names for tasks view
-complete -c vulcan -n "__fish_vulcan_using_subcommand tasks; and __fish_seen_subcommand_from view" -f -a "(vulcan complete task-view 2>/dev/null)" -d "View"
+# Task view names for tasks view show <name>
+complete -c vulcan -n "__fish_vulcan_using_subcommand tasks; and __fish_seen_subcommand_from view; and __fish_seen_subcommand_from show" -f -a "(vulcan complete task-view 2>/dev/null)" -d "View"
 "#
     .trim()
     .to_string()
