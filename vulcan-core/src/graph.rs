@@ -710,7 +710,7 @@ pub fn export_graph(paths: &VaultPaths) -> Result<GraphExportReport, GraphQueryE
         .iter()
         .map(|note| (note.id.as_str(), note.path.as_str()))
         .collect();
-    let nodes = notes
+    let export_nodes = notes
         .notes
         .iter()
         .map(|note| GraphExportNode {
@@ -730,7 +730,7 @@ pub fn export_graph(paths: &VaultPaths) -> Result<GraphExportReport, GraphQueryE
             })
         })
         .collect();
-    Ok(GraphExportReport { nodes, edges })
+    Ok(GraphExportReport { nodes: export_nodes, edges })
 }
 
 fn build_graph_path_report(
