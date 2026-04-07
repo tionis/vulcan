@@ -32,7 +32,11 @@ Reference:
   Machine-readable schema: vulcan describe
 
 Freshness:
-  Override automatic cache refresh with --refresh <off|blocking|background>";
+  Override automatic cache refresh with --refresh <off|blocking|background>
+
+Color:
+  --color always|never|auto   Force or suppress ANSI color output (default: auto)
+  NO_COLOR env var also suppresses color when set";
 
 const NOTES_COMMAND_AFTER_HELP: &str = "\
 Sort keys:
@@ -710,6 +714,213 @@ Examples:
   vulcan properties --type
   vulcan properties --count --type --sort name
   vulcan --output json properties --type";
+
+const GRAPH_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  path        Find the shortest resolved-link path between two notes
+  hubs        List notes with the highest combined link degree
+  moc         Report candidate map-of-content style notes
+  dead-ends   List notes without outbound resolved note links
+  components  Report weakly connected components of the note graph
+  stats       Summarize note-graph and vault analytics
+  trends      Show note-count, orphan, stale, and link trends over saved scans
+
+Examples:
+  vulcan graph path Home Projects/Alpha
+  vulcan graph hubs --limit 10
+  vulcan graph moc
+  vulcan graph dead-ends
+  vulcan graph stats
+  vulcan graph trends --limit 5
+  vulcan --output json graph stats";
+
+const CHECKPOINT_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  create  Create or replace a named checkpoint from the current cache state
+  list    List saved scan and manual checkpoints
+
+Notes:
+  Checkpoints capture a snapshot of the cache at a point in time.
+  Use `vulcan diff --since <name>` to compare a note against a checkpoint.
+  Use `vulcan changes --checkpoint <name>` to see vault-wide delta since a checkpoint.
+
+Examples:
+  vulcan checkpoint create weekly
+  vulcan checkpoint list
+  vulcan --output json checkpoint list";
+
+const EXPORT_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  search-index  Write the cached search corpus as a static JSON index
+
+Notes:
+  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).
+  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.
+
+Examples:
+  vulcan export search-index --path public/search-index.json
+  vulcan export search-index --pretty > /tmp/search.json";
+
+const CACHE_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  inspect  Show cache sizes and row counts
+  verify   Check cache invariants against derived indexes
+  vacuum   Run SQLite VACUUM to reclaim space
+
+Notes:
+  `verify` exits with code 2 when cache checks fail if `--fail-on-errors` is set.
+  `vacuum` should be run periodically on large vaults to reclaim SQLite free-list space.
+
+Examples:
+  vulcan cache inspect
+  vulcan cache verify
+  vulcan cache verify --fail-on-errors
+  vulcan cache vacuum
+  vulcan cache vacuum --dry-run
+  vulcan --output json cache inspect";
+
+const DOCTOR_COMMAND_AFTER_HELP: &str = "\
+Checks performed:
+  - Broken wikilinks and unresolved note references
+  - Dangling block references and heading links
+  - Notes missing from the cache that exist on disk
+  - Cache entries for notes no longer on disk
+  - Frontmatter parse errors and malformed YAML
+
+Notes:
+  `--fix` applies only deterministic repairs (cache pruning, rescan of missing notes).
+  Ambiguous issues such as broken links are reported but never auto-repaired.
+  Use `--fail-on-issues` in CI pipelines to gate on vault health.
+
+Examples:
+  vulcan doctor
+  vulcan doctor --fix
+  vulcan doctor --dry-run --fix
+  vulcan doctor --fail-on-issues
+  vulcan --output json doctor";
+
+const VECTORS_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  index       Embed pending chunks and update the vector index
+  repair      Repair stale or mismatched vector rows
+  rebuild     Rebuild the vector index from scratch
+  neighbors   Find nearest indexed chunks for text or a note
+  related     Recommend semantically related notes
+  duplicates  Report highly similar chunk pairs
+  models      List stored embedding models
+  drop-model  Drop a model and its vectors
+  queue       Inspect or run the explicit indexing queue
+
+Notes:
+  Vectors require an embedding provider configured under [vectors] in .vulcan/config.toml.
+  `index` embeds only chunks added or changed since the last run (incremental).
+  `rebuild` re-embeds everything from scratch; use when switching models.
+  Use `--provider` to override the configured embedding provider for one invocation.
+
+Examples:
+  vulcan vectors index
+  vulcan vectors index --dry-run
+  vulcan vectors neighbors \"project planning\"
+  vulcan vectors neighbors --note Projects/Alpha
+  vulcan vectors related Projects/Alpha
+  vulcan vectors duplicates --threshold 0.98
+  vulcan vectors models
+  vulcan --output json vectors neighbors \"planning\"";
+
+const CHANGES_COMMAND_AFTER_HELP: &str = "\
+Change categories:
+  notes       Notes added, deleted, or path-changed since the baseline
+  links       Outgoing wikilinks added or removed
+  properties  Frontmatter property keys and values added, changed, or removed
+  embeddings  Chunks that were re-embedded
+
+Notes:
+  Without `--checkpoint`, the comparison baseline is the previous completed scan.
+  Use `vulcan checkpoint create <name>` before a refactor to create a named baseline.
+  `vulcan diff <note>` shows line-level changes for a single note.
+
+Examples:
+  vulcan changes
+  vulcan changes --checkpoint weekly
+  vulcan --output json changes
+  vulcan --output json changes --checkpoint pre-refactor";
+
+const CLUSTER_COMMAND_AFTER_HELP: &str = "\
+Notes:
+  `cluster` groups indexed vector chunks by semantic similarity using k-means.
+  The vault must have a configured embedding provider and an up-to-date vector index.
+  `--dry-run` reports cluster assignments without writing them to the cache.
+  Cluster labels are heuristic topic summaries derived from the most common terms.
+
+Examples:
+  vulcan cluster
+  vulcan cluster --clusters 12
+  vulcan cluster --dry-run
+  vulcan --output json cluster";
+
+const RELATED_COMMAND_AFTER_HELP: &str = "\
+Notes:
+  `related` uses the vector index to find the most semantically similar notes.
+  The vault must have a configured embedding provider and an up-to-date vector index.
+  In an interactive terminal, omit the note argument to pick interactively.
+  `vectors related` is the subcommand form; `related` is a top-level shorthand.
+
+Examples:
+  vulcan related Projects/Alpha
+  vulcan related
+  vulcan --output json related Projects/Alpha --limit 10";
+
+const TRUST_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  add     Mark the current vault as trusted
+  revoke  Remove trust from the current vault
+  list    List all currently trusted vault paths
+
+Notes:
+  Trusted vaults may auto-load .vulcan/scripts/startup.js on CLI invocation.
+  Plugin execution (Templater, QuickAdd) also checks vault trust.
+  Trust is stored per vault root path in Vulcan's global config.
+
+Examples:
+  vulcan trust
+  vulcan trust add
+  vulcan trust revoke
+  vulcan trust list";
+
+const REFACTOR_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  rename-alias     Rename an alias inside one note's frontmatter
+  rename-heading   Rename a heading and rewrite inbound heading links
+  rename-block-ref Rename a block reference and rewrite inbound block links
+  rename-property  Rename a frontmatter property key across notes
+  merge-tags       Merge one tag into another across frontmatter and note bodies
+  rewrite          Apply a literal find/replace across filtered notes
+  move             Move a note or attachment and rewrite inbound links
+  link-mentions    Convert plain-text note mentions into links
+
+Notes:
+  All refactor subcommands support `--dry-run` to preview changes without writing files.
+  Mutating refactor commands participate in auto-commit when git integration is enabled.
+  Use `--no-commit` to suppress the auto-commit for a single invocation.
+
+Examples:
+  vulcan refactor rename-heading Projects/Alpha \"## Status\" \"## Current Status\" --dry-run
+  vulcan refactor rename-property status project_status --dry-run
+  vulcan refactor merge-tags \"#wip\" \"#in-progress\" --dry-run
+  vulcan refactor move Projects/Alpha.md Archive/Alpha.md --dry-run
+  vulcan refactor rewrite --where 'status = draft' --find TODO --replace DONE
+  vulcan refactor link-mentions Projects/Alpha --dry-run";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum ColorMode {
+    /// Use color when stdout is a TTY and NO_COLOR is not set (default)
+    #[default]
+    Auto,
+    /// Always emit ANSI color codes
+    Always,
+    /// Never emit ANSI color codes
+    Never,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -2522,7 +2733,7 @@ pub enum Command {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Analyze the resolved note graph")]
+    #[command(about = "Analyze the resolved note graph", after_help = GRAPH_COMMAND_AFTER_HELP)]
     Graph {
         #[command(subcommand)]
         command: GraphCommand,
@@ -2693,12 +2904,18 @@ pub enum Command {
         #[command(subcommand)]
         command: SavedCommand,
     },
-    #[command(about = "Capture and inspect named cache-state checkpoints")]
+    #[command(
+        about = "Capture and inspect named cache-state checkpoints",
+        after_help = CHECKPOINT_COMMAND_AFTER_HELP
+    )]
     Checkpoint {
         #[command(subcommand)]
         command: CheckpointCommand,
     },
-    #[command(about = "Write static export artifacts derived from the cache")]
+    #[command(
+        about = "Write static export artifacts derived from the cache",
+        after_help = EXPORT_COMMAND_AFTER_HELP
+    )]
     Export {
         #[command(subcommand)]
         command: ExportCommand,
@@ -2822,7 +3039,10 @@ pub enum Command {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Report note, link, property, and embedding changes since a baseline")]
+    #[command(
+        about = "Report note, link, property, and embedding changes since a baseline",
+        after_help = CHANGES_COMMAND_AFTER_HELP
+    )]
     Changes {
         #[arg(
             long,
@@ -2889,7 +3109,10 @@ pub enum Command {
         #[command(subcommand)]
         command: AutomationCommand,
     },
-    #[command(about = "Cluster indexed vectors into topical groups")]
+    #[command(
+        about = "Cluster indexed vectors into topical groups",
+        after_help = CLUSTER_COMMAND_AFTER_HELP
+    )]
     Cluster {
         #[arg(long, default_value_t = 8, help = "Requested cluster count")]
         clusters: usize,
@@ -2898,7 +3121,10 @@ pub enum Command {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Recommend semantically related notes for one note")]
+    #[command(
+        about = "Recommend semantically related notes for one note",
+        after_help = RELATED_COMMAND_AFTER_HELP
+    )]
     Related {
         #[arg(
             help = "Note path, filename, or alias to use as the seed note; omit in a TTY session to pick interactively"
@@ -2947,7 +3173,10 @@ pub enum Command {
         )]
         note: Option<String>,
     },
-    #[command(about = "Run vector indexing and similarity commands")]
+    #[command(
+        about = "Run vector indexing and similarity commands",
+        after_help = VECTORS_COMMAND_AFTER_HELP
+    )]
     Vectors {
         #[command(subcommand)]
         command: VectorsCommand,
@@ -3004,7 +3233,10 @@ pub enum Command {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Inspect the vault for broken or suspicious state")]
+    #[command(
+        about = "Inspect the vault for broken or suspicious state",
+        after_help = DOCTOR_COMMAND_AFTER_HELP
+    )]
     Doctor {
         #[arg(long, help = "Apply deterministic local repairs")]
         fix: bool,
@@ -3156,7 +3388,7 @@ Examples:
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Inspect and maintain the SQLite cache")]
+    #[command(about = "Inspect and maintain the SQLite cache", after_help = CACHE_COMMAND_AFTER_HELP)]
     Cache {
         #[command(subcommand)]
         command: CacheCommand,
@@ -3225,7 +3457,10 @@ Examples:
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Apply vault-wide refactors and suggestion passes")]
+    #[command(
+        about = "Apply vault-wide refactors and suggestion passes",
+        after_help = REFACTOR_COMMAND_AFTER_HELP
+    )]
     Refactor {
         #[command(subcommand)]
         command: RefactorCommand,
@@ -3257,7 +3492,10 @@ Examples:
         #[arg(help = "Shell to generate completions for")]
         shell: Shell,
     },
-    #[command(about = "Manage vault trust for startup scripts and plugin execution")]
+    #[command(
+        about = "Manage vault trust for startup scripts and plugin execution",
+        after_help = TRUST_COMMAND_AFTER_HELP
+    )]
     Trust {
         #[command(subcommand)]
         command: Option<TrustCommand>,
@@ -3360,6 +3598,16 @@ pub struct Cli {
         help = "Suppress column headers in table/TSV output (useful for piping)"
     )]
     pub no_header: bool,
+
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        default_value_t = ColorMode::Auto,
+        env = "VULCAN_COLOR",
+        help = "Control ANSI color output (auto respects NO_COLOR and TTY detection)"
+    )]
+    pub color: ColorMode,
 
     #[command(subcommand)]
     pub command: Command,

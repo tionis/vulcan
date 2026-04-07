@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox\n  Query:       query, search, ls, notes, backlinks, links, changes\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, weekly, monthly, periodic, template\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, cluster, related, doctor\n  Index:       index, vectors, cache, repair\n  Runtime:     run, web\n  Git:         git\n  Automation:  saved, automation, batch, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox\n  Query:       query, search, ls, notes, backlinks, links, changes\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, weekly, monthly, periodic, template\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, cluster, related, doctor\n  Index:       index, vectors, cache, repair\n  Runtime:     run, web\n  Git:         git\n  Automation:  saved, automation, batch, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -326,6 +326,7 @@
       },
       {
         "about": "Analyze the resolved note graph",
+        "after_help": "Subcommands:\n  path        Find the shortest resolved-link path between two notes\n  hubs        List notes with the highest combined link degree\n  moc         Report candidate map-of-content style notes\n  dead-ends   List notes without outbound resolved note links\n  components  Report weakly connected components of the note graph\n  stats       Summarize note-graph and vault analytics\n  trends      Show note-count, orphan, stale, and link trends over saved scans\n\nExamples:\n  vulcan graph path Home Projects/Alpha\n  vulcan graph hubs --limit 10\n  vulcan graph moc\n  vulcan graph dead-ends\n  vulcan graph stats\n  vulcan graph trends --limit 5\n  vulcan --output json graph stats",
         "name": "graph",
         "options": [],
         "subcommands": [
@@ -3433,6 +3434,7 @@
       },
       {
         "about": "Capture and inspect named cache-state checkpoints",
+        "after_help": "Subcommands:\n  create  Create or replace a named checkpoint from the current cache state\n  list    List saved scan and manual checkpoints\n\nNotes:\n  Checkpoints capture a snapshot of the cache at a point in time.\n  Use `vulcan diff --since <name>` to compare a note against a checkpoint.\n  Use `vulcan changes --checkpoint <name>` to see vault-wide delta since a checkpoint.\n\nExamples:\n  vulcan checkpoint create weekly\n  vulcan checkpoint list\n  vulcan --output json checkpoint list",
         "name": "checkpoint",
         "options": [],
         "subcommands": [
@@ -3490,6 +3492,7 @@
       },
       {
         "about": "Write static export artifacts derived from the cache",
+        "after_help": "Subcommands:\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
         "name": "export",
         "options": [],
         "subcommands": [
@@ -4507,6 +4510,7 @@
       },
       {
         "about": "Report note, link, property, and embedding changes since a baseline",
+        "after_help": "Change categories:\n  notes       Notes added, deleted, or path-changed since the baseline\n  links       Outgoing wikilinks added or removed\n  properties  Frontmatter property keys and values added, changed, or removed\n  embeddings  Chunks that were re-embedded\n\nNotes:\n  Without `--checkpoint`, the comparison baseline is the previous completed scan.\n  Use `vulcan checkpoint create <name>` before a refactor to create a named baseline.\n  `vulcan diff <note>` shows line-level changes for a single note.\n\nExamples:\n  vulcan changes\n  vulcan changes --checkpoint weekly\n  vulcan --output json changes\n  vulcan --output json changes --checkpoint pre-refactor",
         "name": "changes",
         "options": [
           {
@@ -5017,6 +5021,7 @@
       },
       {
         "about": "Cluster indexed vectors into topical groups",
+        "after_help": "Notes:\n  `cluster` groups indexed vector chunks by semantic similarity using k-means.\n  The vault must have a configured embedding provider and an up-to-date vector index.\n  `--dry-run` reports cluster assignments without writing them to the cache.\n  Cluster labels are heuristic topic summaries derived from the most common terms.\n\nExamples:\n  vulcan cluster\n  vulcan cluster --clusters 12\n  vulcan cluster --dry-run\n  vulcan --output json cluster",
         "name": "cluster",
         "options": [
           {
@@ -5074,6 +5079,7 @@
       },
       {
         "about": "Recommend semantically related notes for one note",
+        "after_help": "Notes:\n  `related` uses the vector index to find the most semantically similar notes.\n  The vault must have a configured embedding provider and an up-to-date vector index.\n  In an interactive terminal, omit the note argument to pick interactively.\n  `vectors related` is the subcommand form; `related` is a top-level shorthand.\n\nExamples:\n  vulcan related Projects/Alpha\n  vulcan related\n  vulcan --output json related Projects/Alpha --limit 10",
         "name": "related",
         "options": [
           {
@@ -6119,6 +6125,7 @@
       },
       {
         "about": "Run vector indexing and similarity commands",
+        "after_help": "Subcommands:\n  index       Embed pending chunks and update the vector index\n  repair      Repair stale or mismatched vector rows\n  rebuild     Rebuild the vector index from scratch\n  neighbors   Find nearest indexed chunks for text or a note\n  related     Recommend semantically related notes\n  duplicates  Report highly similar chunk pairs\n  models      List stored embedding models\n  drop-model  Drop a model and its vectors\n  queue       Inspect or run the explicit indexing queue\n\nNotes:\n  Vectors require an embedding provider configured under [vectors] in .vulcan/config.toml.\n  `index` embeds only chunks added or changed since the last run (incremental).\n  `rebuild` re-embeds everything from scratch; use when switching models.\n  Use `--provider` to override the configured embedding provider for one invocation.\n\nExamples:\n  vulcan vectors index\n  vulcan vectors index --dry-run\n  vulcan vectors neighbors \"project planning\"\n  vulcan vectors neighbors --note Projects/Alpha\n  vulcan vectors related Projects/Alpha\n  vulcan vectors duplicates --threshold 0.98\n  vulcan vectors models\n  vulcan --output json vectors neighbors \"planning\"",
         "name": "vectors",
         "options": [],
         "subcommands": [
@@ -6424,6 +6431,7 @@
       },
       {
         "about": "Inspect the vault for broken or suspicious state",
+        "after_help": "Checks performed:\n  - Broken wikilinks and unresolved note references\n  - Dangling block references and heading links\n  - Notes missing from the cache that exist on disk\n  - Cache entries for notes no longer on disk\n  - Frontmatter parse errors and malformed YAML\n\nNotes:\n  `--fix` applies only deterministic repairs (cache pruning, rescan of missing notes).\n  Ambiguous issues such as broken links are reported but never auto-repaired.\n  Use `--fail-on-issues` in CI pipelines to gate on vault health.\n\nExamples:\n  vulcan doctor\n  vulcan doctor --fix\n  vulcan doctor --dry-run --fix\n  vulcan doctor --fail-on-issues\n  vulcan --output json doctor",
         "name": "doctor",
         "options": [
           {
@@ -6628,6 +6636,7 @@
       },
       {
         "about": "Inspect and maintain the SQLite cache",
+        "after_help": "Subcommands:\n  inspect  Show cache sizes and row counts\n  verify   Check cache invariants against derived indexes\n  vacuum   Run SQLite VACUUM to reclaim space\n\nNotes:\n  `verify` exits with code 2 when cache checks fail if `--fail-on-errors` is set.\n  `vacuum` should be run periodically on large vaults to reclaim SQLite free-list space.\n\nExamples:\n  vulcan cache inspect\n  vulcan cache verify\n  vulcan cache verify --fail-on-errors\n  vulcan cache vacuum\n  vulcan cache vacuum --dry-run\n  vulcan --output json cache inspect",
         "name": "cache",
         "options": [],
         "subcommands": [
@@ -6908,6 +6917,7 @@
       },
       {
         "about": "Apply vault-wide refactors and suggestion passes",
+        "after_help": "Subcommands:\n  rename-alias     Rename an alias inside one note's frontmatter\n  rename-heading   Rename a heading and rewrite inbound heading links\n  rename-block-ref Rename a block reference and rewrite inbound block links\n  rename-property  Rename a frontmatter property key across notes\n  merge-tags       Merge one tag into another across frontmatter and note bodies\n  rewrite          Apply a literal find/replace across filtered notes\n  move             Move a note or attachment and rewrite inbound links\n  link-mentions    Convert plain-text note mentions into links\n\nNotes:\n  All refactor subcommands support `--dry-run` to preview changes without writing files.\n  Mutating refactor commands participate in auto-commit when git integration is enabled.\n  Use `--no-commit` to suppress the auto-commit for a single invocation.\n\nExamples:\n  vulcan refactor rename-heading Projects/Alpha \"## Status\" \"## Current Status\" --dry-run\n  vulcan refactor rename-property status project_status --dry-run\n  vulcan refactor merge-tags \"#wip\" \"#in-progress\" --dry-run\n  vulcan refactor move Projects/Alpha.md Archive/Alpha.md --dry-run\n  vulcan refactor rewrite --where 'status = draft' --find TODO --replace DONE\n  vulcan refactor link-mentions Projects/Alpha --dry-run",
         "name": "refactor",
         "options": [],
         "subcommands": [
@@ -7474,6 +7484,7 @@
       },
       {
         "about": "Manage vault trust for startup scripts and plugin execution",
+        "after_help": "Subcommands:\n  add     Mark the current vault as trusted\n  revoke  Remove trust from the current vault\n  list    List all currently trusted vault paths\n\nNotes:\n  Trusted vaults may auto-load .vulcan/scripts/startup.js on CLI invocation.\n  Plugin execution (Templater, QuickAdd) also checks vault trust.\n  Trust is stored per vault root path in Vulcan's global config.\n\nExamples:\n  vulcan trust\n  vulcan trust add\n  vulcan trust revoke\n  vulcan trust list",
         "name": "trust",
         "options": [],
         "subcommands": [
@@ -7623,6 +7634,21 @@
         "short": null,
         "value_names": [
           "NO_HEADER"
+        ]
+      },
+      {
+        "help": "Control ANSI color output (auto respects NO_COLOR and TTY detection)",
+        "id": "color",
+        "long": "color",
+        "possible_values": [
+          "auto",
+          "always",
+          "never"
+        ],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "COLOR"
         ]
       }
     ],

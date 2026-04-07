@@ -14,16 +14,16 @@ mod terminal_markdown;
 mod trust;
 
 pub use cli::{
-    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, Command, ConfigCommand,
-    ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg,
-    DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs, ExportCommand, ExportFormat,
-    GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg,
-    NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PropertySortArg,
-    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand, SavedCommand,
-    SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, ColorMode, Command,
+    ConfigCommand, ConfigImportArgs, ConfigImportCommand, ConfigImportSelection,
+    ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs,
+    ExportCommand, ExportFormat, GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand,
+    NoteAppendPeriodicArg, NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand,
+    PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand,
+    SavedCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg,
+    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -600,6 +600,14 @@ fn color_enabled_for_terminal(is_tty: bool) -> bool {
     is_tty
         && std::env::var_os("NO_COLOR").is_none()
         && std::env::var("TERM").map_or(true, |value| value != "dumb")
+}
+
+fn resolve_use_color(mode: ColorMode, is_tty: bool) -> bool {
+    match mode {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => color_enabled_for_terminal(is_tty),
+    }
 }
 
 fn format_eta(remaining_units: usize, rate_per_second: f64) -> String {
@@ -12306,8 +12314,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
     let stderr_is_tty = io::stderr().is_terminal();
-    let use_stdout_color = color_enabled_for_terminal(stdout_is_tty);
-    let use_stderr_color = color_enabled_for_terminal(stderr_is_tty);
+    let use_stdout_color = resolve_use_color(cli.color, stdout_is_tty);
+    let use_stderr_color = resolve_use_color(cli.color, stderr_is_tty);
     maybe_auto_refresh_command_cache(&paths, cli, use_stderr_color)?;
     let interactive_note_selection = interactive_note_selection_allowed(cli, stdout_is_tty);
 
@@ -12425,7 +12433,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Help {
             ref search,
             ref topic,
-        } => commands::docs::handle_help_command(cli.output, topic, search.as_deref()),
+        } => commands::docs::handle_help_command(
+            cli.output,
+            topic,
+            search.as_deref(),
+            use_stdout_color,
+        ),
         Command::Describe { format } => commands::docs::handle_describe_command(cli.output, format),
         Command::Doctor {
             fix,
@@ -13437,6 +13450,7 @@ fn print_help_command(
     output: OutputFormat,
     topic: &[String],
     search: Option<&str>,
+    use_color: bool,
 ) -> Result<(), CliError> {
     if let Some(keyword) = search {
         let report = search_help_topics(keyword);
@@ -13483,7 +13497,7 @@ fn print_help_command(
             }
             println!(
                 "{}",
-                terminal_markdown::render_terminal_markdown(&markdown, io::stdout().is_terminal())
+                terminal_markdown::render_terminal_markdown(&markdown, use_color)
             );
             Ok(())
         }
@@ -13930,8 +13944,15 @@ fn print_query_report(
                 return Ok(());
             }
             if let Some(fields) = list_controls.fields.as_deref() {
-                for row in &rows {
-                    print_selected_human_fields(row, fields);
+                if options.stdout_is_tty
+                    && matches!(options.format, QueryFormatArg::Table)
+                    && !fields.is_empty()
+                {
+                    print_aligned_table(&rows, fields, options.no_header, options.use_color);
+                } else {
+                    for row in &rows {
+                        print_selected_human_fields(row, fields);
+                    }
                 }
             } else {
                 for note in visible_notes {
@@ -20013,6 +20034,72 @@ fn render_search_hit_explain(explain: &vulcan_core::SearchHitExplain) -> String 
             parts.join(", ")
         }
         _ => format!("score={:.3}", explain.score),
+    }
+}
+
+/// Format a slice of JSON objects as an aligned text table.
+///
+/// The first row is used as column headers. Each column is padded to the widest
+/// value (header or data) in that column.  When `use_color` is true the header
+/// row is rendered in bold.
+fn print_aligned_table(rows: &[Value], fields: &[String], no_header: bool, use_color: bool) {
+    if rows.is_empty() {
+        return;
+    }
+
+    // Collect cell strings for every row.
+    let data: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            fields
+                .iter()
+                .map(|f| {
+                    let v = select_fields(row.clone(), Some(std::slice::from_ref(f)));
+                    match v.get(f) {
+                        Some(Value::String(s)) => s.clone(),
+                        Some(Value::Null) | None => String::new(),
+                        Some(other) => render_human_value(other),
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    // Compute column widths.
+    let mut widths: Vec<usize> = fields.iter().map(String::len).collect();
+    for row in &data {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.len());
+        }
+    }
+
+    let palette = AnsiPalette::new(use_color);
+
+    // Print header.
+    if !no_header {
+        let header: String = fields
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let padded = format!("{:<width$}", f, width = widths[i]);
+                palette.bold(&padded)
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("{header}");
+        let sep: String = widths.iter().map(|w| "-".repeat(*w)).collect::<Vec<_>>().join("  ");
+        println!("{}", palette.dim(&sep));
+    }
+
+    // Print data rows.
+    for row in &data {
+        let line: String = row
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| format!("{:<width$}", cell, width = widths[i]))
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("{line}");
     }
 }
 
