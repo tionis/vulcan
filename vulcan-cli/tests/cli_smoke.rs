@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use rusqlite::Connection;
 use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
@@ -9,6 +10,7 @@ use std::process::Command as ProcessCommand;
 use std::thread;
 use tempfile::TempDir;
 use vulcan_core::{CacheDatabase, VaultPaths};
+use zip::ZipArchive;
 
 const FIXED_NOW: &str = "2026-04-04T12:00:00Z";
 
@@ -3780,7 +3782,7 @@ fn tasks_list_json_output_supports_source_filters_and_archived_toggle() {
             "tasks",
             "list",
             "--source",
-            "file",
+            "tasknotes",
             "--status",
             "in-progress",
             "--priority",
@@ -3851,7 +3853,7 @@ fn tasks_list_json_output_supports_source_filters_and_archived_toggle() {
             "tasks",
             "list",
             "--source",
-            "file",
+            "tasknotes",
         ])
         .assert()
         .success();
@@ -3873,7 +3875,7 @@ fn tasks_list_json_output_supports_source_filters_and_archived_toggle() {
             "tasks",
             "list",
             "--source",
-            "file",
+            "tasknotes",
             "--include-archived",
         ])
         .assert()
@@ -3885,6 +3887,51 @@ fn tasks_list_json_output_supports_source_filters_and_archived_toggle() {
         .expect("tasks should be an array")
         .iter()
         .any(|task| task["text"] == Value::String("Archived flag".to_string())));
+}
+
+#[test]
+fn tasks_list_json_output_defaults_source_from_config() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::write(
+        vault_root.join("Inbox.md"),
+        concat!(
+            "- [ ] Inline follow-up #ops 🗓️ 2026-04-09\n",
+            "- [x] Inline shipped #ops\n"
+        ),
+    )
+    .expect("inline task fixture should be written");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[tasks]\ndefault_source = \"inline\"\n",
+    )
+    .expect("config should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "list",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["result_count"], Value::Number(2.into()));
+    assert!(json["tasks"]
+        .as_array()
+        .expect("tasks should be an array")
+        .iter()
+        .all(|task| task["taskSource"] == Value::String("inline".to_string())));
 }
 
 #[test]
@@ -9004,6 +9051,257 @@ fn export_search_index_writes_static_json_payload() {
 }
 
 #[test]
+fn export_markdown_combines_matched_notes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "markdown",
+            r#"from notes where file.path matches "^(Home|Projects/Alpha)\.md$""#,
+            "--title",
+            "Project export",
+        ])
+        .assert()
+        .success();
+
+    let out = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(out.contains("# Project export"));
+    assert!(out.contains("## Home.md"));
+    assert!(out.contains("## Projects/Alpha.md"));
+    assert!(out.contains("Home links to [[Projects/Alpha]]"));
+    assert!(out.contains("Owned by [[People/Bob]]"));
+}
+
+#[test]
+fn export_json_emits_note_metadata_and_content() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "json",
+            r#"from notes where file.path = "Home.md""#,
+            "--pretty",
+        ])
+        .assert()
+        .success();
+    let json: Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("json export should emit valid JSON");
+
+    assert_eq!(json["result_count"], Value::Number(1.into()));
+    assert_eq!(json["notes"][0]["document_path"], "Home.md");
+    assert_eq!(json["notes"][0]["file_name"], "Home");
+    assert_eq!(
+        json["notes"][0]["frontmatter"]["aliases"][0],
+        Value::String("Start".to_string())
+    );
+    assert!(json["notes"][0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Home links to [[Projects/Alpha]]"));
+}
+
+#[test]
+fn export_csv_writes_query_rows() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("notes.csv");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "csv",
+            r#"from notes where file.path = "Projects/Alpha.md""#,
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let csv = fs::read_to_string(&export_path).expect("csv export should exist");
+    assert!(csv.starts_with(
+        "document_path,file_name,file_ext,file_mtime,tags,starred,properties,inline_expressions,query"
+    ));
+    assert!(csv.contains("Projects/Alpha.md"));
+    assert!(csv.contains("Alpha"));
+}
+
+#[test]
+fn export_graph_json_format_emits_nodes_and_edges() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "graph",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success();
+
+    let parsed: Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("graph export json should be valid JSON");
+    assert!(parsed["nodes"]
+        .as_array()
+        .is_some_and(|nodes| !nodes.is_empty()));
+    assert!(parsed["edges"]
+        .as_array()
+        .is_some_and(|edges| !edges.is_empty()));
+}
+
+#[test]
+fn export_zip_includes_notes_attachments_and_manifest() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("attachments", &vault_root);
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("attachments.zip");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "zip",
+            r#"from notes where file.path = "Home.md""#,
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("zip export should exist");
+    let mut archive = ZipArchive::new(file).expect("zip export should open");
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        names.push(
+            archive
+                .by_index(index)
+                .expect("zip entry should be readable")
+                .name()
+                .to_string(),
+        );
+    }
+
+    assert!(names.contains(&"Home.md".to_string()));
+    assert!(names.contains(&"assets/logo.png".to_string()));
+    assert!(names.contains(&"assets/guide.pdf".to_string()));
+    assert!(names.contains(&"audio/theme.mp3".to_string()));
+    assert!(names.contains(&".vulcan-export/manifest.json".to_string()));
+    assert!(names.contains(&".vulcan-export/notes.json".to_string()));
+
+    let mut manifest = String::new();
+    archive
+        .by_name(".vulcan-export/manifest.json")
+        .expect("manifest should exist")
+        .read_to_string(&mut manifest)
+        .expect("manifest should be readable");
+    let manifest_json: Value =
+        serde_json::from_str(&manifest).expect("manifest should be valid JSON");
+    assert_eq!(manifest_json["result_count"], Value::Number(1.into()));
+    assert!(manifest_json["attachments"]
+        .as_array()
+        .expect("attachments should be an array")
+        .iter()
+        .any(|path| path == "assets/logo.png"));
+}
+
+#[test]
+fn export_sqlite_writes_notes_links_tags_and_tasks_tables() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("tasknotes.db");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "sqlite",
+            r#"from notes where file.path matches "^TaskNotes/(Tasks|Archive)/""#,
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let connection = Connection::open(&export_path).expect("sqlite export should open");
+    let note_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
+        .expect("notes table should be queryable");
+    let link_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM links", [], |row| row.get(0))
+        .expect("links table should be queryable");
+    let tag_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))
+        .expect("tags table should be queryable");
+    let task_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+        .expect("tasks table should be queryable");
+
+    assert!(note_count >= 3);
+    assert!(link_count >= 1);
+    assert!(tag_count >= 1);
+    assert!(task_count >= 2);
+
+    let exported_note: String = connection
+        .query_row(
+            "SELECT document_path FROM notes WHERE document_path = 'TaskNotes/Tasks/Write Docs.md'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("write docs note should be exported");
+    assert_eq!(exported_note, "TaskNotes/Tasks/Write Docs.md");
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn saved_reports_can_be_listed_run_and_batched() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -13403,10 +13701,11 @@ fn mcp_server_filters_and_rejects_tools_under_readonly_permissions() {
             }
         }),
     ];
-    let payload = requests
-        .iter()
-        .map(|request| format!("{request}\n"))
-        .collect::<String>();
+    let mut payload = String::new();
+    for request in &requests {
+        payload.push_str(&request.to_string());
+        payload.push('\n');
+    }
 
     let stdin = child.stdin.as_mut().expect("stdin should be piped");
     stdin

@@ -60,17 +60,20 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # timestamp = true
 # heading = "## Inbox"
 
+# [tasks]
+# default_source = "all"  # tasknotes | inline | all
+# global_filter = "#task"
+# global_query = "not done"
+# remove_global_filter = true
+# set_created_date = false
+# recurrence_on_completion = "next-line"  # same-line | next-line
+#
 # [tasks.statuses]
 # todo = [" "]
 # completed = ["x", "X"]
 # in_progress = ["/"]
 # cancelled = ["-"]
 # non_task = []
-# global_filter = "#task"
-# global_query = "not done"
-# remove_global_filter = true
-# set_created_date = false
-# recurrence_on_completion = "next-line"  # same-line | next-line
 #
 # [[tasks.statuses.definitions]]
 # symbol = "!"
@@ -901,6 +904,8 @@ impl TaskStatusesConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TasksConfig {
     #[serde(default)]
+    pub default_source: TasksDefaultSource,
+    #[serde(default)]
     pub statuses: TaskStatusesConfig,
     #[serde(default)]
     pub global_filter: Option<String>,
@@ -912,6 +917,16 @@ pub struct TasksConfig {
     pub set_created_date: bool,
     #[serde(default)]
     pub recurrence_on_completion: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TasksDefaultSource {
+    #[serde(alias = "file")]
+    Tasknotes,
+    Inline,
+    #[default]
+    All,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2440,6 +2455,7 @@ struct PartialPeriodicNoteConfig {
 
 #[derive(Debug, Deserialize, Default)]
 struct PartialTasksConfig {
+    default_source: Option<TasksDefaultSource>,
     statuses: Option<PartialTaskStatusesConfig>,
     global_filter: Option<String>,
     global_query: Option<String>,
@@ -6776,6 +6792,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
     }
 
     if let Some(tasks) = overrides.tasks {
+        if let Some(default_source) = tasks.default_source {
+            config.tasks.default_source = default_source;
+        }
         if let Some(global_filter) = tasks.global_filter {
             config.tasks.global_filter = normalize_optional_text(Some(global_filter));
         }
@@ -7997,6 +8016,7 @@ timestamp = false
 heading = "## Notes"
 
 [tasks]
+default_source = "tasknotes"
 global_filter = "#work"
 global_query = "not done"
 remove_global_filter = true
@@ -8569,6 +8589,7 @@ intellisense_render = 2
     }
 
     fn assert_override_tasks_and_kanban(config: &VaultConfig) {
+        assert_eq!(config.tasks.default_source, TasksDefaultSource::Tasknotes);
         assert_eq!(config.tasks.global_filter, Some("#work".to_string()));
         assert_eq!(config.tasks.global_query, Some("not done".to_string()));
         assert!(config.tasks.remove_global_filter);
@@ -9196,6 +9217,26 @@ time_format = "HH:mm:ss"
         assert_eq!(
             loaded.config.tasks.statuses.status_state(">").next_symbol,
             Some("x".to_string())
+        );
+    }
+
+    #[test]
+    fn tasks_default_source_accepts_legacy_file_alias() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[tasks]\ndefault_source = \"file\"\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(
+            loaded.config.tasks.default_source,
+            TasksDefaultSource::Tasknotes
         );
     }
 
