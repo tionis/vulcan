@@ -21103,25 +21103,22 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
                 .map(|b| b.path)
                 .collect()
         }
-        "bases-view" => {
-            // Load bases configs and return view names.
+        "bases-file" | "bases-view" => {
+            // Vault-relative paths to .base files.
             use vulcan_core::CacheDatabase;
             let Ok(db) = CacheDatabase::open(paths) else {
                 return Vec::new();
             };
             let conn = db.connection();
             let mut stmt = match conn
-                .prepare("SELECT filename FROM documents WHERE path LIKE '%.base'")
+                .prepare("SELECT path FROM documents WHERE path LIKE '%.base' ORDER BY path")
             {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
             let rows = stmt.query_map([], |row| row.get::<_, String>(0));
             match rows {
-                Ok(iter) => iter
-                    .flatten()
-                    .map(|name| name.trim_end_matches(".base").to_string())
-                    .collect(),
+                Ok(iter) => iter.flatten().collect(),
                 Err(_) => Vec::new(),
             }
         }
@@ -21200,8 +21197,8 @@ complete -c vulcan -n "__fish_vulcan_using_subcommand backlinks" -f -a "(vulcan 
 # Kanban board names
 complete -c vulcan -n "__fish_vulcan_using_subcommand kanban; and __fish_seen_subcommand_from show add move archive" -f -a "(vulcan complete kanban-board 2>/dev/null)" -d "Board"
 
-# Bases view names
-complete -c vulcan -n "__fish_vulcan_using_subcommand bases; and __fish_seen_subcommand_from eval" -f -a "(vulcan complete bases-view 2>/dev/null)" -d "View"
+# Bases .base file paths
+complete -c vulcan -n "__fish_vulcan_using_subcommand bases; and __fish_seen_subcommand_from eval tui create view-add view-delete view-rename" -f -a "(vulcan complete bases-file 2>/dev/null)" -d "Bases file"
 
 # Daily date patterns
 complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_subcommand_from show" -f -a "(vulcan complete daily-date 2>/dev/null)" -d "Date"
@@ -21238,6 +21235,12 @@ _vulcan_complete_kanban_arg() {
         __vulcan_dynamic_complete kanban-board
     fi
 }
+
+_vulcan_complete_bases_arg() {
+    if [[ "${COMP_WORDS[1]}" == "bases" ]] && [[ "${COMP_WORDS[2]}" =~ ^(eval|tui|create|view-add|view-delete|view-rename)$ ]]; then
+        __vulcan_dynamic_complete bases-file
+    fi
+}
 "#
     .trim()
     .to_string()
@@ -21258,10 +21261,10 @@ _vulcan_complete_kanban_board() {
     _describe 'board' boards
 }
 
-_vulcan_complete_bases_view() {
-    local -a views
-    views=(${(f)"$(vulcan complete bases-view 2>/dev/null)"})
-    _describe 'view' views
+_vulcan_complete_bases_file() {
+    local -a files
+    files=(${(f)"$(vulcan complete bases-file 2>/dev/null)"})
+    _describe 'bases file' files
 }
 
 _vulcan_complete_daily_date() {

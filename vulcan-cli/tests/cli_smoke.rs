@@ -13375,9 +13375,16 @@ fn fish_completions_include_dynamic_hook() {
         .stdout
         .clone();
     let text = String::from_utf8_lossy(&output);
-    // Dynamic completions appended after static script should include vulcan complete calls
     assert!(
-        text.contains("vulcan complete"),
-        "fish completions should include dynamic vulcan complete hook"
+        text.contains("vulcan complete bases-file"),
+        "fish completions should hook bases-file for bases subcommands"
+    );
+    assert!(
+        text.contains("eval tui create view-add view-delete view-rename"),
+        "fish completions should cover all bases file-taking subcommands"
+    );
+    assert!(
+        text.contains("vulcan complete note"),
+        "fish completions should include note context hook"
     );
 }
