@@ -12325,6 +12325,10 @@ fn copy_dir_recursive(source: &Path, destination: &Path) {
     for entry in fs::read_dir(source).expect("source directory should be readable") {
         let entry = entry.expect("directory entry should be readable");
         let file_type = entry.file_type().expect("file type should be readable");
+        // Skip .vulcan/ directories — they are test artifacts, not fixture content.
+        if entry.file_name() == ".vulcan" {
+            continue;
+        }
         let target = destination.join(entry.file_name());
 
         if file_type.is_dir() {
