@@ -224,7 +224,10 @@ mod runtime {
     use crate::resolve_note_reference;
     use crate::search::{search_vault, SearchQuery};
     use crate::VaultPaths;
-    use crate::{move_note, parse_document, query_backlinks, query_links, scan_vault, ScanMode};
+    use crate::{
+        move_note, parse_document, query_backlinks, query_links, render_markdown_html, scan_vault,
+        ScanMode,
+    };
     use serde_json::{Map, Value};
     use std::cmp::Ordering;
 
@@ -1876,6 +1879,10 @@ class Note {
     return this.__ensureDetails().content ?? "";
   }
 
+  get html() {
+    return this.__ensureDetails().html ?? "";
+  }
+
   get frontmatter() {
     return this.file.frontmatter ?? this.__ensureDetails().frontmatter ?? {};
   }
@@ -1928,6 +1935,7 @@ class Note {
     const merged = { ...this.__data };
     if (this.__details != null) {
       merged.content = this.__details.content ?? merged.content;
+      merged.html = this.__details.html ?? merged.html;
       merged.frontmatter = this.__details.frontmatter ?? merged.frontmatter;
       merged.headings = this.__details.headings ?? merged.headings;
       merged.blocks = this.__details.blocks ?? merged.blocks;
@@ -2170,7 +2178,11 @@ Parameters:
   path - Vault-relative path, filename, or alias-like note identifier.
 
 Example:
-  vault.note("Projects/Alpha").content
+  vault.note("Projects/Alpha").content  // raw markdown from disk
+
+Note properties:
+  note.content  - raw markdown source
+  note.html     - rendered HTML using Vulcan's markdown pipeline
 
 See also: vault.notes(), vault.query()`
 );
@@ -3319,6 +3331,7 @@ globalThis.Function = undefined;
             "file": FileMetadataResolver::object(note),
             "frontmatter": note.frontmatter.clone(),
             "content": source,
+            "html": render_markdown_html(&source),
             "headings": parsed.headings.into_iter().map(|heading| serde_json::json!({
                 "level": heading.level,
                 "text": heading.text,
@@ -5458,6 +5471,39 @@ globalThis.Function = undefined;
                     assert!(rows[0][4].as_i64().is_some_and(|value| value >= 2));
                     assert!(rows[0][5].as_i64().is_some_and(|value| value >= 1));
                     assert!(rows[0][6].as_i64().is_some_and(|value| value >= 1));
+                }
+                other => panic!("expected table output, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn dataviewjs_note_content_is_raw_markdown_and_html_is_rendered() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const note = vault.note("Dashboard");
+                dv.table(
+                  ["raw", "html"],
+                  [[
+                    note.content.startsWith("---\nstatus: draft"),
+                    note.html.includes("<h2>Lists</h2>") && !note.html.includes("status: draft")
+                  ]]
+                );
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            match &result.outputs[0] {
+                DataviewJsOutput::Table { headers, rows } => {
+                    assert_eq!(headers, &vec!["raw".to_string(), "html".to_string()]);
+                    assert_eq!(rows, &vec![vec![Value::Bool(true), Value::Bool(true)]]);
                 }
                 other => panic!("expected table output, got {other:?}"),
             }

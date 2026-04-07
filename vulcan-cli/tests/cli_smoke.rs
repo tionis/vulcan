@@ -1220,6 +1220,42 @@ fn note_get_human_output_adds_line_numbers_unless_raw() {
 }
 
 #[test]
+fn note_get_html_mode_renders_selected_markdown() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "get",
+            "Dashboard",
+            "--mode",
+            "html",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let html = json["content"]
+        .as_str()
+        .expect("html content should be serialized as a string");
+
+    assert_eq!(json["metadata"]["mode"], "html");
+    assert!(html.contains("<h1>Dashboard</h1>"));
+    assert!(html.contains("<h2>Tasks</h2>"));
+    assert!(html.contains("TODO first"));
+    assert!(!html.contains("status: active"));
+}
+
+#[test]
 fn note_info_json_output_reports_summary_metadata() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -21,6 +21,7 @@ pub mod periodic;
 pub mod properties;
 pub mod query;
 pub mod refactor;
+pub mod render;
 pub mod resolver;
 pub mod saved_queries;
 pub mod scan;
@@ -137,6 +138,7 @@ pub use refactor::{
     rename_heading, rename_property, set_note_property, BulkMutationReport, RefactorChange,
     RefactorError, RefactorFileReport, RefactorReport,
 };
+pub use render::{render_markdown_fragment_html, render_markdown_html};
 pub use resolver::{
     resolve_link, LinkResolutionProblem, LinkResolutionResult, ResolverDocument, ResolverIndex,
     ResolverLink,

@@ -7,6 +7,7 @@ mod semantic_pass;
 mod tag_extractor;
 pub mod types;
 
+pub(crate) use options::{fragment_parser_options, parser_options};
 pub use types::{
     ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument,
     RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField, RawLink,
@@ -15,7 +16,6 @@ pub use types::{
 
 use crate::config::VaultConfig;
 use comment_scanner::scan_comment_regions;
-use options::{fragment_parser_options, parser_options};
 use pulldown_cmark::Parser;
 use semantic_pass::process_events;
 

@@ -266,11 +266,13 @@ Notes:
   `--check` runs non-blocking doctor-like diagnostics for the resulting note.
   Mutating note commands support --no-commit; `patch` also supports --dry-run.
   `note get --output json` returns content, parsed frontmatter, and selection metadata.
+  `note get --mode html` renders the selected markdown through Vulcan's HTML pipeline.
   `note append --periodic <daily|weekly|monthly>` creates the target periodic note first when missing.
   Repeat `--var key=value` to satisfy QuickAdd-style `{{VALUE}}` / `{{VDATE:...}}` prompts in automation.
 
 Examples:
   vulcan note get Projects/Alpha --heading Status
+  vulcan note get Projects/Alpha --mode html
   vulcan note info Projects/Alpha
   vulcan note history Projects/Alpha --limit 5
   vulcan note set Projects/Alpha --no-frontmatter < body.md
@@ -315,6 +317,7 @@ Examples:
 
 const NOTE_GET_COMMAND_AFTER_HELP: &str = "\
 Selectors:
+  --mode <markdown|html>    render selected content as markdown (default) or HTML
   --heading <name>        limit to one heading section, including nested subheadings
   --block-ref <id>        limit to the block tagged with ^<id>
   --lines <range>         limit to a 1-based line range within the current selection
@@ -331,6 +334,7 @@ Line range syntax:
 
 Examples:
   vulcan note get Dashboard
+  vulcan note get Dashboard --mode html
   vulcan note get Dashboard --heading Tasks --match TODO --context 1
   vulcan note get Dashboard --block-ref status-card
   vulcan note get Dashboard --lines 10-20 --raw";
@@ -2513,6 +2517,13 @@ pub enum NoteCommand {
     Get {
         #[arg(help = "Note path, filename, or alias to read")]
         note: String,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = NoteGetMode::Markdown,
+            help = "Return selected content as markdown or rendered HTML"
+        )]
+        mode: NoteGetMode,
         #[arg(long, help = "Extract one heading section by exact heading text")]
         heading: Option<String>,
         #[arg(long = "block-ref", help = "Extract one block by block reference id")]
@@ -2750,6 +2761,13 @@ pub enum NoteCommand {
         #[arg(long, help = "Named checkpoint to compare against instead of git HEAD")]
         since: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum NoteGetMode {
+    #[default]
+    Markdown,
+    Html,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
