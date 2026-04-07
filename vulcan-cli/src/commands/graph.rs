@@ -2,8 +2,8 @@ use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
 use crate::{Cli, CliError, GraphCommand};
 use vulcan_core::{
-    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
-    query_graph_moc_candidates, query_graph_path, query_graph_trends, VaultPaths,
+    export_graph, query_graph_analytics, query_graph_components, query_graph_dead_ends,
+    query_graph_hubs, query_graph_moc_candidates, query_graph_path, query_graph_trends, VaultPaths,
 };
 
 pub(crate) fn handle_graph_command(
@@ -85,6 +85,10 @@ pub(crate) fn handle_graph_command(
             let report = query_graph_trends(paths, *limit).map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             crate::print_graph_trends_report(cli.output, &report, list_controls, export.as_ref())
+        }
+        GraphCommand::Export { format } => {
+            let report = export_graph(paths).map_err(CliError::operation)?;
+            crate::print_graph_export_report(cli.output, &report, *format)
         }
     }
 }

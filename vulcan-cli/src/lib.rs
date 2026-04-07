@@ -17,13 +17,14 @@ pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, ColorMode, Command,
     ConfigCommand, ConfigImportArgs, ConfigImportCommand, ConfigImportSelection,
     ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs,
-    ExportCommand, ExportFormat, GitCommand, GraphCommand, IndexCommand, InitArgs, KanbanCommand,
-    NoteAppendPeriodicArg, NoteCommand, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand,
-    PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RepairCommand,
-    SavedCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg,
-    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    ExportCommand, ExportFormat, GitCommand, GraphCommand, GraphExportFormat, IndexCommand,
+    InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, OutputFormat, PeriodicOpenArgs,
+    PeriodicSubcommand, PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand,
+    RefreshMode, RepairCommand, SavedCommand, SearchBackendArg, SearchMode, SearchSortArg,
+    SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand,
+    WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -9044,32 +9045,39 @@ fn load_daily_events_for_path(
 fn run_daily_show_command(
     paths: &VaultPaths,
     date: Option<&str>,
+    period_type: &str,
 ) -> Result<PeriodicShowReport, CliError> {
     let config = load_vault_config(paths).config;
-    let target = resolve_periodic_target(&config.periodic, "daily", date, false)?;
+    let target = resolve_periodic_target(&config.periodic, period_type, date, false)?;
     let resolved = resolve_periodic_note(
         paths.vault_root(),
         &config.periodic,
-        "daily",
+        period_type,
         &target.reference_date,
     )
     .unwrap_or_else(|| target.path.clone());
     let absolute_path = paths.vault_root().join(&resolved);
     if !absolute_path.is_file() {
         return Err(CliError::operation(format!(
-            "daily note does not exist on disk: {}",
+            "{period_type} note does not exist on disk: {}",
             target.path
         )));
     }
 
+    let events = if period_type == "daily" {
+        load_daily_events_for_path(paths, &resolved)?
+    } else {
+        Vec::new()
+    };
+
     Ok(PeriodicShowReport {
-        period_type: "daily".to_string(),
+        period_type: period_type.to_string(),
         reference_date: target.reference_date,
         start_date: target.start_date,
         end_date: target.end_date,
         path: resolved.clone(),
         content: fs::read_to_string(&absolute_path).map_err(CliError::operation)?,
-        events: load_daily_events_for_path(paths, &resolved)?,
+        events,
     })
 }
 
@@ -9142,6 +9150,17 @@ fn run_daily_list_command(
         .map_err(CliError::operation)
 }
 
+pub(crate) fn run_periodic_export_ics_command(
+    paths: &VaultPaths,
+    _period_type: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    path: Option<&Path>,
+    calendar_name: Option<&str>,
+) -> Result<DailyIcsExportReport, CliError> {
+    run_daily_export_ics_command(paths, from, to, false, false, path, calendar_name)
+}
+
 fn run_daily_export_ics_command(
     paths: &VaultPaths,
     from: Option<&str>,
@@ -9185,14 +9204,15 @@ fn run_daily_append_command(
     date: Option<&str>,
     no_commit: bool,
     quiet: bool,
+    period_type: &str,
 ) -> Result<DailyAppendReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, quiet);
 
     let config = load_vault_config(paths).config;
-    let target = resolve_periodic_target(&config.periodic, "daily", date, true)?;
+    let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
     let mut warnings = Vec::new();
-    let created = write_periodic_note_if_missing(paths, "daily", &target.path, &mut warnings)?;
+    let created = write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings)?;
     let absolute_path = paths.vault_root().join(&target.path);
     let existing = fs::read_to_string(&absolute_path).unwrap_or_default();
     let updated = heading.map_or_else(
@@ -9202,7 +9222,7 @@ fn run_daily_append_command(
     fs::write(&absolute_path, updated).map_err(CliError::operation)?;
 
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
-    commit_periodic_changes_if_needed(&auto_commit, paths, "daily", &target.path)?;
+    commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path)?;
 
     Ok(DailyAppendReport {
         period_type: target.period_type,
@@ -12398,6 +12418,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             generate(shell, &mut command, "vulcan", &mut io::stdout());
             Ok(())
         }
+        Command::Status => {
+            let report = run_status_command(&paths)?;
+            print_status_report(cli.output, &report, use_stdout_color)
+        }
+        Command::Mcp => run_mcp_server(&paths),
         Command::Trust { ref command } => handle_trust_command(cli, &paths, command.as_ref()),
         Command::Bases { ref command } => commands::bases::handle_bases_command(
             cli,
@@ -13174,6 +13199,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let result = match command {
+                Some(TemplateSubcommand::List) => run_template_command(
+                    &paths,
+                    None,
+                    true,
+                    None,
+                    render.engine,
+                    &render.vars,
+                    no_commit,
+                    cli.quiet,
+                    stdout_is_tty,
+                )?,
+                Some(TemplateSubcommand::Show { name: tname }) => {
+                    return run_template_show_command(&paths, tname, cli.output);
+                }
                 Some(TemplateSubcommand::Insert {
                     template,
                     note,
@@ -20532,6 +20571,475 @@ fn append_change_rows(rows: &mut Vec<Value>, anchor: &str, kind: ChangeKind, ite
             "path": item.path,
             "status": item.status,
         }));
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// vulcan status
+// ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+struct VaultStatusReport {
+    vault_root: String,
+    note_count: usize,
+    attachment_count: usize,
+    last_scan: Option<String>,
+    cache_bytes: u64,
+    git_branch: Option<String>,
+    git_dirty: bool,
+    git_staged: usize,
+    git_unstaged: usize,
+    git_untracked: usize,
+}
+
+fn run_status_command(paths: &VaultPaths) -> Result<VaultStatusReport, CliError> {
+    let cache = inspect_cache(paths).map_err(CliError::operation)?;
+
+    let last_scan = {
+        use vulcan_core::CacheDatabase;
+        let db = CacheDatabase::open(paths).ok();
+        db.and_then(|db| {
+            db.connection()
+                .query_row(
+                    "SELECT MAX(indexed_at) FROM documents",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+        })
+    };
+
+    let (git_branch, git_dirty, git_staged, git_unstaged, git_untracked) =
+        if vulcan_core::is_git_repo(paths.vault_root()) {
+            match git_status(paths.vault_root()) {
+                Ok(status) => {
+                    let branch = {
+                        let output = ProcessCommand::new("git")
+                            .arg("-C")
+                            .arg(paths.vault_root())
+                            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                            .output()
+                            .ok();
+                        output.and_then(|o| {
+                            if o.status.success() {
+                                String::from_utf8(o.stdout)
+                                    .ok()
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                            } else {
+                                None
+                            }
+                        })
+                    };
+                    (
+                        branch,
+                        !status.clean,
+                        status.staged.len(),
+                        status.unstaged.len(),
+                        status.untracked.len(),
+                    )
+                }
+                Err(_) => (None, false, 0, 0, 0),
+            }
+        } else {
+            (None, false, 0, 0, 0)
+        };
+
+    Ok(VaultStatusReport {
+        vault_root: paths.vault_root().display().to_string(),
+        note_count: cache.notes,
+        attachment_count: cache.attachments,
+        last_scan,
+        cache_bytes: cache.database_bytes,
+        git_branch,
+        git_dirty,
+        git_staged,
+        git_unstaged,
+        git_untracked,
+    })
+}
+
+fn print_status_report(
+    output: OutputFormat,
+    report: &VaultStatusReport,
+    use_color: bool,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human => {
+            let palette = AnsiPalette::new(use_color);
+            println!("Vault:      {}", report.vault_root);
+            println!(
+                "Notes:      {}  attachments: {}",
+                report.note_count, report.attachment_count
+            );
+            println!(
+                "Cache:      {} bytes",
+                report.cache_bytes
+            );
+            if let Some(last_scan) = &report.last_scan {
+                println!("Last scan:  {last_scan}");
+            } else {
+                println!("Last scan:  {}", palette.dim("never"));
+            }
+            if let Some(branch) = &report.git_branch {
+                let dirty_flag = if report.git_dirty {
+                    format!(
+                        " {}",
+                        palette.yellow(&format!(
+                            "(dirty: {} staged, {} unstaged, {} untracked)",
+                            report.git_staged, report.git_unstaged, report.git_untracked
+                        ))
+                    )
+                } else {
+                    format!(" {}", palette.green("(clean)"))
+                };
+                println!("Git:        {branch}{dirty_flag}");
+            } else {
+                println!("Git:        {}", palette.dim("not a git repository"));
+            }
+            Ok(())
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// graph export
+// ────────────────────────────────────────────────────────────────────────────
+
+fn print_graph_export_report(
+    output: OutputFormat,
+    report: &vulcan_core::GraphExportReport,
+    format: GraphExportFormat,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human => {
+            match format {
+                GraphExportFormat::Json => {
+                    print_json(report)?;
+                }
+                GraphExportFormat::Dot => {
+                    println!("digraph vault {{");
+                    for node in &report.nodes {
+                        let label = node.path.trim_end_matches(".md").replace('"', "\\\"");
+                        let id = node.path.replace('"', "\\\"");
+                        println!("  \"{id}\" [label=\"{label}\"];");
+                    }
+                    for edge in &report.edges {
+                        let src = edge.source.replace('"', "\\\"");
+                        let tgt = edge.target.replace('"', "\\\"");
+                        println!("  \"{src}\" -> \"{tgt}\";");
+                    }
+                    println!("}}");
+                }
+                GraphExportFormat::Graphml => {
+                    println!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+                    println!("<graphml xmlns=\"http://graphml.graphdrawing.org/graphml\">");
+                    println!("  <graph id=\"vault\" edgedefault=\"directed\">");
+                    for node in &report.nodes {
+                        let id = node.path.replace('"', "&quot;");
+                        println!("    <node id=\"{id}\"/>");
+                    }
+                    for (i, edge) in report.edges.iter().enumerate() {
+                        let src = edge.source.replace('"', "&quot;");
+                        let tgt = edge.target.replace('"', "&quot;");
+                        println!("    <edge id=\"e{i}\" source=\"{src}\" target=\"{tgt}\"/>");
+                    }
+                    println!("  </graph>");
+                    println!("</graphml>");
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// template show
+// ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+struct TemplateShowReport {
+    name: String,
+    source: String,
+    path: String,
+    content: String,
+}
+
+fn run_template_show_command(
+    paths: &VaultPaths,
+    name: &str,
+    output: OutputFormat,
+) -> Result<(), CliError> {
+    let config = load_vault_config(paths).config;
+    let templates = discover_templates(
+        paths,
+        config.templates.obsidian_folder.as_deref(),
+        config.templates.templater_folder.as_deref(),
+    )?;
+    let template = resolve_template_file(paths, &templates.templates, name)?;
+    let absolute = &template.absolute_path;
+    let content = fs::read_to_string(absolute).map_err(CliError::operation)?;
+    let report = TemplateShowReport {
+        name: template.name.clone(),
+        source: template.source.to_string(),
+        path: template.display_path.clone(),
+        content: content.clone(),
+    };
+    match output {
+        OutputFormat::Json => print_json(&report),
+        OutputFormat::Human => {
+            println!("Name:   {}", report.name);
+            println!("Source: {}", report.source);
+            println!("Path:   {}", report.path);
+            println!();
+            print!("{content}");
+            Ok(())
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// MCP server
+// ────────────────────────────────────────────────────────────────────────────
+
+fn run_mcp_server(paths: &VaultPaths) -> Result<(), CliError> {
+    use std::io::BufRead;
+
+    let exe = std::env::current_exe().map_err(CliError::operation)?;
+    let vault_str = paths.vault_root().to_string_lossy().into_owned();
+    let tools = build_mcp_tool_definitions_with_paths();
+
+    let stdin = io::stdin();
+    for line in stdin.lock().lines() {
+        let line = line.map_err(CliError::operation)?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let request: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                let response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": { "code": -32700, "message": format!("Parse error: {e}") }
+                });
+                println!("{}", serde_json::to_string(&response).unwrap_or_default());
+                continue;
+            }
+        };
+
+        let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let method = request
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let params = request.get("params");
+
+        let result: Result<Value, (i64, String)> = match method {
+            "initialize" => Ok(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "vulcan", "version": env!("CARGO_PKG_VERSION") }
+            })),
+            "notifications/initialized" => {
+                // No response needed for notifications
+                continue;
+            }
+            "tools/list" => {
+                let list: Vec<Value> = tools
+                    .iter()
+                    .map(|t| {
+                        serde_json::json!({
+                            "name": t.name,
+                            "description": t.description,
+                            "inputSchema": t.input_schema
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "tools": list }))
+            }
+            "tools/call" => {
+                let tool_name = params
+                    .and_then(|p| p.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let arguments = params
+                    .and_then(|p| p.get("arguments"))
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+
+                match mcp_dispatch_tool(&exe, &vault_str, tool_name, &arguments, &tools) {
+                    Ok(text) => Ok(serde_json::json!({
+                        "content": [{ "type": "text", "text": text }]
+                    })),
+                    Err(e) => Err((-32603, e)),
+                }
+            }
+            _ => Err((-32601, format!("Method not found: {method}"))),
+        };
+
+        let response = match result {
+            Ok(value) => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": value
+            }),
+            Err((code, message)) => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": { "code": code, "message": message }
+            }),
+        };
+        println!("{}", serde_json::to_string(&response).unwrap_or_default());
+    }
+    Ok(())
+}
+
+struct McpToolWithPath {
+    name: String,
+    description: String,
+    input_schema: Value,
+    /// Command path segments, e.g. ["note", "get"]
+    command_path: Vec<String>,
+    /// Which argument IDs are positional (not flags)
+    positional_ids: Vec<String>,
+}
+
+fn build_mcp_tool_definitions_with_paths() -> Vec<McpToolWithPath> {
+    let tree = cli_command_tree();
+    let mut tools = Vec::new();
+    for subcommand in tree
+        .get_subcommands()
+        .filter(|s| !s.is_hide_set())
+    {
+        collect_mcp_tools_inner(subcommand, Vec::new(), &mut tools);
+    }
+    tools
+}
+
+fn collect_mcp_tools_inner(
+    command: &clap::Command,
+    mut prefix: Vec<String>,
+    tools: &mut Vec<McpToolWithPath>,
+) {
+    prefix.push(command.get_name().to_string());
+    let subs: Vec<_> = command
+        .get_subcommands()
+        .filter(|s| !s.is_hide_set())
+        .collect();
+    if subs.is_empty() {
+        let positional_ids: Vec<String> = command
+            .get_arguments()
+            .filter(|a| a.is_positional() && !a.is_global_set())
+            .map(|a| a.get_id().to_string())
+            .collect();
+        tools.push(McpToolWithPath {
+            name: tool_name_from_path(&prefix),
+            description: command
+                .get_about()
+                .map_or_else(|| prefix.join(" "), ToString::to_string),
+            input_schema: command_input_schema(command),
+            command_path: prefix,
+            positional_ids,
+        });
+        return;
+    }
+    for sub in subs {
+        collect_mcp_tools_inner(sub, prefix.clone(), tools);
+    }
+}
+
+fn mcp_dispatch_tool(
+    exe: &Path,
+    vault: &str,
+    tool_name: &str,
+    arguments: &serde_json::Map<String, Value>,
+    tools: &[McpToolWithPath],
+) -> Result<String, String> {
+    let tool = tools
+        .iter()
+        .find(|t| t.name == tool_name)
+        .ok_or_else(|| format!("unknown tool: {tool_name}"))?;
+
+    let mut args: Vec<OsString> = vec![
+        "--vault".into(),
+        vault.into(),
+        "--output".into(),
+        "json".into(),
+    ];
+
+    // Add command path segments
+    for segment in &tool.command_path {
+        args.push(segment.into());
+    }
+
+    // Positional args first (in order they appear in positional_ids)
+    for pos_id in &tool.positional_ids {
+        if let Some(val) = arguments.get(pos_id) {
+            let s = mcp_value_to_string(val);
+            if !s.is_empty() {
+                args.push(s.into());
+            }
+        }
+    }
+
+    // Then flag args
+    for (key, val) in arguments {
+        if tool.positional_ids.contains(key) {
+            continue; // already handled
+        }
+        // Skip null/false optional flags
+        match val {
+            Value::Null => continue,
+            Value::Bool(false) => continue,
+            Value::Bool(true) => {
+                let flag = format!("--{}", key.replace('_', "-"));
+                args.push(flag.into());
+                continue;
+            }
+            _ => {}
+        }
+        let flag = format!("--{}", key.replace('_', "-"));
+        args.push(flag.into());
+        args.push(mcp_value_to_string(val).into());
+    }
+
+    let output = ProcessCommand::new(exe)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("failed to run tool: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    if !output.status.success() && stdout.trim().is_empty() {
+        return Err(if stderr.trim().is_empty() {
+            format!("tool exited with status {}", output.status)
+        } else {
+            stderr.trim().to_string()
+        });
+    }
+
+    Ok(stdout)
+}
+
+fn mcp_value_to_string(val: &Value) -> String {
+    match val {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Array(arr) => arr
+            .iter()
+            .map(mcp_value_to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::Null => String::new(),
+        Value::Object(_) => serde_json::to_string(val).unwrap_or_default(),
     }
 }
 

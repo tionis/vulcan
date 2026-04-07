@@ -12951,3 +12951,338 @@ fn quiet_flag_suppresses_warnings_but_not_primary_output() {
         "scan JSON output should contain count fields, got: {stdout}"
     );
 }
+
+// ── Phase 9.19.6: Missing commands ──────────────────────────────────────────
+
+#[test]
+fn status_json_output_reports_vault_root_and_note_count() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "status",
+        ])
+        .assert()
+        .success();
+
+    let out = String::from_utf8_lossy(&assert.get_output().stdout);
+    let parsed: Value = serde_json::from_str(out.trim()).expect("status should emit valid JSON");
+    assert!(
+        parsed.get("vault_root").is_some(),
+        "status JSON must include vault_root, got: {out}"
+    );
+    assert!(
+        parsed.get("note_count").is_some(),
+        "status JSON must include note_count, got: {out}"
+    );
+    let note_count = parsed["note_count"].as_u64().expect("note_count should be integer");
+    assert!(note_count > 0, "basic vault should have at least one indexed note");
+}
+
+#[test]
+fn status_human_output_shows_vault_and_notes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", vault_root.to_str().expect("utf-8"), "status"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Notes")
+                .and(predicate::str::contains("Vault")),
+        );
+}
+
+#[test]
+fn graph_export_json_format_emits_nodes_and_edges() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "graph",
+            "export",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success();
+
+    let out = String::from_utf8_lossy(&assert.get_output().stdout);
+    let parsed: Value = serde_json::from_str(out.trim()).expect("graph export json should be valid JSON");
+    assert!(parsed.get("nodes").is_some(), "json export should have nodes, got: {out}");
+    assert!(parsed.get("edges").is_some(), "json export should have edges, got: {out}");
+    let nodes = parsed["nodes"].as_array().expect("nodes should be array");
+    assert!(!nodes.is_empty(), "basic vault should have at least one node");
+    // Each node should have id and path
+    let first = &nodes[0];
+    assert!(first.get("id").is_some(), "node should have id");
+    assert!(first.get("path").is_some(), "node should have path");
+}
+
+#[test]
+fn graph_export_dot_format_emits_digraph_syntax() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "graph",
+            "export",
+            "--format",
+            "dot",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("digraph"));
+}
+
+#[test]
+fn graph_export_graphml_format_emits_xml() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "graph",
+            "export",
+            "--format",
+            "graphml",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("<?xml")
+                .and(predicate::str::contains("<graphml")),
+        );
+}
+
+#[test]
+fn template_list_subcommand_lists_available_templates() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates"))
+        .expect("template dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/templates/daily.md"),
+        "# Daily Note\n\n{{date}}\n",
+    )
+    .expect("template should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "template",
+            "list",
+        ])
+        .assert()
+        .success();
+
+    let out = String::from_utf8_lossy(&assert.get_output().stdout);
+    let parsed: Value = serde_json::from_str(out.trim()).expect("template list should emit valid JSON");
+    let templates = parsed["templates"]
+        .as_array()
+        .expect("templates should be an array");
+    assert!(!templates.is_empty(), "should list at least one template");
+    let names: Vec<&str> = templates
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(
+        names.iter().any(|n| n.contains("daily")),
+        "should list a template matching 'daily', got: {names:?}"
+    );
+}
+
+#[test]
+fn template_show_subcommand_displays_template_contents() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates"))
+        .expect("template dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/templates/meeting.md"),
+        "# Meeting Notes\n\nDate: {{date}}\n",
+    )
+    .expect("template should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "template",
+            "show",
+            "meeting",
+        ])
+        .assert()
+        .success();
+
+    let out = String::from_utf8_lossy(&assert.get_output().stdout);
+    let parsed: Value = serde_json::from_str(out.trim()).expect("template show should emit valid JSON");
+    let name = parsed["name"].as_str().expect("name should be a string");
+    assert!(name.contains("meeting"), "name should contain 'meeting', got: {name}");
+    let content = parsed["content"].as_str().expect("content should be a string");
+    assert!(
+        content.contains("Meeting Notes"),
+        "content should include template body, got: {content}"
+    );
+}
+
+#[test]
+fn periodic_show_subcommand_is_generalized_from_daily_show() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
+
+    fs::write(
+        vault_root.join("Journal/Daily/2026-04-04.md"),
+        "---\ntags:\n  - daily\n---\n# 2026-04-04\n\nTest daily note.\n",
+    )
+    .expect("daily note should write");
+
+    // `periodic show --type daily --date 2026-04-04` should behave like `daily show 2026-04-04`
+    cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "periodic",
+            "show",
+            "--type",
+            "daily",
+            "--date",
+            "2026-04-04",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn periodic_append_subcommand_delegates_to_daily_append() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-04-04.md"),
+        "---\ntags:\n  - daily\n---\n# 2026-04-04\n\nOriginal content.\n",
+    )
+    .expect("daily note should write");
+
+    cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "periodic",
+            "append",
+            "Added via periodic append.",
+            "--type",
+            "daily",
+            "--date",
+            "2026-04-04",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(vault_root.join("Journal/Daily/2026-04-04.md"))
+        .expect("note should still exist");
+    assert!(
+        content.contains("Added via periodic append."),
+        "append should have written text to the note"
+    );
+}
+
+#[test]
+fn mcp_server_responds_to_initialize_request() {
+    use std::io::Write;
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let mut child = std::process::Command::new(
+        assert_cmd::cargo::cargo_bin("vulcan"),
+    )
+    .args([
+        "--vault",
+        vault_root.to_str().expect("utf-8"),
+        "mcp",
+    ])
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .expect("mcp server should start");
+
+    let init_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "test", "version": "0.0.1" }
+        }
+    });
+    let msg = format!("{}\n", init_request);
+
+    let stdin = child.stdin.as_mut().expect("stdin should be piped");
+    stdin.write_all(msg.as_bytes()).expect("write to mcp stdin");
+    stdin.flush().expect("flush mcp stdin");
+    drop(child.stdin.take());
+
+    let output = child
+        .wait_with_output()
+        .expect("mcp server should exit");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first_line = stdout.lines().next().unwrap_or("");
+    let response: Value = serde_json::from_str(first_line)
+        .expect("mcp should emit valid JSON-RPC response");
+    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"), "response must be JSON-RPC 2.0");
+    assert_eq!(response["id"].as_u64(), Some(1), "response id must match request id");
+    assert!(
+        response.get("result").is_some(),
+        "initialize should return a result, got: {stdout}"
+    );
+}
