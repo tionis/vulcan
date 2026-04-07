@@ -12479,9 +12479,17 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let mut buf = Vec::new();
             let mut command = Cli::command();
             generate(shell, &mut command, "vulcan", &mut buf);
-            let static_script = String::from_utf8_lossy(&buf);
+            let static_script = String::from_utf8_lossy(&buf).into_owned();
             let dynamic = generate_dynamic_completions(&shell);
-            print!("{static_script}");
+            // clap_complete doesn't add "not __fish_seen_subcommand_from" guards
+            // for nested subcommand candidates — patch the script so subcommand
+            // names stop cycling once one has been selected.
+            let patched = if matches!(shell, clap_complete::Shell::Fish) {
+                fix_fish_nested_subcommand_guards(static_script)
+            } else {
+                static_script
+            };
+            print!("{patched}");
             if !dynamic.is_empty() {
                 println!("{dynamic}");
             }
@@ -21294,6 +21302,72 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
         }
         _ => Vec::new(),
     }
+}
+
+/// clap_complete generates Fish nested-subcommand completions with a condition like
+///   `__fish_seen_subcommand_from PARENT`
+/// but never adds a `not __fish_seen_subcommand_from CHILD1 CHILD2` guard.  That
+/// means that once the user types e.g. `tasks view show`, Fish still offers `show`
+/// and `list` as candidates for the next word (cycling ad nauseam).
+///
+/// This function collects all lines that:
+///   1. have a condition ending with `; and __fish_seen_subcommand_from \w+`  (no `not` after)
+///   2. offer a bare word subcommand via `-f -a "word"`
+/// groups them by condition, then re-emits those lines with the missing
+/// `; and not __fish_seen_subcommand_from WORD1 WORD2 …` guard appended.
+fn fix_fish_nested_subcommand_guards(script: String) -> String {
+    use std::collections::HashMap;
+
+    // Capture (full_line, condition_base, subcommand_word)
+    // Pattern: ...-n "COND" ... -f -a "WORD" ...
+    // where COND ends with `; and __fish_seen_subcommand_from \w+` (no trailing `; and not`)
+    // Match lines of the form:
+    //   complete -c vulcan -n "COND; and __fish_seen_subcommand_from WORD" -f -a "SUB" -d '...'
+    // where the condition ends with `__fish_seen_subcommand_from WORD` (no further `; and ...`).
+    // These are the nested-subcommand candidate lines that need a `not` guard.
+    let line_re = Regex::new(
+        r#"^(complete -c vulcan -n ")(.*; and __fish_seen_subcommand_from \w+)(" .*-f -a ")(\w+)(" .*)$"#,
+    )
+    .expect("regex should compile");
+
+    let mut condition_to_words: HashMap<String, Vec<String>> = HashMap::new();
+    for line in script.lines() {
+        if let Some(caps) = line_re.captures(line) {
+            let cond = caps[2].to_string();
+            let word = caps[4].to_string();
+            condition_to_words.entry(cond).or_default().push(word);
+        }
+    }
+
+    // Only patch conditions that have more than one subcommand — a single-child
+    // parent has nothing else to cycle through so no guard is needed.
+    let mut out = String::with_capacity(script.len() + 512);
+    for line in script.lines() {
+        if let Some(caps) = line_re.captures(line) {
+            let cond = caps[2].to_string();
+            if let Some(words) = condition_to_words.get(&cond) {
+                if words.len() > 1 {
+                    let not_guard = format!(
+                        "; and not __fish_seen_subcommand_from {}",
+                        words.join(" ")
+                    );
+                    let patched = format!(
+                        "{}{}{}{}{}{}",
+                        &caps[1], &caps[2], not_guard, &caps[3], &caps[4], &caps[5]
+                    );
+                    out.push_str(&patched);
+                    out.push('\n');
+                    continue;
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !script.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 fn generate_dynamic_completions(shell: &clap_complete::Shell) -> String {
