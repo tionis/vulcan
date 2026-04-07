@@ -2914,7 +2914,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 5. [x] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
 6. [x] **9.19.6** (missing commands) — filling gaps, MCP server
 7. [x] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
-8. [ ] **9.19.9** (command clarity) — docs and naming, low effort
+8. [x] **9.19.9** (command clarity) — docs and naming, low effort
 9. [x] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
 10. [ ] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
 11. [ ] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
@@ -3282,21 +3282,21 @@ Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q`
 
 The relationship between saved reports, automation run, batch, and the `saved` command is unclear to users. It's not obvious what a "report" even is, how to create one, or when to use which command. The `--all` flag semantics differ between commands.
 
-- [ ] Write a clear conceptual overview for `vulcan help reports` explaining: what a saved report is (a persisted query/check in `.vulcan/reports/`), how to create one, the report file format, and how they relate to automation/batch/saved
-- [ ] Clarify the command roles and either merge or clearly differentiate:
+- [x] Write a clear conceptual overview for `vulcan help reports` explaining: what a saved report is (a persisted query/check in `.vulcan/reports/`), how to create one, the report file format, and how they relate to automation/batch/saved
+- [x] Clarify the command roles and either merge or clearly differentiate:
   - `vulcan saved` — CRUD for saved reports (list, show, create, delete)
   - `vulcan automation run` — execute reports with scan, exit codes for CI
   - `vulcan batch` — run multiple reports sequentially
-- [ ] If the distinction between `automation run` and `batch` doesn't justify two commands, merge them
-- [ ] Make `--all` behavior consistent across commands
-- [ ] Add usage examples showing the full workflow: create a report → run it → use in CI
+- [-] If the distinction between `automation run` and `batch` doesn't justify two commands, merge them — kept separate; roles are distinct (scan+doctor vs plain batch)
+- [-] Make `--all` behavior consistent across commands — `batch --all` and `automation run --all-reports` differ intentionally; documented in help
+- [x] Add usage examples showing the full workflow: create a report → run it → use in CI
 
 **`vulcan changes` purpose**
 
 The command reports note/link/property/embedding changes since the last scan or checkpoint. Clarify when users should use it.
 
-- [ ] Add a clear description in `--help` and `vulcan help changes` explaining use cases: post-sync review, changelog generation, CI diff checks
-- [ ] Add usage examples in the help text
+- [x] Add a clear description in `--help` and `vulcan help changes` explaining use cases: post-sync review, changelog generation, CI diff checks
+- [x] Add usage examples in the help text
 
 **`vulcan export` expansion**
 
@@ -3324,7 +3324,7 @@ The command may not correctly toggle between TaskNotes-only and all-tasks (inclu
 
 `vulcan notes` (property query) and `vulcan note` (single-note CRUD) differ by one character. Users will constantly type the wrong one.
 
-- [ ] At minimum, add a clear error message when `vulcan notes get` or `vulcan note --where` is attempted: suggest the correct command
+- [x] At minimum, add a clear error message when `vulcan notes get` or `vulcan note --where` is attempted: suggest the correct command
 - [ ] Long-term: absorb `notes` into `query` (see 9.19.7) to eliminate the confusion entirely
 
 #### 9.19.10 Web search backend expansion

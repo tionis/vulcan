@@ -12314,21 +12314,63 @@ pub fn run() -> Result<(), CliError> {
     run_from(std::env::args_os())
 }
 
+/// Return a human-readable hint when the user has likely mixed up `note` and `notes`.
+fn detect_command_confusion(args: &[OsString]) -> Option<String> {
+    let strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
+    // Skip the binary name at index 0; look at index 1 for the subcommand.
+    let subcommand = strs.get(1).copied().unwrap_or("");
+    let rest = strs.get(2..).unwrap_or(&[]);
+
+    // `vulcan notes get …` → should be `vulcan note get …`
+    const NOTE_SUBCOMMANDS: &[&str] = &[
+        "get", "set", "create", "append", "update", "unset", "patch", "delete", "rename", "info",
+        "history",
+    ];
+    if subcommand == "notes" {
+        if let Some(&sub) = rest.first() {
+            if NOTE_SUBCOMMANDS.contains(&sub) {
+                return Some(format!(
+                    "`vulcan notes {sub}` is not valid — did you mean `vulcan note {sub}`?\n\
+                     `vulcan notes` queries notes by property; `vulcan note` operates on a single note."
+                ));
+            }
+        }
+    }
+
+    // `vulcan note --where …` → should be `vulcan notes --where …`
+    if subcommand == "note" && rest.iter().any(|&a| a == "--where") {
+        return Some(
+            "`vulcan note --where` is not valid — did you mean `vulcan notes --where`?\n\
+             `vulcan notes --where` queries notes by property; `vulcan note` operates on a single note."
+                .to_string(),
+        );
+    }
+
+    None
+}
+
 pub fn run_from<I, T>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<OsString>>();
-    let cli = match Cli::try_parse_from(args) {
+    let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
-        Err(error) => match error.kind() {
-            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
-                error.print().map_err(CliError::operation)?;
-                return Ok(());
+        Err(error) => {
+            match error.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                    error.print().map_err(CliError::operation)?;
+                    return Ok(());
+                }
+                _ => {
+                    if let Some(hint) = detect_command_confusion(&args) {
+                        eprintln!("hint: {hint}");
+                    }
+                    return Err(CliError::clap(&error));
+                }
             }
-            _ => return Err(CliError::clap(&error)),
-        },
+        }
     };
     dispatch(&cli)
 }
@@ -18974,6 +19016,52 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
             "Shape and usage guidance for the planned JS Note object.",
             include_str!("../../docs/reference/js-api/note-object.md"),
             &["js.vault", "note get", "query"],
+        ),
+        static_help_topic(
+            "reports",
+            HelpTopicKind::Concept,
+            "Saved report definitions and the commands that create, run, and schedule them.",
+            "\
+# Vulcan Report System
+
+A **saved report** is a persisted query or check stored as a YAML file in `.vulcan/reports/`.
+Reports capture the parameters of a `search`, `notes`, `query`, or `bases` command so they
+can be re-run by name without repeating the flags.
+
+## Creating reports
+
+  vulcan saved search <name> --where <filter>  # full-text search report
+  vulcan saved notes  <name> --where <filter>  # property query report
+  vulcan saved bases  <name> <file>            # Bases view report
+
+## Running reports
+
+  vulcan saved run <name>              # run one report with full export options
+  vulcan batch <name> [<name>...]      # run one or more reports sequentially (no scan)
+  vulcan batch --all                   # run every report in .vulcan/reports
+  vulcan automation run <name> --scan  # run reports + scan + health checks (CI)
+
+## Command roles
+
+| Command            | Scan | Doctor | Exit codes | Best for        |
+|--------------------|------|--------|------------|-----------------|
+| `saved run`        | no   | no     | 0/1        | one-off runs    |
+| `batch`            | no   | no     | 0/1        | scheduled batch |
+| `automation run`   | opt  | opt    | 0/1/2      | CI pipelines    |
+
+## Report file format
+
+Reports are YAML files in `.vulcan/reports/<name>.yaml`:
+
+  kind: search
+  filters: [\"status = done\"]
+  description: completed notes
+
+## Tip
+
+Use `--fail-on-issues` with `automation run` to get exit code 2 when checks
+complete but still report problems — useful for CI gates.",
+            &["saved", "batch", "automation", "query"],
         ),
     ]
 }
