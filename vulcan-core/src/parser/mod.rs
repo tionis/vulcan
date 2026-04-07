@@ -392,6 +392,8 @@ mod tests {
                 "  1 == 1,\n",
                 "  1 != 2,\n",
                 "  2 !== 3,\n",
+                "  \"%%keep%%\",\n",
+                "  \"#notatag\",\n",
                 "];\n",
                 "```\n",
             ),
@@ -399,10 +401,35 @@ mod tests {
         );
 
         assert_eq!(parsed.dataview_blocks.len(), 1);
+        assert!(parsed.tags.is_empty());
         assert!(parsed.dataview_blocks[0].text.contains("=== \"string\""));
         assert!(parsed.dataview_blocks[0].text.contains("1 == 1"));
         assert!(parsed.dataview_blocks[0].text.contains("1 != 2"));
         assert!(parsed.dataview_blocks[0].text.contains("2 !== 3"));
+        assert!(parsed.dataview_blocks[0].text.contains("\"%%keep%%\""));
+        assert!(parsed.dataview_blocks[0].text.contains("\"#notatag\""));
+    }
+
+    #[test]
+    fn generic_code_blocks_preserve_comment_markers_whitespace_and_tags() {
+        let parsed = parse_document(
+            concat!(
+                "```js\n",
+                "\n",
+                "  const marker = \"%%keep%%\";\n",
+                "  const tag = \"#notatag\";\n",
+                "```\n",
+            ),
+            &VaultConfig::default(),
+        );
+
+        assert!(parsed.tags.is_empty());
+        assert_eq!(parsed.chunk_texts.len(), 1);
+        assert!(parsed.chunk_texts[0]
+            .content
+            .starts_with("\n  const marker"));
+        assert!(parsed.chunk_texts[0].content.contains("\"%%keep%%\""));
+        assert!(parsed.chunk_texts[0].content.contains("\"#notatag\""));
     }
 
     #[test]
