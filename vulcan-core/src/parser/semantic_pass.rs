@@ -203,17 +203,22 @@ impl<'a> SemanticProcessor<'a> {
             return;
         }
 
+        if self
+            .current_block
+            .as_ref()
+            .is_some_and(|block| block.block_kind == SemanticBlockKind::CodeBlock)
+        {
+            let raw_text = &self.source[range];
+            if !raw_text.trim().is_empty() {
+                self.saw_body_content = true;
+            }
+            self.push_text_to_active(raw_text);
+            return;
+        }
+
         for visible_range in visible_subranges(range.clone(), self.comment_regions) {
             let visible_text = &self.source[visible_range.clone()];
-            let clean_text = if self
-                .current_block
-                .as_ref()
-                .is_some_and(|block| block.block_kind == SemanticBlockKind::CodeBlock)
-            {
-                visible_text.to_string()
-            } else {
-                strip_highlight_markers(visible_text)
-            };
+            let clean_text = strip_highlight_markers(visible_text);
             if !clean_text.trim().is_empty() {
                 self.saw_body_content = true;
             }
@@ -354,8 +359,12 @@ impl<'a> SemanticProcessor<'a> {
             return;
         }
 
-        let text = block.text.trim().to_string();
-        if text.is_empty() {
+        let text = if block.block_kind == SemanticBlockKind::CodeBlock {
+            block.text.trim_end_matches(['\n', '\r']).to_string()
+        } else {
+            block.text.trim().to_string()
+        };
+        if text.trim().is_empty() {
             return;
         }
 
