@@ -27,6 +27,7 @@ pub(crate) fn handle_note_command(
     match command {
         NoteCommand::Get {
             note,
+            mode,
             heading,
             block_ref,
             lines,
@@ -39,6 +40,7 @@ pub(crate) fn handle_note_command(
                 paths,
                 NoteGetOptions {
                     note,
+                    mode: *mode,
                     heading: heading.as_deref(),
                     block_ref: block_ref.as_deref(),
                     lines: lines.as_deref(),

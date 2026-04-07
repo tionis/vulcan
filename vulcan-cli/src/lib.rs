@@ -18,13 +18,13 @@ pub use cli::{
     ConfigCommand, ConfigImportArgs, ConfigImportCommand, ConfigImportSelection,
     ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs,
     ExportCommand, ExportFormat, GitCommand, GraphCommand, GraphExportFormat, IndexCommand,
-    InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, OutputFormat, PeriodicOpenArgs,
-    PeriodicSubcommand, PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand,
-    RefreshMode, RepairCommand, SavedCommand, SearchBackendArg, SearchMode, SearchSortArg,
-    SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
-    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchMode,
+    InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode, OutputFormat,
+    PeriodicOpenArgs, PeriodicSubcommand, PropertySortArg, QueryEngineArg, QueryFormatArg,
+    RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchBackendArg, SearchMode,
+    SearchSortArg, SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg,
+    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
+    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -80,36 +80,36 @@ use vulcan_core::{
     parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
     parse_tasks_query, period_range_for_date, plan_base_note_create, query_backlinks,
     query_change_report, query_links, query_notes, rebuild_vault_with_progress, rename_alias,
-    rename_block_ref, rename_heading, rename_property, repair_fts, resolve_link,
-    resolve_note_reference, resolve_periodic_note, save_saved_report, scan_vault_with_progress,
-    search_vault, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
-    tasknotes_default_date_value, tasknotes_default_recurrence_rule,
-    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
-    tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
-    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
-    BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
-    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
-    ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic, ConfigImportReport,
-    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
-    DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
-    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
-    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
-    KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
-    PeriodicNotesImporter, PluginImporter, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
-    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
-    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
-    WatchReport,
+    rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
+    render_markdown_html, repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note,
+    save_saved_report, scan_vault_with_progress, search_vault, shape_tasks_query_result,
+    step_period_start, task_upcoming_occurrences, tasknotes_default_date_value,
+    tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
+    tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
+    validate_vulcan_overrides_toml, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
+    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
+    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
+    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
+    ClusterReport, ConfigDiagnostic, ConfigImportReport, CoreImporter, DataviewImporter,
+    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
+    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
+    PluginImporter, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
+    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
+    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 
 #[derive(Debug)]
@@ -1455,6 +1455,7 @@ struct NoteGetReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct NoteGetMetadata {
+    mode: String,
     heading: Option<String>,
     block_ref: Option<String>,
     lines: Option<String>,
@@ -10358,6 +10359,7 @@ struct SourceLine {
 #[derive(Debug, Clone, Copy)]
 struct NoteGetOptions<'a> {
     note: &'a str,
+    mode: NoteGetMode,
     heading: Option<&'a str>,
     block_ref: Option<&'a str>,
     lines: Option<&'a str>,
@@ -10397,6 +10399,7 @@ fn run_note_get_command(
 ) -> Result<NoteGetReport, CliError> {
     let NoteGetOptions {
         note,
+        mode,
         heading,
         block_ref,
         lines,
@@ -10437,6 +10440,12 @@ fn run_note_get_command(
 
     let line_spans = selected_line_spans(&selected, &source_lines);
     let selected_content = render_selected_raw_content(&selected, &source_lines);
+    let selection_is_full_document = selection_covers_full_document(&selected, &source_lines);
+    let rendered_content = render_note_get_content(
+        &selected_content,
+        mode,
+        selection_is_full_document && !no_frontmatter,
+    );
     let frontmatter = parsed
         .frontmatter
         .as_ref()
@@ -10446,9 +10455,10 @@ fn run_note_get_command(
 
     Ok(NoteGetReport {
         path: relative_path,
-        content: selected_content,
+        content: rendered_content,
         frontmatter,
         metadata: NoteGetMetadata {
+            mode: note_get_mode_name(mode).to_string(),
             heading: heading.map(ToOwned::to_owned),
             block_ref: block_ref.map(ToOwned::to_owned),
             lines: lines.map(ToOwned::to_owned),
@@ -10467,6 +10477,34 @@ fn run_note_get_command(
             })
             .collect(),
     })
+}
+
+fn render_note_get_content(content: &str, mode: NoteGetMode, full_document: bool) -> String {
+    match mode {
+        NoteGetMode::Markdown => content.to_string(),
+        NoteGetMode::Html => {
+            if full_document {
+                render_markdown_html(content)
+            } else {
+                render_markdown_fragment_html(content)
+            }
+        }
+    }
+}
+
+fn note_get_mode_name(mode: NoteGetMode) -> &'static str {
+    match mode {
+        NoteGetMode::Markdown => "markdown",
+        NoteGetMode::Html => "html",
+    }
+}
+
+fn selection_covers_full_document(selected: &[usize], source_lines: &[SourceLine]) -> bool {
+    selected.len() == source_lines.len()
+        && selected
+            .iter()
+            .enumerate()
+            .all(|(expected, actual)| expected == *actual)
 }
 
 #[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
@@ -15040,7 +15078,8 @@ fn write_text_file_if_missing(path: &Path, contents: &str) -> Result<bool, CliEr
 fn print_note_get_report(output: OutputFormat, report: &NoteGetReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
-            if report.metadata.raw
+            if report.metadata.mode == "html"
+                || report.metadata.raw
                 || (report.metadata.lines.is_none() && report.metadata.match_pattern.is_none())
             {
                 print!("{}", report.content);
@@ -22416,6 +22455,7 @@ mod tests {
             Command::Note {
                 command: NoteCommand::Get {
                     note: "Dashboard".to_string(),
+                    mode: NoteGetMode::Markdown,
                     heading: Some("Tasks".to_string()),
                     block_ref: None,
                     lines: None,
@@ -22423,6 +22463,29 @@ mod tests {
                     context: 1,
                     no_frontmatter: false,
                     raw: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_get_html_mode_command() {
+        let cli = Cli::try_parse_from(["vulcan", "note", "get", "Dashboard", "--mode", "html"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::Get {
+                    note: "Dashboard".to_string(),
+                    mode: NoteGetMode::Html,
+                    heading: None,
+                    block_ref: None,
+                    lines: None,
+                    match_pattern: None,
+                    context: 0,
+                    no_frontmatter: false,
+                    raw: false,
                 },
             }
         );

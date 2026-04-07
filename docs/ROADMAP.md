@@ -2910,7 +2910,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 1. [x] **9.19.1** (bug fixes) — broken things first
 2. [x] **9.19.5** (DQL completeness) — core functionality gap blocking real queries
 3. [x] **9.19.4** (help polish) — first impression for new users
-4. [-] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
+4. [x] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
 5. [x] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
 6. [-] **9.19.6** (missing commands) — filling gaps, MCP server
 7. [x] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
@@ -3012,9 +3012,9 @@ The JS runtime does not expose Obsidian-compatible objects (`app`, `tp`, etc.) t
 **Raw markdown / HTML access**
 
 - These tasks are foundational for **Phase 9.20 (Static site builder)**. Land them on the shared renderer used by `site build`, later WebUI note pages, and any future wiki mode rather than as isolated one-off HTML conversions.
-- [ ] Ensure `vault.note(path).content` returns raw markdown (verify this works and document it)
-- [ ] Add `vault.note(path).html` — render the note's markdown to HTML using the existing markdown pipeline
-- [ ] `--mode html` flag on `vulcan note get` for CLI access to rendered HTML
+- [x] Ensure `vault.note(path).content` returns raw markdown (verify this works and document it)
+- [x] Add `vault.note(path).html` — render the note's markdown to HTML using the existing markdown pipeline
+- [x] `--mode html` flag on `vulcan note get` for CLI access to rendered HTML
 
 #### 9.19.3 Shell completion improvements
 
