@@ -12487,6 +12487,7 @@ struct MockWebServer {
 }
 
 impl MockWebServer {
+    #[allow(clippy::too_many_lines)]
     fn spawn() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         listener
@@ -13289,7 +13290,7 @@ fn mcp_server_responds_to_initialize_request() {
             "clientInfo": { "name": "test", "version": "0.0.1" }
         }
     });
-    let msg = format!("{}\n", init_request);
+    let msg = format!("{init_request}\n");
 
     let stdin = child.stdin.as_mut().expect("stdin should be piped");
     stdin.write_all(msg.as_bytes()).expect("write to mcp stdin");

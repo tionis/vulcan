@@ -730,7 +730,10 @@ pub fn export_graph(paths: &VaultPaths) -> Result<GraphExportReport, GraphQueryE
             })
         })
         .collect();
-    Ok(GraphExportReport { nodes: export_nodes, edges })
+    Ok(GraphExportReport {
+        nodes: export_nodes,
+        edges,
+    })
 }
 
 fn build_graph_path_report(

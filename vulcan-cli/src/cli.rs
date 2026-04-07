@@ -986,7 +986,7 @@ Examples:
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum ColorMode {
-    /// Use color when stdout is a TTY and NO_COLOR is not set (default)
+    /// Use color when stdout is a TTY and `NO_COLOR` is not set (default)
     #[default]
     Auto,
     /// Always emit ANSI color codes
