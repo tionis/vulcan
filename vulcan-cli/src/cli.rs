@@ -68,7 +68,12 @@ Values:
 Examples:
   vulcan notes --where 'status = done'
   vulcan notes --where 'tags contains sprint'
-  vulcan notes --where 'file.path starts_with \"Projects/\"' --sort due";
+  vulcan notes --where 'file.path starts_with \"Projects/\"' --sort due
+
+See also:
+  `vulcan note` — single-note CRUD (get, set, create, append, patch, delete, rename)
+  `vulcan query` — full DQL query language with FROM/WHERE/SELECT/ORDER BY
+  `vulcan help filters` — complete filter grammar reference";
 
 const SEARCH_COMMAND_AFTER_HELP: &str = "\
 Search query syntax:
@@ -277,7 +282,11 @@ Examples:
   vulcan ls --tag project | vulcan note unset --stdin --key due
   vulcan note delete Projects/Alpha --dry-run
   vulcan note rename Projects/Alpha Beta
-  vulcan note patch Projects/Alpha --find TODO --replace DONE";
+  vulcan note patch Projects/Alpha --find TODO --replace DONE
+
+See also:
+  `vulcan notes --where` — bulk property queries across all notes
+  `vulcan query` — full DQL query language with FROM/WHERE/SELECT/ORDER BY";
 
 const QUERY_COMMAND_AFTER_HELP: &str = "\
 Query DSL syntax:
@@ -603,6 +612,29 @@ Examples:
   vulcan saved run weekly --export jsonl --export-path exports/weekly.jsonl
   vulcan automation run weekly --scan --doctor";
 
+const BATCH_COMMAND_AFTER_HELP: &str = "\
+Notes:
+  `batch` runs one or more saved reports sequentially without scan or doctor checks.
+  Use `--all` to run every report definition found in .vulcan/reports.
+  For CI workflows that also need scanning and health checks, prefer `automation run`.
+
+Report system overview:
+  saved reports live as YAML files in .vulcan/reports (created by `vulcan saved <type>`).
+  `vulcan batch` just executes them; it does not scan or repair the cache.
+  `vulcan automation run` adds `--scan`, `--doctor`, and `--fail-on-issues` for CI.
+  `vulcan saved run <name>` runs a single report with full export options.
+
+Examples:
+  vulcan batch weekly-review
+  vulcan batch weekly-review monthly-summary
+  vulcan batch --all
+  vulcan --output json batch weekly-review
+
+See also:
+  `vulcan saved` — create, list, and manage report definitions
+  `vulcan automation run` — scan + reports + health checks in one step
+  `vulcan help reports` — conceptual overview of the report system";
+
 const AUTOMATION_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   run         execute saved reports plus optional checks and repairs
@@ -614,7 +646,12 @@ Notes:
 
 Examples:
   vulcan automation run weekly --scan --doctor
-  vulcan automation run --all-reports --verify-cache --repair-fts --fail-on-issues";
+  vulcan automation run --all-reports --verify-cache --repair-fts --fail-on-issues
+
+See also:
+  `vulcan saved` — create and manage report definitions
+  `vulcan batch` — run reports without scan or health checks
+  `vulcan help reports` — conceptual overview of the report system";
 
 const DAILY_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -3190,7 +3227,10 @@ pub enum Command {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Run multiple saved reports for automation and scheduled jobs")]
+    #[command(
+        about = "Run multiple saved reports for automation and scheduled jobs",
+        after_help = BATCH_COMMAND_AFTER_HELP
+    )]
     Batch {
         #[arg(help = "Saved report names to run")]
         names: Vec<String>,
