@@ -683,6 +683,56 @@ pub fn query_graph_analytics(paths: &VaultPaths) -> Result<GraphAnalyticsReport,
     build_graph_analytics_report(&connection, &notes, &adjacency)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphExportNode {
+    pub id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphExportEdge {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraphExportReport {
+    pub nodes: Vec<GraphExportNode>,
+    pub edges: Vec<GraphExportEdge>,
+}
+
+pub fn export_graph(paths: &VaultPaths) -> Result<GraphExportReport, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_indexed_notes(&connection)?;
+    let adjacency = GraphAdjacency::load(&connection)?;
+    let id_to_path: HashMap<&str, &str> = notes
+        .notes
+        .iter()
+        .map(|note| (note.id.as_str(), note.path.as_str()))
+        .collect();
+    let nodes = notes
+        .notes
+        .iter()
+        .map(|note| GraphExportNode {
+            id: note.path.clone(),
+            path: note.path.clone(),
+        })
+        .collect();
+    let edges = adjacency
+        .edges
+        .iter()
+        .filter_map(|(src_id, tgt_id)| {
+            let src = id_to_path.get(src_id.as_str())?;
+            let tgt = id_to_path.get(tgt_id.as_str())?;
+            Some(GraphExportEdge {
+                source: (*src).to_string(),
+                target: (*tgt).to_string(),
+            })
+        })
+        .collect();
+    Ok(GraphExportReport { nodes, edges })
+}
+
 fn build_graph_path_report(
     notes: &IndexedNoteSet,
     adjacency: &GraphAdjacency,

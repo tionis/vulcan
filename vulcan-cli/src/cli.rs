@@ -887,6 +887,42 @@ Examples:
   vulcan trust revoke
   vulcan trust list";
 
+const STATUS_COMMAND_AFTER_HELP: &str = "\
+Output:
+  note_count   total markdown notes indexed in the cache
+  cache_bytes  SQLite cache file size in bytes
+  last_scan    ISO-8601 timestamp of the most recent scan (null if never scanned)
+  git_branch   current branch name (null when not a git repo)
+  git_dirty    true if there are uncommitted changes
+
+Notes:
+  `vulcan status` does not run a scan — it reflects the last cached state.
+  Use `vulcan scan` first if you want up-to-date counts.
+
+Examples:
+  vulcan status
+  vulcan status --output json";
+
+const MCP_COMMAND_AFTER_HELP: &str = "\
+Protocol:
+  Speaks JSON-RPC 2.0 over stdio (stdin → stdout).
+  Each request and response is a single UTF-8 JSON line.
+
+Supported methods:
+  initialize      Negotiate protocol version and report server capabilities
+  tools/list      Return all tool definitions (mirrors `vulcan describe --format mcp`)
+  tools/call      Execute a Vulcan command and return its JSON output as content
+
+Notes:
+  Start with `--vault <path>` so all tool calls operate on the correct vault.
+  Tool names use underscore-joined command paths: note_get, graph_stats, etc.
+  Each tools/call runs synchronously; long operations block until complete.
+  All tool output is returned as JSON (--output json is applied automatically).
+
+Examples:
+  vulcan mcp --vault ~/notes
+  vulcan mcp | jq .";
+
 const REFACTOR_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   rename-alias     Rename an alias inside one note's frontmatter
@@ -1287,6 +1323,26 @@ pub enum GraphCommand {
         #[command(flatten)]
         export: ExportArgs,
     },
+    #[command(about = "Export the resolved link graph for visualization in external tools")]
+    Export {
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = GraphExportFormat::Json,
+            help = "Output format: json ({nodes,edges}), dot (Graphviz), or graphml (XML)"
+        )]
+        format: GraphExportFormat,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum GraphExportFormat {
+    #[value(name = "json")]
+    Json,
+    #[value(name = "dot")]
+    Dot,
+    #[value(name = "graphml")]
+    Graphml,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -1766,6 +1822,39 @@ pub enum PeriodicSubcommand {
         from: Option<String>,
         #[arg(long, help = "End date for the gap window")]
         to: Option<String>,
+    },
+    #[command(about = "Display a periodic note for a given date")]
+    Show {
+        #[arg(long = "type", help = "Period type: daily, weekly, or monthly")]
+        period_type: String,
+        #[arg(long, help = "Target date (YYYY-MM-DD); defaults to today")]
+        date: Option<String>,
+    },
+    #[command(about = "Append text to a periodic note")]
+    Append {
+        #[arg(help = "Text to append")]
+        text: String,
+        #[arg(long = "type", help = "Period type: daily, weekly, or monthly")]
+        period_type: String,
+        #[arg(long, help = "Heading to append under (created if missing)")]
+        heading: Option<String>,
+        #[arg(long, help = "Target date (YYYY-MM-DD); defaults to today")]
+        date: Option<String>,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Export events from periodic notes as an iCal feed")]
+    ExportIcs {
+        #[arg(long = "type", help = "Period type: daily, weekly, or monthly")]
+        period_type: String,
+        #[arg(long, help = "Start date for the export range")]
+        from: Option<String>,
+        #[arg(long, help = "End date for the export range")]
+        to: Option<String>,
+        #[arg(long, help = "Write the .ics output to this file path")]
+        path: Option<PathBuf>,
+        #[arg(long, help = "Override the calendar display name")]
+        calendar_name: Option<String>,
     },
 }
 
@@ -2336,6 +2425,13 @@ pub enum AutomationCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum TemplateSubcommand {
+    #[command(about = "List available templates from all configured sources")]
+    List,
+    #[command(about = "Display a template's raw contents and metadata")]
+    Show {
+        #[arg(help = "Template name or filename stem to display")]
+        name: String,
+    },
     #[command(about = "Insert a rendered template into an existing note")]
     Insert {
         #[arg(help = "Template name or filename stem")]
@@ -3500,6 +3596,16 @@ Examples:
         #[command(subcommand)]
         command: Option<TrustCommand>,
     },
+    #[command(
+        about = "Show vault overview: note count, cache size, git status, and config summary",
+        after_help = STATUS_COMMAND_AFTER_HELP
+    )]
+    Status,
+    #[command(
+        about = "Start an MCP (Model Context Protocol) server over stdio",
+        after_help = MCP_COMMAND_AFTER_HELP
+    )]
+    Mcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

@@ -25,7 +25,7 @@ pub(crate) fn handle_daily_command(
             crate::print_periodic_open_report(cli.output, &report)
         }
         DailyCommand::Show { date } => {
-            let report = crate::run_daily_show_command(paths, date.as_deref())?;
+            let report = crate::run_daily_show_command(paths, date.as_deref(), "daily")?;
             crate::print_daily_show_report(cli.output, &report)
         }
         DailyCommand::List {
@@ -75,6 +75,7 @@ pub(crate) fn handle_daily_command(
                 date.as_deref(),
                 *no_commit,
                 cli.quiet,
+                "daily",
             )?;
             crate::print_daily_append_report(cli.output, &report)
         }
@@ -164,6 +165,45 @@ pub(crate) fn handle_periodic_command(
                 to.as_deref(),
             )?;
             crate::print_periodic_gap_report(cli.output, &report, list_controls)
+        }
+        Some(PeriodicSubcommand::Show { period_type, date }) => {
+            let report = crate::run_daily_show_command(paths, date.as_deref(), period_type)?;
+            crate::print_daily_show_report(cli.output, &report)
+        }
+        Some(PeriodicSubcommand::Append {
+            text,
+            period_type,
+            heading,
+            date,
+            no_commit,
+        }) => {
+            let report = crate::run_daily_append_command(
+                paths,
+                text,
+                heading.as_deref(),
+                date.as_deref(),
+                *no_commit,
+                cli.quiet,
+                period_type,
+            )?;
+            crate::print_daily_append_report(cli.output, &report)
+        }
+        Some(PeriodicSubcommand::ExportIcs {
+            period_type,
+            from,
+            to,
+            path,
+            calendar_name,
+        }) => {
+            let report = crate::run_periodic_export_ics_command(
+                paths,
+                period_type,
+                from.as_deref(),
+                to.as_deref(),
+                path.as_deref(),
+                calendar_name.as_deref(),
+            )?;
+            crate::print_daily_export_ics_report(cli.output, &report)
         }
         None => {
             let period_type = period_type.ok_or_else(|| {

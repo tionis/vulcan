@@ -561,6 +561,28 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Export the resolved link graph for visualization in external tools",
+            "name": "export",
+            "options": [
+              {
+                "help": "Output format: json ({nodes,edges}), dot (Graphviz), or graphml (XML)",
+                "id": "format",
+                "long": "format",
+                "possible_values": [
+                  "json",
+                  "dot",
+                  "graphml"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FORMAT"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },
@@ -4505,6 +4527,162 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Display a periodic note for a given date",
+            "name": "show",
+            "options": [
+              {
+                "help": "Period type: daily, weekly, or monthly",
+                "id": "period_type",
+                "long": "type",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PERIOD_TYPE"
+                ]
+              },
+              {
+                "help": "Target date (YYYY-MM-DD); defaults to today",
+                "id": "date",
+                "long": "date",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Append text to a periodic note",
+            "name": "append",
+            "options": [
+              {
+                "help": "Text to append",
+                "id": "text",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TEXT"
+                ]
+              },
+              {
+                "help": "Period type: daily, weekly, or monthly",
+                "id": "period_type",
+                "long": "type",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PERIOD_TYPE"
+                ]
+              },
+              {
+                "help": "Heading to append under (created if missing)",
+                "id": "heading",
+                "long": "heading",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HEADING"
+                ]
+              },
+              {
+                "help": "Target date (YYYY-MM-DD); defaults to today",
+                "id": "date",
+                "long": "date",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Export events from periodic notes as an iCal feed",
+            "name": "export-ics",
+            "options": [
+              {
+                "help": "Period type: daily, weekly, or monthly",
+                "id": "period_type",
+                "long": "type",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PERIOD_TYPE"
+                ]
+              },
+              {
+                "help": "Start date for the export range",
+                "id": "from",
+                "long": "from",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM"
+                ]
+              },
+              {
+                "help": "End date for the export range",
+                "id": "to",
+                "long": "to",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TO"
+                ]
+              },
+              {
+                "help": "Write the .ics output to this file path",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Override the calendar display name",
+                "id": "calendar_name",
+                "long": "calendar-name",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CALENDAR_NAME"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },
@@ -4709,6 +4887,30 @@
           }
         ],
         "subcommands": [
+          {
+            "about": "List available templates from all configured sources",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Display a template's raw contents and metadata",
+            "name": "show",
+            "options": [
+              {
+                "help": "Template name or filename stem to display",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
           {
             "about": "Insert a rendered template into an existing note",
             "name": "insert",
@@ -7507,6 +7709,20 @@
             "subcommands": []
           }
         ]
+      },
+      {
+        "about": "Show vault overview: note count, cache size, git status, and config summary",
+        "after_help": "Output:\n  note_count   total markdown notes indexed in the cache\n  cache_bytes  SQLite cache file size in bytes\n  last_scan    ISO-8601 timestamp of the most recent scan (null if never scanned)\n  git_branch   current branch name (null when not a git repo)\n  git_dirty    true if there are uncommitted changes\n\nNotes:\n  `vulcan status` does not run a scan — it reflects the last cached state.\n  Use `vulcan scan` first if you want up-to-date counts.\n\nExamples:\n  vulcan status\n  vulcan status --output json",
+        "name": "status",
+        "options": [],
+        "subcommands": []
+      },
+      {
+        "about": "Start an MCP (Model Context Protocol) server over stdio",
+        "after_help": "Protocol:\n  Speaks JSON-RPC 2.0 over stdio (stdin → stdout).\n  Each request and response is a single UTF-8 JSON line.\n\nSupported methods:\n  initialize      Negotiate protocol version and report server capabilities\n  tools/list      Return all tool definitions (mirrors `vulcan describe --format mcp`)\n  tools/call      Execute a Vulcan command and return its JSON output as content\n\nNotes:\n  Start with `--vault <path>` so all tool calls operate on the correct vault.\n  Tool names use underscore-joined command paths: note_get, graph_stats, etc.\n  Each tools/call runs synchronously; long operations block until complete.\n  All tool output is returned as JSON (--output json is applied automatically).\n\nExamples:\n  vulcan mcp --vault ~/notes\n  vulcan mcp | jq .",
+        "name": "mcp",
+        "options": [],
+        "subcommands": []
       }
     ],
     "global_options": [

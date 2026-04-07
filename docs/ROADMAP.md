@@ -2912,10 +2912,10 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 3. [x] **9.19.4** (help polish) — first impression for new users
 4. [ ] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
 5. [x] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
-6. [-] **9.19.6** (missing commands) — filling gaps, MCP server
+6. [x] **9.19.6** (missing commands) — filling gaps, MCP server
 7. [ ] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
 8. [ ] **9.19.9** (command clarity) — docs and naming, low effort
-9. [ ] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
+9. [-] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
 10. [ ] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
 11. [ ] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
 12. [ ] **9.19.12** (plugins) — after permissions design is clear
@@ -3115,13 +3115,13 @@ Commands that are absent from the CLI but expected based on the existing surface
 
 **Vault discovery commands**
 
-- [ ] **`vulcan status`** — vault overview: root path, note count, last scan time, cache size, config summary (enabled features, template/periodic settings), git branch and dirty status. The "dashboard" a user checks first.
+- [x] **`vulcan status`** — vault overview: root path, note count, last scan time, cache size, config summary (enabled features, template/periodic settings), git branch and dirty status. The "dashboard" a user checks first.
 - [x] **`vulcan tags [--count] [--sort count|name] [--where <filter>]`** — list all tags in the vault with occurrence counts. Filterable to a path prefix or property condition. `--output json` returns `[{ tag, count }]`.
 - [x] **`vulcan properties [--count] [--sort count|name] [--type]`** — list all frontmatter property keys used across the vault with occurrence counts and inferred types. Essential for discovering available `--where` filter fields.
 
 **Graph export**
 
-- [ ] **`graph export --format dot|json|graphml`** — export the resolved link graph for visualization in external tools (Gephi, Graphviz, d3, etc.). `dot` produces Graphviz DOT format, `json` produces `{ nodes: [...], edges: [...] }`, `graphml` produces GraphML XML.
+- [x] **`graph export --format dot|json|graphml`** — export the resolved link graph for visualization in external tools (Gephi, Graphviz, d3, etc.). `dot` produces Graphviz DOT format, `json` produces `{ nodes: [...], edges: [...] }`, `graphml` produces GraphML XML.
 
 **Config management**
 
@@ -3135,19 +3135,19 @@ The `config` group currently only has `import`. Users need to inspect and modify
 
 `daily` has 5 subcommands (`today`, `show`, `list`, `append`, `export-ics`) but `weekly` and `monthly` are bare commands with no subcommands. When nesting under `periodic` (9.19.7), all period types should share the same surface.
 
-- [ ] **`periodic show [date] --type daily|weekly|monthly`** — display a periodic note (generalized from `daily show`)
-- [ ] **`periodic list --type <type> [--from] [--to]`** — list periodic notes of a type (generalized from `daily list`)
-- [ ] **`periodic append <text> --type <type> [--heading] [--date]`** — append to a periodic note (generalized from `daily append`)
-- [ ] **`periodic export-ics --type <type> [--from] [--to]`** — export events from periodic notes
-- [ ] `daily today`, `daily show`, etc. remain as convenience aliases that set `--type daily` implicitly
+- [x] **`periodic show [date] --type daily|weekly|monthly`** — display a periodic note (generalized from `daily show`)
+- [x] **`periodic list --type <type> [--from] [--to]`** — list periodic notes of a type (generalized from `daily list`)
+- [x] **`periodic append <text> --type <type> [--heading] [--date]`** — append to a periodic note (generalized from `daily append`)
+- [x] **`periodic export-ics --type <type> [--from] [--to]`** — export events from periodic notes
+- [x] `daily today`, `daily show`, etc. remain as convenience aliases that set `--type daily` implicitly
 
 **Template subcommand consistency**
 
 `template --list` is a flag, unlike every other group which uses `<group> list`. There's also no way to view a template's contents without opening the file.
 
-- [ ] **`template list`** — proper subcommand replacing `template --list`
-- [ ] **`template show <name>`** — display a template's raw contents and metadata (source, engine, variables)
-- [ ] Keep `template --list` as a hidden backward-compat alias
+- [x] **`template list`** — proper subcommand replacing `template --list`
+- [x] **`template show <name>`** — display a template's raw contents and metadata (source, engine, variables)
+- [x] Keep `template --list` as a hidden backward-compat alias
 
 **Convenience aliases**
 
@@ -3157,11 +3157,11 @@ The `config` group currently only has `import`. Users need to inspect and modify
 
 `index serve` exposes HTTP but only 8 read-only endpoints. There is no MCP transport for direct LLM harness integration. The HTTP API expansion to cover the full CLI surface (note CRUD, tasks, refactor, git, etc.) is deferred to **Phase 10.3** where it ships properly with axum, middleware, and multi-vault support — expanding the hand-rolled TCP server here would be throwaway work.
 
-- [ ] **`vulcan mcp`** — start an MCP server over stdio (JSON-RPC). Exposes the full tool surface from `describe --format mcp` as a live server. Stdio-based, no HTTP server changes needed.
-- [ ] Reuse the `describe --format mcp` tool definitions as the MCP tool manifest
-- [ ] Support MCP tool calls by dispatching to the same command handlers used by the CLI
+- [x] **`vulcan mcp`** — start an MCP server over stdio (JSON-RPC). Exposes the full tool surface from `describe --format mcp` as a live server. Stdio-based, no HTTP server changes needed.
+- [x] Reuse the `describe --format mcp` tool definitions as the MCP tool manifest
+- [x] Support MCP tool calls by dispatching to the same command handlers used by the CLI
 - [ ] MCP server should respect the permission layer (9.19.13) via `--permissions <profile>`
-- [ ] Add `vulcan mcp` to the top-level command list (it's an integration point, not a subcommand of `index`)
+- [x] Add `vulcan mcp` to the top-level command list (it's an integration point, not a subcommand of `index`)
 
 #### 9.19.7 Command reorganization
 
