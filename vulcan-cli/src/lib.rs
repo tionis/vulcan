@@ -8542,9 +8542,10 @@ fn run_inbox_command(
     text: Option<&str>,
     file: Option<&PathBuf>,
     no_commit: bool,
+    quiet: bool,
 ) -> Result<InboxReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, false);
+    warn_auto_commit_if_needed(&auto_commit, quiet);
     let inbox_config = vulcan_core::load_vault_config(paths).config.inbox;
     let relative_path = normalize_relative_input_path(
         &inbox_config.path,
@@ -8595,6 +8596,7 @@ fn run_template_command(
     engine: TemplateEngineArg,
     vars: &[String],
     no_commit: bool,
+    quiet: bool,
     stdout_is_tty: bool,
 ) -> Result<TemplateCommandResult, CliError> {
     let config = load_vault_config(paths).config;
@@ -8660,7 +8662,7 @@ fn run_template_command(
 
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, false);
+    warn_auto_commit_if_needed(&auto_commit, quiet);
     let mut changed_paths = vec![rendered.target_path.clone()];
     changed_paths.extend(rendered.changed_paths.clone());
     changed_paths.sort();
@@ -8693,6 +8695,7 @@ fn run_template_insert_command(
     engine: TemplateEngineArg,
     vars: &[String],
     no_commit: bool,
+    quiet: bool,
     interactive_note_selection: bool,
 ) -> Result<TemplateInsertReport, CliError> {
     let config = load_vault_config(paths).config;
@@ -8737,7 +8740,7 @@ fn run_template_insert_command(
 
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, false);
+    warn_auto_commit_if_needed(&auto_commit, quiet);
     let mut changed_paths = vec![rendered_template.target_path.clone()];
     changed_paths.extend(rendered_template.changed_paths.clone());
     changed_paths.sort();
@@ -8984,10 +8987,11 @@ fn run_periodic_open_command(
     date: Option<&str>,
     no_edit: bool,
     no_commit: bool,
+    quiet: bool,
     allow_editor: bool,
 ) -> Result<PeriodicOpenReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, false);
+    warn_auto_commit_if_needed(&auto_commit, quiet);
 
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
@@ -9180,9 +9184,10 @@ fn run_daily_append_command(
     heading: Option<&str>,
     date: Option<&str>,
     no_commit: bool,
+    quiet: bool,
 ) -> Result<DailyAppendReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, false);
+    warn_auto_commit_if_needed(&auto_commit, quiet);
 
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, "daily", date, true)?;
@@ -13028,7 +13033,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 value,
                 dry_run,
                 no_commit,
-            } => run_config_set(&paths, cli.output, key, value, *dry_run, *no_commit),
+            } => run_config_set(&paths, cli.output, key, value, *dry_run, *no_commit, cli.quiet),
             ConfigCommand::Import(selection) => {
                 if selection.command.is_some() && (selection.all || selection.list) {
                     return Err(CliError::operation(
@@ -13045,7 +13050,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     return print_config_import_list_report(cli.output, &paths, &report);
                 }
                 if selection.all {
-                    return run_config_import_batch(&paths, cli.output, &selection.args);
+                    return run_config_import_batch(&paths, cli.output, &selection.args, cli.quiet);
                 }
                 let Some(command) = selection.command.as_ref() else {
                     return Err(CliError::operation(
@@ -13053,7 +13058,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     ));
                 };
                 let importer = importer_for_command(command);
-                run_config_import(&paths, cli.output, importer.as_ref(), &selection.args)
+                run_config_import(&paths, cli.output, importer.as_ref(), &selection.args, cli.quiet)
             }
         },
         Command::Daily { ref command } => commands::periodic::handle_daily_command(
@@ -13157,7 +13162,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref file,
             no_commit,
         } => {
-            let report = run_inbox_command(&paths, text.as_deref(), file.as_ref(), no_commit)?;
+            let report = run_inbox_command(&paths, text.as_deref(), file.as_ref(), no_commit, cli.quiet)?;
             print_inbox_report(cli.output, &report)
         }
         Command::Template {
@@ -13188,6 +13193,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     render.engine,
                     &render.vars,
                     *no_commit,
+                    cli.quiet,
                     interactive_note_selection,
                 )?),
                 Some(TemplateSubcommand::Preview {
@@ -13209,6 +13215,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     render.engine,
                     &render.vars,
                     no_commit,
+                    cli.quiet,
                     stdout_is_tty,
                 )?,
             };
@@ -15182,6 +15189,7 @@ fn run_config_set(
     raw_value: &str,
     dry_run: bool,
     no_commit: bool,
+    quiet: bool,
 ) -> Result<(), CliError> {
     let loaded = load_vault_config(paths);
     let json_config = serde_json::to_value(&loaded.config).map_err(CliError::operation)?;
@@ -15204,7 +15212,7 @@ fn run_config_set(
 
     if !dry_run && updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-        warn_auto_commit_if_needed(&auto_commit, false);
+        warn_auto_commit_if_needed(&auto_commit, quiet);
         ensure_vulcan_dir(paths).map_err(CliError::operation)?;
         fs::write(&config_path, rendered).map_err(CliError::operation)?;
         auto_commit
@@ -15582,6 +15590,7 @@ fn run_config_import(
     output: OutputFormat,
     importer: &dyn PluginImporter,
     args: &ConfigImportArgs,
+    quiet: bool,
 ) -> Result<(), CliError> {
     let target = config_import_target(args.target);
     let report = if args.dry_run {
@@ -15590,7 +15599,7 @@ fn run_config_import(
             .map_err(CliError::operation)?
     } else {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, args.no_commit);
-        warn_auto_commit_if_needed(&auto_commit, false);
+        warn_auto_commit_if_needed(&auto_commit, quiet);
         let had_gitignore = paths.gitignore_file().exists();
         let report = importer
             .import(paths, target)
@@ -15614,6 +15623,7 @@ fn run_config_import_batch(
     paths: &VaultPaths,
     output: OutputFormat,
     args: &ConfigImportArgs,
+    quiet: bool,
 ) -> Result<(), CliError> {
     let target = config_import_target(args.target);
     let discovered = discover_config_importers(paths);
@@ -15634,7 +15644,7 @@ fn run_config_import_batch(
         }
     } else {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, args.no_commit);
-        warn_auto_commit_if_needed(&auto_commit, false);
+        warn_auto_commit_if_needed(&auto_commit, quiet);
         let had_gitignore = paths.gitignore_file().exists();
         for importer in importers {
             reports.push(
@@ -22522,6 +22532,7 @@ mod tests {
             &[],
             false,
             false,
+            false,
         )
         .expect("template list should succeed");
         let TemplateCommandResult::List(report) = result else {
@@ -22578,6 +22589,7 @@ mod tests {
             &[],
             false,
             false,
+            false,
         )
         .expect("template list should succeed");
         let TemplateCommandResult::List(report) = result else {
@@ -22625,6 +22637,7 @@ mod tests {
             Some("Journal/Today"),
             TemplateEngineArg::Auto,
             &[],
+            false,
             false,
             false,
         )
@@ -22713,6 +22726,7 @@ mod tests {
             &[],
             false,
             false,
+            false,
         )
         .expect("template command should succeed");
 
@@ -22751,6 +22765,7 @@ mod tests {
             TemplateInsertMode::Prepend,
             TemplateEngineArg::Auto,
             &[],
+            false,
             false,
             false,
         )
@@ -22803,6 +22818,7 @@ mod tests {
             TemplateInsertMode::Append,
             TemplateEngineArg::Auto,
             &[],
+            false,
             false,
             false,
         )
