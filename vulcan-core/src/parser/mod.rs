@@ -383,6 +383,29 @@ mod tests {
     }
 
     #[test]
+    fn dataviewjs_code_blocks_preserve_equality_operators() {
+        let parsed = parse_document(
+            concat!(
+                "```dataviewjs\n",
+                "const checks = [\n",
+                "  typeof \"x\" === \"string\",\n",
+                "  1 == 1,\n",
+                "  1 != 2,\n",
+                "  2 !== 3,\n",
+                "];\n",
+                "```\n",
+            ),
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.dataview_blocks.len(), 1);
+        assert!(parsed.dataview_blocks[0].text.contains("=== \"string\""));
+        assert!(parsed.dataview_blocks[0].text.contains("1 == 1"));
+        assert!(parsed.dataview_blocks[0].text.contains("1 != 2"));
+        assert!(parsed.dataview_blocks[0].text.contains("2 !== 3"));
+    }
+
+    #[test]
     fn html_links_and_block_refs_are_detected() {
         let parsed = parse_document(
             "Paragraph\n\n^para\n\n- item\n- item two\n\n^list\n\n> quote\n\n^quote\n\n```\ncode\n```\n\n^code\n\n<a href=\"https://example.com\">html</a>",
