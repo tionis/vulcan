@@ -13356,6 +13356,104 @@ fn mcp_server_responds_to_initialize_request() {
 }
 
 #[test]
+fn mcp_server_filters_and_rejects_tools_under_readonly_permissions() {
+    use std::io::Write;
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "mcp",
+            "--permissions",
+            "readonly",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("mcp server should start");
+
+    let requests = [
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list"
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "note_get",
+                "arguments": { "note": "Projects/Alpha.md" }
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "note_set",
+                "arguments": { "note": "Projects/Alpha.md" }
+            }
+        }),
+    ];
+    let payload = requests
+        .iter()
+        .map(|request| format!("{request}\n"))
+        .collect::<String>();
+
+    let stdin = child.stdin.as_mut().expect("stdin should be piped");
+    stdin
+        .write_all(payload.as_bytes())
+        .expect("write to mcp stdin");
+    stdin.flush().expect("flush mcp stdin");
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("mcp server should exit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let responses = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("mcp should emit valid JSON"))
+        .collect::<Vec<_>>();
+    assert_eq!(responses.len(), 3, "expected three JSON-RPC responses");
+
+    let list_tools = responses[0]["result"]["tools"]
+        .as_array()
+        .expect("tools/list should return a tool array");
+    assert!(
+        list_tools.iter().any(|tool| tool["name"] == "note_get"),
+        "readonly profile should keep read tools visible"
+    );
+    assert!(
+        !list_tools.iter().any(|tool| tool["name"] == "note_set"),
+        "readonly profile should hide mutating note tools"
+    );
+    assert!(
+        !list_tools.iter().any(|tool| tool["name"] == "web_search"),
+        "readonly profile should hide network tools"
+    );
+    assert!(
+        !list_tools.iter().any(|tool| tool["name"] == "index_scan"),
+        "readonly profile should hide index tools"
+    );
+
+    assert!(
+        responses[1].get("result").is_some(),
+        "note_get should remain callable under readonly permissions"
+    );
+    assert_eq!(
+        responses[2]["error"]["message"].as_str(),
+        Some("permission denied: tool `note_set` requires write access under profile `readonly`")
+    );
+}
+
+#[test]
 fn complete_note_context_returns_note_paths() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

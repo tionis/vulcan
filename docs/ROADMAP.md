@@ -2912,7 +2912,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 3. [x] **9.19.4** (help polish) — first impression for new users
 4. [x] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
 5. [x] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
-6. [-] **9.19.6** (missing commands) — filling gaps, MCP server
+6. [x] **9.19.6** (missing commands) — filling gaps, MCP server
 7. [x] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
 8. [-] **9.19.9** (command clarity) — docs and naming, low effort
 9. [x] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
@@ -3161,7 +3161,7 @@ The `config` group currently only has `import`. Users need to inspect and modify
 - [x] **`vulcan mcp`** — start an MCP server over stdio (JSON-RPC). Exposes the full tool surface from `describe --format mcp` as a live server. Stdio-based, no HTTP server changes needed.
 - [x] Reuse the `describe --format mcp` tool definitions as the MCP tool manifest
 - [x] Support MCP tool calls by dispatching to the same command handlers used by the CLI
-- [ ] MCP server should respect the permission layer (9.19.13) via `--permissions <profile>`
+- [x] MCP server should respect the permission layer (9.19.13) via `--permissions <profile>`
 - [x] Add `vulcan mcp` to the top-level command list (it's an integration point, not a subcommand of `index`)
 
 #### 9.19.7 Command reorganization

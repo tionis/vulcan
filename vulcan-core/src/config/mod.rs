@@ -1837,6 +1837,212 @@ impl Default for ScanConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PathPermissionKeyword {
+    All,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PathPermissionRules {
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PathPermissionConfig {
+    Keyword(PathPermissionKeyword),
+    Rules(PathPermissionRules),
+}
+
+impl Default for PathPermissionConfig {
+    fn default() -> Self {
+        Self::Keyword(PathPermissionKeyword::None)
+    }
+}
+
+impl PathPermissionConfig {
+    #[must_use]
+    pub fn is_all(&self) -> bool {
+        matches!(self, Self::Keyword(PathPermissionKeyword::All))
+    }
+
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::Keyword(PathPermissionKeyword::None))
+    }
+
+    #[must_use]
+    pub fn is_scoped(&self) -> bool {
+        matches!(self, Self::Rules(_))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionMode {
+    Allow,
+    #[default]
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigPermissionMode {
+    Read,
+    Write,
+    #[default]
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct NetworkPermissionDetails {
+    pub allow: bool,
+    #[serde(default)]
+    pub domains: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum NetworkPermissionConfig {
+    Mode(PermissionMode),
+    Details(NetworkPermissionDetails),
+}
+
+impl Default for NetworkPermissionConfig {
+    fn default() -> Self {
+        Self::Mode(PermissionMode::Deny)
+    }
+}
+
+impl NetworkPermissionConfig {
+    #[must_use]
+    pub fn is_allowed(&self) -> bool {
+        match self {
+            Self::Mode(mode) => matches!(mode, PermissionMode::Allow),
+            Self::Details(details) => details.allow,
+        }
+    }
+
+    #[must_use]
+    pub fn domain_allowlist(&self) -> &[String] {
+        match self {
+            Self::Mode(_) => &[],
+            Self::Details(details) => &details.domains,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionLimitKeyword {
+    Unlimited,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PermissionLimit {
+    Value(usize),
+    Keyword(PermissionLimitKeyword),
+}
+
+impl Default for PermissionLimit {
+    fn default() -> Self {
+        Self::Keyword(PermissionLimitKeyword::Unlimited)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionProfile {
+    #[serde(default)]
+    pub read: PathPermissionConfig,
+    #[serde(default)]
+    pub write: PathPermissionConfig,
+    #[serde(default)]
+    pub refactor: PathPermissionConfig,
+    #[serde(default)]
+    pub git: PermissionMode,
+    #[serde(default)]
+    pub network: NetworkPermissionConfig,
+    #[serde(default)]
+    pub index: PermissionMode,
+    #[serde(default)]
+    pub config: ConfigPermissionMode,
+    #[serde(default)]
+    pub execute: PermissionMode,
+    #[serde(default)]
+    pub shell: PermissionMode,
+    #[serde(default)]
+    pub cpu_limit_ms: PermissionLimit,
+    #[serde(default)]
+    pub memory_limit_mb: PermissionLimit,
+    #[serde(default)]
+    pub stack_limit_kb: PermissionLimit,
+}
+
+impl Default for PermissionProfile {
+    fn default() -> Self {
+        Self {
+            read: PathPermissionConfig::Keyword(PathPermissionKeyword::None),
+            write: PathPermissionConfig::Keyword(PathPermissionKeyword::None),
+            refactor: PathPermissionConfig::Keyword(PathPermissionKeyword::None),
+            git: PermissionMode::Deny,
+            network: NetworkPermissionConfig::Mode(PermissionMode::Deny),
+            index: PermissionMode::Deny,
+            config: ConfigPermissionMode::None,
+            execute: PermissionMode::Deny,
+            shell: PermissionMode::Deny,
+            cpu_limit_ms: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
+            memory_limit_mb: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
+            stack_limit_kb: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
+        }
+    }
+}
+
+impl PermissionProfile {
+    #[must_use]
+    pub fn unrestricted() -> Self {
+        Self {
+            read: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
+            write: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
+            refactor: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
+            git: PermissionMode::Allow,
+            network: NetworkPermissionConfig::Mode(PermissionMode::Allow),
+            index: PermissionMode::Allow,
+            config: ConfigPermissionMode::Write,
+            execute: PermissionMode::Allow,
+            shell: PermissionMode::Allow,
+            cpu_limit_ms: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
+            memory_limit_mb: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
+            stack_limit_kb: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
+        }
+    }
+
+    #[must_use]
+    pub fn readonly() -> Self {
+        Self {
+            read: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
+            config: ConfigPermissionMode::Read,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn is_unrestricted(&self) -> bool {
+        self == &Self::unrestricted()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PermissionsConfig {
+    #[serde(default)]
+    pub profiles: BTreeMap<String, PermissionProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultConfig {
     pub scan: ScanConfig,
     pub chunking: ChunkingConfig,
@@ -1896,6 +2102,12 @@ pub struct ConfigDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigLoadResult {
     pub config: VaultConfig,
+    pub diagnostics: Vec<ConfigDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionProfilesLoadResult {
+    pub profiles: BTreeMap<String, PermissionProfile>,
     pub diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -2090,6 +2302,7 @@ struct PartialVulcanConfig {
     quickadd: Option<PartialQuickAddConfig>,
     web: Option<PartialWebConfig>,
     periodic: Option<PartialPeriodicConfig>,
+    permissions: Option<PartialPermissionsConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2152,6 +2365,27 @@ struct PartialTemplatesConfig {
     enabled_templates_hotkeys: Option<Vec<String>>,
     startup_templates: Option<Vec<String>>,
     intellisense_render: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialPermissionsConfig {
+    profiles: Option<BTreeMap<String, PartialPermissionProfile>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialPermissionProfile {
+    read: Option<PathPermissionConfig>,
+    write: Option<PathPermissionConfig>,
+    refactor: Option<PathPermissionConfig>,
+    git: Option<PermissionMode>,
+    network: Option<NetworkPermissionConfig>,
+    index: Option<PermissionMode>,
+    config: Option<ConfigPermissionMode>,
+    execute: Option<PermissionMode>,
+    shell: Option<PermissionMode>,
+    cpu_limit_ms: Option<PermissionLimit>,
+    memory_limit_mb: Option<PermissionLimit>,
+    stack_limit_kb: Option<PermissionLimit>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -4023,6 +4257,42 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
 
     ConfigLoadResult {
         config,
+        diagnostics,
+    }
+}
+
+#[must_use]
+pub fn builtin_permission_profiles() -> BTreeMap<String, PermissionProfile> {
+    let mut profiles = BTreeMap::new();
+    profiles.insert("readonly".to_string(), PermissionProfile::readonly());
+    profiles.insert(
+        "unrestricted".to_string(),
+        PermissionProfile::unrestricted(),
+    );
+    profiles
+}
+
+#[must_use]
+pub fn load_permission_profiles(paths: &VaultPaths) -> PermissionProfilesLoadResult {
+    let mut profiles = builtin_permission_profiles();
+    let mut diagnostics = Vec::new();
+
+    if let Some(vulcan_config) =
+        load_vulcan_overrides(paths.config_file(), "Vulcan config", &mut diagnostics)
+    {
+        apply_permission_profile_overrides(&mut profiles, vulcan_config.permissions);
+    }
+
+    if let Some(local_config) = load_vulcan_overrides(
+        paths.local_config_file(),
+        "local Vulcan config",
+        &mut diagnostics,
+    ) {
+        apply_permission_profile_overrides(&mut profiles, local_config.permissions);
+    }
+
+    PermissionProfilesLoadResult {
+        profiles,
         diagnostics,
     }
 }
@@ -6993,6 +7263,65 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
     }
 }
 
+fn apply_permission_profile_overrides(
+    profiles: &mut BTreeMap<String, PermissionProfile>,
+    overrides: Option<PartialPermissionsConfig>,
+) {
+    let Some(overrides) = overrides else {
+        return;
+    };
+    let Some(profile_overrides) = overrides.profiles else {
+        return;
+    };
+
+    for (name, override_profile) in profile_overrides {
+        let profile = profiles.entry(name).or_default();
+        apply_partial_permission_profile(profile, override_profile);
+    }
+}
+
+fn apply_partial_permission_profile(
+    profile: &mut PermissionProfile,
+    overrides: PartialPermissionProfile,
+) {
+    if let Some(read) = overrides.read {
+        profile.read = read;
+    }
+    if let Some(write) = overrides.write {
+        profile.write = write;
+    }
+    if let Some(refactor) = overrides.refactor {
+        profile.refactor = refactor;
+    }
+    if let Some(git) = overrides.git {
+        profile.git = git;
+    }
+    if let Some(network) = overrides.network {
+        profile.network = network;
+    }
+    if let Some(index) = overrides.index {
+        profile.index = index;
+    }
+    if let Some(config) = overrides.config {
+        profile.config = config;
+    }
+    if let Some(execute) = overrides.execute {
+        profile.execute = execute;
+    }
+    if let Some(shell) = overrides.shell {
+        profile.shell = shell;
+    }
+    if let Some(cpu_limit_ms) = overrides.cpu_limit_ms {
+        profile.cpu_limit_ms = cpu_limit_ms;
+    }
+    if let Some(memory_limit_mb) = overrides.memory_limit_mb {
+        profile.memory_limit_mb = memory_limit_mb;
+    }
+    if let Some(stack_limit_kb) = overrides.stack_limit_kb {
+        profile.stack_limit_kb = stack_limit_kb;
+    }
+}
+
 fn normalize_attachment_folder(path: &str) -> PathBuf {
     if path == "/" || path.is_empty() {
         PathBuf::from(".")
@@ -8370,6 +8699,101 @@ intellisense_render = 2
 
         assert_eq!(loaded.config, VaultConfig::default());
         assert!(loaded.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn missing_files_use_builtin_permission_profiles() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let loaded = load_permission_profiles(&paths);
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(
+            loaded.profiles.get("readonly"),
+            Some(&PermissionProfile::readonly())
+        );
+        assert_eq!(
+            loaded.profiles.get("unrestricted"),
+            Some(&PermissionProfile::unrestricted())
+        );
+    }
+
+    #[test]
+    fn permission_profiles_merge_shared_and_local_overrides() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        write_test_file(
+            &vault_root.join(".vulcan/config.toml"),
+            r#"
+[permissions.profiles.agent]
+read = "all"
+write = "none"
+network = "allow"
+"#,
+        );
+        write_test_file(
+            &vault_root.join(".vulcan/config.local.toml"),
+            r#"
+[permissions.profiles.agent]
+write = "all"
+git = "allow"
+"#,
+        );
+
+        let loaded = load_permission_profiles(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        let agent = loaded
+            .profiles
+            .get("agent")
+            .expect("custom profile should be loaded");
+        assert_eq!(
+            agent.read,
+            PathPermissionConfig::Keyword(PathPermissionKeyword::All)
+        );
+        assert_eq!(
+            agent.write,
+            PathPermissionConfig::Keyword(PathPermissionKeyword::All)
+        );
+        assert_eq!(
+            agent.network,
+            NetworkPermissionConfig::Mode(PermissionMode::Allow)
+        );
+        assert_eq!(agent.git, PermissionMode::Allow);
+    }
+
+    #[test]
+    fn permission_profiles_parse_scoped_paths_and_network_domains() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        write_test_file(
+            &vault_root.join(".vulcan/config.toml"),
+            r#"
+[permissions.profiles.agent]
+read = { allow = ["folder:Projects/**"], deny = ["folder:Archive/**"] }
+write = "none"
+network = { allow = true, domains = ["api.tavily.com"] }
+cpu_limit_ms = 5000
+"#,
+        );
+
+        let loaded = load_permission_profiles(&VaultPaths::new(vault_root));
+
+        assert!(loaded.diagnostics.is_empty());
+        let agent = loaded
+            .profiles
+            .get("agent")
+            .expect("custom profile should be loaded");
+        assert!(matches!(agent.read, PathPermissionConfig::Rules(_)));
+        assert_eq!(
+            agent.network,
+            NetworkPermissionConfig::Details(NetworkPermissionDetails {
+                allow: true,
+                domains: vec!["api.tavily.com".to_string()],
+            })
+        );
+        assert_eq!(agent.cpu_limit_ms, PermissionLimit::Value(5000));
     }
 
     #[test]

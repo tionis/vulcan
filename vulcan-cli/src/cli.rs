@@ -956,12 +956,14 @@ Supported methods:
 
 Notes:
   Start with `--vault <path>` so all tool calls operate on the correct vault.
+  `--permissions <profile>` filters the exposed tool set before requests are handled.
   Tool names use underscore-joined command paths: note_get, graph_stats, etc.
   Each tools/call runs synchronously; long operations block until complete.
   All tool output is returned as JSON (--output json is applied automatically).
 
 Examples:
   vulcan mcp --vault ~/notes
+  vulcan mcp --vault ~/notes --permissions readonly
   vulcan mcp | jq .";
 
 const REFACTOR_COMMAND_AFTER_HELP: &str = "\
@@ -3671,7 +3673,10 @@ Examples:
         about = "Start an MCP (Model Context Protocol) server over stdio",
         after_help = MCP_COMMAND_AFTER_HELP
     )]
-    Mcp,
+    Mcp {
+        #[arg(long, help = "Restrict MCP tools to a named permission profile")]
+        permissions: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
