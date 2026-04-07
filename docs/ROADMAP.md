@@ -2970,7 +2970,7 @@ The REPL currently uses rustyline but lacks several ergonomic features expected 
 
 - [x] **Tab completion:** Extend the existing completer to cover `dv.*`, `web.*`, `console.*`, `app.*`, and dot-commands.
 - [x] **Special variables:** `_` = last successful result, `_error` = last error object.
-- [ ] **Multi-line editing:** Allow users to navigate within multi-line expressions using arrow keys (rustyline supports this with proper configuration). Show a visual continuation indicator.
+- [x] **Multi-line editing:** Allow users to navigate within multi-line expressions using arrow keys (rustyline supports this with proper configuration). Show a visual continuation indicator.
 - [x] **Reverse history search:** Enable rustyline's `Ctrl+R` reverse search mode (via `EditMode::Emacs`)
 - [x] **Persistent history:** History persists at `.vulcan/repl_history`, max size raised to 10,000 entries
 - [x] **Syntax highlighting:** Use rustyline's `Highlighter` trait to colorize JS keywords, strings, numbers, and comments in the input line

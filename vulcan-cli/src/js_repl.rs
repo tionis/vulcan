@@ -192,22 +192,15 @@ fn run_repl_loop(
     let mut pending = String::new();
 
     loop {
-        let prompt = if pending.is_empty() {
-            PRIMARY_PROMPT
-        } else {
-            CONTINUATION_PROMPT
-        };
-        match editor.readline(prompt) {
+        match read_repl_submission(&mut editor, &pending) {
             Ok(line) => {
-                if !pending.is_empty() {
-                    pending.push('\n');
-                }
-                pending.push_str(&line);
-                if repl_input_needs_continuation(&pending) {
+                if repl_input_needs_continuation(&line) {
+                    pending = line;
                     continue;
                 }
 
-                let source = std::mem::take(&mut pending);
+                pending.clear();
+                let source = line;
                 let trimmed = source.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -247,6 +240,23 @@ fn run_repl_loop(
 
     save_history(&history_path, &history)?;
     Ok(())
+}
+
+fn read_repl_submission(editor: &mut ReplEditor, pending: &str) -> Result<String, ReadlineError> {
+    if pending.is_empty() {
+        editor.readline(PRIMARY_PROMPT)
+    } else {
+        let initial = continuation_initial_buffer(pending);
+        editor.readline_with_initial(CONTINUATION_PROMPT, (&initial, ""))
+    }
+}
+
+fn continuation_initial_buffer(pending: &str) -> String {
+    let mut initial = pending.to_string();
+    if !initial.ends_with('\n') {
+        initial.push('\n');
+    }
+    initial
 }
 
 fn inject_last_result(session: &DataviewJsSession, result: &DataviewJsResult) {
@@ -809,6 +819,7 @@ fn build_repl_editor(history: &[String], completions: &[&str]) -> Result<ReplEdi
     let config = Config::builder()
         .completion_type(CompletionType::List)
         .edit_mode(EditMode::Emacs)
+        .check_cursor_position(true)
         .build();
     let mut editor = Editor::<ReplHelper, DefaultHistory>::with_config(config)
         .map_err(|error| CliError::operation(&error))?;
@@ -990,6 +1001,15 @@ mod tests {
         assert!(repl_input_needs_continuation("vault."));
         assert!(!repl_input_needs_continuation("({ ok: true })"));
         assert!(!repl_input_needs_continuation("vault.note(\"Home\")"));
+    }
+
+    #[test]
+    fn continuation_initial_buffer_appends_one_newline_for_multiline_editing() {
+        assert_eq!(continuation_initial_buffer("if (true) {"), "if (true) {\n");
+        assert_eq!(
+            continuation_initial_buffer("if (true) {\n  1 + 1\n"),
+            "if (true) {\n  1 + 1\n"
+        );
     }
 
     #[test]
