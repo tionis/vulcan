@@ -2013,6 +2013,7 @@ mod tests {
     use std::net::TcpListener;
     use std::path::Path;
     use std::thread;
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
     #[test]
@@ -2052,6 +2053,52 @@ mod tests {
         assert_eq!(second_report.indexed, 0);
         assert_eq!(second_report.skipped, 4);
         server.shutdown();
+    }
+
+    #[test]
+    fn read_request_fallible_handles_nonblocking_partial_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should expose a local address");
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection should accept");
+            stream
+                .set_nonblocking(true)
+                .expect("accepted stream should be configurable");
+            read_request_fallible(&mut stream)
+        });
+
+        let mut client =
+            std::net::TcpStream::connect(address).expect("client should connect to test server");
+        client
+            .set_nodelay(true)
+            .expect("client stream should be configurable");
+        let body = r#"{"input":["split payload"]}"#;
+        let request = format!(
+            "POST /v1/embeddings HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        client
+            .write_all(request.as_bytes())
+            .expect("request headers should write");
+        thread::sleep(Duration::from_millis(25));
+        client
+            .write_all(body.as_bytes())
+            .expect("request body should write");
+
+        let request = server
+            .join()
+            .expect("server thread should join")
+            .expect("request should be captured");
+        let input = request
+            .body
+            .get("input")
+            .and_then(Value::as_array)
+            .and_then(|inputs| inputs.first())
+            .and_then(Value::as_str);
+        assert_eq!(input, Some("split payload"));
     }
 
     #[test]
@@ -2767,7 +2814,10 @@ mod tests {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream
-                            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                            .set_nonblocking(false)
+                            .expect("accepted stream should switch to blocking mode");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
                             .expect("read timeout should be configurable");
                         let Some(request) = read_request_fallible(&mut stream) else {
                             continue;
@@ -2796,7 +2846,7 @@ mod tests {
                             .expect("response should write");
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(std::time::Duration::from_millis(10));
+                        thread::sleep(Duration::from_millis(10));
                     }
                     Err(error) => panic!("unexpected mock server error: {error}"),
                 }
@@ -2839,16 +2889,16 @@ mod tests {
     }
 
     fn read_request_fallible(stream: &mut std::net::TcpStream) -> Option<CapturedRequest> {
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut buffer = Vec::new();
         let mut header_end = None;
 
         loop {
             let mut chunk = [0_u8; 1024];
-            let bytes_read = match stream.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(_) => return None,
-            };
+            let bytes_read = read_with_retry(stream, &mut chunk, deadline)?;
+            if bytes_read == 0 {
+                break;
+            }
             buffer.extend_from_slice(&chunk[..bytes_read]);
             if let Some(position) = find_subslice(&buffer, b"\r\n\r\n") {
                 header_end = Some(position + 4);
@@ -2866,17 +2916,40 @@ mod tests {
         let mut body_bytes = buffer[header_end..].to_vec();
         while body_bytes.len() < content_length {
             let mut chunk = vec![0_u8; content_length - body_bytes.len()];
-            let bytes_read = match stream.read(chunk.as_mut_slice()) {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(_) => return None,
-            };
+            let bytes_read = read_with_retry(stream, chunk.as_mut_slice(), deadline)?;
+            if bytes_read == 0 {
+                return None;
+            }
             body_bytes.extend_from_slice(&chunk[..bytes_read]);
         }
 
         Some(CapturedRequest {
             body: serde_json::from_slice(&body_bytes).ok()?,
         })
+    }
+
+    fn read_with_retry(
+        stream: &mut std::net::TcpStream,
+        buffer: &mut [u8],
+        deadline: Instant,
+    ) -> Option<usize> {
+        loop {
+            match stream.read(buffer) {
+                Ok(bytes_read) => return Some(bytes_read),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if Instant::now() >= deadline {
+                        return None;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => return None,
+            }
+        }
     }
 
     fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
