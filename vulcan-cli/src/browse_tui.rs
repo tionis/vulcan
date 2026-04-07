@@ -2,6 +2,7 @@ use crate::bases_tui;
 use crate::commit::AutoCommitPolicy;
 use crate::editor::{open_in_editor, with_terminal_suspended};
 use crate::note_picker::{handle_picker_key, NotePickerState, PickerAction};
+use crate::output::{markdown_table_column_count, markdown_table_header_lines, markdown_table_row};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -3849,19 +3850,22 @@ fn dql_preview_lines(result: &DqlQueryResult) -> Vec<String> {
 
 fn dql_table_preview_lines(result: &DqlQueryResult) -> Vec<String> {
     let mut lines = Vec::new();
-    if !result.columns.is_empty() {
-        lines.push(result.columns.join(" | "));
+    let preview_rows = result.rows.iter().take(3).collect::<Vec<_>>();
+    let column_count = result.columns.len();
+    if column_count > 0 {
+        let [header, separator] = markdown_table_header_lines(&result.columns, column_count);
+        lines.push(header);
+        lines.push(separator);
     }
 
-    for row in result.rows.iter().take(3) {
-        lines.push(
+    for row in preview_rows {
+        lines.push(markdown_table_row(
             result
                 .columns
                 .iter()
-                .map(|column| render_preview_value(&row[column]))
-                .collect::<Vec<_>>()
-                .join(" | "),
-        );
+                .map(|column| render_preview_value(&row[column])),
+            column_count,
+        ));
     }
     lines
 }
@@ -3928,14 +3932,18 @@ fn dataview_js_preview_lines(result: &vulcan_core::DataviewJsResult) -> Vec<Stri
         match output {
             DataviewJsOutput::Query { result } => lines.extend(dql_preview_lines(result)),
             DataviewJsOutput::Table { headers, rows } => {
-                if !headers.is_empty() {
-                    lines.push(headers.join(" | "));
+                let preview_rows = rows.iter().take(3).collect::<Vec<_>>();
+                let column_count = markdown_table_column_count(
+                    headers.len(),
+                    preview_rows.iter().map(|row| row.len()),
+                );
+                if column_count > 0 {
+                    let [header, separator] = markdown_table_header_lines(headers, column_count);
+                    lines.push(header);
+                    lines.push(separator);
                 }
-                lines.extend(rows.iter().take(3).map(|row| {
-                    row.iter()
-                        .map(render_preview_value)
-                        .collect::<Vec<_>>()
-                        .join(" | ")
+                lines.extend(preview_rows.into_iter().map(|row| {
+                    markdown_table_row(row.iter().map(render_preview_value), column_count)
                 }));
             }
             DataviewJsOutput::List { items } => lines.extend(

@@ -30,8 +30,9 @@ pub use cli::{
 use crate::commit::AutoCommitPolicy;
 use crate::editor::open_in_editor;
 use crate::output::{
-    paginated_items, print_json, print_json_lines, print_selected_human_fields,
-    render_dataview_inline_value, render_human_value, select_fields, ListOutputControls,
+    markdown_table_column_count, markdown_table_header_lines, markdown_table_row, paginated_items,
+    print_json, print_json_lines, print_selected_human_fields, render_dataview_inline_value,
+    render_human_value, select_fields, ListOutputControls,
 };
 use crate::resolve::{interactive_note_selection_allowed, resolve_note_argument};
 use crate::template_engine::{
@@ -190,7 +191,6 @@ impl Display for CliError {
 impl std::error::Error for CliError {}
 
 const SCAN_PROGRESS_STEP: usize = 250;
-const BASES_MAX_COLUMN_WIDTH: usize = 28;
 
 struct BundledTextFile {
     kind: &'static str,
@@ -18036,15 +18036,18 @@ fn print_dataview_js_result_human(result: &DataviewJsResult, show_result_count: 
                 print_dql_query_result_human(result, show_result_count);
             }
             DataviewJsOutput::Table { headers, rows } => {
-                if !headers.is_empty() {
-                    println!("{}", headers.join(" | "));
+                let column_count =
+                    markdown_table_column_count(headers.len(), rows.iter().map(Vec::len));
+                if column_count > 0 {
+                    let [header, separator] = markdown_table_header_lines(headers, column_count);
+                    println!("{header}");
+                    println!("{separator}");
                 }
                 for row in rows {
-                    let rendered = row
-                        .iter()
-                        .map(render_dataview_inline_value)
-                        .collect::<Vec<_>>()
-                        .join(" | ");
+                    let rendered = markdown_table_row(
+                        row.iter().map(render_dataview_inline_value),
+                        column_count,
+                    );
                     println!("{rendered}");
                 }
             }
@@ -18105,16 +18108,20 @@ fn print_dataview_js_result_human(result: &DataviewJsResult, show_result_count: 
 }
 
 fn print_dql_table_human(result: &DqlQueryResult, show_result_count: bool) {
-    if !result.columns.is_empty() {
-        println!("{}", result.columns.join(" | "));
+    let column_count = result.columns.len();
+    if column_count > 0 {
+        let [header, separator] = markdown_table_header_lines(&result.columns, column_count);
+        println!("{header}");
+        println!("{separator}");
     }
     for row in &result.rows {
-        let line = result
-            .columns
-            .iter()
-            .map(|column| render_dataview_inline_value(&row[column]))
-            .collect::<Vec<_>>()
-            .join(" | ");
+        let line = markdown_table_row(
+            result
+                .columns
+                .iter()
+                .map(|column| render_dataview_inline_value(&row[column])),
+            column_count,
+        );
         println!("{line}");
     }
     if show_result_count {
@@ -21314,15 +21321,6 @@ fn print_bases_table(
     if columns.is_empty() {
         columns = view.columns.iter().collect();
     }
-    let widths = columns
-        .iter()
-        .map(|column| {
-            rows.iter()
-                .map(|row| bases_cell_text(row, &column.key).chars().count())
-                .fold(column.display_name.chars().count(), usize::max)
-                .min(BASES_MAX_COLUMN_WIDTH)
-        })
-        .collect::<Vec<_>>();
 
     if view.group_by.is_some() {
         let mut start = 0_usize;
@@ -21339,54 +21337,44 @@ fn print_bases_table(
                 palette.bold(&group_name),
                 palette.dim(&format!("({} rows)", end - start))
             );
-            print_bases_table_header(&columns, &widths, palette);
-            for row in &rows[start..end] {
-                print_bases_table_row(row, &columns, &widths);
-            }
+            print_bases_markdown_table(&columns, &rows[start..end]);
             println!();
             start = end;
         }
     } else {
-        print_bases_table_header(&columns, &widths, palette);
-        for row in rows {
-            print_bases_table_row(row, &columns, &widths);
-        }
+        print_bases_markdown_table(&columns, rows);
         println!();
     }
 }
 
-fn print_bases_table_header(
+fn print_bases_markdown_table(
     columns: &[&vulcan_core::BasesColumn],
-    widths: &[usize],
-    palette: AnsiPalette,
+    rows: &[&vulcan_core::BasesRow],
 ) {
-    let header = columns
+    let headers = columns
         .iter()
-        .zip(widths.iter().copied())
-        .map(|(column, width)| fit_bases_cell(&column.display_name, width))
-        .collect::<Vec<_>>()
-        .join("  ");
-    let separator = widths
-        .iter()
-        .map(|width| "-".repeat(*width))
-        .collect::<Vec<_>>()
-        .join("  ");
-    println!("{}", palette.bold(&header));
-    println!("{}", palette.dim(&separator));
-}
+        .map(|column| column.display_name.clone())
+        .collect::<Vec<_>>();
+    let column_count = headers.len();
+    if column_count == 0 {
+        return;
+    }
 
-fn print_bases_table_row(
-    row: &vulcan_core::BasesRow,
-    columns: &[&vulcan_core::BasesColumn],
-    widths: &[usize],
-) {
-    let rendered = columns
-        .iter()
-        .zip(widths.iter().copied())
-        .map(|(column, width)| fit_bases_cell(&bases_cell_text(row, &column.key), width))
-        .collect::<Vec<_>>()
-        .join("  ");
-    println!("{rendered}");
+    let [header, separator] = markdown_table_header_lines(&headers, column_count);
+    println!("{header}");
+    println!("{separator}");
+
+    for row in rows {
+        println!(
+            "{}",
+            markdown_table_row(
+                columns
+                    .iter()
+                    .map(|column| bases_cell_text(row, &column.key)),
+                column_count,
+            )
+        );
+    }
 }
 
 fn bases_group_name(row: &vulcan_core::BasesRow) -> String {
@@ -21403,19 +21391,6 @@ fn bases_cell_text(row: &vulcan_core::BasesRow, key: &str) -> String {
         .map(|value| render_human_value(&value))
         .filter(|value| !value.is_empty() && value != "null")
         .unwrap_or_else(|| "-".to_string())
-}
-
-fn fit_bases_cell(value: &str, width: usize) -> String {
-    let truncated = if value.chars().count() > width {
-        if width <= 3 {
-            ".".repeat(width)
-        } else {
-            value.chars().take(width - 3).collect::<String>() + "..."
-        }
-    } else {
-        value.to_string()
-    };
-    format!("{truncated:<width$}")
 }
 
 fn bases_value_for_key(row: &vulcan_core::BasesRow, key: &str) -> Option<Value> {

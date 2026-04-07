@@ -1,3 +1,4 @@
+use crate::output::{markdown_table_column_count, markdown_table_header_lines, markdown_table_row};
 use crate::{render_dataview_inline_value, trust, CliError, OutputFormat};
 use rustyline::completion::{Completer, Pair};
 use rustyline::config::{CompletionType, Config, EditMode};
@@ -452,16 +453,20 @@ fn print_outputs_human(outputs: &[DataviewJsOutput]) {
         }
         match output {
             DataviewJsOutput::Table { headers, rows } => {
-                if !headers.is_empty() {
-                    println!("{}", headers.join(" | "));
+                let column_count =
+                    markdown_table_column_count(headers.len(), rows.iter().map(Vec::len));
+                if column_count > 0 {
+                    let [header, separator] = markdown_table_header_lines(headers, column_count);
+                    println!("{header}");
+                    println!("{separator}");
                 }
                 for row in rows {
                     println!(
                         "{}",
-                        row.iter()
-                            .map(render_dataview_inline_value)
-                            .collect::<Vec<_>>()
-                            .join(" | ")
+                        markdown_table_row(
+                            row.iter().map(render_dataview_inline_value),
+                            column_count,
+                        )
                     );
                 }
             }

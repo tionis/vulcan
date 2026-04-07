@@ -2852,10 +2852,48 @@ fn dataview_eval_human_output_keeps_empty_table_headers() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone())
         .expect("stdout should be valid utf-8");
 
-    assert!(stdout.contains("File | status | priority"));
-    assert!(stdout.contains("[[Projects/Alpha]] | active | 1"));
-    assert!(stdout.contains("[[Dashboard]] | draft | [2.0,3.0]"));
+    assert!(stdout.contains("| File | status | priority |"));
+    assert!(stdout.contains("| --- | --- | --- |"));
+    assert!(stdout.contains("| [[Projects/Alpha]] | active | 1.0 |"));
+    assert!(stdout.contains("| [[Dashboard]] | draft | [2.0,3.0] |"));
     assert!(stdout.contains("2 result(s)"));
+}
+
+#[test]
+fn dataview_eval_human_output_escapes_pipes_inside_table_cells() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    fs::write(
+        vault_root.join("Pipe Dashboard.md"),
+        concat!(
+            "```dataviewjs\n",
+            "dv.table([\"Value\"], [[\"work | break\"]]);\n",
+            "```\n",
+        ),
+    )
+    .expect("note should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "dataview",
+            "eval",
+            "Pipe Dashboard",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone())
+        .expect("stdout should be valid utf-8");
+
+    assert!(stdout.contains("| Value |"));
+    assert!(stdout.contains("| --- |"));
+    assert!(stdout.contains("| work \\| break |"));
 }
 
 #[test]
@@ -6723,9 +6761,10 @@ fn dataview_query_human_output_respects_display_result_count_setting() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone())
         .expect("stdout should be valid utf-8");
 
-    assert!(stdout.contains("File | status"));
-    assert!(stdout.contains("[[Projects/Alpha]] | active"));
-    assert!(stdout.contains("[[Projects/Beta]] | backlog"));
+    assert!(stdout.contains("| File | status |"));
+    assert!(stdout.contains("| --- | --- |"));
+    assert!(stdout.contains("| [[Projects/Alpha]] | active |"));
+    assert!(stdout.contains("| [[Projects/Beta]] | backlog |"));
     assert!(!stdout.contains("result(s)"));
 }
 
@@ -6804,7 +6843,8 @@ fn dataview_plugin_display_settings_affect_human_output() {
         .success();
     let table_stdout = String::from_utf8(table_assert.get_output().stdout.clone())
         .expect("stdout should be valid utf-8");
-    assert!(table_stdout.contains("Document | status"));
+    assert!(table_stdout.contains("| Document | status |"));
+    assert!(table_stdout.contains("| --- | --- |"));
     assert!(!table_stdout.contains("result(s)"));
 
     let grouped_assert = Command::cargo_bin("vulcan")
@@ -6822,7 +6862,8 @@ fn dataview_plugin_display_settings_affect_human_output() {
         .success();
     let grouped_stdout = String::from_utf8(grouped_assert.get_output().stdout.clone())
         .expect("stdout should be valid utf-8");
-    assert!(grouped_stdout.contains("Bucket | count"));
+    assert!(grouped_stdout.contains("| Bucket | count |"));
+    assert!(grouped_stdout.contains("| --- | --- |"));
     assert!(!grouped_stdout.contains("result(s)"));
 }
 
@@ -8828,9 +8869,9 @@ fn bases_human_output_is_compact_and_grouped() {
             predicate::str::contains("Release Table")
                 .and(predicate::str::contains("Grouped by: Status"))
                 .and(predicate::str::contains("Group: backlog"))
-                .and(predicate::str::contains("Name"))
-                .and(predicate::str::contains("Due"))
-                .and(predicate::str::contains("Backlog")),
+                .and(predicate::str::contains("| Name | Due |"))
+                .and(predicate::str::contains("| --- | --- |"))
+                .and(predicate::str::contains("| Backlog |")),
         );
 }
 
