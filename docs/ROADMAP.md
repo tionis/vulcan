@@ -3310,7 +3310,7 @@ Currently only supports `export search-index`. Add more useful export targets an
 - [x] `vulcan export graph --format dot|json` — export the link graph in DOT or JSON format
 - [x] `vulcan export zip <query> -o vault.zip` — export matched notes with content, metadata, and attachments as a structured ZIP archive (preserves directory layout)
 - [x] `vulcan export sqlite <query> -o vault.db` — export to a self-contained SQLite database with tables for notes (path, content, frontmatter JSON), links, tags, and tasks
-- [ ] `vulcan export epub <query> -o book.epub` (future) — render matched notes to an EPUB document with table of contents derived from note structure and link ordering
+- [ ] `vulcan export epub <query> -o book.epub` — render matched notes to an EPUB document optionally enriched with backlinks, with table of contents derived from note structure, tags and link ordering
 
 **`vulcan tasks` source selection**
 
@@ -3326,7 +3326,7 @@ The command may not correctly toggle between TaskNotes-only and all-tasks (inclu
 `vulcan notes` (property query) and `vulcan note` (single-note CRUD) differ by one character. Users will constantly type the wrong one.
 
 - [x] At minimum, add a clear error message when `vulcan notes get` or `vulcan note --where` is attempted: suggest the correct command
-- [ ] Long-term: absorb `notes` into `query` (see 9.19.7) to eliminate the confusion entirely
+- [-] Long-term: absorb `notes` into `query` (see 9.19.7) to eliminate the confusion entirely
 
 #### 9.19.10 Web search backend expansion
 
