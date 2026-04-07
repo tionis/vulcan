@@ -418,7 +418,7 @@ fn run_dot_expr(
 fn print_repl_result(output: OutputFormat, result: &DataviewJsResult) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(result),
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             print_repl_result_human(result);
             Ok(())
         }
@@ -428,7 +428,7 @@ fn print_repl_result(output: OutputFormat, result: &DataviewJsResult) -> Result<
 fn print_repl_error(output: OutputFormat, error: &str) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(&serde_json::json!({ "error": error })),
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             eprintln!("error: {error}");
             Ok(())
         }

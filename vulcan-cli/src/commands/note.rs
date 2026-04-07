@@ -50,7 +50,7 @@ pub(crate) fn handle_note_command(
                     raw: *raw,
                 },
             )?;
-            crate::print_note_get_report(cli.output, &report)
+            crate::print_note_get_report(cli.output, &report, stdout_is_tty, use_stdout_color)
         }
         NoteCommand::Set {
             note,

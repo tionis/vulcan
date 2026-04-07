@@ -5,6 +5,8 @@ pub(crate) fn handle_dataview_command(
     cli: &Cli,
     paths: &VaultPaths,
     command: &DataviewCommand,
+    stdout_is_tty: bool,
+    use_stdout_color: bool,
 ) -> Result<(), CliError> {
     let display_result_count = load_vault_config(paths)
         .config
@@ -18,15 +20,33 @@ pub(crate) fn handle_dataview_command(
         }
         DataviewCommand::Query { dql } => {
             let result = crate::run_dataview_query_command(paths, dql)?;
-            crate::print_dql_query_result(cli.output, &result, display_result_count)
+            crate::print_dql_query_result(
+                cli.output,
+                &result,
+                display_result_count,
+                stdout_is_tty,
+                use_stdout_color,
+            )
         }
         DataviewCommand::QueryJs { js, file } => {
             let result = crate::run_dataview_query_js_command(paths, js, file.as_deref())?;
-            crate::print_dataview_js_result(cli.output, &result, display_result_count)
+            crate::print_dataview_js_result(
+                cli.output,
+                &result,
+                display_result_count,
+                stdout_is_tty,
+                use_stdout_color,
+            )
         }
         DataviewCommand::Eval { file, block } => {
             let report = crate::run_dataview_eval_command(paths, file, *block)?;
-            crate::print_dataview_eval_report(cli.output, &report, display_result_count)
+            crate::print_dataview_eval_report(
+                cli.output,
+                &report,
+                display_result_count,
+                stdout_is_tty,
+                use_stdout_color,
+            )
         }
     }
 }

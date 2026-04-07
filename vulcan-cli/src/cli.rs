@@ -8,6 +8,7 @@ Quick start:
   vulcan search \"meeting notes\"                       Full-text search
   vulcan today                                         Open today's daily note
   vulcan note create Projects/new-idea.md              Create a note
+  vulcan render README.md                              Render markdown in the terminal
   vulcan run                                           Start the JS REPL
 
 Command groups (run `vulcan help` for the full grouped reference):
@@ -19,7 +20,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   Plugins:     bases, dataview
   Analysis:    graph, suggest, cluster, related, doctor
   Index:       index, vectors, cache, repair
-  Runtime:     run, web
+  Runtime:     run, web, render
   Git:         git
   Automation:  saved, automation, batch, export, checkpoint
   Setup:       init, config, trust
@@ -37,6 +38,17 @@ Freshness:
 Color:
   --color always|never|auto   Force or suppress ANSI color output (default: auto)
   NO_COLOR env var also suppresses color when set";
+
+const RENDER_COMMAND_AFTER_HELP: &str = "\
+Notes:
+  Human output uses Vulcan's terminal markdown renderer.
+  When stdout is not a TTY, the rendered output is emitted without ANSI escapes.
+  Use `--output markdown` to print the original markdown source unchanged.
+
+Examples:
+  vulcan render README.md
+  cat README.md | vulcan render
+  vulcan --output markdown render README.md";
 
 const NOTES_COMMAND_AFTER_HELP: &str = "\
 Sort keys:
@@ -1021,6 +1033,7 @@ pub enum ColorMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
     Human,
+    Markdown,
     Json,
 }
 
@@ -1907,6 +1920,12 @@ pub enum WebFetchMode {
     Markdown,
     Html,
     Raw,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct RenderArgs {
+    #[arg(help = "Markdown file to render; omit to read from stdin")]
+    pub file: Option<PathBuf>,
 }
 
 /// CLI-level search backend selector (mirrors `SearchBackendKind` from config).
@@ -3265,6 +3284,11 @@ pub enum Command {
         #[command(subcommand)]
         command: WebCommand,
     },
+    #[command(
+        about = "Render markdown from a file or stdin in the terminal",
+        after_help = RENDER_COMMAND_AFTER_HELP
+    )]
+    Render(RenderArgs),
     #[command(
         about = "Open or create the weekly note for a date",
         after_help = PERIODIC_COMMAND_AFTER_HELP

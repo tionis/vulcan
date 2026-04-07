@@ -51,6 +51,8 @@ pub(crate) fn handle_run_command(
     cli: &Cli,
     paths: &VaultPaths,
     args: &RunArgs<'_>,
+    stdout_is_tty: bool,
+    use_stdout_color: bool,
 ) -> Result<(), CliError> {
     let timeout = crate::parse_run_timeout(args.timeout)?;
     let sandbox = crate::parse_run_sandbox(args.sandbox)?;
@@ -59,7 +61,13 @@ pub(crate) fn handle_run_command(
     if !args.eval.is_empty() {
         for code in args.eval {
             let result = crate::run_js_eval(paths, code, timeout, sandbox)?;
-            crate::print_dataview_js_result(cli.output, &result, false)?;
+            crate::print_dataview_js_result(
+                cli.output,
+                &result,
+                false,
+                stdout_is_tty,
+                use_stdout_color,
+            )?;
         }
         return Ok(());
     }
@@ -71,7 +79,7 @@ pub(crate) fn handle_run_command(
         js_repl::run_js_repl(paths, cli.output, timeout, sandbox, args.no_startup)
     } else {
         let result = crate::run_js_command(paths, args.script, args.script_mode, timeout, sandbox)?;
-        crate::print_dataview_js_result(cli.output, &result, false)
+        crate::print_dataview_js_result(cli.output, &result, false, stdout_is_tty, use_stdout_color)
     }
 }
 
@@ -79,6 +87,8 @@ pub(crate) fn handle_web_command(
     cli: &Cli,
     paths: &VaultPaths,
     command: &WebCommand,
+    stdout_is_tty: bool,
+    use_stdout_color: bool,
 ) -> Result<(), CliError> {
     match command {
         WebCommand::Search {
@@ -97,7 +107,7 @@ pub(crate) fn handle_web_command(
         } => {
             let report =
                 crate::run_web_fetch_command(paths, url, *mode, save.as_ref(), *extract_article)?;
-            crate::print_web_fetch_report(cli.output, &report)
+            crate::print_web_fetch_report(cli.output, &report, stdout_is_tty, use_stdout_color)
         }
     }
 }

@@ -107,7 +107,13 @@ pub(crate) fn handle_query_command(
             .config
             .dataview
             .display_result_count;
-        return crate::print_dql_query_result(cli.output, &result, display_result_count);
+        return crate::print_dql_query_result(
+            cli.output,
+            &result,
+            display_result_count,
+            stdout_is_tty,
+            use_stdout_color,
+        );
     }
 
     let ast = match (dsl, json) {
@@ -458,7 +464,7 @@ fn print_tag_counts(
     let visible = paginated_items(tags, list_controls);
     let rows = tag_rows(visible);
     match output {
-        crate::OutputFormat::Human => {
+        crate::OutputFormat::Human | crate::OutputFormat::Markdown => {
             if visible.is_empty() {
                 println!("No tags found.");
                 return Ok(());
@@ -514,7 +520,7 @@ fn print_property_catalog(
     let visible = paginated_items(properties, list_controls);
     let rows = property_catalog_rows(visible);
     match output {
-        crate::OutputFormat::Human => {
+        crate::OutputFormat::Human | crate::OutputFormat::Markdown => {
             if visible.is_empty() {
                 println!("No properties found.");
                 return Ok(());
@@ -567,7 +573,7 @@ fn print_query_field_catalog(
     let visible_rows = paginated_items(&rows, list_controls);
 
     match cli.output {
-        crate::OutputFormat::Human => {
+        crate::OutputFormat::Human | crate::OutputFormat::Markdown => {
             if visible_rows.is_empty() {
                 println!("No query fields discovered.");
                 return Ok(());

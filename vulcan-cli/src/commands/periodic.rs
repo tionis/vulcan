@@ -10,6 +10,8 @@ pub(crate) fn handle_daily_command(
     command: &DailyCommand,
     interactive_note_selection: bool,
     list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_stdout_color: bool,
 ) -> Result<(), CliError> {
     match command {
         DailyCommand::Today { no_edit, no_commit } => {
@@ -26,7 +28,7 @@ pub(crate) fn handle_daily_command(
         }
         DailyCommand::Show { date } => {
             let report = crate::run_daily_show_command(paths, date.as_deref(), "daily")?;
-            crate::print_daily_show_report(cli.output, &report)
+            crate::print_daily_show_report(cli.output, &report, stdout_is_tty, use_stdout_color)
         }
         DailyCommand::List {
             from,
@@ -137,6 +139,7 @@ pub(crate) fn handle_monthly_command(
     crate::print_periodic_open_report(cli.output, &report)
 }
 
+#[allow(clippy::fn_params_excessive_bools)]
 pub(crate) fn handle_periodic_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -147,6 +150,8 @@ pub(crate) fn handle_periodic_command(
     no_commit: bool,
     interactive_note_selection: bool,
     list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_stdout_color: bool,
 ) -> Result<(), CliError> {
     match command {
         Some(PeriodicSubcommand::List { period_type }) => {
@@ -168,7 +173,7 @@ pub(crate) fn handle_periodic_command(
         }
         Some(PeriodicSubcommand::Show { period_type, date }) => {
             let report = crate::run_daily_show_command(paths, date.as_deref(), period_type)?;
-            crate::print_daily_show_report(cli.output, &report)
+            crate::print_daily_show_report(cli.output, &report, stdout_is_tty, use_stdout_color)
         }
         Some(PeriodicSubcommand::Append {
             text,
