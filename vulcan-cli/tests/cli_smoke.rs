@@ -13334,24 +13334,68 @@ fn complete_daily_date_context_returns_keywords_and_dates() {
         .clone();
     let text = String::from_utf8_lossy(&output);
     let lines: Vec<&str> = text.lines().collect();
-    assert!(
-        lines.contains(&"today"),
-        "daily-date completions should include 'today'"
-    );
-    assert!(
-        lines.contains(&"yesterday"),
-        "daily-date completions should include 'yesterday'"
-    );
-    assert!(
-        lines.contains(&"tomorrow"),
-        "daily-date completions should include 'tomorrow'"
-    );
-    // Should have 14 ISO date entries plus the 3 keywords
+    assert!(lines.contains(&"today"), "should include 'today'");
+    assert!(lines.contains(&"yesterday"), "should include 'yesterday'");
+    assert!(lines.contains(&"tomorrow"), "should include 'tomorrow'");
     let iso_dates: Vec<_> = lines
         .iter()
         .filter(|l| l.len() == 10 && l.chars().nth(4) == Some('-'))
         .collect();
     assert_eq!(iso_dates.len(), 14, "should have 14 past ISO dates");
+}
+
+#[test]
+fn complete_daily_date_includes_existing_note_dates() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir should be created");
+
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[periodic.daily]\nfolder = \"Journal/Daily\"\n",
+    )
+    .expect("config should be written");
+
+    // Create two daily notes with dates far enough back they won't be in the
+    // last-14-days hardcoded list.
+    for date in &["2024-01-15", "2023-06-03"] {
+        fs::write(
+            vault_root.join(format!("Journal/Daily/{date}.md")),
+            format!("# {date}\n\nA daily note.\n"),
+        )
+        .expect("daily note should be written");
+    }
+    run_scan(&vault_root);
+
+    let vault_str = vault_root.to_str().expect("vault path should be utf-8");
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", vault_str, "complete", "daily-date"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8_lossy(&output);
+    let lines: Vec<&str> = text.lines().collect();
+
+    assert!(lines.contains(&"today"), "should still include 'today'");
+    assert!(
+        lines.contains(&"2024-01-15"),
+        "should include existing daily note date 2024-01-15"
+    );
+    assert!(
+        lines.contains(&"2023-06-03"),
+        "should include existing daily note date 2023-06-03"
+    );
+    // Existing dates should not be duplicated
+    assert_eq!(
+        lines.iter().filter(|&&l| l == "2024-01-15").count(),
+        1,
+        "each date should appear exactly once"
+    );
 }
 
 #[test]

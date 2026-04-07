@@ -12383,9 +12383,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     // erroring so the shell gets a clean exit.
     if let Command::Complete { ref context } = cli.command {
         if context == "daily-date" {
-            // Pure date arithmetic — no vault needed.
+            // Emit vault-free candidates (keywords + last 14 days) first, then
+            // supplement with existing note dates from the vault if available.
+            let mut seen = std::collections::HashSet::new();
             for candidate in collect_complete_candidates_no_vault(context) {
-                println!("{candidate}");
+                if seen.insert(candidate.clone()) {
+                    println!("{candidate}");
+                }
+            }
+            if let Ok(paths) = resolve_vault_root(&cli.vault).map(VaultPaths::new) {
+                for candidate in collect_complete_candidates(&paths, context) {
+                    if seen.insert(candidate.clone()) {
+                        println!("{candidate}");
+                    }
+                }
             }
             return Ok(());
         }
@@ -21201,10 +21212,13 @@ fn collect_complete_candidates_no_vault(context: &str) -> Vec<String> {
 }
 
 fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String> {
-    // Delegate vault-free contexts so they always work.
-    let vault_free = collect_complete_candidates_no_vault(context);
-    if !vault_free.is_empty() {
-        return vault_free;
+    // vault-free contexts that also have a vault-dependent branch are handled in
+    // dispatch() using a HashSet merge; skip them here to avoid masking the DB branch.
+    if context != "daily-date" {
+        let vault_free = collect_complete_candidates_no_vault(context);
+        if !vault_free.is_empty() {
+            return vault_free;
+        }
     }
     match context {
         "note" => {
@@ -21238,6 +21252,27 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
                     }
                     out
                 }
+                Err(_) => Vec::new(),
+            }
+        }
+        "daily-date" => {
+            // Vault-dependent supplement: dates of existing daily notes.
+            use vulcan_core::CacheDatabase;
+            let Ok(db) = CacheDatabase::open(paths) else {
+                return Vec::new();
+            };
+            let conn = db.connection();
+            let mut stmt = match conn.prepare(
+                "SELECT periodic_date FROM documents \
+                 WHERE periodic_type = 'daily' AND periodic_date IS NOT NULL \
+                 ORDER BY periodic_date DESC",
+            ) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0));
+            match rows {
+                Ok(iter) => iter.flatten().collect(),
                 Err(_) => Vec::new(),
             }
         }
