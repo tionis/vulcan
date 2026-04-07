@@ -2910,11 +2910,11 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 1. [x] **9.19.1** (bug fixes) — broken things first
 2. [x] **9.19.5** (DQL completeness) — core functionality gap blocking real queries
 3. [x] **9.19.4** (help polish) — first impression for new users
-4. [x] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
+4. [-] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
 5. [x] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
-6. [x] **9.19.6** (missing commands) — filling gaps, MCP server
+6. [-] **9.19.6** (missing commands) — filling gaps, MCP server
 7. [x] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
-8. [x] **9.19.9** (command clarity) — docs and naming, low effort
+8. [-] **9.19.9** (command clarity) — docs and naming, low effort
 9. [x] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
 10. [ ] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
 11. [ ] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
@@ -3011,6 +3011,7 @@ The JS runtime does not expose Obsidian-compatible objects (`app`, `tp`, etc.) t
 
 **Raw markdown / HTML access**
 
+- These tasks are foundational for **Phase 9.20 (Static site builder)**. Land them on the shared renderer used by `site build`, later WebUI note pages, and any future wiki mode rather than as isolated one-off HTML conversions.
 - [ ] Ensure `vault.note(path).content` returns raw markdown (verify this works and document it)
 - [ ] Add `vault.note(path).html` — render the note's markdown to HTML using the existing markdown pipeline
 - [ ] `--mode html` flag on `vulcan note get` for CLI access to rendered HTML
@@ -3305,7 +3306,7 @@ Currently only supports `export search-index`. Add more useful export targets an
 - [ ] `vulcan export markdown <query>` — export matched notes as a combined markdown document
 - [ ] `vulcan export json <query>` — export note metadata and content as JSON
 - [ ] `vulcan export csv <query>` — export query results as CSV
-- [ ] `vulcan export html <query>` — render matched notes to static HTML
+- [-] `vulcan export html <query>` — superseded by **Phase 9.20** `site build`; if retained, implement as a thin one-shot wrapper around a transient site profile rather than a separate rendering path
 - [ ] `vulcan export graph --format dot|json` — export the link graph in DOT or JSON format
 - [ ] `vulcan export zip <query> -o vault.zip` — export matched notes with content, metadata, and attachments as a structured ZIP archive (preserves directory layout)
 - [ ] `vulcan export sqlite <query> -o vault.db` — export to a self-contained SQLite database with tables for notes (path, content, frontmatter JSON), links, tags, and tasks
@@ -3564,6 +3565,167 @@ The release binary is 28MB. This is acceptable given the portability goal, but w
 
 ---
 
+## Phase 9.20: Static Site Builder
+
+**Goal:** Generate a polished, Obsidian-native static website directly from a vault, with profile-scoped publication rules, a shared HTML renderer, and a fast local preview loop. This phase is intentionally scheduled **before** daemon/WebUI work in the roadmap priority order so later phases reuse a proven rendering layer instead of inventing a second one.
+
+**Depends on:** Phase 7 complete. Best started after Phase 9 is functionally complete, especially 9.8 (Dataview), 9.10 (Tasks), 9.11 (Kanban), 9.15 (TaskNotes), 9.16 (Periodic notes), 9.18.2/9.18.7 (note HTML/docs surface), and 9.19.6 (missing commands / CLI surface). DataviewJS static execution in 9.20.7 depends on 9.8.8 and 9.18.5.
+
+**Design refs:** `docs/design_document.md` §10 (single search engine reused across CLI/HTTP/web), §12b inline expressions and DataviewJS rendering concerns, 9.19.2 (raw markdown / HTML access), 9.19.9 (`export html`), Phase 13 (WebUI browse), and Phase 16 (Wiki mode).
+
+**Why this phase exists:** Quartz, Obsidian Publish, and similar tools prove there is demand for vault-native publishing, but Vulcan has an unusual advantage: the parser, graph cache, query AST, Dataview/Bases evaluator, task model, and link resolver already exist locally in Rust. A static builder exercises exactly the parts later WebUI/wiki phases need most — rendering, routing, page indexes, search/graph assets, and publish filtering — without first taking on daemon auth, multi-vault orchestration, or collaborative editing.
+
+**Core rules**
+
+- **CLI-first, daemon-independent.** `vulcan site build` and `vulcan site serve` must work against a local vault and SQLite cache without Phase 10 running.
+- **One renderer, many surfaces.** Note HTML for `note get --mode html`, static site pages, and later WebUI/wiki pages must come from the same render pipeline and data structures.
+- **Vault remains the source of truth.** The output directory is disposable. Rebuilds must be deterministic from vault contents + config.
+- **Privacy by omission, never by hiding.** In static output, "private pages" means excluded at build time. Never emit hidden HTML/JSON and rely on client-side checks.
+- **Subset publishing uses existing query/filter concepts.** Site profiles should reuse canonical query/filter machinery instead of inventing a separate publish DSL.
+- **No required Node toolchain.** The default theme, renderer, and preview server should ship in the Rust binary. Optional downstream theming pipelines can exist later.
+- **Custom CSS and light/dark mode are baseline features, not post-launch polish.**
+- **Static assets must respect publish filters.** Search indexes, graph JSON, hover-preview manifests, RSS feeds, and copied attachments must never leak excluded notes.
+
+**Configuration sketch**
+
+```toml
+[site.profiles.public]
+title = "My Notes"
+base_url = "https://notes.example.com"
+output_dir = ".vulcan/site/public"
+home = "Home"
+language = "en"
+theme = "default"
+include_query = 'from "Garden"'
+exclude_folders = ["Templates/**", "Archive/**"]
+exclude_tags = ["private", "draft"]
+search = true
+graph = true
+backlinks = true
+rss = true
+extra_css = ["site/public.css"]
+extra_js = ["site/public.js"]
+favicon = "site/favicon.png"
+
+[site.profiles.docs]
+title = "Project Docs"
+base_url = "https://docs.example.com"
+output_dir = ".vulcan/site/docs"
+include_query = 'from "Docs"'
+theme = "default"
+search = true
+graph = false
+```
+
+### 9.20.1 Shared render contract and CLI surface
+
+This is the foundation. Do this before building site chrome, templates, or preview tooling.
+
+- [ ] Add `vulcan site build [--profile <name>] [--output-dir <path>] [--clean] [--dry-run] [--watch]`
+- [ ] Add `vulcan site serve [--profile <name>] [--output-dir <path>] [--port <n>] [--watch]`
+- [ ] Add `vulcan site profiles` (list available site profiles with effective settings)
+- [ ] Add `vulcan site doctor [--profile <name>]` for publish-specific diagnostics: unpublished link targets, slug collisions, unsupported embeds, missing assets, SEO metadata gaps
+- [ ] Land `vault.note(path).html` and `vulcan note get --mode html` on the same renderer used by site generation
+- [ ] Define shared render structs in Rust (`RenderContext`, `RenderedNote`, `RenderedEmbed`, `SiteRoute`, etc.) so CLI/site/WebUI reuse the same contracts
+- [ ] Define deterministic route/slug planning with diagnostics on collisions and stable defaults derived from note path/frontmatter
+- [ ] Add JSON output for `site build`, `site profiles`, and `site doctor` for automation/LLM use
+- [ ] Snapshot tests for single-note HTML rendering and route manifests
+
+### 9.20.2 Site profiles and publication selection
+
+Publishing a subset of the vault is a first-class requirement. Profiles are the mechanism.
+
+- [ ] Add `[site.profiles.<name>]` config section to `.vulcan/config.toml`
+- [ ] Support profile fields: `title`, `base_url`, `output_dir`, `home`, `language`, `theme`, `search`, `graph`, `backlinks`, `rss`, `favicon`, `logo`, `extra_css`, `extra_js`
+- [ ] Support inclusion/exclusion by canonical query AST, folder glob, explicit note path, tag, and frontmatter predicates
+- [ ] Support multiple profiles per vault so one vault can publish a public garden, project docs, and private local preview separately
+- [ ] Add per-profile slug/frontmatter overrides: title, description, canonical URL, summary image, custom slug
+- [ ] Add link policy for references that point outside the published subset: `error`, `warn`, `drop-link`, or `render-plain-text`
+- [ ] Add attachment policy: copy only referenced assets, copy whole folders, or error on missing references
+- [ ] "Private pages" in static mode are implemented as exclusion rules only; document this constraint explicitly in help and config docs
+- [ ] Config tests for precedence, profile parsing, subset selection, and publish-leak prevention
+
+### 9.20.3 Obsidian-native HTML renderer
+
+The renderer should understand vault semantics, not just CommonMark.
+
+- [ ] Render Markdown to HTML with Obsidian-compatible support for wikilinks, heading/block refs, note embeds, image/audio/video/PDF embeds, footnotes, callouts, task lists, tables, and syntax highlighting
+- [ ] Render math and mermaid with clear server/client responsibilities (static HTML + minimal runtime hook, or prerender where practical)
+- [ ] Generate stable heading IDs and block anchors for deep links and embeds
+- [ ] Render note/block embeds recursively with loop detection and depth limits
+- [ ] Copy referenced attachments into the output with deterministic paths; optionally content-hash emitted asset filenames
+- [ ] Add configurable raw HTML policy: passthrough, sanitize, or strip with diagnostics
+- [ ] Generate per-page metadata from existing indexes: title, excerpt/summary, tags, aliases, outgoing links, backlinks, breadcrumbs, heading tree, created/modified dates
+- [ ] Preserve unsupported syntax as visible diagnostics or fallback blocks rather than silently dropping content
+- [ ] Add snapshot/integration tests against fixture vaults covering embeds, block refs, math, mermaid, callouts, and attachment rewriting
+
+### 9.20.4 Site generation, theme system, and default UX
+
+This sub-phase turns rendered notes into a coherent website rather than a folder of HTML fragments.
+
+- [ ] Generate note pages, home page, folder listings, tag listings, recent-notes page, and optional archive page
+- [ ] Add TOC, breadcrumbs, backlinks, and previous/next navigation using existing graph and path metadata
+- [ ] Ship a responsive default theme implemented with plain CSS and minimal JS; no SPA router required for the first usable version
+- [ ] Use CSS custom properties for the theme token system so customization stays simple and stable
+- [ ] Support light/dark mode out of the box: `prefers-color-scheme` by default plus a manual toggle persisted in browser storage
+- [ ] Support profile-scoped custom CSS as a first-class feature (`extra_css`) and optional profile-scoped custom JS (`extra_js`)
+- [ ] Support favicon/logo injection and custom page title templates
+- [ ] Implement SEO basics: canonical URLs, sitemap.xml, RSS/Atom feed, OpenGraph/Twitter metadata, social preview fallbacks
+- [ ] Accessibility budget: ensure the default theme is keyboard-navigable, mobile-friendly, and screen-reader-friendly; add snapshot or smoke tests for landmarks/heading structure
+- [ ] If `vulcan export html` is kept, implement it as a thin wrapper over `site build` rather than a parallel renderer/template stack
+
+### 9.20.5 Client-side search, graph assets, and hover previews
+
+These features differentiate the site from a plain markdown-to-HTML export and directly reuse existing Vulcan data structures.
+
+- [ ] Generate a static client-side search index from chunks/search metadata with note titles, headings, excerpts, tags, and URLs
+- [ ] Provide a default search UI with keyboard shortcut, result highlighting, and mobile-friendly behavior
+- [ ] Emit graph JSON using the resolved note graph plus per-page local neighborhoods for a local graph view
+- [ ] Add a global graph page and per-page local graph component using the same JSON asset schema later reusable by WebUI
+- [ ] Generate a hover-preview/popover manifest with title, excerpt, URL, and optional heading outline so links can show Wikipedia-style previews
+- [ ] Generate recent-notes and related-notes manifests from existing metadata/graph data where useful
+- [ ] Ensure publish filters apply uniformly: excluded notes must not appear in search indexes, graph JSON, preview manifests, feeds, or copied assets
+- [ ] Add regression tests proving excluded/draft/private notes cannot leak through any generated static asset
+
+### 9.20.6 Local preview server and incremental rebuilds
+
+This is a site-development loop, not a replacement for the daemon.
+
+- [ ] `vulcan site serve --watch` serves the generated site from a lightweight local HTTP server
+- [ ] Watch vault files, `.vulcan/config.toml`, profile CSS/JS assets, and theme/template files; rebuild incrementally when inputs change
+- [ ] Rebuild only affected pages/indices/assets where possible using the existing incremental scan and dependency information
+- [ ] Browser live reload via SSE or WebSocket; keep this local and simple rather than reusing Phase 10 routing/auth
+- [ ] Clear diagnostics in the terminal and optional in-browser overlay for broken links, unsupported embeds, render failures, or leaked/private pages
+- [ ] Add `--fail-on-warning` / `--strict` mode for CI-style preview checks
+- [ ] Integration tests for build → serve → modify source → incremental rebuild → updated output
+
+### 9.20.7 Dataview, Bases, Tasks, and advanced read-only surfaces
+
+Vulcan should compete on Obsidian-native semantics here, not just theming.
+
+- [ ] Render inline Dataview expressions in note pages using the same evaluator as CLI/WebUI
+- [ ] Render DQL query blocks to static HTML tables/lists/task views when evaluation is deterministic
+- [ ] Render Bases views to static tables/cards using the canonical query AST and existing Bases evaluator
+- [ ] Render Tasks plugin views, TaskNotes views, periodic-note event listings, and Kanban boards in read-only HTML where the underlying data already exists in the cache
+- [ ] Add explicit DataviewJS publish policy: default `off`; optional `static` mode behind `js_runtime` feature flag and profile opt-in
+- [ ] In DataviewJS `static` mode, enforce determinism constraints: no network, no wall-clock dependence, no filesystem writes, and clear diagnostics on unsupported behavior
+- [ ] Unsupported or disabled DataviewJS blocks should render visible fallback output with diagnostics rather than disappearing silently
+- [ ] Document what is intentionally deferred from the first static-site release: comments, analytics integrations, stacked pages, SPA routing, full browser-side DataviewJS parity, and any "private page" mechanism that depends on runtime auth
+- [ ] Integration tests on fixture vaults containing Dataview, Bases, Tasks, TaskNotes, Kanban, and periodic-note content
+
+### 9.20.8 Testing, determinism, and later-phase reuse
+
+This phase is only worth doing early if later phases can build on it directly.
+
+- [ ] Build-twice determinism test: same vault + same config must produce byte-identical output (modulo intentional timestamps in feeds, which should be normalized in tests)
+- [ ] Multi-profile tests: one vault builds multiple profiles with different subsets/themes without asset leakage between outputs
+- [ ] Publish-subset leak tests: excluded notes cannot appear in HTML, JSON manifests, feeds, copied assets, or hover previews
+- [ ] HTML snapshot tests for representative pages and fixture vaults
+- [ ] Document the shared renderer/output contracts reused by Phase 13 note pages and Phase 16 wiki mode
+- [ ] Add explicit cross-reference notes in later phases: WebUI and wiki features must reuse this renderer/search/graph asset model unless a documented reason requires divergence
+
+---
+
 ## Deferred enhancements (post-Phase 9)
 
 Features removed from Phase 9 sub-phases that need deeper research, depend on later phases (WebUI, daemon, chat platforms), or will be implemented differently than their Obsidian plugin counterparts. These are not abandoned — they are intentionally deferred until their prerequisites and design constraints are better understood.
@@ -3639,7 +3801,7 @@ The `tasknotesCalendar` and `tasknotesMiniCalendar` Bases view types require vis
 
 **Goal:** A long-running process that serves multiple vaults over a proper REST API. The CLI can connect to it instead of opening the cache directly, eliminating per-command startup cost and enabling multi-vault workflows.
 
-**Depends on:** Phase 7 complete. Phases 9.8–9.17 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes, Periodic Notes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins.
+**Depends on:** Phase 7 complete. Phases 9.8–9.17 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes, Periodic Notes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins. **Phase 9.20 is intentionally scheduled before this phase in roadmap priority order to solidify shared rendering/export contracts, but Phase 10 does not technically require it.**
 **Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
 
 Search API note: search request semantics are already defined earlier by the shared `SearchQuery` contract from Phase 9.6. Phase 10 daemon work reuses that surface; it does not introduce a second search-parameter design step.
@@ -3840,9 +4002,9 @@ trait SyncBackend: Send + Sync {
 
 ## Phase 13: WebUI — Admin and Browse
 
-**Goal:** A web interface for managing the daemon, browsing vaults, and monitoring sync. Read-only initially, leveraging the existing JSON API.
+**Goal:** A web interface for managing the daemon, browsing vaults, and monitoring sync. Read-only initially, leveraging the existing JSON API and the shared rendering/site contracts established in Phase 9.20.
 
-**Depends on:** Phase 10 (daemon REST API).
+**Depends on:** Phase 10 (daemon REST API), Phase 9.20 (shared note renderer, route/search/graph asset contracts), and Phase 17.1–17.3 for auth-respecting browse surfaces.
 
 ### 13.1 Architecture
 
@@ -3863,8 +4025,8 @@ trait SyncBackend: Send + Sync {
 ### 13.3 Vault browser
 
 - [ ] Note list with search (uses `/search` API)
-- [ ] Note detail view: rendered markdown, frontmatter properties, backlinks, outgoing links
-- [ ] Graph visualization: interactive node-link diagram (uses `/graph/*` APIs)
+- [ ] Note detail view: rendered markdown, frontmatter properties, backlinks, outgoing links. Reuse the same note renderer and metadata contracts as `vulcan site build`.
+- [ ] Graph visualization: interactive node-link diagram (uses `/graph/*` APIs and should reuse the graph JSON schema from Phase 9.20 where practical)
 - [ ] Tag cloud / tag browser
 - [ ] Property explorer: browse notes by property values
 - [ ] Bases view rendering: display evaluated bases views as tables
@@ -3999,7 +4161,7 @@ trait SyncBackend: Send + Sync {
 
 **Goal:** A polished, public-facing wiki served from an Obsidian vault. Read-optimized with optional auth for editing. Supports real-time collaborative editing via Automerge CRDTs.
 
-**Depends on:** Phase 13 (WebUI browse), Phase 14 (WebUI write, Automerge editing sessions).
+**Depends on:** Phase 13 (WebUI browse), Phase 14 (WebUI write, Automerge editing sessions), and Phase 9.20 (public-rendering, theming, routing, and SEO groundwork).
 
 **Automerge in Phase 16:** Phase 14 introduces Automerge for ephemeral single-user editing sessions. Phase 16 extends this to multi-user real-time collaboration by adding the Automerge sync protocol over WebSockets. The on-disk `.md` files and git remain the canonical store and versioning backend — Automerge is the live collaboration layer, not a replacement for git.
 
@@ -4011,6 +4173,7 @@ trait SyncBackend: Send + Sync {
 - [ ] Search: full FTS + vector hybrid search exposed in the UI
 - [ ] Home page: configurable (default: note named `Home.md` or `index.md`)
 - [ ] SEO: server-rendered HTML, meta tags, sitemap generation
+- [ ] Reuse the route conventions, default metadata model, hover-preview contracts, and theme tokens from Phase 9.20 unless a documented dynamic requirement forces divergence
 
 ### 16.2 Wiki-specific rendering
 
@@ -4519,30 +4682,29 @@ Phase 1 (Core indexing)
                                Phase 7 (Post-v1 workflow features)
                                     ↓                    ↓                         ↓
                           Phase 8 (Performance)  Phase 9 (CLI refinements)  Phase 10 (Multi-vault daemon)
-                                                   ↓                          ↓             ↓
-                                                 9.3 ──────→ Phase 11 (Git versioning)  Phase 17 (User mgmt & ACL)
-                                                                ↓                         ↓
-                                                        Phase 12 (Sync)           Phase 13 (WebUI browse)
-                                                                                    ↓
-                                  Phase 18 (Canvas) ───→ 18.5 (Canvas WebUI read) ← Phase 13
-                                    ↑                           ↓
-                                  Phase 7              Phase 14 (WebUI write + Automerge)
-                                                                ↓
-                                                 18.6 (Canvas WebUI editor) ← Phase 14
-                                                                ↓
-                                                        Phase 15 (Extensibility) ← Phase 10
-                                                                ↓
-                                                        Phase 16 (Wiki + live collab)
-                                                                ↓
-                                                        16.6 (Local-first / WASM) [future]
+                                                   ↓            ↘             ↓             ↓
+                                                  9.3      Phase 9.20         │      Phase 17 (User mgmt & ACL)
+                                                   │      (Static site builder)│             ↓
+                                                   └──────→ Phase 11 (Git versioning)   Phase 13 (WebUI browse)
+                                                                  ↓                  ↖        ↓
+                                                          Phase 12 (Sync)      (also from 9.20)
+                                                                                         ↓
+                                  Phase 18 (Canvas) ───→ 18.5 (Canvas WebUI read) ← Phase 14 (WebUI write + Automerge)
+                                    ↑                                                      ↓
+                                  Phase 7                                      18.6 (Canvas WebUI editor)
+                                                                                        ↓
+                                                        Phase 15 (Extensibility) ← Phase 10   Phase 16 (Wiki + live collab)
+                                                                                                        ↓
+                                                                                            16.6 (Local-first / WASM) [future]
 ```
 
 Phase 8 (Performance) is independent and can proceed in parallel with Phases 9 and 10 after Phase 7.
-Phases 9 and 10 can proceed in parallel after Phase 7.
+Phase 9.20 (Static site builder) is intentionally scheduled after Phase 9 and before Phase 10 in roadmap priority order, but Phase 10 remains technically independent if daemon work becomes urgent.
+Phases 9 and 10 can proceed in parallel after Phase 7; 9.20 is the recommended "do this first" bridge between them for rendering/publication work.
 Phase 11 requires 9.3 (git module) and 10 (daemon). Phase 12 requires 10 and 11.
 Phase 17 requires 10 (daemon). Sub-phases 17.1–17.3 (users, groups, ACLs, permission-filtered queries) must complete before Phase 13.
-Phase 13 requires 10 and 17.1–17.3. Phase 14 requires 13 and 10's write endpoints. Phase 14 introduces Automerge as the document model.
-Phase 15 requires 10. Phase 16 requires 13, 14, and 17.4–17.5 (document secrets, share links). Phase 16 also uses the Automerge foundation from Phase 14.
+Phase 13 requires 10, 9.20, and 17.1–17.3. Phase 14 requires 13 and 10's write endpoints. Phase 14 introduces Automerge as the document model.
+Phase 15 requires 10. Phase 16 requires 13, 14, 9.20, and 17.4–17.5 (document secrets, share links). Phase 16 also uses the Automerge foundation from Phase 14.
 Phase 17.6 (OIDC/SSO) is a future direction — deferred until the local auth system is stable.
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas ACLs follow from Phase 17.
@@ -4556,6 +4718,7 @@ Phase 9.13 (QuickAdd) provides Obsidian-compatible capture format syntax and set
 Phase 9.15 (TaskNotes) is Vulcan's primary task management model. Builds on Phase 4 (properties/Bases, including 4.5.1 custom source types) and Phase 9.8 (Dataview metadata). Reuses shared task infrastructure from 9.10 (recurring tasks, dependencies, custom statuses). The unified `vulcan tasks` CLI (9.15.9) covers both TaskNotes file-based tasks and inline checkbox tasks. Calendar sync (9.15.10), HTTP API (9.15.12), and calendar Bases views are deferred to post-Phase 9. Time tracking (9.15.6) ships core+CLI only; GUI deferred to post-WebUI. Reminders (9.15.7) ship core evaluation only; delivery channels deferred to chat/daemon phases.
 Phase 9.16 (Periodic notes) builds on Phase 1 (document indexing) and Phase 9.7 (template variables). It provides shared infrastructure for `file.day` resolution (9.8.3), Kanban date linking (9.11), QuickAdd daily note capture (9.13), and TaskNotes pomodoro storage (9.15). Can start as early as Wave 2 but `file.day` can be stubbed pending its completion.
 Phase 9.17 (Unified settings import) infrastructure (9.17.1–9.17.3) depends only on 9.5 (config layering) and can start in Wave 2. Core importer (9.17.4) depends on 9.17.1. Dataview importer (9.17.5) depends on 9.17.1 and 9.8.9. Batch commands (9.17.6) depend on 9.17.1 and any two or more importers on the trait. Init integration (9.17.7) depends on 9.17.6. Individual plugin importers (9.9.4, 9.10.5, 9.11.4, 9.13.3, 9.15.11, 9.16.4) are refactored or implemented as `PluginImporter` (9.17.1) within their respective phases.
+Phase 9.20 (Static site builder) is the recommended bridge between CLI completion and daemon/WebUI work. It reuses the parser, graph, query, Dataview, Bases, and task foundations to produce a shared HTML renderer, route planner, and static search/graph/preview assets. Phase 10 does not technically depend on it, but Phase 13 and Phase 16 should.
 Phase 4.5.1 (Custom Bases source types) extends the Bases evaluator with pluggable data sources. The trait and `FileSource` extraction are part of Phase 4. The actual custom source registrations happen in Phase 9.15.8 (TaskNotes Bases views).
 Phase 18.8 (Excalidraw) is part of Phase 18 (Canvas) — both are visual JSON-based document types. Parsing/indexing (18.8.1–18.8.2) depends on Phase 7. WebUI rendering (18.8.3) depends on Phase 13. WebUI editing (18.8.4) depends on Phase 14.
 Phase 14.1 (Note editor) includes Advanced Tables-style table editing for the WebUI — tab navigation, column management, sorting, CSV paste, and formula support.
@@ -4579,6 +4742,7 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | Dependency | Purpose | Phase |
 |------------|---------|-------|
 | `aho-corasick` | Multi-pattern string matching for mention detection | 8 |
+| `askama` or `maud` | Rust-side HTML templating for shared renderer / static site builder | 9.20 |
 | `axum` | HTTP framework for daemon | 10 |
 | `tokio` | Async runtime for axum | 10 |
 | `tower-http` | CORS, compression, logging middleware | 10 |
