@@ -19,6 +19,7 @@ pub(crate) fn handle_daily_command(
                 None,
                 *no_edit,
                 *no_commit,
+                cli.quiet,
                 interactive_note_selection,
             )?;
             crate::print_periodic_open_report(cli.output, &report)
@@ -73,6 +74,7 @@ pub(crate) fn handle_daily_command(
                 heading.as_deref(),
                 date.as_deref(),
                 *no_commit,
+                cli.quiet,
             )?;
             crate::print_daily_append_report(cli.output, &report)
         }
@@ -92,6 +94,7 @@ pub(crate) fn handle_today_command(
         None,
         no_edit,
         no_commit,
+        cli.quiet,
         interactive_note_selection,
     )?;
     crate::print_periodic_open_report(cli.output, &report)
@@ -109,6 +112,7 @@ pub(crate) fn handle_weekly_command(
         args.date.as_deref(),
         args.no_edit,
         args.no_commit,
+        cli.quiet,
         interactive_note_selection,
     )?;
     crate::print_periodic_open_report(cli.output, &report)
@@ -126,6 +130,7 @@ pub(crate) fn handle_monthly_command(
         args.date.as_deref(),
         args.no_edit,
         args.no_commit,
+        cli.quiet,
         interactive_note_selection,
     )?;
     crate::print_periodic_open_report(cli.output, &report)
@@ -172,6 +177,7 @@ pub(crate) fn handle_periodic_command(
                 date,
                 no_edit,
                 no_commit,
+                cli.quiet,
                 interactive_note_selection,
             )?;
             crate::print_periodic_open_report(cli.output, &report)

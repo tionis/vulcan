@@ -2911,7 +2911,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 2. [x] **9.19.5** (DQL completeness) — core functionality gap blocking real queries
 3. [x] **9.19.4** (help polish) — first impression for new users
 4. [ ] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
-5. [-] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
+5. [x] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
 6. [-] **9.19.6** (missing commands) — filling gaps, MCP server
 7. [ ] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
 8. [ ] **9.19.9** (command clarity) — docs and naming, low effort
@@ -3268,13 +3268,13 @@ Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q`
 
 **`--output json` audit**
 
-- [ ] Verify every command supports `--output json` and produces valid JSON
-- [ ] Commands that currently only support `--output human` should gain JSON support
-- [ ] JSON output should never include ANSI escape codes or progress output
+- [x] Verify every command supports `--output json` and produces valid JSON
+- [x] Commands that currently only support `--output human` should gain JSON support
+- [x] JSON output should never include ANSI escape codes or progress output
 
 **Structured error output**
 
-- [ ] All commands in `--output json` mode should return errors as `{"error": "<message>", "code": "<error_code>"}` on stdout with appropriate exit code — not unstructured stderr text (partially implemented in 9.18.7, verify completeness)
+- [x] All commands in `--output json` mode should return errors as `{"error": "<message>", "code": "<error_code>"}` on stdout with appropriate exit code — not unstructured stderr text (partially implemented in 9.18.7, verify completeness)
 
 #### 9.19.9 Command clarity and discoverability
 

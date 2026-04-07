@@ -12575,3 +12575,119 @@ fn embedding_for_input(input: &str) -> Vec<f32> {
         vec![0.5, 0.5]
     }
 }
+
+/// Returns true if `text` contains any ANSI escape sequence byte sequences.
+fn contains_ansi(text: &str) -> bool {
+    text.contains('\x1b')
+}
+
+#[test]
+fn json_output_contains_no_ansi_escape_codes() {
+    // Commands that produce JSON output should never include ANSI escape codes.
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault = temp_dir.path();
+    fs::write(vault.join("note.md"), "---\ntitle: Test\n---\n# Test\n")
+        .expect("note should be written");
+
+    let commands_with_json_output: &[&[&str]] = &[
+        &["scan", "--output", "json"],
+        &["query", "--output", "json"],
+        &["doctor", "--output", "json"],
+        &["tags", "--output", "json"],
+        &["graph", "analytics", "--output", "json"],
+    ];
+
+    for args in commands_with_json_output {
+        let output = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(*args)
+            .arg("--vault")
+            .arg(vault)
+            .output()
+            .expect("command should run");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !contains_ansi(&stdout),
+            "ANSI codes found in JSON stdout for {:?}: {:?}",
+            args,
+            &stdout[..stdout.len().min(200)]
+        );
+    }
+}
+
+#[test]
+fn json_output_error_is_structured() {
+    // When --output json is requested and a command fails, the error should be
+    // output as {"error": "...", "code": "..."} on stdout (not unstructured stderr text).
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault = temp_dir.path();
+
+    // Requesting a note that doesn't exist should produce a structured error
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["note", "get", "nonexistent-note-xyz", "--output", "json"])
+        .arg("--vault")
+        .arg(vault)
+        .output()
+        .expect("command should run");
+
+    assert_ne!(output.status.code(), Some(0), "should exit with non-zero code on error");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.trim().is_empty(), "JSON error output should be on stdout");
+
+    let parsed: Value = serde_json::from_str(stdout.trim())
+        .expect("JSON error output should be valid JSON");
+    assert!(
+        parsed.get("error").is_some(),
+        "JSON error should have 'error' field, got: {stdout}"
+    );
+    assert!(
+        parsed.get("code").is_some(),
+        "JSON error should have 'code' field, got: {stdout}"
+    );
+    assert!(
+        !contains_ansi(&stdout),
+        "JSON error output should not contain ANSI codes"
+    );
+}
+
+#[test]
+fn quiet_flag_suppresses_warnings_but_not_primary_output() {
+    // --quiet should suppress warnings (e.g. auto-commit warnings) but still emit
+    // the primary structured output so pipelines can process results.
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault = temp_dir.path();
+    // Create a git-backed vault so that auto-commit warnings might fire
+    init_git_repo(vault);
+    fs::write(vault.join("note.md"), "---\ntitle: A\n---\n# A\n")
+        .expect("note should be written");
+    commit_all(vault, "initial");
+    // Enable auto-commit in config
+    fs::create_dir_all(vault.join(".vulcan")).expect("vulcan dir");
+    fs::write(vault.join(".vulcan/config.toml"), "[git]\nauto_commit = true\n")
+        .expect("config should write");
+
+    // With --quiet, no warnings on stderr, but scan summary should still work
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["scan", "--quiet", "--output", "json"])
+        .arg("--vault")
+        .arg(vault)
+        .output()
+        .expect("command should run");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("warning:"),
+        "--quiet should suppress warnings, but got: {stderr}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(stdout.trim())
+        .expect("JSON scan output should be valid JSON");
+    assert!(
+        parsed.get("discovered").is_some() || parsed.get("added").is_some() || parsed.get("total").is_some(),
+        "scan JSON output should contain count fields, got: {stdout}"
+    );
+}
