@@ -281,6 +281,7 @@ fn friendly_repl_error(raw: &str) -> String {
     raw.to_string()
 }
 
+#[allow(clippy::too_many_lines)]
 fn try_dot_command(
     session: &DataviewJsSession,
     trimmed: &str,
@@ -292,8 +293,7 @@ fn try_dot_command(
     // Distinguish from known exit commands (already handled by caller)
     let (cmd, arg) = rest
         .split_once(' ')
-        .map(|(c, a)| (c, a.trim()))
-        .unwrap_or((rest, ""));
+        .map_or((rest, ""), |(c, a)| (c, a.trim()));
 
     match cmd {
         "type" => {
@@ -587,6 +587,7 @@ fn colorize_json_line(line: &str) -> String {
     line.to_string()
 }
 
+#[allow(clippy::too_many_lines)]
 fn highlight_js_line(line: &str) -> String {
     const KEYWORD_COLOR: &str = "\x1b[35m"; // magenta
     const STRING_COLOR: &str = "\x1b[32m"; // green

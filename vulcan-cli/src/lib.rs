@@ -8588,7 +8588,7 @@ fn run_inbox_command(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn run_template_command(
     paths: &VaultPaths,
     name: Option<&str>,
@@ -8982,6 +8982,7 @@ fn commit_periodic_changes_if_needed(
     Ok(())
 }
 
+#[allow(clippy::fn_params_excessive_bools)]
 fn run_periodic_open_command(
     paths: &VaultPaths,
     period_type: &str,
@@ -12316,16 +12317,14 @@ pub fn run() -> Result<(), CliError> {
 
 /// Return a human-readable hint when the user has likely mixed up `note` and `notes`.
 fn detect_command_confusion(args: &[OsString]) -> Option<String> {
-    let strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
-    // Skip the binary name at index 0; look at index 1 for the subcommand.
-    let subcommand = strs.get(1).copied().unwrap_or("");
-    let rest = strs.get(2..).unwrap_or(&[]);
-
-    // `vulcan notes get …` → should be `vulcan note get …`
     const NOTE_SUBCOMMANDS: &[&str] = &[
         "get", "set", "create", "append", "update", "unset", "patch", "delete", "rename", "info",
         "history",
     ];
+    let strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
+    // Skip the binary name at index 0; look at index 1 for the subcommand.
+    let subcommand = strs.get(1).copied().unwrap_or("");
+    let rest = strs.get(2..).unwrap_or(&[]);
     if subcommand == "notes" {
         if let Some(&sub) = rest.first() {
             if NOTE_SUBCOMMANDS.contains(&sub) {
@@ -12338,7 +12337,7 @@ fn detect_command_confusion(args: &[OsString]) -> Option<String> {
     }
 
     // `vulcan note --where …` → should be `vulcan notes --where …`
-    if subcommand == "note" && rest.iter().any(|&a| a == "--where") {
+    if subcommand == "note" && rest.contains(&"--where") {
         return Some(
             "`vulcan note --where` is not valid — did you mean `vulcan notes --where`?\n\
              `vulcan notes --where` queries notes by property; `vulcan note` operates on a single note."
@@ -12399,11 +12398,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             return Ok(());
         }
         // All other contexts need a vault; if we can't find one, return empty.
-        let paths = match resolve_vault_root(&cli.vault).map(VaultPaths::new) {
-            Ok(p) => p,
-            Err(_) => return Ok(()),
+        let Ok(paths) = resolve_vault_root(&cli.vault).map(VaultPaths::new) else {
+            return Ok(());
         };
-        return run_complete_command(&paths, context);
+        run_complete_command(&paths, context);
+        return Ok(());
     }
 
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
@@ -12489,12 +12488,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let mut command = Cli::command();
             generate(shell, &mut command, "vulcan", &mut buf);
             let static_script = String::from_utf8_lossy(&buf).into_owned();
-            let dynamic = generate_dynamic_completions(&shell);
+            let dynamic = generate_dynamic_completions(shell);
             // clap_complete doesn't add "not __fish_seen_subcommand_from" guards
             // for nested subcommand candidates — patch the script so subcommand
             // names stop cycling once one has been selected.
             let patched = if matches!(shell, clap_complete::Shell::Fish) {
-                fix_fish_nested_subcommand_guards(static_script)
+                fix_fish_nested_subcommand_guards(&static_script)
             } else {
                 static_script
             };
@@ -12504,7 +12503,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             Ok(())
         }
-        Command::Complete { ref context } => run_complete_command(&paths, context),
+        Command::Complete { ref context } => {
+            run_complete_command(&paths, context);
+            Ok(())
+        }
         Command::Status => {
             let report = run_status_command(&paths)?;
             print_status_report(cli.output, &report, use_stdout_color)
@@ -18971,6 +18973,7 @@ fn static_help_topic(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn builtin_help_topics() -> Vec<HelpTopicReport> {
     vec![
         static_help_topic(
@@ -21042,7 +21045,7 @@ struct McpToolWithPath {
     name: String,
     description: String,
     input_schema: Value,
-    /// Command path segments, e.g. ["note", "get"]
+    /// Command path segments, e.g. `["note", "get"]`
     command_path: Vec<String>,
     /// Which argument IDs are positional (not flags)
     positional_ids: Vec<String>,
@@ -21130,8 +21133,7 @@ fn mcp_dispatch_tool(
         }
         // Skip null/false optional flags
         match val {
-            Value::Null => continue,
-            Value::Bool(false) => continue,
+            Value::Null | Value::Bool(false) => continue,
             Value::Bool(true) => {
                 let flag = format!("--{}", key.replace('_', "-"));
                 args.push(flag.into());
@@ -21178,12 +21180,11 @@ fn mcp_value_to_string(val: &Value) -> String {
     }
 }
 
-fn run_complete_command(paths: &VaultPaths, context: &str) -> Result<(), CliError> {
+fn run_complete_command(paths: &VaultPaths, context: &str) {
     let candidates = collect_complete_candidates(paths, context);
     for candidate in &candidates {
         println!("{candidate}");
     }
-    Ok(())
 }
 
 /// Candidates for contexts that require no vault (safe to call before path resolution).
@@ -21197,7 +21198,7 @@ fn collect_complete_candidates_no_vault(context: &str) -> Vec<String> {
             ];
             let now_secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
+                .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
                 .unwrap_or(0);
             for offset in 1..=14i64 {
                 let past_secs = now_secs - offset * 86400;
@@ -21211,6 +21212,7 @@ fn collect_complete_candidates_no_vault(context: &str) -> Vec<String> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String> {
     // vault-free contexts that also have a vault-dependent branch are handled in
     // dispatch() using a HashSet merge; skip them here to avoid masking the DB branch.
@@ -21228,10 +21230,9 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
                 return Vec::new();
             };
             let conn = db.connection();
-            let mut stmt = match conn.prepare("SELECT path, filename FROM documents ORDER BY path")
-            {
-                Ok(s) => s,
-                Err(_) => return Vec::new(),
+            let Ok(mut stmt) = conn.prepare("SELECT path, filename FROM documents ORDER BY path")
+            else {
+                return Vec::new();
             };
             let rows = stmt.query_map([], |row| {
                 Ok((
@@ -21261,13 +21262,12 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
                 return Vec::new();
             };
             let conn = db.connection();
-            let mut stmt = match conn.prepare(
+            let Ok(mut stmt) = conn.prepare(
                 "SELECT periodic_date FROM documents \
                  WHERE periodic_type = 'daily' AND periodic_date IS NOT NULL \
                  ORDER BY periodic_date DESC",
-            ) {
-                Ok(s) => s,
-                Err(_) => return Vec::new(),
+            ) else {
+                return Vec::new();
             };
             let rows = stmt.query_map([], |row| row.get::<_, String>(0));
             match rows {
@@ -21290,11 +21290,10 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
                 return Vec::new();
             };
             let conn = db.connection();
-            let mut stmt = match conn
-                .prepare("SELECT path FROM documents WHERE path LIKE '%.base' ORDER BY path")
-            {
-                Ok(s) => s,
-                Err(_) => return Vec::new(),
+            let Ok(mut stmt) =
+                conn.prepare("SELECT path FROM documents WHERE path LIKE '%.base' ORDER BY path")
+            else {
+                return Vec::new();
             };
             let rows = stmt.query_map([], |row| row.get::<_, String>(0));
             match rows {
@@ -21352,7 +21351,7 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
     }
 }
 
-/// clap_complete generates Fish nested-subcommand completions with a condition like
+/// `clap_complete` generates Fish nested-subcommand completions with a condition like
 ///   `__fish_seen_subcommand_from PARENT`
 /// but never adds a `not __fish_seen_subcommand_from CHILD1 CHILD2` guard.  That
 /// means that once the user types e.g. `tasks view show`, Fish still offers `show`
@@ -21361,9 +21360,10 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
 /// This function collects all lines that:
 ///   1. have a condition ending with `; and __fish_seen_subcommand_from \w+`  (no `not` after)
 ///   2. offer a bare word subcommand via `-f -a "word"`
+///
 /// groups them by condition, then re-emits those lines with the missing
 /// `; and not __fish_seen_subcommand_from WORD1 WORD2 …` guard appended.
-fn fix_fish_nested_subcommand_guards(script: String) -> String {
+fn fix_fish_nested_subcommand_guards(script: &str) -> String {
     use std::collections::HashMap;
 
     // Capture (full_line, condition_base, subcommand_word)
@@ -21416,7 +21416,7 @@ fn fix_fish_nested_subcommand_guards(script: String) -> String {
     out
 }
 
-fn generate_dynamic_completions(shell: &clap_complete::Shell) -> String {
+fn generate_dynamic_completions(shell: clap_complete::Shell) -> String {
     match shell {
         clap_complete::Shell::Fish => generate_fish_dynamic_completions(),
         clap_complete::Shell::Bash => generate_bash_dynamic_completions(),
