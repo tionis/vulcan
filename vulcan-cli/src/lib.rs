@@ -21326,14 +21326,28 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
                 .unwrap_or_default()
         }
         "task-view" => {
-            use vulcan_core::load_vault_config;
-            let config = load_vault_config(paths).config;
-            config
+            // Saved view IDs from config plus .base file paths from the DB
+            // (tasks view show accepts either).
+            use vulcan_core::{load_vault_config, CacheDatabase};
+            let mut out: Vec<String> = load_vault_config(paths)
+                .config
                 .tasknotes
                 .saved_views
                 .iter()
                 .map(|v| v.id.clone())
-                .collect()
+                .collect();
+            if let Ok(db) = CacheDatabase::open(paths) {
+                let conn = db.connection();
+                if let Ok(mut stmt) = conn
+                    .prepare("SELECT path FROM documents WHERE path LIKE '%.base' ORDER BY path")
+                {
+                    let rows = stmt.query_map([], |row| row.get::<_, String>(0));
+                    if let Ok(iter) = rows {
+                        out.extend(iter.flatten());
+                    }
+                }
+            }
+            out
         }
         _ => Vec::new(),
     }
@@ -21435,6 +21449,7 @@ complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_sub
 complete -c vulcan -n "__fish_vulcan_using_subcommand run" -f -a "(vulcan complete script 2>/dev/null)" -d "Script"
 
 # Task view names for tasks view show <name>
+# Condition: view has been seen AND show has been seen (nested sub-subcommand context).
 complete -c vulcan -n "__fish_vulcan_using_subcommand tasks; and __fish_seen_subcommand_from view; and __fish_seen_subcommand_from show" -f -a "(vulcan complete task-view 2>/dev/null)" -d "View"
 "#
     .trim()
