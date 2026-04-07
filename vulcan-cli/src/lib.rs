@@ -20,8 +20,8 @@ pub use cli::{
     ExportCommand, ExportFormat, GitCommand, GraphCommand, GraphExportFormat, IndexCommand,
     InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode, OutputFormat,
     PeriodicOpenArgs, PeriodicSubcommand, PropertySortArg, QueryEngineArg, QueryFormatArg,
-    RefactorCommand, RefreshMode, RepairCommand, SavedCommand, SearchBackendArg, SearchMode,
-    SearchSortArg, SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg,
+    RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand, SearchBackendArg,
+    SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg,
     TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
     TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand,
     VectorsCommand, WebCommand, WebFetchMode,
@@ -741,6 +741,13 @@ struct WebFetchReport {
     mode: String,
     content: String,
     saved: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct RenderReport {
+    path: Option<String>,
+    source: String,
+    rendered: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -12460,6 +12467,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         return Ok(());
     }
 
+    if let Command::Render(RenderArgs { ref file }) = cli.command {
+        let stdout_is_tty = io::stdout().is_terminal();
+        let use_stdout_color = resolve_use_color(cli.color, stdout_is_tty);
+        let report = run_render_command(file.as_ref())?;
+        return print_render_report(cli.output, &report, stdout_is_tty, use_stdout_color);
+    }
+
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
@@ -12470,6 +12484,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let interactive_note_selection = interactive_note_selection_allowed(cli, stdout_is_tty);
 
     match cli.command {
+        Command::Render(_) => unreachable!("render handled before vault resolution"),
         Command::Index { ref command } => commands::index::handle_index_command(
             cli,
             &paths,
@@ -12611,6 +12626,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             cli.output,
             topic,
             search.as_deref(),
+            stdout_is_tty,
             use_stdout_color,
         ),
         Command::Describe { format } => commands::docs::handle_describe_command(cli.output, format),
@@ -12960,9 +12976,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             r#type,
             &list_controls,
         ),
-        Command::Dataview { ref command } => {
-            commands::dataview::handle_dataview_command(cli, &paths, command)
-        }
+        Command::Dataview { ref command } => commands::dataview::handle_dataview_command(
+            cli,
+            &paths,
+            command,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Tasks { ref command } => commands::tasks::handle_tasks_command(
             cli,
             &paths,
@@ -13254,7 +13274,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let links = load_export_links(&paths, &notes)?;
                 let summary = write_zip_export(&paths, path, &report, &notes, &links)?;
                 match cli.output {
-                    OutputFormat::Human => {
+                    OutputFormat::Human | OutputFormat::Markdown => {
                         println!("{}", summary.path);
                         Ok(())
                     }
@@ -13271,7 +13291,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let links = load_export_links(&paths, &notes)?;
                 let summary = write_sqlite_export(path, &report, &notes, &links)?;
                 match cli.output {
-                    OutputFormat::Human => {
+                    OutputFormat::Human | OutputFormat::Markdown => {
                         println!("{}", summary.path);
                         Ok(())
                     }
@@ -13335,6 +13355,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             command,
             interactive_note_selection,
             &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
         ),
         Command::Today { no_edit, no_commit } => commands::periodic::handle_today_command(
             cli,
@@ -13364,8 +13386,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 sandbox: sandbox.as_deref(),
                 no_startup,
             },
+            stdout_is_tty,
+            use_stdout_color,
         ),
-        Command::Web { ref command } => commands::runtime::handle_web_command(cli, &paths, command),
+        Command::Web { ref command } => commands::runtime::handle_web_command(
+            cli,
+            &paths,
+            command,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         Command::Weekly { ref args } => {
             commands::periodic::handle_weekly_command(cli, &paths, args, interactive_note_selection)
         }
@@ -13391,6 +13421,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
             interactive_note_selection,
             &list_controls,
+            stdout_is_tty,
+            use_stdout_color,
         ),
         Command::Changes {
             ref checkpoint,
@@ -13513,9 +13545,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 TemplateCommandResult::Insert(report) => {
                     print_template_insert_report(cli.output, &report)
                 }
-                TemplateCommandResult::Preview(report) => {
-                    print_template_preview_report(cli.output, &report)
-                }
+                TemplateCommandResult::Preview(report) => print_template_preview_report(
+                    cli.output,
+                    &report,
+                    stdout_is_tty,
+                    use_stdout_color,
+                ),
             }
         }
         Command::LinkMentions {
@@ -13656,7 +13691,7 @@ fn print_search_report(
     let rows = search_hit_rows(report, visible_hits);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!(
                     "{} {} {}",
@@ -13695,12 +13730,150 @@ fn print_search_report(
     }
 }
 
+fn run_render_command(path: Option<&PathBuf>) -> Result<RenderReport, CliError> {
+    let (path, source) = match path {
+        Some(path) if path.as_os_str() == "-" => {
+            let mut source = String::new();
+            io::stdin()
+                .read_to_string(&mut source)
+                .map_err(CliError::operation)?;
+            (None, source)
+        }
+        Some(path) => (
+            Some(path.display().to_string()),
+            fs::read_to_string(path).map_err(CliError::operation)?,
+        ),
+        None => {
+            if io::stdin().is_terminal() {
+                return Err(CliError::operation(
+                    "`vulcan render` requires a file path or piped stdin",
+                ));
+            }
+            let mut source = String::new();
+            io::stdin()
+                .read_to_string(&mut source)
+                .map_err(CliError::operation)?;
+            (None, source)
+        }
+    };
+
+    let rendered = terminal_markdown::render_terminal_markdown(&source, false);
+    Ok(RenderReport {
+        path,
+        source,
+        rendered,
+    })
+}
+
+fn print_markdown_output(
+    output: OutputFormat,
+    markdown: &str,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => Err(CliError::operation(
+            "markdown helper cannot print JSON output directly",
+        )),
+        OutputFormat::Human => {
+            let rendered = if stdout_is_tty {
+                terminal_markdown::render_terminal_markdown(markdown, use_color)
+            } else {
+                markdown.to_string()
+            };
+            if rendered.is_empty() {
+                return Ok(());
+            }
+            print!("{rendered}");
+            if !rendered.ends_with('\n') {
+                println!();
+            }
+            Ok(())
+        }
+        OutputFormat::Markdown => {
+            if markdown.is_empty() {
+                return Ok(());
+            }
+            print!("{markdown}");
+            if !markdown.ends_with('\n') {
+                println!();
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_render_report(
+    output: OutputFormat,
+    report: &RenderReport,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human => {
+            let rendered = if stdout_is_tty {
+                terminal_markdown::render_terminal_markdown(&report.source, use_color)
+            } else {
+                report.rendered.clone()
+            };
+            print!("{rendered}");
+            if !rendered.ends_with('\n') {
+                println!();
+            }
+            Ok(())
+        }
+        OutputFormat::Markdown => {
+            print!("{}", report.source);
+            if !report.source.ends_with('\n') {
+                println!();
+            }
+            Ok(())
+        }
+    }
+}
+
+fn render_help_search_markdown(keyword: &str, report: &HelpSearchReport) -> String {
+    if report.matches.is_empty() {
+        return format!("# Help search\n\nNo help topics matched `{keyword}`.");
+    }
+
+    let items = report
+        .matches
+        .iter()
+        .map(|item| format!("- `{}` [{}]: {}", item.name, item.kind, item.summary))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("# Help search\n\nTopics matching `{keyword}`:\n\n{items}")
+}
+
+fn render_help_topic_markdown(report: &HelpTopicReport) -> String {
+    let mut markdown = format!("# {}\n\n{}\n", report.name, report.summary);
+    if !report.body.is_empty() {
+        markdown.push('\n');
+        markdown.push_str(&report.body);
+        markdown.push('\n');
+    }
+    if !report.options.is_empty() {
+        markdown.push_str("\n## Options\n\n");
+        for option in &report.options {
+            let flag = option
+                .long
+                .as_deref()
+                .map_or_else(|| option.id.clone(), |long| format!("--{long}"));
+            let summary = option.help.as_deref().unwrap_or("undocumented");
+            let _ = writeln!(markdown, "- `{flag}`: {summary}");
+        }
+    }
+    markdown
+}
+
 fn print_describe_report(output: OutputFormat, format: DescribeFormatArg) -> Result<(), CliError> {
     match format {
         DescribeFormatArg::JsonSchema => {
             let report = describe_cli();
             match output {
-                OutputFormat::Human => {
+                OutputFormat::Human | OutputFormat::Markdown => {
                     print_describe_human(&report);
                     Ok(())
                 }
@@ -13710,7 +13883,7 @@ fn print_describe_report(output: OutputFormat, format: DescribeFormatArg) -> Res
         DescribeFormatArg::OpenaiTools => {
             let tools = build_openai_tool_definitions();
             match output {
-                OutputFormat::Human => {
+                OutputFormat::Human | OutputFormat::Markdown => {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&tools).map_err(CliError::operation)?
@@ -13723,7 +13896,7 @@ fn print_describe_report(output: OutputFormat, format: DescribeFormatArg) -> Res
         DescribeFormatArg::Mcp => {
             let tools = build_mcp_tool_definitions();
             match output {
-                OutputFormat::Human => {
+                OutputFormat::Human | OutputFormat::Markdown => {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&tools).map_err(CliError::operation)?
@@ -13740,22 +13913,26 @@ fn print_help_command(
     output: OutputFormat,
     topic: &[String],
     search: Option<&str>,
+    stdout_is_tty: bool,
     use_color: bool,
 ) -> Result<(), CliError> {
     if let Some(keyword) = search {
         let report = search_help_topics(keyword);
         return match output {
             OutputFormat::Human => {
-                if report.matches.is_empty() {
-                    println!("No help topics matched `{keyword}`.");
-                } else {
-                    println!("Help topics matching `{keyword}`:");
-                    for item in &report.matches {
-                        println!("- {} [{}]: {}", item.name, item.kind, item.summary);
-                    }
-                }
+                let markdown = render_help_search_markdown(keyword, &report);
+                println!(
+                    "{}",
+                    terminal_markdown::render_terminal_markdown(&markdown, use_color)
+                );
                 Ok(())
             }
+            OutputFormat::Markdown => print_markdown_output(
+                output,
+                &render_help_search_markdown(keyword, &report),
+                stdout_is_tty,
+                use_color,
+            ),
             OutputFormat::Json => print_json(&report),
         };
     }
@@ -13768,29 +13945,19 @@ fn print_help_command(
 
     match output {
         OutputFormat::Human => {
-            let mut markdown = format!("# {}\n\n{}\n", report.name, report.summary);
-            if !report.body.is_empty() {
-                markdown.push('\n');
-                markdown.push_str(&report.body);
-                markdown.push('\n');
-            }
-            if !report.options.is_empty() {
-                markdown.push_str("\n## Options\n\n");
-                for option in &report.options {
-                    let flag = option
-                        .long
-                        .as_deref()
-                        .map_or_else(|| option.id.clone(), |long| format!("--{long}"));
-                    let summary = option.help.as_deref().unwrap_or("undocumented");
-                    let _ = writeln!(markdown, "- `{flag}`: {summary}");
-                }
-            }
+            let markdown = render_help_topic_markdown(&report);
             println!(
                 "{}",
                 terminal_markdown::render_terminal_markdown(&markdown, use_color)
             );
             Ok(())
         }
+        OutputFormat::Markdown => print_markdown_output(
+            output,
+            &render_help_topic_markdown(&report),
+            stdout_is_tty,
+            use_color,
+        ),
         OutputFormat::Json => print_json(&report),
     }
 }
@@ -13807,7 +13974,7 @@ fn print_saved_report_list(
     let palette = AnsiPalette::new(use_color);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Saved reports"));
             }
@@ -13849,7 +14016,7 @@ fn print_saved_report_definition(
     definition: &SavedReportDefinition,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Saved report: {}", definition.name);
             println!("Kind: {:?}", definition.query.kind());
             if let Some(description) = definition.description.as_deref() {
@@ -13934,7 +14101,7 @@ fn print_saved_report_definition(
 
 fn print_batch_run_report(output: OutputFormat, report: &BatchRunReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "Batch completed: {} succeeded, {} failed",
                 report.succeeded, report.failed
@@ -13983,7 +14150,7 @@ fn print_notes_report(
     let rows = note_rows(report, visible_notes);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Notes query"));
             }
@@ -14190,7 +14357,7 @@ fn print_query_report(
     }
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if options.explain
                 || (options.stdout_is_tty && matches!(options.format, QueryFormatArg::Table))
             {
@@ -14297,7 +14464,7 @@ fn print_rebuild_report(
 ) -> Result<(), CliError> {
     let palette = AnsiPalette::new(use_color);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!(
                     "{}: would rebuild {} discovered files with {} cached documents",
@@ -14324,7 +14491,7 @@ fn print_rebuild_report(
 
 fn print_repair_fts_report(output: OutputFormat, report: &RepairFtsReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!(
                     "Dry run: would rebuild FTS rows for {} chunks across {} documents",
@@ -14344,7 +14511,7 @@ fn print_repair_fts_report(output: OutputFormat, report: &RepairFtsReport) -> Re
 
 fn print_watch_report(output: OutputFormat, report: &WatchReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.startup {
                 println!(
                     "Initial scan: {} added, {} updated, {} unchanged, {} deleted",
@@ -14377,7 +14544,7 @@ fn print_vector_index_report(
 ) -> Result<(), CliError> {
     let palette = AnsiPalette::new(use_color);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "{} vectors with {}:{} {}: {} indexed, {} skipped, {} failed {}",
                 if report.dry_run {
@@ -14407,7 +14574,7 @@ fn print_vector_queue_report(
     report: &VectorQueueReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "Vector queue {}:{}: {} pending, {} indexed, {} stale{}",
                 report.provider_name,
@@ -14434,7 +14601,7 @@ fn print_vector_repair_report(
 ) -> Result<(), CliError> {
     let palette = AnsiPalette::new(use_color);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let status = if report.dry_run {
                 palette.cyan("Dry run")
             } else if report.repaired {
@@ -14480,7 +14647,7 @@ fn print_vector_neighbors_report(
     let rows = vector_neighbor_rows(report, visible_hits);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 if let Some(query_text) = report.query_text.as_deref() {
                     println!(
@@ -14534,7 +14701,7 @@ fn print_related_notes_report(
     let palette = AnsiPalette::new(use_color);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!(
                     "{} {}",
@@ -14590,7 +14757,7 @@ fn print_vector_duplicates_report(
     let rows = vector_duplicate_rows(report, visible_pairs);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Vector duplicates"));
             }
@@ -14642,7 +14809,7 @@ fn print_vector_models_report(
         .collect();
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let palette = AnsiPalette::new(use_color);
             if stdout_is_tty {
                 println!("{}", palette.cyan("Vector models"));
@@ -14687,7 +14854,7 @@ fn print_cluster_report(
     let rows = cluster_rows(report, visible_clusters);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 if report.dry_run {
                     println!("Vector clusters (dry run)");
@@ -14733,8 +14900,8 @@ fn print_bases_report(
     let palette = AnsiPalette::new(use_color);
 
     match output {
-        OutputFormat::Human => {
-            if stdout_is_tty {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if output == OutputFormat::Human && stdout_is_tty {
                 println!(
                     "{} {}",
                     palette.cyan("Bases eval"),
@@ -14748,18 +14915,12 @@ fn print_bases_report(
                     print_selected_human_fields(row, fields);
                 }
             } else {
-                print_bases_human(report, list_controls, palette);
-            }
-
-            if !report.diagnostics.is_empty() {
-                println!("{}:", palette.yellow("Diagnostics"));
-                for diagnostic in &report.diagnostics {
-                    if let Some(path) = diagnostic.path.as_deref() {
-                        println!("- {path}: {}", diagnostic.message);
-                    } else {
-                        println!("- {}", diagnostic.message);
-                    }
-                }
+                print_markdown_output(
+                    output,
+                    &render_bases_markdown(report, list_controls),
+                    stdout_is_tty,
+                    use_color,
+                )?;
             }
 
             export_rows(visible_rows, list_controls.fields.as_deref(), export)?;
@@ -14781,7 +14942,7 @@ fn print_bases_view_edit_report(
     report: &BasesViewEditReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!("Dry run: {}", report.action);
             } else {
@@ -14807,7 +14968,7 @@ fn print_bases_create_report(
     report: &BasesCreateReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!("Would create {} from {}.", report.path, report.file);
             } else {
@@ -14856,7 +15017,7 @@ fn print_mention_suggestions_report(
     let palette = AnsiPalette::new(use_color);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Mention suggestions"));
             }
@@ -14897,7 +15058,7 @@ fn print_duplicate_suggestions_report(
     let palette = AnsiPalette::new(use_color);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Duplicate suggestions"));
             }
@@ -14938,7 +15099,7 @@ fn print_links_report(
     let rows = outgoing_link_rows(report, visible_links);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!(
                     "{} {} {}",
@@ -14984,7 +15145,7 @@ fn print_backlinks_report(
     let rows = backlink_rows(report, visible_backlinks);
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!(
                     "{} {} {}",
@@ -15099,7 +15260,7 @@ fn print_init_summary(
     };
 
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "Initialized {} (config {}, cache {})",
                 normalized.summary.vault_root.display(),
@@ -15183,14 +15344,28 @@ fn write_text_file_if_missing(path: &Path, contents: &str) -> Result<bool, CliEr
     Ok(true)
 }
 
-fn print_note_get_report(output: OutputFormat, report: &NoteGetReport) -> Result<(), CliError> {
+fn print_note_get_report(
+    output: OutputFormat,
+    report: &NoteGetReport,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
             if report.metadata.mode == "html"
                 || report.metadata.raw
                 || (report.metadata.lines.is_none() && report.metadata.match_pattern.is_none())
             {
-                print!("{}", report.content);
+                if report.metadata.mode == "html" || report.metadata.raw {
+                    print!("{}", report.content);
+                } else {
+                    return print_markdown_output(
+                        output,
+                        &report.content,
+                        stdout_is_tty,
+                        use_color,
+                    );
+                }
             } else {
                 let mut previous_line = None;
                 for line in &report.display_lines {
@@ -15204,13 +15379,25 @@ fn print_note_get_report(output: OutputFormat, report: &NoteGetReport) -> Result
             }
             Ok(())
         }
+        OutputFormat::Markdown => {
+            if report.metadata.mode == "html"
+                || report.metadata.raw
+                || (report.metadata.lines.is_some() || report.metadata.match_pattern.is_some())
+            {
+                print!("{}", report.content);
+            } else {
+                print_markdown_output(output, &report.content, stdout_is_tty, use_color)?;
+                return Ok(());
+            }
+            Ok(())
+        }
         OutputFormat::Json => print_json(report),
     }
 }
 
 fn print_note_set_report(output: OutputFormat, report: &NoteSetReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "Updated {}{}.",
                 report.path,
@@ -15232,7 +15419,7 @@ fn print_note_create_report(
     report: &NoteCreateReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Created {}.", report.path);
             if let Some(template) = report.template.as_deref() {
                 let engine = report.engine.as_deref().unwrap_or("auto");
@@ -15253,7 +15440,7 @@ fn print_note_append_report(
     report: &NoteAppendReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let target = report.period_type.as_deref().map_or_else(
                 || report.path.clone(),
                 |period_type| {
@@ -15288,7 +15475,7 @@ fn print_note_append_report(
 
 fn print_note_patch_report(output: OutputFormat, report: &NotePatchReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!(
                     "Dry run: would patch {} ({} match{}).",
@@ -15319,7 +15506,7 @@ fn print_note_delete_report(
     report: &NoteDeleteReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!("Dry run: would delete {}.", report.path);
             } else {
@@ -15346,7 +15533,7 @@ fn print_note_delete_report(
 
 fn print_note_info_report(output: OutputFormat, report: &NoteInfoReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("{}", report.path);
             println!("Matched by: {}", note_match_kind_label(&report.matched_by));
             println!("Words: {}", report.word_count);
@@ -15405,7 +15592,7 @@ fn print_note_history_report(
     report: &NoteHistoryReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.entries.is_empty() {
                 println!("No commits for {}.", report.path);
                 return Ok(());
@@ -15693,7 +15880,7 @@ fn print_config_show_report(
     config: &TomlValue,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let rendered_value = match report.section.as_deref() {
                 Some(section) => wrap_config_section_toml(section, config.clone())?,
                 None => config.clone(),
@@ -15715,7 +15902,7 @@ fn print_config_show_report(
 
 fn print_config_get_report(output: OutputFormat, report: &ConfigGetReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             print_config_value_human(&report.value)?;
             for diagnostic in &report.diagnostics {
                 eprintln!(
@@ -15732,7 +15919,7 @@ fn print_config_get_report(output: OutputFormat, report: &ConfigGetReport) -> Re
 
 fn print_config_set_report(output: OutputFormat, report: &ConfigSetReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let rendered_value =
                 serde_json::to_string(&report.value).map_err(CliError::operation)?;
             if report.dry_run {
@@ -15972,7 +16159,7 @@ fn print_config_import_list_report(
             .collect(),
     };
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if normalized.importers.is_empty() {
                 println!("No importers are registered.");
                 return Ok(());
@@ -16010,7 +16197,7 @@ fn print_config_import_batch_report(
             .collect(),
     };
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "{} {} detected importer{} into {} ({} updated)",
                 if normalized.dry_run {
@@ -16095,7 +16282,7 @@ fn print_config_import_report(
 ) -> Result<(), CliError> {
     let report = normalize_config_import_report(paths, report);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "{} {} settings from {} into {} ({}, {})",
                 if report.dry_run {
@@ -16217,7 +16404,7 @@ fn render_config_import_value(value: &Value) -> Result<String, CliError> {
 fn print_scan_summary(output: OutputFormat, summary: &ScanSummary, use_color: bool) {
     let palette = AnsiPalette::new(use_color);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "{} {} files: {} added, {} updated, {} unchanged, {} deleted",
                 palette.cyan("Scanned"),
@@ -16297,7 +16484,7 @@ fn kanban_add_changed_files(report: &KanbanAddReport) -> Vec<String> {
 
 fn print_edit_report(output: OutputFormat, report: &EditReport) {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.created {
                 println!("Created and edited {}", report.path);
             } else {
@@ -16312,7 +16499,7 @@ fn print_edit_report(output: OutputFormat, report: &EditReport) {
 
 fn print_move_summary(output: OutputFormat, summary: &MoveSummary) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if summary.dry_run {
                 println!(
                     "Dry run: move {} -> {}",
@@ -16345,7 +16532,7 @@ fn print_move_summary(output: OutputFormat, summary: &MoveSummary) -> Result<(),
 
 fn print_refactor_report(output: OutputFormat, report: &RefactorReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!("Dry run for {}", report.action);
             } else {
@@ -16375,7 +16562,7 @@ fn print_bulk_mutation_report(
     report: &BulkMutationReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!("Dry run for {}", report.action);
             } else {
@@ -16407,7 +16594,7 @@ fn print_doctor_report(
     report: &DoctorReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Doctor summary for {}", paths.vault_root().display());
             println!("- unresolved links: {}", report.summary.unresolved_links);
             println!(
@@ -16457,7 +16644,7 @@ fn print_note_doctor_report(
     report: &NoteDoctorReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Doctor summary for {}", report.path);
             if report.diagnostics.is_empty() {
                 println!("No issues found.");
@@ -16476,7 +16663,7 @@ fn print_doctor_fix_report(
     report: &DoctorFixReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!("Doctor fix plan for {}", paths.vault_root().display());
             } else {
@@ -16505,7 +16692,7 @@ fn print_doctor_fix_report(
 
 fn print_graph_path_report(output: OutputFormat, report: &GraphPathReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.path.is_empty() {
                 println!(
                     "No resolved path from {} to {}.",
@@ -16532,7 +16719,7 @@ fn print_graph_hubs_report(
     let palette = AnsiPalette::new(use_color);
     let rows = graph_hub_rows(visible_notes);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Graph hubs"));
             }
@@ -16574,7 +16761,7 @@ fn print_graph_moc_report(
     let palette = AnsiPalette::new(use_color);
     let rows = graph_moc_rows(visible_notes);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("MOC candidates"));
             }
@@ -16619,7 +16806,7 @@ fn print_graph_dead_ends_report(
     let palette = AnsiPalette::new(use_color);
     let rows = graph_dead_end_rows(visible_notes);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Graph dead ends"));
             }
@@ -16658,7 +16845,7 @@ fn print_graph_components_report(
     let palette = AnsiPalette::new(use_color);
     let rows = graph_component_rows(visible_components);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Graph components"));
             }
@@ -16692,7 +16879,7 @@ fn print_graph_analytics_report(
 ) -> Result<(), CliError> {
     let rows = graph_analytics_rows(report);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Notes: {}", report.note_count);
             println!("Attachments: {}", report.attachment_count);
             println!("Bases: {}", report.base_count);
@@ -16724,7 +16911,7 @@ fn print_graph_trends_report(
     let visible_rows = paginated_items(&rows, list_controls);
     let visible_points = paginated_items(&report.points, list_controls);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.points.is_empty() {
                 println!("No graph trend checkpoints.");
                 return Ok(());
@@ -16764,7 +16951,7 @@ fn print_checkpoint_record(
     record: &CheckpointRecord,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "Checkpoint {} [{}]: {} notes, {} orphan, {} stale, {} links",
                 record.name.as_deref().unwrap_or(&record.id),
@@ -16792,7 +16979,7 @@ fn print_checkpoint_list(
     let rows = checkpoint_rows(visible);
     let palette = AnsiPalette::new(use_color);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Checkpoints"));
             }
@@ -16839,7 +17026,7 @@ fn print_change_report(
     let visible = paginated_items(&rows, list_controls);
     let palette = AnsiPalette::new(use_color);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!(
                     "{} {}",
@@ -16877,7 +17064,7 @@ fn print_change_report(
 
 fn print_diff_report(output: OutputFormat, report: &DiffReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if let Some(diff) = report.diff.as_deref() {
                 if diff.trim().is_empty() {
                     println!("No changes in {} since {}.", report.path, report.anchor);
@@ -16909,7 +17096,7 @@ fn print_git_status_report(
     report: &vulcan_core::GitStatusReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.clean {
                 println!("Working tree clean.");
                 return Ok(());
@@ -16940,7 +17127,7 @@ fn print_git_status_report(
 
 fn print_git_log_report(output: OutputFormat, report: &GitLogReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.entries.is_empty() {
                 println!("No commits.");
                 return Ok(());
@@ -16965,7 +17152,7 @@ fn print_git_diff_group_report(
     report: &GitDiffReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.diff.trim().is_empty() {
                 if let Some(path) = &report.path {
                     println!("No changes in {path}.");
@@ -16986,7 +17173,7 @@ fn print_git_diff_group_report(
 
 fn print_git_commit_report(output: OutputFormat, report: &GitCommitReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.committed {
                 let sha = report.sha.as_deref().unwrap_or_default();
                 println!(
@@ -17006,7 +17193,7 @@ fn print_git_commit_report(output: OutputFormat, report: &GitCommitReport) -> Re
 
 fn print_git_blame_report(output: OutputFormat, report: &GitBlameReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             for line in &report.lines {
                 println!(
                     "{:>4} {} {:<16} | {}",
@@ -17024,7 +17211,7 @@ fn print_git_blame_report(output: OutputFormat, report: &GitBlameReport) -> Resu
 
 fn print_web_search_report(output: OutputFormat, report: &WebSearchReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.results.is_empty() {
                 println!("No web results.");
                 return Ok(());
@@ -17041,7 +17228,12 @@ fn print_web_search_report(output: OutputFormat, report: &WebSearchReport) -> Re
     }
 }
 
-fn print_web_fetch_report(output: OutputFormat, report: &WebFetchReport) -> Result<(), CliError> {
+fn print_web_fetch_report(
+    output: OutputFormat,
+    report: &WebFetchReport,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
             if let Some(saved) = &report.saved {
@@ -17049,6 +17241,8 @@ fn print_web_fetch_report(output: OutputFormat, report: &WebFetchReport) -> Resu
                     "Fetched {} [{} {}] -> {}",
                     report.url, report.status, report.content_type, saved
                 );
+            } else if report.mode == "markdown" {
+                print_markdown_output(output, &report.content, stdout_is_tty, use_color)?;
             } else {
                 print!("{}", report.content);
                 if !report.content.ends_with('\n') {
@@ -17056,6 +17250,24 @@ fn print_web_fetch_report(output: OutputFormat, report: &WebFetchReport) -> Resu
                 }
             }
             Ok(())
+        }
+        OutputFormat::Markdown => {
+            if report.mode == "markdown" && report.saved.is_none() {
+                print_markdown_output(output, &report.content, stdout_is_tty, use_color)
+            } else {
+                if let Some(saved) = &report.saved {
+                    println!(
+                        "Fetched {} [{} {}] -> {}",
+                        report.url, report.status, report.content_type, saved
+                    );
+                } else {
+                    print!("{}", report.content);
+                    if !report.content.ends_with('\n') {
+                        println!();
+                    }
+                }
+                Ok(())
+            }
         }
         OutputFormat::Json => print_json(report),
     }
@@ -17066,7 +17278,7 @@ fn print_dataview_inline_report(
     report: &DataviewInlineReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.results.is_empty() {
                 println!("No inline expressions in {}", report.file);
                 return Ok(());
@@ -17093,33 +17305,16 @@ fn print_dataview_eval_report(
     output: OutputFormat,
     report: &DataviewEvalReport,
     show_result_count: bool,
+    stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
-            if report.blocks.is_empty() {
-                println!("No Dataview blocks in {}", report.file);
-                return Ok(());
-            }
-
-            println!("Dataview blocks for {}", report.file);
-            for (index, block) in report.blocks.iter().enumerate() {
-                if index > 0 {
-                    println!();
-                }
-                println!(
-                    "Block {} ({}, line {})",
-                    block.block_index, block.language, block.line_number
-                );
-                if let Some(error) = &block.error {
-                    println!("error: {error}");
-                    continue;
-                }
-                if let Some(result) = &block.result {
-                    print_dataview_block_result_human(result, show_result_count);
-                }
-            }
-            Ok(())
-        }
+        OutputFormat::Human | OutputFormat::Markdown => print_markdown_output(
+            output,
+            &render_dataview_eval_markdown(report, show_result_count),
+            stdout_is_tty,
+            use_color,
+        ),
         OutputFormat::Json => print_json(report),
     }
 }
@@ -17128,12 +17323,16 @@ fn print_dataview_js_result(
     output: OutputFormat,
     result: &DataviewJsResult,
     show_result_count: bool,
+    stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
-            print_dataview_js_result_human(result, show_result_count);
-            Ok(())
-        }
+        OutputFormat::Human | OutputFormat::Markdown => print_markdown_output(
+            output,
+            &render_dataview_js_markdown(result, show_result_count),
+            stdout_is_tty,
+            use_color,
+        ),
         OutputFormat::Json => print_json(result),
     }
 }
@@ -17142,12 +17341,16 @@ fn print_dql_query_result(
     output: OutputFormat,
     result: &DqlQueryResult,
     show_result_count: bool,
+    stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
-            print_dql_query_result_human(result, show_result_count);
-            Ok(())
-        }
+        OutputFormat::Human | OutputFormat::Markdown => print_markdown_output(
+            output,
+            &render_dql_query_markdown(result, show_result_count),
+            stdout_is_tty,
+            use_color,
+        ),
         OutputFormat::Json => print_json(result),
     }
 }
@@ -17157,7 +17360,7 @@ fn print_tasks_query_result(
     result: &TasksQueryResult,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             print_tasks_query_result_human(result)?;
             Ok(())
         }
@@ -17167,7 +17370,7 @@ fn print_tasks_query_result(
 
 fn print_task_show_report(output: OutputFormat, report: &TaskShowReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("{}", report.path);
             println!("Title: {}", report.title);
             println!(
@@ -17219,7 +17422,7 @@ fn print_task_show_report(output: OutputFormat, report: &TaskShowReport) -> Resu
 
 fn print_task_track_report(output: OutputFormat, report: &TaskTrackReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let suffix = if report.dry_run { " (dry-run)" } else { "" };
             println!("{}{}", report.path, suffix);
             println!("Action: {}", report.action);
@@ -17253,7 +17456,7 @@ fn print_task_track_status_report(
     report: &TaskTrackStatusReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.active_sessions.is_empty() {
                 println!("No active TaskNotes time tracking sessions.");
                 return Ok(());
@@ -17283,7 +17486,7 @@ fn print_task_track_log_report(
     report: &TaskTrackLogReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("{}", report.path);
             println!("Title: {}", report.title);
             println!("Tracked total: {}m", report.total_time_minutes);
@@ -17309,7 +17512,7 @@ fn print_task_track_summary_report(
     report: &TaskTrackSummaryReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "{} {} -> {}",
                 report.period.to_ascii_uppercase(),
@@ -17337,7 +17540,7 @@ fn print_task_pomodoro_report(
     report: &TaskPomodoroReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let suffix = if report.dry_run { " (dry-run)" } else { "" };
             println!("{}{}", report.storage_note_path, suffix);
             println!("Action: {}", report.action);
@@ -17377,7 +17580,7 @@ fn print_task_pomodoro_status_report(
     report: &TaskPomodoroStatusReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if let Some(active) = &report.active {
                 println!("{}", active.storage_note_path);
                 if let Some(task_path) = &active.task_path {
@@ -17413,7 +17616,7 @@ fn print_task_pomodoro_status_report(
 
 fn print_task_due_report(output: OutputFormat, report: &TaskDueReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.tasks.is_empty() {
                 println!("No TaskNotes tasks due within {}.", report.within);
                 return Ok(());
@@ -17433,7 +17636,7 @@ fn print_task_reminders_report(
     report: &TaskRemindersReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.reminders.is_empty() {
                 println!("No TaskNotes reminders due within {}.", report.upcoming);
                 return Ok(());
@@ -17453,7 +17656,7 @@ fn print_task_reminders_report(
 
 fn print_task_add_report(output: OutputFormat, report: &TaskAddReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let suffix = if report.dry_run { " (dry-run)" } else { "" };
             println!("{}{}", report.path, suffix);
             println!("Title: {}", report.title);
@@ -17491,7 +17694,7 @@ fn print_task_create_report(
     report: &TaskCreateReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let suffix = if report.dry_run { " (dry-run)" } else { "" };
             println!("{}{}", report.task, suffix);
             if report.created_note {
@@ -17509,7 +17712,7 @@ fn print_task_convert_report(
     report: &TaskConvertReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let suffix = if report.dry_run { " (dry-run)" } else { "" };
             if report.source_path == report.target_path {
                 println!("{}{}", report.target_path, suffix);
@@ -17542,7 +17745,7 @@ fn print_task_mutation_report(
     report: &TaskMutationReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let suffix = if report.dry_run { " (dry-run)" } else { "" };
             println!("{}{}", report.path, suffix);
             if let (Some(from), Some(to)) = (&report.moved_from, &report.moved_to) {
@@ -17566,7 +17769,7 @@ fn print_tasknotes_view_list_report(
     report: &TaskNotesViewListReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.views.is_empty() {
                 println!("No TaskNotes views.");
                 return Ok(());
@@ -17593,7 +17796,7 @@ fn print_tasknotes_view_list_report(
 
 fn print_tasks_eval_report(output: OutputFormat, report: &TasksEvalReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.blocks.is_empty() {
                 println!("No Tasks blocks in {}", report.file);
                 return Ok(());
@@ -17621,7 +17824,7 @@ fn print_tasks_eval_report(output: OutputFormat, report: &TasksEvalReport) -> Re
 
 fn print_tasks_next_report(output: OutputFormat, report: &TasksNextReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.occurrences.is_empty() {
                 println!("No recurring task instances.");
                 return Ok(());
@@ -17674,7 +17877,7 @@ fn print_tasks_blocked_report(
     report: &TasksBlockedReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.tasks.is_empty() {
                 println!("No blocked tasks.");
                 return Ok(());
@@ -17736,7 +17939,7 @@ fn print_tasks_graph_report(
     report: &TasksGraphReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Tasks: {}", report.nodes.len());
             println!("Dependencies: {}", report.edges.len());
             if report.edges.is_empty() {
@@ -17781,7 +17984,7 @@ fn print_kanban_board_list(
     let rows = kanban_board_rows(visible_boards);
     let palette = AnsiPalette::new(use_color);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!("{}", palette.cyan("Kanban boards"));
             }
@@ -17813,7 +18016,7 @@ fn print_kanban_board_report(
     verbose: bool,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let card_count = report
                 .columns
                 .iter()
@@ -17857,7 +18060,7 @@ fn print_kanban_cards_report(
     let rows = kanban_card_rows(report, visible_cards);
     let palette = AnsiPalette::new(use_color);
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if stdout_is_tty {
                 println!(
                     "{} {}",
@@ -17895,7 +18098,7 @@ fn print_kanban_archive_report(
     report: &KanbanArchiveReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!(
                     "Dry run: archive {} from {} to {} in {}",
@@ -17925,7 +18128,7 @@ fn print_kanban_move_report(
     report: &KanbanMoveReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!(
                     "Dry run: move {} from {} to {} in {}",
@@ -17946,7 +18149,7 @@ fn print_kanban_move_report(
 
 fn print_kanban_add_report(output: OutputFormat, report: &KanbanAddReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!("Dry run: add card to {} in {}", report.column, report.path);
             } else {
@@ -18007,200 +18210,249 @@ fn print_tasks_by_file_human(tasks: &[Value]) {
     }
 }
 
-fn print_dql_query_result_human(result: &DqlQueryResult, show_result_count: bool) {
-    match result.query_type {
-        vulcan_core::dql::DqlQueryType::Table => print_dql_table_human(result, show_result_count),
-        vulcan_core::dql::DqlQueryType::List => print_dql_list_human(result),
-        vulcan_core::dql::DqlQueryType::Task => print_dql_task_human(result, show_result_count),
-        vulcan_core::dql::DqlQueryType::Calendar => print_dql_calendar_human(result),
+fn render_dql_query_markdown(result: &DqlQueryResult, show_result_count: bool) -> String {
+    let mut sections = Vec::new();
+    let body = match result.query_type {
+        vulcan_core::dql::DqlQueryType::Table => {
+            render_dql_table_markdown(result, show_result_count)
+        }
+        vulcan_core::dql::DqlQueryType::List => render_dql_list_markdown(result),
+        vulcan_core::dql::DqlQueryType::Task => render_dql_task_markdown(result, show_result_count),
+        vulcan_core::dql::DqlQueryType::Calendar => render_dql_calendar_markdown(result),
+    };
+    if !body.is_empty() {
+        sections.push(body);
     }
-    print_dql_diagnostics_human(&result.diagnostics);
+    let diagnostics = render_dql_diagnostics_markdown(&result.diagnostics);
+    if !diagnostics.is_empty() {
+        sections.push(diagnostics);
+    }
+    sections.join("\n\n")
 }
 
-fn print_dataview_block_result_human(result: &DataviewBlockResult, show_result_count: bool) {
+fn render_dataview_block_markdown(result: &DataviewBlockResult, show_result_count: bool) -> String {
     match result {
-        DataviewBlockResult::Dql(result) => print_dql_query_result_human(result, show_result_count),
-        DataviewBlockResult::Js(result) => {
-            print_dataview_js_result_human(result, show_result_count);
-        }
+        DataviewBlockResult::Dql(result) => render_dql_query_markdown(result, show_result_count),
+        DataviewBlockResult::Js(result) => render_dataview_js_markdown(result, show_result_count),
     }
 }
 
-fn print_dataview_js_result_human(result: &DataviewJsResult, show_result_count: bool) {
-    for (index, output) in result.outputs.iter().enumerate() {
-        if index > 0 {
-            println!();
+fn render_dataview_eval_markdown(report: &DataviewEvalReport, show_result_count: bool) -> String {
+    if report.blocks.is_empty() {
+        return format!("No Dataview blocks in {}", report.file);
+    }
+
+    let mut sections = vec![format!("# Dataview blocks for {}", report.file)];
+    for block in &report.blocks {
+        let mut section = vec![format!(
+            "## Block {} (`{}`, line {})",
+            block.block_index, block.language, block.line_number
+        )];
+        if let Some(error) = &block.error {
+            section.push(format!("error: {error}"));
+        } else if let Some(result) = &block.result {
+            let rendered = render_dataview_block_markdown(result, show_result_count);
+            if !rendered.is_empty() {
+                section.push(rendered);
+            }
         }
-        match output {
+        sections.push(section.join("\n\n"));
+    }
+    sections.join("\n\n")
+}
+
+fn render_dataview_js_markdown(result: &DataviewJsResult, show_result_count: bool) -> String {
+    if result.outputs.is_empty() {
+        return result
+            .value
+            .as_ref()
+            .map(render_dataview_inline_value)
+            .unwrap_or_default();
+    }
+
+    result
+        .outputs
+        .iter()
+        .map(|output| match output {
             DataviewJsOutput::Query { result } => {
-                print_dql_query_result_human(result, show_result_count);
+                render_dql_query_markdown(result, show_result_count)
             }
             DataviewJsOutput::Table { headers, rows } => {
-                let column_count =
-                    markdown_table_column_count(headers.len(), rows.iter().map(Vec::len));
-                if column_count > 0 {
-                    let [header, separator] = markdown_table_header_lines(headers, column_count);
-                    println!("{header}");
-                    println!("{separator}");
-                }
-                for row in rows {
-                    let rendered = markdown_table_row(
-                        row.iter().map(render_dataview_inline_value),
-                        column_count,
-                    );
-                    println!("{rendered}");
-                }
+                render_dataview_table_markdown(headers, rows)
             }
-            DataviewJsOutput::List { items } => {
-                for item in items {
-                    println!("- {}", render_dataview_inline_value(item));
-                }
-            }
+            DataviewJsOutput::List { items } => items
+                .iter()
+                .map(|item| format!("- {}", render_dataview_inline_value(item)))
+                .collect::<Vec<_>>()
+                .join("\n"),
             DataviewJsOutput::TaskList {
                 tasks,
                 group_by_file,
-            } => {
-                let mut current_file: Option<&str> = None;
-                for task in tasks {
-                    let file = task
-                        .get("path")
-                        .and_then(Value::as_str)
-                        .or_else(|| {
-                            task.get("file")
-                                .and_then(|file| file.get("path"))
-                                .and_then(Value::as_str)
-                        })
-                        .unwrap_or("<unknown>");
-                    if *group_by_file && current_file != Some(file) {
-                        current_file = Some(file);
-                        println!("{file}");
-                    }
-                    let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
-                    let text = task
-                        .get("text")
-                        .map(render_dataview_inline_value)
-                        .unwrap_or_default();
-                    println!("- [{status}] {text}");
-                }
-            }
-            DataviewJsOutput::Paragraph { text } | DataviewJsOutput::Span { text } => {
-                println!("{text}");
-            }
+            } => render_dataview_task_list_markdown(tasks, *group_by_file),
+            DataviewJsOutput::Paragraph { text } | DataviewJsOutput::Span { text } => text.clone(),
             DataviewJsOutput::Header { level, text } => {
-                let prefix = "#".repeat((*level).max(1));
-                println!("{prefix} {text}");
+                format!("{} {text}", "#".repeat((*level).max(1)))
             }
             DataviewJsOutput::Element {
                 element,
                 text,
                 attrs: _,
-            } => {
-                println!("<{element}> {text}");
-            }
-        }
-    }
-
-    if result.outputs.is_empty() {
-        if let Some(value) = &result.value {
-            println!("{}", render_dataview_inline_value(value));
-        }
-    }
+            } => format!("<{element}> {text}"),
+        })
+        .filter(|section| !section.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
-fn print_dql_table_human(result: &DqlQueryResult, show_result_count: bool) {
+fn render_dataview_table_markdown(headers: &[String], rows: &[Vec<Value>]) -> String {
+    let column_count = markdown_table_column_count(headers.len(), rows.iter().map(Vec::len));
+    let mut lines = Vec::new();
+    if column_count > 0 {
+        let [header, separator] = markdown_table_header_lines(headers, column_count);
+        lines.push(header);
+        lines.push(separator);
+    }
+    lines.extend(
+        rows.iter().map(|row| {
+            markdown_table_row(row.iter().map(render_dataview_inline_value), column_count)
+        }),
+    );
+    lines.join("\n")
+}
+
+fn render_dataview_task_list_markdown(tasks: &[Value], group_by_file: bool) -> String {
+    let mut lines = Vec::new();
+    let mut current_file: Option<&str> = None;
+    for task in tasks {
+        let file = task
+            .get("path")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                task.get("file")
+                    .and_then(|file| file.get("path"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("<unknown>");
+        if group_by_file && current_file != Some(file) {
+            current_file = Some(file);
+            lines.push(format!("### {file}"));
+        }
+        let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
+        let text = task
+            .get("text")
+            .map(render_dataview_inline_value)
+            .unwrap_or_default();
+        lines.push(format!("- [{status}] {text}"));
+    }
+    lines.join("\n")
+}
+
+fn render_dql_table_markdown(result: &DqlQueryResult, show_result_count: bool) -> String {
     let column_count = result.columns.len();
+    let mut lines = Vec::new();
     if column_count > 0 {
         let [header, separator] = markdown_table_header_lines(&result.columns, column_count);
-        println!("{header}");
-        println!("{separator}");
+        lines.push(header);
+        lines.push(separator);
     }
-    for row in &result.rows {
-        let line = markdown_table_row(
+    lines.extend(result.rows.iter().map(|row| {
+        markdown_table_row(
             result
                 .columns
                 .iter()
                 .map(|column| render_dataview_inline_value(&row[column])),
             column_count,
-        );
-        println!("{line}");
-    }
+        )
+    }));
     if show_result_count {
-        println!("{} result(s)", result.result_count);
+        lines.push(format!("{} result(s)", result.result_count));
     }
+    lines.join("\n")
 }
 
-fn print_dql_list_human(result: &DqlQueryResult) {
+fn render_dql_list_markdown(result: &DqlQueryResult) -> String {
     if result.rows.is_empty() {
-        return;
+        return String::new();
     }
-    for row in &result.rows {
-        let rendered = match result.columns.as_slice() {
-            [column] => render_dataview_inline_value(&row[column]),
+    result
+        .rows
+        .iter()
+        .map(|row| match result.columns.as_slice() {
+            [column] => format!("- {}", render_dataview_inline_value(&row[column])),
             [left, right, ..] => format!(
-                "{}: {}",
+                "- {}: {}",
                 render_dataview_inline_value(&row[left]),
                 render_dataview_inline_value(&row[right])
             ),
-            [] => serde_json::to_string(row).unwrap_or_default(),
-        };
-        println!("- {rendered}");
-    }
+            [] => format!("- {}", serde_json::to_string(row).unwrap_or_default()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn print_dql_task_human(result: &DqlQueryResult, show_result_count: bool) {
+fn render_dql_task_markdown(result: &DqlQueryResult, show_result_count: bool) -> String {
     if result.rows.is_empty() {
-        return;
+        return String::new();
     }
 
     let file_column = result.columns.first().map_or("File", String::as_str);
     let mut current_file: Option<&str> = None;
+    let mut lines = Vec::new();
     for row in &result.rows {
         let file = row[file_column].as_str().unwrap_or_default();
         if current_file != Some(file) {
             current_file = Some(file);
-            println!("{file}");
+            lines.push(format!("### {file}"));
         }
         let status = row["status"].as_str().unwrap_or(" ");
         let text = render_dataview_inline_value(&row["text"]);
-        println!("- [{status}] {text}");
+        lines.push(format!("- [{status}] {text}"));
     }
     if show_result_count {
-        println!("{} task(s)", result.result_count);
+        lines.push(format!("{} task(s)", result.result_count));
     }
+    lines.join("\n")
 }
 
-fn print_dql_calendar_human(result: &DqlQueryResult) {
+fn render_dql_calendar_markdown(result: &DqlQueryResult) -> String {
     if result.rows.is_empty() {
-        println!("No calendar entries.");
-        return;
+        return "No calendar entries.".to_string();
     }
 
     let file_column = result.columns.get(1).map_or("File", String::as_str);
     let mut current_date: Option<&str> = None;
+    let mut lines = Vec::new();
     for row in &result.rows {
         let date = row["date"].as_str().unwrap_or_default();
         if current_date != Some(date) {
             current_date = Some(date);
-            println!("{date}");
+            lines.push(format!("### {date}"));
         }
-        println!("- {}", render_dataview_inline_value(&row[file_column]));
+        lines.push(format!(
+            "- {}",
+            render_dataview_inline_value(&row[file_column])
+        ));
     }
+    lines.join("\n")
 }
 
-fn print_dql_diagnostics_human(diagnostics: &[vulcan_core::DqlDiagnostic]) {
+fn render_dql_diagnostics_markdown(diagnostics: &[vulcan_core::DqlDiagnostic]) -> String {
     if diagnostics.is_empty() {
-        return;
+        return String::new();
     }
-
-    println!("Diagnostics:");
-    for diagnostic in diagnostics {
-        println!("- {}", diagnostic.message);
-    }
+    std::iter::once("Diagnostics:".to_string())
+        .chain(
+            diagnostics
+                .iter()
+                .map(|diagnostic| format!("- {}", diagnostic.message)),
+        )
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn print_inbox_report(output: OutputFormat, report: &InboxReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Appended to {}", report.path);
             Ok(())
         }
@@ -18213,7 +18465,7 @@ fn print_template_list_report(
     report: &TemplateListReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.templates.is_empty() {
                 println!("No templates found.");
             } else {
@@ -18235,7 +18487,7 @@ fn print_template_create_report(
     report: &TemplateCreateReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "Created {} from {} ({}, {})",
                 report.path, report.template, report.template_source, report.engine
@@ -18257,7 +18509,7 @@ fn print_template_insert_report(
     report: &TemplateInsertReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "Inserted {} into {} ({}, {}, {})",
                 report.template, report.note, report.mode, report.template_source, report.engine
@@ -18277,10 +18529,12 @@ fn print_template_insert_report(
 fn print_template_preview_report(
     output: OutputFormat,
     report: &TemplatePreviewReport,
+    stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
-            println!("{}", report.content);
+        OutputFormat::Human | OutputFormat::Markdown => {
+            print_markdown_output(output, &report.content, stdout_is_tty, use_color)?;
             for warning in &report.warnings {
                 eprintln!("Warning: {warning}");
             }
@@ -18295,7 +18549,7 @@ fn print_template_preview_report(
 
 fn print_open_report(output: OutputFormat, report: &OpenReport) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Opened {} in Obsidian", report.path);
             Ok(())
         }
@@ -18308,7 +18562,7 @@ fn print_periodic_open_report(
     report: &PeriodicOpenReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.created {
                 println!("Created {}", report.path);
             } else {
@@ -18333,14 +18587,12 @@ fn print_periodic_open_report(
 fn print_daily_show_report(
     output: OutputFormat,
     report: &PeriodicShowReport,
+    stdout_is_tty: bool,
+    use_color: bool,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
-            print!("{}", report.content);
-            if !report.content.ends_with('\n') {
-                println!();
-            }
-            Ok(())
+        OutputFormat::Human | OutputFormat::Markdown => {
+            print_markdown_output(output, &report.content, stdout_is_tty, use_color)
         }
         OutputFormat::Json => print_json(report),
     }
@@ -18357,7 +18609,7 @@ fn print_daily_list_report(
         .map(|item| serde_json::to_value(item).expect("daily list row should serialize"))
         .collect::<Vec<_>>();
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if visible.is_empty() {
                 println!("No daily notes in range.");
                 return Ok(());
@@ -18394,7 +18646,7 @@ fn print_daily_export_ics_report(
     report: &DailyIcsExportReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if let Some(path) = report.path.as_deref() {
                 println!(
                     "Wrote {} event(s) from {} daily note(s) to {}",
@@ -18417,7 +18669,7 @@ fn print_daily_append_report(
     report: &DailyAppendReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.created {
                 println!("Created {}", report.path);
             }
@@ -18445,7 +18697,7 @@ fn print_periodic_list_report(
         .map(|item| serde_json::to_value(item).expect("periodic list row should serialize"))
         .collect::<Vec<_>>();
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if visible.is_empty() {
                 println!("No indexed periodic notes.");
                 return Ok(());
@@ -18484,7 +18736,7 @@ fn print_periodic_gap_report(
         .map(|item| serde_json::to_value(item).expect("periodic gap row should serialize"))
         .collect::<Vec<_>>();
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if visible.is_empty() {
                 println!("No periodic gaps in range.");
                 return Ok(());
@@ -18527,7 +18779,7 @@ fn print_static_search_index_report(
         }
         fs::write(path, format!("{rendered}\n")).map_err(CliError::operation)?;
         match output {
-            OutputFormat::Human => {
+            OutputFormat::Human | OutputFormat::Markdown => {
                 println!(
                     "Exported static search index: {} documents, {} chunks -> {}",
                     report.documents,
@@ -18896,7 +19148,7 @@ fn write_text_export(
         }
         fs::write(path, payload).map_err(CliError::operation)?;
         match output {
-            OutputFormat::Human => {
+            OutputFormat::Human | OutputFormat::Markdown => {
                 println!("{}", path.display());
                 Ok(())
             }
@@ -19275,7 +19527,7 @@ fn print_automation_run_report(
     report: &AutomationRunReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Automation actions: {}", report.actions.join(", "));
             if let Some(scan) = report.scan.as_ref() {
                 println!(
@@ -19340,7 +19592,7 @@ fn print_cache_inspect_report(
     report: &CacheInspectReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Cache: {}", report.cache_path);
             println!("Bytes: {}", report.database_bytes);
             println!("Documents: {}", report.documents);
@@ -19363,7 +19615,7 @@ fn print_cache_verify_report(
     report: &CacheVerifyReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Cache healthy: {}", report.healthy);
             for check in &report.checks {
                 println!(
@@ -19384,7 +19636,7 @@ fn print_cache_vacuum_report(
     report: &CacheVacuumReport,
 ) -> Result<(), CliError> {
     match output {
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             if report.dry_run {
                 println!("Dry run: cache is {} bytes", report.before_bytes);
             } else {
@@ -19737,6 +19989,10 @@ fn help_overview() -> HelpTopicReport {
                 (
                     "web",
                     "Fetch URLs and run web searches via configured backends",
+                ),
+                (
+                    "render",
+                    "Render markdown from a file or stdin with the terminal renderer",
                 ),
             ],
         ),
@@ -21227,16 +21483,13 @@ fn print_kanban_card_list_item(card: &KanbanCardListItem) {
     }
 }
 
-fn print_bases_human(
-    report: &BasesEvalReport,
-    list_controls: &ListOutputControls,
-    palette: AnsiPalette,
-) {
+fn render_bases_markdown(report: &BasesEvalReport, list_controls: &ListOutputControls) -> String {
     let mut row_index = 0_usize;
     let mut printed_any = false;
     let end = list_controls.limit.map_or(usize::MAX, |limit| {
         list_controls.offset.saturating_add(limit)
     });
+    let mut sections = Vec::new();
 
     for view in &report.views {
         let mut visible_rows = Vec::new();
@@ -21253,8 +21506,7 @@ fn print_bases_human(
         }
 
         if !visible_rows.is_empty() {
-            print_bases_view_header(view, visible_rows.len(), palette);
-            print_bases_table(view, &visible_rows, palette);
+            sections.push(render_bases_view_markdown(view, &visible_rows));
             printed_any = true;
         }
 
@@ -21264,26 +21516,36 @@ fn print_bases_human(
     }
 
     if !printed_any {
-        println!("No bases rows.");
+        sections.push("No bases rows.".to_string());
     }
+
+    if !report.diagnostics.is_empty() {
+        let mut diagnostics = vec!["## Diagnostics".to_string()];
+        diagnostics.extend(report.diagnostics.iter().map(|diagnostic| {
+            if let Some(path) = diagnostic.path.as_deref() {
+                format!("- {path}: {}", diagnostic.message)
+            } else {
+                format!("- {}", diagnostic.message)
+            }
+        }));
+        sections.push(diagnostics.join("\n"));
+    }
+
+    sections.join("\n\n")
 }
 
-fn print_bases_view_header(
+fn render_bases_view_markdown(
     view: &vulcan_core::BasesEvaluatedView,
-    visible_rows: usize,
-    palette: AnsiPalette,
-) {
+    rows: &[&vulcan_core::BasesRow],
+) -> String {
+    let visible_rows = rows.len();
     let name = view.name.as_deref().unwrap_or("view");
     let row_summary = if visible_rows == view.rows.len() {
         format!("{} rows", view.rows.len())
     } else {
         format!("{visible_rows} of {} rows", view.rows.len())
     };
-    println!(
-        "{} {}",
-        palette.bold(name),
-        palette.dim(&format!("({row_summary})"))
-    );
+    let mut lines = vec![format!("## {name} ({row_summary})")];
     if !view.columns.is_empty() {
         let columns = view
             .columns
@@ -21291,24 +21553,23 @@ fn print_bases_view_header(
             .map(|column| column.display_name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        println!("{}: {columns}", palette.cyan("Columns"));
+        lines.push(format!("Columns: {columns}"));
     }
     if let Some(group_by) = view.group_by.as_ref() {
-        println!(
-            "{}: {}{}",
-            palette.cyan("Grouped by"),
+        lines.push(format!(
+            "Grouped by: {}{}",
             group_by.display_name,
             if group_by.descending { " (desc)" } else { "" }
-        );
+        ));
     }
-    println!();
+    lines.push(render_bases_table_markdown(view, rows));
+    lines.join("\n\n")
 }
 
-fn print_bases_table(
+fn render_bases_table_markdown(
     view: &vulcan_core::BasesEvaluatedView,
     rows: &[&vulcan_core::BasesRow],
-    palette: AnsiPalette,
-) {
+) -> String {
     let group_key = view
         .group_by
         .as_ref()
@@ -21322,6 +21583,7 @@ fn print_bases_table(
         columns = view.columns.iter().collect();
     }
 
+    let mut sections = Vec::new();
     if view.group_by.is_some() {
         let mut start = 0_usize;
         while start < rows.len() {
@@ -21331,50 +21593,45 @@ fn print_bases_table(
                 end += 1;
             }
 
-            println!(
-                "{} {} {}",
-                palette.green("Group:"),
-                palette.bold(&group_name),
-                palette.dim(&format!("({} rows)", end - start))
-            );
-            print_bases_markdown_table(&columns, &rows[start..end]);
-            println!();
+            let group_rows = &rows[start..end];
+            sections.push(format!(
+                "### Group: {group_name} ({} rows)\n\n{}",
+                group_rows.len(),
+                render_bases_table_block_markdown(&columns, group_rows)
+            ));
             start = end;
         }
     } else {
-        print_bases_markdown_table(&columns, rows);
-        println!();
+        sections.push(render_bases_table_block_markdown(&columns, rows));
     }
+    sections.join("\n\n")
 }
 
-fn print_bases_markdown_table(
+fn render_bases_table_block_markdown(
     columns: &[&vulcan_core::BasesColumn],
     rows: &[&vulcan_core::BasesRow],
-) {
+) -> String {
     let headers = columns
         .iter()
         .map(|column| column.display_name.clone())
         .collect::<Vec<_>>();
     let column_count = headers.len();
     if column_count == 0 {
-        return;
+        return String::new();
     }
 
     let [header, separator] = markdown_table_header_lines(&headers, column_count);
-    println!("{header}");
-    println!("{separator}");
+    let mut lines = vec![header, separator];
 
-    for row in rows {
-        println!(
-            "{}",
-            markdown_table_row(
-                columns
-                    .iter()
-                    .map(|column| bases_cell_text(row, &column.key)),
-                column_count,
-            )
-        );
-    }
+    lines.extend(rows.iter().map(|row| {
+        markdown_table_row(
+            columns
+                .iter()
+                .map(|column| bases_cell_text(row, &column.key)),
+            column_count,
+        )
+    }));
+    lines.join("\n")
 }
 
 fn bases_group_name(row: &vulcan_core::BasesRow) -> String {
@@ -21658,7 +21915,7 @@ fn print_status_report(
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(report),
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             let palette = AnsiPalette::new(use_color);
             println!("Vault:      {}", report.vault_root);
             println!(
@@ -21703,7 +21960,7 @@ fn print_graph_export_report(
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(report),
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             match format {
                 GraphExportFormat::Json => {
                     print_json(report)?;
@@ -21778,7 +22035,7 @@ fn run_template_show_command(
     };
     match output {
         OutputFormat::Json => print_json(&report),
-        OutputFormat::Human => {
+        OutputFormat::Human | OutputFormat::Markdown => {
             println!("Name:   {}", report.name);
             println!("Source: {}", report.source);
             println!("Path:   {}", report.path);

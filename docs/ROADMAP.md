@@ -3056,6 +3056,7 @@ Most commands show only flags in their `--help` output. Add 2–3 concrete usage
 - [x] Use consistent color scheme across all output: `AnsiPalette` (bold, yellow, red, cyan, dim) used throughout; help now routes through `--color` flag
 - [x] Add `--color auto|always|never` global flag (respect `NO_COLOR` env var); also reads `VULCAN_COLOR` env var
 - [x] Format table output with aligned columns when stdout is a TTY and `--fields` is specified with `--format table`
+- [x] Add an integrated terminal markdown renderer, expose raw `--output markdown`, and add `vulcan render [file]` so markdown-first outputs auto-render in interactive terminals while staying pipe-friendly
 - [-] Progress bars for long-running operations (scan, vectors, batch) using `indicatif` or similar — deferred; current eprintln progress reporting is sufficient for the common case
 
 **`describe` command assessment**

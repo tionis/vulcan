@@ -88,6 +88,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("config"))
             .and(predicate::str::contains("automation"))
             .and(predicate::str::contains("run"))
+            .and(predicate::str::contains("render"))
             .and(predicate::str::contains("help"))
             .and(predicate::str::contains("describe"))
             .and(predicate::str::contains("completions"))
@@ -115,6 +116,21 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("--color <COLOR>"))
             .and(predicate::str::contains("--color always|never|auto")),
     );
+}
+
+#[test]
+fn help_markdown_output_emits_raw_markdown() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "markdown", "help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("# help")
+                .and(predicate::str::contains("## JavaScript & Web"))
+                .and(predicate::str::contains("- `render`"))
+                .and(predicate::str::contains('\x1b').not()),
+        );
 }
 
 #[test]
@@ -1255,6 +1271,37 @@ fn note_get_html_mode_renders_selected_markdown() {
     assert!(html.contains("<h2>Tasks</h2>"));
     assert!(html.contains("TODO first"));
     assert!(!html.contains("status: active"));
+}
+
+#[test]
+fn note_get_markdown_output_preserves_raw_markdown() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "markdown",
+            "note",
+            "get",
+            "Dashboard",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::starts_with("---\nstatus: active\n")
+                .and(predicate::str::contains("# Dashboard"))
+                .and(predicate::str::contains("## Tasks"))
+                .and(predicate::str::contains("^done-item"))
+                .and(predicate::str::contains("1: ").not()),
+        );
 }
 
 #[test]
@@ -7124,6 +7171,45 @@ fn template_preview_renders_templater_templates_with_var_bindings() {
     assert!(content.contains("PLAN"));
     assert!(content.contains("Project Vulcan"));
     assert!(content.contains("Path Notes/Plan.md"));
+}
+
+#[test]
+fn render_human_output_formats_markdown_files() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let markdown_path = temp_dir.path().join("sample.md");
+    fs::write(
+        &markdown_path,
+        "# Title\n\n| Name | Hours |\n| --- | ---: |\n| Alpha | 2 |\n",
+    )
+    .expect("markdown file should be written");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "render",
+            markdown_path
+                .to_str()
+                .expect("markdown path should be valid utf-8"),
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Title")
+                .and(predicate::str::contains("| Name  | Hours |"))
+                .and(predicate::str::contains("| ----- | ----: |"))
+                .and(predicate::str::contains("# Title").not()),
+        );
+}
+
+#[test]
+fn render_markdown_output_echoes_raw_stdin() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "markdown", "render"])
+        .write_stdin("# Title\n\nBody\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("# Title\n\nBody\n"));
 }
 
 #[test]

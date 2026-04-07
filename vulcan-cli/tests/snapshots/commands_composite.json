@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox\n  Query:       query, search, ls, notes, backlinks, links, changes\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, weekly, monthly, periodic, template\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, cluster, related, doctor\n  Index:       index, vectors, cache, repair\n  Runtime:     run, web\n  Git:         git\n  Automation:  saved, automation, batch, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox\n  Query:       query, search, ls, notes, backlinks, links, changes\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, weekly, monthly, periodic, template\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, cluster, related, doctor\n  Index:       index, vectors, cache, repair\n  Runtime:     run, web, render\n  Git:         git\n  Automation:  saved, automation, batch, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -4578,6 +4578,25 @@
         ]
       },
       {
+        "about": "Render markdown from a file or stdin in the terminal",
+        "after_help": "Notes:\n  Human output uses Vulcan's terminal markdown renderer.\n  When stdout is not a TTY, the rendered output is emitted without ANSI escapes.\n  Use `--output markdown` to print the original markdown source unchanged.\n\nExamples:\n  vulcan render README.md\n  cat README.md | vulcan render\n  vulcan --output markdown render README.md",
+        "name": "render",
+        "options": [
+          {
+            "help": "Markdown file to render; omit to read from stdin",
+            "id": "file",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILE"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Open or create the weekly note for a date",
         "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `weekly [date]` and `monthly [date]` are shorthand for `periodic weekly|monthly`.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n\nExamples:\n  vulcan weekly\n  vulcan monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
         "name": "weekly",
@@ -8028,6 +8047,7 @@
         "long": "output",
         "possible_values": [
           "human",
+          "markdown",
           "json"
         ],
         "required": false,
