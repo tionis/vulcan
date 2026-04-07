@@ -1,4 +1,5 @@
 # Vulcan
+> WARNING: This project is in a pre-alpha stage. It contains a *huge* amount of LLM written code and needs extensive integration testing, especially for edge cases before it can enter a more stable stage. If you use this, please have a good backup and/or versioning solution like git ready.
 
 Headless CLI for [Obsidian](https://obsidian.md)-style vaults and plain Markdown directories. A single Rust binary that indexes your vault into a local SQLite cache and exposes graph queries, full-text search, semantic retrieval, scripting, and safe bulk mutations — no running Obsidian instance required.
 
