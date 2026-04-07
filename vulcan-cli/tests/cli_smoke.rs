@@ -2859,6 +2859,58 @@ fn dataview_eval_human_output_keeps_empty_table_headers() {
 }
 
 #[test]
+fn dataview_eval_json_output_preserves_js_equality_operators() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    fs::write(
+        vault_root.join("Equality Dashboard.md"),
+        concat!(
+            "```dataviewjs\n",
+            "const checks = [\n",
+            "  typeof \"x\" === \"string\",\n",
+            "  1 == 1,\n",
+            "  1 != 2,\n",
+            "  2 !== 3,\n",
+            "];\n",
+            "dv.paragraph(String(checks.every(Boolean)));\n",
+            "```\n",
+        ),
+    )
+    .expect("note should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "dataview",
+            "eval",
+            "Equality Dashboard",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["blocks"][0]["language"], "dataviewjs");
+    assert_eq!(json["blocks"][0]["error"], Value::Null);
+    assert_eq!(
+        json["blocks"][0]["result"]["data"]["outputs"],
+        serde_json::json!([
+            {
+                "kind": "paragraph",
+                "text": "true"
+            }
+        ])
+    );
+}
+
+#[test]
 fn dataview_eval_human_output_shows_unsupported_dql_diagnostics() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -530,6 +530,9 @@ function __vulcanPlain(value) {
   if (value instanceof DataArray) {
     return value.array().map(__vulcanPlain);
   }
+  if (value instanceof VulcanDateTime) {
+    return value.toISO();
+  }
   if (value instanceof Date) {
     return value.toISOString();
   }
@@ -617,6 +620,32 @@ function __vulcanDateMillis(value) {
     return millis == null ? null : millis;
   }
   return null;
+}
+
+function __vulcanReviveFileMetadata(file) {
+  if (!file || typeof file !== "object" || Array.isArray(file)) {
+    return file;
+  }
+  const revived = { ...file };
+  for (const key of ["day", "mday", "cday"]) {
+    if (typeof revived[key] === "string") {
+      const millis = __vulcan_date_millis(revived[key]);
+      if (millis != null) {
+        revived[key] = new VulcanDateTime(new Date(millis));
+      }
+    }
+  }
+  return revived;
+}
+
+function __vulcanRevivePage(page) {
+  if (!page || typeof page !== "object" || Array.isArray(page)) {
+    return page;
+  }
+  return {
+    ...page,
+    file: __vulcanReviveFileMetadata(page.file),
+  };
 }
 
 function __vulcanDurationMillis(value) {
@@ -1668,13 +1697,13 @@ const __vulcanPrivateEval = globalThis.eval;
 
 const dv = {
   pages(source) {
-    return new DataArray(JSON.parse(__vulcan_pages_json(source)));
+    return new DataArray(JSON.parse(__vulcan_pages_json(source)).map(__vulcanRevivePage));
   },
   page(path) {
-    return JSON.parse(__vulcan_page_json(path));
+    return __vulcanRevivePage(JSON.parse(__vulcan_page_json(path)));
   },
   current() {
-    return JSON.parse(__vulcan_current_json());
+    return __vulcanRevivePage(JSON.parse(__vulcan_current_json()));
   },
   query(dql, file, _settings) {
     return JSON.parse(__vulcan_query_json(dql, file));
@@ -1755,7 +1784,7 @@ const dv = {
     const millis = __vulcan_date_millis(
       input instanceof Date ? input.toISOString() : String(input)
     );
-    return millis == null ? null : new Date(millis);
+    return millis == null ? null : new VulcanDateTime(new Date(millis));
   },
   duration(input) {
     const millis = __vulcan_duration_millis(String(input));
@@ -5768,6 +5797,48 @@ globalThis.Function = undefined;
                     assert_eq!(rows[0][2], Value::String("2026-04-03".to_string()));
                     assert_eq!(rows[0][3], Value::String("People/Bob".to_string()));
                     assert_eq!(rows[0][4], Value::String("2026-04-05".to_string()));
+                }
+                other => panic!("expected table output, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn dataviewjs_exposes_formattable_dates_for_dv_date_and_file_day() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            fs::create_dir_all(vault_root.join("Journal")).expect("journal dir should exist");
+            fs::write(vault_root.join("Journal/2026-04-03.md"), "# Daily\n")
+                .expect("daily note should be written");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                dv.table(
+                  ["fileDay", "parsed"],
+                  [[
+                    dv.page("Journal/2026-04-03").file.day.toFormat("yyyy-MM-dd"),
+                    dv.date("2026-04-04").toFormat("yyyy-MM-dd")
+                  ]]
+                );
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            assert_eq!(result.outputs.len(), 1);
+            match &result.outputs[0] {
+                DataviewJsOutput::Table { headers, rows } => {
+                    assert_eq!(headers, &vec!["fileDay".to_string(), "parsed".to_string()]);
+                    assert_eq!(
+                        rows,
+                        &vec![vec![
+                            Value::String("2026-04-03".to_string()),
+                            Value::String("2026-04-04".to_string())
+                        ]]
+                    );
                 }
                 other => panic!("expected table output, got {other:?}"),
             }

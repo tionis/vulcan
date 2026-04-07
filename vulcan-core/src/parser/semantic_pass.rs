@@ -205,7 +205,15 @@ impl<'a> SemanticProcessor<'a> {
 
         for visible_range in visible_subranges(range.clone(), self.comment_regions) {
             let visible_text = &self.source[visible_range.clone()];
-            let clean_text = strip_highlight_markers(visible_text);
+            let clean_text = if self
+                .current_block
+                .as_ref()
+                .is_some_and(|block| block.block_kind == SemanticBlockKind::CodeBlock)
+            {
+                visible_text.to_string()
+            } else {
+                strip_highlight_markers(visible_text)
+            };
             if !clean_text.trim().is_empty() {
                 self.saw_body_content = true;
             }
