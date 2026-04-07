@@ -12357,20 +12357,18 @@ where
     let args = args.into_iter().map(Into::into).collect::<Vec<OsString>>();
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
-        Err(error) => {
-            match error.kind() {
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
-                    error.print().map_err(CliError::operation)?;
-                    return Ok(());
-                }
-                _ => {
-                    if let Some(hint) = detect_command_confusion(&args) {
-                        eprintln!("hint: {hint}");
-                    }
-                    return Err(CliError::clap(&error));
-                }
+        Err(error) => match error.kind() {
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                error.print().map_err(CliError::operation)?;
+                return Ok(());
             }
-        }
+            _ => {
+                if let Some(hint) = detect_command_confusion(&args) {
+                    eprintln!("hint: {hint}");
+                }
+                return Err(CliError::clap(&error));
+            }
+        },
     };
     dispatch(&cli)
 }
@@ -13147,7 +13145,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 value,
                 dry_run,
                 no_commit,
-            } => run_config_set(&paths, cli.output, key, value, *dry_run, *no_commit, cli.quiet),
+            } => run_config_set(
+                &paths, cli.output, key, value, *dry_run, *no_commit, cli.quiet,
+            ),
             ConfigCommand::Import(selection) => {
                 if selection.command.is_some() && (selection.all || selection.list) {
                     return Err(CliError::operation(
@@ -13172,7 +13172,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     ));
                 };
                 let importer = importer_for_command(command);
-                run_config_import(&paths, cli.output, importer.as_ref(), &selection.args, cli.quiet)
+                run_config_import(
+                    &paths,
+                    cli.output,
+                    importer.as_ref(),
+                    &selection.args,
+                    cli.quiet,
+                )
             }
         },
         Command::Daily { ref command } => commands::periodic::handle_daily_command(
@@ -13276,7 +13282,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref file,
             no_commit,
         } => {
-            let report = run_inbox_command(&paths, text.as_deref(), file.as_ref(), no_commit, cli.quiet)?;
+            let report =
+                run_inbox_command(&paths, text.as_deref(), file.as_ref(), no_commit, cli.quiet)?;
             print_inbox_report(cli.output, &report)
         }
         Command::Template {
@@ -20271,7 +20278,11 @@ fn print_aligned_table(rows: &[Value], fields: &[String], no_header: bool, use_c
             .collect::<Vec<_>>()
             .join("  ");
         println!("{header}");
-        let sep: String = widths.iter().map(|w| "-".repeat(*w)).collect::<Vec<_>>().join("  ");
+        let sep: String = widths
+            .iter()
+            .map(|w| "-".repeat(*w))
+            .collect::<Vec<_>>()
+            .join("  ");
         println!("{}", palette.dim(&sep));
     }
 
@@ -20735,11 +20746,9 @@ fn run_status_command(paths: &VaultPaths) -> Result<VaultStatusReport, CliError>
         let db = CacheDatabase::open(paths).ok();
         db.and_then(|db| {
             db.connection()
-                .query_row(
-                    "SELECT MAX(indexed_at) FROM documents",
-                    [],
-                    |row| row.get::<_, Option<String>>(0),
-                )
+                .query_row("SELECT MAX(indexed_at) FROM documents", [], |row| {
+                    row.get::<_, Option<String>>(0)
+                })
                 .ok()
                 .flatten()
         })
@@ -20809,10 +20818,7 @@ fn print_status_report(
                 "Notes:      {}  attachments: {}",
                 report.note_count, report.attachment_count
             );
-            println!(
-                "Cache:      {} bytes",
-                report.cache_bytes
-            );
+            println!("Cache:      {} bytes", report.cache_bytes);
             if let Some(last_scan) = &report.last_scan {
                 println!("Last scan:  {last_scan}");
             } else {
@@ -20968,10 +20974,7 @@ fn run_mcp_server(paths: &VaultPaths) -> Result<(), CliError> {
         };
 
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let method = request.get("method").and_then(Value::as_str).unwrap_or("");
         let params = request.get("params");
 
         let result: Result<Value, (i64, String)> = match method {
@@ -21048,10 +21051,7 @@ struct McpToolWithPath {
 fn build_mcp_tool_definitions_with_paths() -> Vec<McpToolWithPath> {
     let tree = cli_command_tree();
     let mut tools = Vec::new();
-    for subcommand in tree
-        .get_subcommands()
-        .filter(|s| !s.is_hide_set())
-    {
+    for subcommand in tree.get_subcommands().filter(|s| !s.is_hide_set()) {
         collect_mcp_tools_inner(subcommand, Vec::new(), &mut tools);
     }
     tools
@@ -21228,9 +21228,8 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
                 return Vec::new();
             };
             let conn = db.connection();
-            let mut stmt = match conn.prepare(
-                "SELECT path, filename FROM documents ORDER BY path",
-            ) {
+            let mut stmt = match conn.prepare("SELECT path, filename FROM documents ORDER BY path")
+            {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
@@ -21396,10 +21395,8 @@ fn fix_fish_nested_subcommand_guards(script: String) -> String {
             let cond = caps[2].to_string();
             if let Some(words) = condition_to_words.get(&cond) {
                 if words.len() > 1 {
-                    let not_guard = format!(
-                        "; and not __fish_seen_subcommand_from {}",
-                        words.join(" ")
-                    );
+                    let not_guard =
+                        format!("; and not __fish_seen_subcommand_from {}", words.join(" "));
                     let patched = format!(
                         "{}{}{}{}{}{}",
                         &caps[1], &caps[2], not_guard, &caps[3], &caps[4], &caps[5]

@@ -12896,12 +12896,19 @@ fn json_output_error_is_structured() {
         .output()
         .expect("command should run");
 
-    assert_ne!(output.status.code(), Some(0), "should exit with non-zero code on error");
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "should exit with non-zero code on error"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.trim().is_empty(), "JSON error output should be on stdout");
+    assert!(
+        !stdout.trim().is_empty(),
+        "JSON error output should be on stdout"
+    );
 
-    let parsed: Value = serde_json::from_str(stdout.trim())
-        .expect("JSON error output should be valid JSON");
+    let parsed: Value =
+        serde_json::from_str(stdout.trim()).expect("JSON error output should be valid JSON");
     assert!(
         parsed.get("error").is_some(),
         "JSON error should have 'error' field, got: {stdout}"
@@ -12924,13 +12931,15 @@ fn quiet_flag_suppresses_warnings_but_not_primary_output() {
     let vault = temp_dir.path();
     // Create a git-backed vault so that auto-commit warnings might fire
     init_git_repo(vault);
-    fs::write(vault.join("note.md"), "---\ntitle: A\n---\n# A\n")
-        .expect("note should be written");
+    fs::write(vault.join("note.md"), "---\ntitle: A\n---\n# A\n").expect("note should be written");
     commit_all(vault, "initial");
     // Enable auto-commit in config
     fs::create_dir_all(vault.join(".vulcan")).expect("vulcan dir");
-    fs::write(vault.join(".vulcan/config.toml"), "[git]\nauto_commit = true\n")
-        .expect("config should write");
+    fs::write(
+        vault.join(".vulcan/config.toml"),
+        "[git]\nauto_commit = true\n",
+    )
+    .expect("config should write");
 
     // With --quiet, no warnings on stderr, but scan summary should still work
     let output = Command::cargo_bin("vulcan")
@@ -12948,10 +12957,12 @@ fn quiet_flag_suppresses_warnings_but_not_primary_output() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: Value = serde_json::from_str(stdout.trim())
-        .expect("JSON scan output should be valid JSON");
+    let parsed: Value =
+        serde_json::from_str(stdout.trim()).expect("JSON scan output should be valid JSON");
     assert!(
-        parsed.get("discovered").is_some() || parsed.get("added").is_some() || parsed.get("total").is_some(),
+        parsed.get("discovered").is_some()
+            || parsed.get("added").is_some()
+            || parsed.get("total").is_some(),
         "scan JSON output should contain count fields, got: {stdout}"
     );
 }
@@ -12987,8 +12998,13 @@ fn status_json_output_reports_vault_root_and_note_count() {
         parsed.get("note_count").is_some(),
         "status JSON must include note_count, got: {out}"
     );
-    let note_count = parsed["note_count"].as_u64().expect("note_count should be integer");
-    assert!(note_count > 0, "basic vault should have at least one indexed note");
+    let note_count = parsed["note_count"]
+        .as_u64()
+        .expect("note_count should be integer");
+    assert!(
+        note_count > 0,
+        "basic vault should have at least one indexed note"
+    );
 }
 
 #[test]
@@ -13003,10 +13019,7 @@ fn status_human_output_shows_vault_and_notes() {
         .args(["--vault", vault_root.to_str().expect("utf-8"), "status"])
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("Notes")
-                .and(predicate::str::contains("Vault")),
-        );
+        .stdout(predicate::str::contains("Notes").and(predicate::str::contains("Vault")));
 }
 
 #[test]
@@ -13032,11 +13045,21 @@ fn graph_export_json_format_emits_nodes_and_edges() {
         .success();
 
     let out = String::from_utf8_lossy(&assert.get_output().stdout);
-    let parsed: Value = serde_json::from_str(out.trim()).expect("graph export json should be valid JSON");
-    assert!(parsed.get("nodes").is_some(), "json export should have nodes, got: {out}");
-    assert!(parsed.get("edges").is_some(), "json export should have edges, got: {out}");
+    let parsed: Value =
+        serde_json::from_str(out.trim()).expect("graph export json should be valid JSON");
+    assert!(
+        parsed.get("nodes").is_some(),
+        "json export should have nodes, got: {out}"
+    );
+    assert!(
+        parsed.get("edges").is_some(),
+        "json export should have edges, got: {out}"
+    );
     let nodes = parsed["nodes"].as_array().expect("nodes should be array");
-    assert!(!nodes.is_empty(), "basic vault should have at least one node");
+    assert!(
+        !nodes.is_empty(),
+        "basic vault should have at least one node"
+    );
     // Each node should have id and path
     let first = &nodes[0];
     assert!(first.get("id").is_some(), "node should have id");
@@ -13084,10 +13107,7 @@ fn graph_export_graphml_format_emits_xml() {
         ])
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("<?xml")
-                .and(predicate::str::contains("<graphml")),
-        );
+        .stdout(predicate::str::contains("<?xml").and(predicate::str::contains("<graphml")));
 }
 
 #[test]
@@ -13116,7 +13136,8 @@ fn template_list_subcommand_lists_available_templates() {
         .success();
 
     let out = String::from_utf8_lossy(&assert.get_output().stdout);
-    let parsed: Value = serde_json::from_str(out.trim()).expect("template list should emit valid JSON");
+    let parsed: Value =
+        serde_json::from_str(out.trim()).expect("template list should emit valid JSON");
     let templates = parsed["templates"]
         .as_array()
         .expect("templates should be an array");
@@ -13158,10 +13179,16 @@ fn template_show_subcommand_displays_template_contents() {
         .success();
 
     let out = String::from_utf8_lossy(&assert.get_output().stdout);
-    let parsed: Value = serde_json::from_str(out.trim()).expect("template show should emit valid JSON");
+    let parsed: Value =
+        serde_json::from_str(out.trim()).expect("template show should emit valid JSON");
     let name = parsed["name"].as_str().expect("name should be a string");
-    assert!(name.contains("meeting"), "name should contain 'meeting', got: {name}");
-    let content = parsed["content"].as_str().expect("content should be a string");
+    assert!(
+        name.contains("meeting"),
+        "name should contain 'meeting', got: {name}"
+    );
+    let content = parsed["content"]
+        .as_str()
+        .expect("content should be a string");
     assert!(
         content.contains("Meeting Notes"),
         "content should include template body, got: {content}"
@@ -13244,19 +13271,13 @@ fn mcp_server_responds_to_initialize_request() {
     copy_fixture_vault("basic", &vault_root);
     run_scan(&vault_root);
 
-    let mut child = std::process::Command::new(
-        assert_cmd::cargo::cargo_bin("vulcan"),
-    )
-    .args([
-        "--vault",
-        vault_root.to_str().expect("utf-8"),
-        "mcp",
-    ])
-    .stdin(std::process::Stdio::piped())
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::null())
-    .spawn()
-    .expect("mcp server should start");
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .args(["--vault", vault_root.to_str().expect("utf-8"), "mcp"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("mcp server should start");
 
     let init_request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -13275,16 +13296,22 @@ fn mcp_server_responds_to_initialize_request() {
     stdin.flush().expect("flush mcp stdin");
     drop(child.stdin.take());
 
-    let output = child
-        .wait_with_output()
-        .expect("mcp server should exit");
+    let output = child.wait_with_output().expect("mcp server should exit");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let first_line = stdout.lines().next().unwrap_or("");
-    let response: Value = serde_json::from_str(first_line)
-        .expect("mcp should emit valid JSON-RPC response");
-    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"), "response must be JSON-RPC 2.0");
-    assert_eq!(response["id"].as_u64(), Some(1), "response id must match request id");
+    let response: Value =
+        serde_json::from_str(first_line).expect("mcp should emit valid JSON-RPC response");
+    assert_eq!(
+        response["jsonrpc"].as_str(),
+        Some("2.0"),
+        "response must be JSON-RPC 2.0"
+    );
+    assert_eq!(
+        response["id"].as_u64(),
+        Some(1),
+        "response id must match request id"
+    );
     assert!(
         response.get("result").is_some(),
         "initialize should return a result, got: {stdout}"
@@ -13302,7 +13329,9 @@ fn complete_note_context_returns_note_paths() {
         .expect("binary should build")
         .args([
             "--vault",
-            vault_root.to_str().expect("vault path should be valid utf-8"),
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
             "complete",
             "note",
         ])
