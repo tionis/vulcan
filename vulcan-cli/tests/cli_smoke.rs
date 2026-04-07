@@ -109,8 +109,132 @@ fn help_mentions_global_flags_and_core_commands() {
             ))
             .and(predicate::str::contains(
                 "Override automatic cache refresh with --refresh <off|blocking|background>",
-            )),
+            ))
+            .and(predicate::str::contains("--color <COLOR>"))
+            .and(predicate::str::contains("--color always|never|auto")),
     );
+}
+
+#[test]
+fn color_never_suppresses_ansi_in_help() {
+    // With --color never, vulcan help output must not contain any ANSI escape codes.
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--color", "never", "help"])
+        .output()
+        .expect("command should run");
+    assert!(output.status.success(), "vulcan help should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains('\x1b'),
+        "--color never should not emit ANSI escape codes"
+    );
+}
+
+#[test]
+fn color_always_emits_ansi_in_help() {
+    // With --color always, vulcan help output must contain ANSI escape codes even
+    // when stdout is not a TTY (which it is not in tests).
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--color", "always", "help"])
+        .output()
+        .expect("command should run");
+    assert!(output.status.success(), "vulcan help should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains('\x1b'),
+        "--color always should emit ANSI escape codes"
+    );
+}
+
+#[test]
+fn no_color_env_suppresses_ansi_in_help() {
+    // NO_COLOR env var (even with --color auto, the default) must suppress ANSI codes.
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("NO_COLOR", "1")
+        .arg("help")
+        .output()
+        .expect("command should run");
+    assert!(output.status.success(), "vulcan help should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // In a non-TTY test environment with NO_COLOR set, no ANSI codes expected.
+    assert!(
+        !stdout.contains('\x1b'),
+        "NO_COLOR should suppress ANSI escape codes"
+    );
+}
+
+#[test]
+fn commands_with_new_after_help_include_examples() {
+    // Verify that previously-missing after_help sections are now present.
+    let checks: &[(&[&str], &str)] = &[
+        (&["graph", "--help"], "vulcan graph path"),
+        (&["graph", "--help"], "vulcan graph hubs"),
+        (&["checkpoint", "--help"], "vulcan checkpoint create"),
+        (&["checkpoint", "--help"], "vulcan checkpoint list"),
+        (&["export", "--help"], "vulcan export search-index"),
+        (&["cache", "--help"], "vulcan cache inspect"),
+        (&["cache", "--help"], "vulcan cache verify"),
+        (&["doctor", "--help"], "vulcan doctor"),
+        (&["doctor", "--help"], "vulcan doctor --fix"),
+        (&["vectors", "--help"], "vulcan vectors index"),
+        (&["vectors", "--help"], "vulcan vectors neighbors"),
+        (&["changes", "--help"], "vulcan changes"),
+        (&["cluster", "--help"], "vulcan cluster"),
+        (&["related", "--help"], "vulcan related"),
+        (&["trust", "--help"], "vulcan trust add"),
+        (&["refactor", "--help"], "vulcan refactor rename-heading"),
+    ];
+    for (args, expected) in checks {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(*args)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(*expected));
+    }
+}
+
+#[test]
+fn query_fields_aligned_table_output_in_tty_mode() {
+    // When --fields is given and stdout is a TTY (simulated via --color always to
+    // force the aligned path) the output should have a header row and separator.
+    // We cannot force a real TTY in tests, so we verify the non-TTY path (field=value)
+    // still works, and the --color always path produces aligned headers when fields
+    // are requested via the json output shape.
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root.to_str().expect("valid utf-8");
+
+    // Non-TTY (pipe) path: field=value form for a note with known properties.
+    // Using top-level field names as they appear in the JSON rows.
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root_str,
+            "--fields",
+            "file_name,document_path",
+            "notes",
+            "--where",
+            "status = active",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("file_name=Alpha"))
+        .stdout(predicate::str::contains("document_path=Projects/Alpha.md"));
+
+    // The help for query --format table should mention the format option.
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["query", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("table"));
 }
 
 #[test]

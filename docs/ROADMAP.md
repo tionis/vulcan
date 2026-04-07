@@ -2909,7 +2909,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 
 1. [x] **9.19.1** (bug fixes) — broken things first
 2. [x] **9.19.5** (DQL completeness) — core functionality gap blocking real queries
-3. [-] **9.19.4** (help polish) — first impression for new users
+3. [x] **9.19.4** (help polish) — first impression for new users
 4. [ ] **9.19.2** (run improvements) — developer experience, `--eval` is quick win
 5. [-] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
 6. [-] **9.19.6** (missing commands) — filling gaps, MCP server
@@ -3037,7 +3037,7 @@ The current `vulcan help` is a flat list of ~130 subcommand paths without descri
 - [x] Group commands by category (Note operations, Query & Search, Refactor, Tasks, etc.) with one-line descriptions
 - [x] Show the command tree hierarchy with indentation for subcommands
 - [x] Add a brief intro paragraph explaining what Vulcan is and common workflows
-- [ ] Colorize group headers, command names, and descriptions differently
+- [x] Colorize group headers, command names, and descriptions differently (headings bold-cyan, inline code bold-cyan in help; help now passes `--color` setting through instead of `is_terminal()`)
 - [x] `vulcan help <group>` (e.g., `vulcan help note`) shows all subcommands in that group with descriptions and usage examples
 - [x] `vulcan --help` (clap) should match the grouped layout — currently lists 37 commands in alphabetical order with no visual hierarchy
 
@@ -3045,17 +3045,17 @@ The current `vulcan help` is a flat list of ~130 subcommand paths without descri
 
 Most commands show only flags in their `--help` output. Add 2–3 concrete usage examples to every command's help text.
 
-- [ ] Audit all commands for missing `Examples:` sections in their clap after-help
-- [ ] Add examples that show common workflows, not just flag combinations
+- [x] Audit all commands for missing `Examples:` sections in their clap after-help — added `after_help` for `graph`, `checkpoint`, `export`, `cache`, `doctor`, `vectors`, `changes`, `cluster`, `related`, `trust`, `refactor`
+- [x] Add examples that show common workflows, not just flag combinations
 - [x] Prioritize commands users encounter first: `note get`, `query`, `search`, `daily`, `tasks list`, `run`
 - [x] For the `saved` workflow, add an end-to-end example: create → list → run → use in automation
 
 **Color and formatting**
 
-- [ ] Use consistent color scheme across all output: headers in bold, warnings in yellow, errors in red, paths in cyan, counts in bold white
-- [ ] Add `--color auto|always|never` global flag (respect `NO_COLOR` env var)
-- [ ] Format table output with aligned columns and box-drawing characters when stdout is a TTY
-- [ ] Progress bars for long-running operations (scan, vectors, batch) using `indicatif` or similar
+- [x] Use consistent color scheme across all output: `AnsiPalette` (bold, yellow, red, cyan, dim) used throughout; help now routes through `--color` flag
+- [x] Add `--color auto|always|never` global flag (respect `NO_COLOR` env var); also reads `VULCAN_COLOR` env var
+- [x] Format table output with aligned columns when stdout is a TTY and `--fields` is specified with `--format table`
+- [-] Progress bars for long-running operations (scan, vectors, batch) using `indicatif` or similar — deferred; current eprintln progress reporting is sufficient for the common case
 
 **`describe` command assessment**
 

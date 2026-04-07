@@ -171,7 +171,8 @@ fn style_heading(text: &str, level: u8, use_color: bool) -> String {
 
 fn style_inline_code(text: &str, use_color: bool) -> String {
     if use_color {
-        format!("\u{1b}[2m`{text}`\u{1b}[0m")
+        // Bold + cyan for inline code so command names and options stand out clearly
+        format!("\u{1b}[1;36m{text}\u{1b}[0m")
     } else {
         format!("`{text}`")
     }
