@@ -2916,7 +2916,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 7. [x] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
 8. [x] **9.19.9** (command clarity) — docs and naming, low effort
 9. [x] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
-10. [ ] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
+10. [x] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
 11. [ ] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
 12. [ ] **9.19.12** (plugins) — after permissions design is clear
 13. [ ] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
@@ -3173,56 +3173,56 @@ The `config` group currently only has `import`. Users need to inspect and modify
 
 The current CLI has 37 top-level commands. This is too many for discoverability. Target: ~25 top-level commands by nesting or merging.
 
-- [ ] **Nest `cluster` and `related` under `vectors`** — they already exist as `vectors cluster` aliases. Remove the top-level entries or mark `hide = true`.
-- [ ] **Nest `weekly` and `monthly` under `periodic`** — `periodic weekly`, `periodic monthly`. Keep hidden top-level aliases for backwards compatibility but remove from help listing.
-- [ ] **Merge `batch` into `automation`** — `automation run --batch` or `automation run --all` replaces the standalone `batch` command. Add a hidden `batch` alias.
-- [ ] **Hide top-level `diff`** — `note diff` already exists for single-note diffs. If the top-level `diff` does something different (vault-wide), clarify; if identical, remove.
-- [ ] **Absorb `notes` into `query`** — `notes --where` is a subset of `query`. Make `vulcan notes` a hidden alias for `query --format table`. Remove `notes` from the main help listing.
+- [x] **Nest `cluster` and `related` under `vectors`** — they already exist as `vectors cluster` aliases. Remove the top-level entries or mark `hide = true`.
+- [x] **Nest `weekly` and `monthly` under `periodic`** — `periodic weekly`, `periodic monthly`. Keep hidden top-level aliases for backwards compatibility but remove from help listing.
+- [x] **Merge `batch` into `automation`** — `automation run --batch` or `automation run --all` replaces the standalone `batch` command. Add a hidden `batch` alias.
+- [x] **Hide top-level `diff`** — `note diff` already exists for single-note diffs. If the top-level `diff` does something different (vault-wide), clarify; if identical, remove.
+- [x] **Absorb `notes` into `query`** — `notes --where` is a subset of `query`. Make `vulcan notes` a hidden alias for `query --format table`. Remove `notes` from the main help listing.
 
 **Group reassignment**
 
 The current group labels don't match user mental models.
 
-- [ ] Move `browse`, `edit`, `open` into an **Interactive** group
-- [ ] Move `run`, `web` into a **Scripting** group (or keep under a renamed "Tools" group)
-- [ ] Move `diff` out of "Graph and Query" — it's about change history, not querying
-- [ ] Reconsider `template` under "Journaling" — templates are used for more than journals; maybe "Content Creation" or just "Notes"
+- [x] Move `browse`, `edit`, `open` into an **Interactive** group
+- [x] Move `run`, `web` into a **Scripting** group (or keep under a renamed "Tools" group)
+- [x] Move `diff` out of "Graph and Query" — it's about change history, not querying
+- [x] Reconsider `template` under "Journaling" — templates are used for more than journals; maybe "Content Creation" or just "Notes"
 
 **`automation` expansion**
 
 Currently has only one subcommand (`run`). Either flatten to a top-level command or add subcommands to justify the group.
 
-- [ ] If merging `batch` into `automation`, the group gains purpose: `automation run [reports...]`, `automation run --all`, `automation list` (show what would run)
-- [ ] Otherwise, flatten `automation run` to a top-level `automation` command with run semantics
+- [x] If merging `batch` into `automation`, the group gains purpose: `automation run [reports...]`, `automation run --all`, `automation list` (show what would run)
+- [-] Otherwise, flatten `automation run` to a top-level `automation` command with run semantics
 
 **`saved` creation UX**
 
 The current `saved search <name> <query>` reads like "search within saved reports" rather than "create a saved search". Improve discoverability.
 
-- [ ] Rename creation subcommands: `saved create search <name>`, `saved create notes <name>`, `saved create bases <name>` — or use a flag: `saved create <name> --type search`
-- [ ] Add `saved delete <name>` if not already present
+- [x] Rename creation subcommands: `saved create search <name>`, `saved create notes <name>`, `saved create bases <name>` — or use a flag: `saved create <name> --type search`
+- [x] Add `saved delete <name>` if not already present
 
 **`update`/`unset` placement**
 
 These top-level bulk mutation commands aren't in any group and feel orphaned. They operate on filtered note sets (like `query`) but mutate frontmatter (like `note`).
 
-- [ ] Move to `note update --where <filter> --key <key> --value <value>` and `note unset --where <filter> --key <key>`. The `--where` flag distinguishes bulk mode from single-note mode.
-- [ ] Alternatively, place under `refactor update`/`refactor unset` since they're cross-vault mutations.
-- [ ] Keep hidden top-level aliases for backward compatibility.
+- [x] Move to `note update --where <filter> --key <key> --value <value>` and `note unset --where <filter> --key <key>`. The `--where` flag distinguishes bulk mode from single-note mode.
+- [-] Alternatively, place under `refactor update`/`refactor unset` since they're cross-vault mutations.
+- [x] Keep hidden top-level aliases for backward compatibility.
 
 **Query language auto-detection**
 
 Users who know Dataview will type DQL into `vulcan query` and get errors. Users who know Vulcan DSL will be confused by `dataview query`.
 
-- [ ] Auto-detect query language in `vulcan query`: if input starts with `TABLE`, `LIST`, `TASK`, or `CALENDAR` (case-insensitive), route to DQL evaluation
-- [ ] Print a note when auto-detection triggers: `(detected as Dataview query)`
-- [ ] `--language dql|vulcan` flag to force language when auto-detection is wrong
+- [x] Auto-detect query language in `vulcan query`: if input starts with `TABLE`, `LIST`, `TASK`, or `CALENDAR` (case-insensitive), route to DQL evaluation
+- [x] Print a note when auto-detection triggers: `(detected as Dataview query)`
+- [x] `--language dql|vulcan` flag to force language when auto-detection is wrong
 
 **User-defined command aliases**
 
 Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q` → `vulcan query`.
 
-- [ ] Add `[aliases]` section in `.vulcan/config.toml`:
+- [x] Add `[aliases]` section in `.vulcan/config.toml`:
   ```toml
   [aliases]
   t = "tasks list"
@@ -3230,9 +3230,9 @@ Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q`
   tl = "tasks list --source tasknotes --sort-by due"
   inbox = "inbox"
   ```
-- [ ] Alias expansion happens before clap parsing — simple string prefix replacement
-- [ ] `vulcan aliases` or `config show aliases` to list active aliases
-- [ ] Built-in aliases ship as defaults (e.g., `today` → `daily today`) and can be overridden
+- [x] Alias expansion happens before clap parsing — simple string prefix replacement
+- [x] `vulcan aliases` or `config show aliases` to list active aliases
+- [x] Built-in aliases ship as defaults (e.g., `today` → `daily today`) and can be overridden
 
 
 #### 9.19.8 Scriptability improvements

@@ -12,17 +12,18 @@ Quick start:
   vulcan run                                           Start the JS REPL
 
 Command groups (run `vulcan help` for the full grouped reference):
-  Notes:       note, inbox
-  Query:       query, search, ls, notes, backlinks, links, changes
+  Notes:       note, inbox, template
+  Query:       query, search, ls, backlinks, links
   Refactor:    refactor, move, rename-property
   Tasks:       tasks, kanban
-  Periodic:    today, daily, weekly, monthly, periodic, template
+  Periodic:    today, daily, periodic
   Plugins:     bases, dataview
-  Analysis:    graph, suggest, cluster, related, doctor
+  Analysis:    graph, suggest, doctor
   Index:       index, vectors, cache, repair
-  Runtime:     run, web, render
-  Git:         git
-  Automation:  saved, automation, batch, export, checkpoint
+  Interactive: browse, edit, open
+  Scripting:   run, web, render
+  Git:         git, changes
+  Automation:  saved, automation, export, checkpoint
   Setup:       init, config, trust
 
 Reference:
@@ -320,9 +321,17 @@ Formats:
   detail  path, metadata summary, and content preview
   count   matched row count only
 
+Shortcuts:
+  Bare `query` defaults to `from notes`.
+  `query --where ... --sort ...` builds a `from notes` query without writing DSL.
+  `--language auto` detects Dataview DQL when the query starts with TABLE/LIST/TASK/CALENDAR.
+
 Examples:
   vulcan query --list-fields
+  vulcan query
+  vulcan query --where 'status = done' --sort due
   vulcan query --format paths 'from notes where status = done'
+  vulcan query --language dql 'TABLE status FROM #project'
   vulcan query --glob 'Projects/**' 'from notes'
   vulcan query 'from notes where file.name matches \"^2026-\"'
   vulcan query 'from notes where owner matches_i \"alice\"'";
@@ -614,9 +623,8 @@ const SAVED_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   list        list saved query and report definitions
   show        display one saved report definition
-  search      save a search report definition
-  notes       save a notes/property report definition
-  bases       save a Bases report definition
+  create      save a new search, notes, or Bases report definition
+  delete      remove one saved report definition
   run         execute one saved report
 
 Notes:
@@ -625,21 +633,23 @@ Notes:
   Use `automation run` when you want saved reports plus health checks in one non-interactive step.
 
 Examples:
-  vulcan saved search weekly dashboard --where 'reviewed = true' --description 'weekly dashboard'
+  vulcan saved create search weekly dashboard --where 'reviewed = true' --description 'weekly dashboard'
+  vulcan saved create notes active --where 'status = active' --sort due
   vulcan saved list
+  vulcan saved delete weekly
   vulcan saved run weekly --export jsonl --export-path exports/weekly.jsonl
   vulcan automation run weekly --scan --doctor";
 
 const BATCH_COMMAND_AFTER_HELP: &str = "\
 Notes:
-  `batch` runs one or more saved reports sequentially without scan or doctor checks.
-  Use `--all` to run every report definition found in .vulcan/reports.
-  For CI workflows that also need scanning and health checks, prefer `automation run`.
+  `batch` is a hidden legacy alias for `automation run`.
+  It runs saved reports sequentially without enabling scan, doctor, or repair flags by default.
+  Use `--all` to mirror `automation run --all`.
 
 Report system overview:
-  saved reports live as YAML files in .vulcan/reports (created by `vulcan saved <type>`).
-  `vulcan batch` just executes them; it does not scan or repair the cache.
-  `vulcan automation run` adds `--scan`, `--doctor`, and `--fail-on-issues` for CI.
+  saved reports live as TOML files in .vulcan/reports (created by `vulcan saved create <type>`).
+  `vulcan batch` is kept only for backwards compatibility.
+  `vulcan automation run` is the preferred entrypoint and adds `--scan`, `--doctor`, and `--fail-on-issues` for CI.
   `vulcan saved run <name>` runs a single report with full export options.
 
 Examples:
@@ -655,20 +665,21 @@ See also:
 
 const AUTOMATION_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  list        list saved reports that automation can run
   run         execute saved reports plus optional checks and repairs
 
 Notes:
   `automation run` is intended for CI, cron jobs, and other non-interactive workflows.
-  Pass saved report names positionally, or use --all-reports to run everything in .vulcan/reports.
+  Pass saved report names positionally, or use --all / --all-reports to run everything in .vulcan/reports.
   `--fail-on-issues` returns exit code 2 when checks complete but still report problems.
 
 Examples:
+  vulcan automation list
   vulcan automation run weekly --scan --doctor
-  vulcan automation run --all-reports --verify-cache --repair-fts --fail-on-issues
+  vulcan automation run --all --verify-cache --repair-fts --fail-on-issues
 
 See also:
   `vulcan saved` — create and manage report definitions
-  `vulcan batch` — run reports without scan or health checks
   `vulcan help reports` — conceptual overview of the report system";
 
 const DAILY_COMMAND_AFTER_HELP: &str = "\
@@ -694,15 +705,18 @@ Examples:
 const PERIODIC_COMMAND_AFTER_HELP: &str = "\
 Behavior:
   `periodic <type> [date]` opens or creates the configured periodic note for that date.
-  `weekly [date]` and `monthly [date]` are shorthand for `periodic weekly|monthly`.
+  `periodic weekly [date]` and `periodic monthly [date]` are the preferred open forms.
+  Top-level `weekly` and `monthly` remain as hidden compatibility aliases.
 
 Subcommands:
   list        list indexed periodic notes
   gaps        show missing periodic notes across a date range
+  weekly      open or create the weekly note for a date
+  monthly     open or create the monthly note for a date
 
 Examples:
-  vulcan weekly
-  vulcan monthly 2026-04-03 --no-edit
+  vulcan periodic weekly
+  vulcan periodic monthly 2026-04-03 --no-edit
   vulcan periodic yearly 2026-01-01
   vulcan periodic list --type daily
   vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07";
@@ -877,6 +891,7 @@ Subcommands:
   index       Embed pending chunks and update the vector index
   repair      Repair stale or mismatched vector rows
   rebuild     Rebuild the vector index from scratch
+  cluster     Group indexed chunks into semantic clusters
   neighbors   Find nearest indexed chunks for text or a note
   related     Recommend semantically related notes
   duplicates  Report highly similar chunk pairs
@@ -893,6 +908,7 @@ Notes:
 Examples:
   vulcan vectors index
   vulcan vectors index --dry-run
+  vulcan vectors cluster --clusters 12
   vulcan vectors neighbors \"project planning\"
   vulcan vectors neighbors --note Projects/Alpha
   vulcan vectors related Projects/Alpha
@@ -1247,6 +1263,15 @@ pub enum VectorsCommand {
         #[command(flatten)]
         export: ExportArgs,
     },
+    #[command(about = "Cluster indexed vectors into topical groups")]
+    Cluster {
+        #[arg(long, default_value_t = 8, help = "Requested cluster count")]
+        clusters: usize,
+        #[arg(long, help = "Report cluster assignments without persisting them")]
+        dry_run: bool,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
     #[command(about = "Recommend semantically related notes for one note")]
     Related {
         #[arg(
@@ -1462,9 +1487,20 @@ pub enum SavedCommand {
         #[arg(help = "Saved report name")]
         name: String,
     },
+    #[command(about = "Create a saved search, notes query, or Bases report")]
+    Create {
+        #[command(subcommand)]
+        command: SavedCreateCommand,
+    },
+    #[command(about = "Delete one saved report definition")]
+    Delete {
+        #[arg(help = "Saved report name")]
+        name: String,
+    },
     #[command(
         about = "Persist a saved search definition in .vulcan/reports",
-        after_help = SEARCH_COMMAND_AFTER_HELP
+        after_help = SEARCH_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Search {
         #[arg(help = "Saved report name")]
@@ -1518,7 +1554,8 @@ pub enum SavedCommand {
     },
     #[command(
         about = "Persist a saved property query definition in .vulcan/reports",
-        after_help = NOTES_COMMAND_AFTER_HELP
+        after_help = NOTES_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Notes {
         #[arg(help = "Saved report name")]
@@ -1540,7 +1577,10 @@ pub enum SavedCommand {
         #[command(flatten)]
         export: ExportArgs,
     },
-    #[command(about = "Persist a saved Bases evaluation definition in .vulcan/reports")]
+    #[command(
+        about = "Persist a saved Bases evaluation definition in .vulcan/reports",
+        hide = true
+    )]
     Bases {
         #[arg(help = "Saved report name")]
         name: String,
@@ -1981,6 +2021,7 @@ pub enum QueryEngineArg {
     /// Auto-detect: DQL when input starts with TABLE/LIST/TASK/CALENDAR, native DSL otherwise
     Auto,
     /// Vulcan native query DSL (`from notes where …`)
+    #[value(name = "vulcan", alias = "dsl")]
     Dsl,
     /// Dataview Query Language (`TABLE … FROM … WHERE …`)
     Dql,
@@ -2033,6 +2074,16 @@ pub enum PeriodicSubcommand {
         date: Option<String>,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
+    },
+    #[command(about = "Open or create the weekly note for a date")]
+    Weekly {
+        #[command(flatten)]
+        args: PeriodicOpenArgs,
+    },
+    #[command(about = "Open or create the monthly note for a date")]
+    Monthly {
+        #[command(flatten)]
+        args: PeriodicOpenArgs,
     },
     #[command(about = "Export events from periodic notes as an iCal feed")]
     ExportIcs {
@@ -2583,11 +2634,17 @@ pub enum RefactorCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum AutomationCommand {
+    #[command(about = "List saved reports that automation can run")]
+    List,
     #[command(about = "Run saved reports, checks, and repairs for non-interactive workflows")]
     Run {
         #[arg(help = "Saved report names to run")]
         reports: Vec<String>,
-        #[arg(long, help = "Run every saved report definition in .vulcan/reports")]
+        #[arg(
+            long,
+            visible_alias = "all",
+            help = "Run every saved report definition in .vulcan/reports"
+        )]
         all_reports: bool,
         #[arg(
             long,
@@ -2611,6 +2668,99 @@ pub enum AutomationCommand {
             help = "Return exit code 2 when completed checks still report issues"
         )]
         fail_on_issues: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SavedCreateCommand {
+    #[command(
+        about = "Persist a saved search definition in .vulcan/reports",
+        after_help = SEARCH_COMMAND_AFTER_HELP
+    )]
+    Search {
+        #[arg(help = "Saved report name")]
+        name: String,
+        #[arg(
+            help = "Full-text query string; supports phrases, `or`, `-term`, and inline tag:/path:/has: filters"
+        )]
+        query: String,
+        #[arg(
+            long = "where",
+            help = "Typed property filter such as `status = done`; repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = SearchMode::Keyword,
+            help = "Search strategy to store"
+        )]
+        mode: SearchMode,
+        #[arg(long, help = "Restrict matches to notes carrying the given tag")]
+        tag: Option<String>,
+        #[arg(
+            long = "path-prefix",
+            help = "Restrict matches to paths under this prefix"
+        )]
+        path_prefix: Option<String>,
+        #[arg(long = "has-property", help = "Require a property key to be present")]
+        has_property: Option<String>,
+        #[arg(long, value_enum, help = "Override result ordering")]
+        sort: Option<SearchSortArg>,
+        #[arg(long, help = "Require case-sensitive matching for unscoped terms")]
+        match_case: bool,
+        #[arg(
+            long = "context-size",
+            default_value_t = 18,
+            help = "Approximate snippet context size for each search hit"
+        )]
+        context_size: usize,
+        #[arg(long, help = "Persist the query string as raw FTS5 syntax")]
+        raw_query: bool,
+        #[arg(
+            long,
+            help = "Enable typo-tolerant fallback when the saved search runs"
+        )]
+        fuzzy: bool,
+        #[arg(long, help = "Optional saved report description")]
+        description: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(
+        about = "Persist a saved property query definition in .vulcan/reports",
+        after_help = NOTES_COMMAND_AFTER_HELP
+    )]
+    Notes {
+        #[arg(help = "Saved report name")]
+        name: String,
+        #[arg(
+            long = "where",
+            help = "Filter expression such as `status = done`; repeatable and combined with AND"
+        )]
+        filters: Vec<String>,
+        #[arg(
+            long,
+            help = "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by"
+        )]
+        sort: Option<String>,
+        #[arg(long, help = "Sort descending instead of ascending")]
+        desc: bool,
+        #[arg(long, help = "Optional saved report description")]
+        description: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
+    #[command(about = "Persist a saved Bases evaluation definition in .vulcan/reports")]
+    Bases {
+        #[arg(help = "Saved report name")]
+        name: String,
+        #[arg(help = "Vault-relative path to the .base file to evaluate")]
+        file: String,
+        #[arg(long, help = "Optional saved report description")]
+        description: Option<String>,
+        #[command(flatten)]
+        export: ExportArgs,
     },
 }
 
@@ -2904,7 +3054,10 @@ pub enum NoteCommand {
         #[arg(help = "Note path, filename, or alias to inspect")]
         note: String,
     },
-    #[command(about = "Show one note's changes since git HEAD, the last scan, or a checkpoint")]
+    #[command(
+        about = "Show one note's changes since git HEAD, the last scan, or a checkpoint",
+        after_help = DIFF_COMMAND_AFTER_HELP
+    )]
     Diff {
         #[arg(help = "Note path, filename, or alias to inspect")]
         note: String,
@@ -3102,7 +3255,8 @@ pub enum Command {
     },
     #[command(
         about = "Query notes by typed properties",
-        after_help = NOTES_COMMAND_AFTER_HELP
+        after_help = NOTES_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Notes {
         #[arg(
@@ -3315,7 +3469,8 @@ pub enum Command {
     Render(RenderArgs),
     #[command(
         about = "Open or create the weekly note for a date",
-        after_help = PERIODIC_COMMAND_AFTER_HELP
+        after_help = PERIODIC_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Weekly {
         #[command(flatten)]
@@ -3323,7 +3478,8 @@ pub enum Command {
     },
     #[command(
         about = "Open or create the monthly note for a date",
-        after_help = PERIODIC_COMMAND_AFTER_HELP
+        after_help = PERIODIC_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Monthly {
         #[command(flatten)]
@@ -3360,7 +3516,8 @@ pub enum Command {
     },
     #[command(
         about = "Show one note's changes since git HEAD, the last scan, or a checkpoint",
-        after_help = DIFF_COMMAND_AFTER_HELP
+        after_help = DIFF_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Diff {
         #[arg(
@@ -3402,7 +3559,8 @@ pub enum Command {
     },
     #[command(
         about = "Run multiple saved reports for automation and scheduled jobs",
-        after_help = BATCH_COMMAND_AFTER_HELP
+        after_help = BATCH_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Batch {
         #[arg(help = "Saved report names to run")]
@@ -3420,7 +3578,8 @@ pub enum Command {
     },
     #[command(
         about = "Cluster indexed vectors into topical groups",
-        after_help = CLUSTER_COMMAND_AFTER_HELP
+        after_help = CLUSTER_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Cluster {
         #[arg(long, default_value_t = 8, help = "Requested cluster count")]
@@ -3432,7 +3591,8 @@ pub enum Command {
     },
     #[command(
         about = "Recommend semantically related notes for one note",
-        after_help = RELATED_COMMAND_AFTER_HELP
+        after_help = RELATED_COMMAND_AFTER_HELP,
+        hide = true
     )]
     Related {
         #[arg(
@@ -3571,7 +3731,8 @@ Examples:
   vulcan update --where 'status = draft' --key status --value done --dry-run
   vulcan ls --tag project | vulcan update --stdin --key status --value done
   vulcan update --where 'tags contains wip' --key reviewed --value true
-  vulcan update --where 'file.path starts_with \"Archive/\"' --key archived --value true"
+  vulcan update --where 'file.path starts_with \"Archive/\"' --key archived --value true",
+        hide = true
     )]
     Update {
         #[arg(
@@ -3606,7 +3767,8 @@ Filter syntax:
 Examples:
   vulcan unset --where 'status = draft' --key draft_notes --dry-run
   vulcan ls --tag project | vulcan unset --stdin --key due
-  vulcan unset --where 'file.path starts_with \"Archive/\"' --key due"
+  vulcan unset --where 'file.path starts_with \"Archive/\"' --key due",
+        hide = true
     )]
     Unset {
         #[arg(
@@ -3707,7 +3869,9 @@ Examples:
         after_help = QUERY_COMMAND_AFTER_HELP
     )]
     Query {
-        #[arg(help = "Query string (DSL or DQL depending on --engine); omit with --list-fields")]
+        #[arg(
+            help = "Query string (Vulcan or DQL depending on --language); omit with --list-fields"
+        )]
         dsl: Option<String>,
         #[arg(
             long,
@@ -3715,15 +3879,31 @@ Examples:
         )]
         json: Option<String>,
         #[arg(
+            long = "where",
+            help = "Shortcut note filter such as `status = done`; repeatable and combined with AND when no DSL/JSON query is supplied"
+        )]
+        filters: Vec<String>,
+        #[arg(
+            long,
+            help = "Shortcut note sort key when no DSL/JSON query is supplied"
+        )]
+        sort: Option<String>,
+        #[arg(
+            long,
+            help = "Shortcut descending sort flag when no DSL/JSON query is supplied"
+        )]
+        desc: bool,
+        #[arg(
             long,
             help = "List available property keys and file.* fields for filters, sorts, and --fields"
         )]
         list_fields: bool,
         #[arg(
-            long,
+            long = "language",
+            alias = "engine",
             value_enum,
             default_value_t = QueryEngineArg::Auto,
-            help = "Query engine: auto-detect (default), native dsl, or dql (Dataview)"
+            help = "Query language: auto-detect (default), vulcan, or dql (Dataview)"
         )]
         engine: QueryEngineArg,
         #[arg(long, value_enum, default_value_t = QueryFormatArg::Table)]

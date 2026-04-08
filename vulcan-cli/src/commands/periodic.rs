@@ -193,6 +193,12 @@ pub(crate) fn handle_periodic_command(
             )?;
             crate::print_daily_append_report(cli.output, &report)
         }
+        Some(PeriodicSubcommand::Weekly { args }) => {
+            handle_weekly_command(cli, paths, args, interactive_note_selection)
+        }
+        Some(PeriodicSubcommand::Monthly { args }) => {
+            handle_monthly_command(cli, paths, args, interactive_note_selection)
+        }
         Some(PeriodicSubcommand::ExportIcs {
             period_type,
             from,

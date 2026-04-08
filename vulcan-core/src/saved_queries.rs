@@ -192,6 +192,12 @@ pub fn load_saved_report(
     })
 }
 
+pub fn delete_saved_report(paths: &VaultPaths, name: &str) -> Result<PathBuf, SavedReportError> {
+    let report_path = report_definition_path(paths, name)?;
+    fs::remove_file(&report_path)?;
+    Ok(report_path)
+}
+
 pub fn list_saved_reports(paths: &VaultPaths) -> Result<Vec<SavedReportSummary>, SavedReportError> {
     if !paths.reports_dir().exists() {
         return Ok(Vec::new());
@@ -377,5 +383,32 @@ mod tests {
         for invalid in ["", "../weekly", "weekly/search", "bad name", "bad\nname"] {
             assert!(normalize_saved_report_name(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn delete_saved_report_removes_definition_file() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        save_saved_report(
+            &paths,
+            &SavedReportDefinition {
+                name: "weekly".to_string(),
+                description: None,
+                fields: None,
+                limit: None,
+                export: None,
+                query: SavedReportQuery::Notes {
+                    filters: vec!["status = active".to_string()],
+                    sort_by: None,
+                    sort_descending: false,
+                },
+            },
+        )
+        .expect("saved report should save");
+
+        let deleted = delete_saved_report(&paths, "weekly").expect("delete should succeed");
+
+        assert_eq!(deleted, paths.reports_dir().join("weekly.toml"));
+        assert!(!deleted.exists(), "saved report file should be removed");
     }
 }

@@ -148,9 +148,9 @@ pub use resolver::{
     ResolverLink,
 };
 pub use saved_queries::{
-    list_saved_reports, load_saved_report, normalize_saved_report_name, report_definition_path,
-    save_saved_report, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportError,
-    SavedReportKind, SavedReportQuery, SavedReportSummary,
+    delete_saved_report, list_saved_reports, load_saved_report, normalize_saved_report_name,
+    report_definition_path, save_saved_report, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportError, SavedReportKind, SavedReportQuery, SavedReportSummary,
 };
 pub use scan::{
     detect_document_kind, scan_vault, scan_vault_with_progress, DocumentKind, ScanError, ScanMode,
