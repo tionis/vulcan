@@ -732,7 +732,7 @@ Inline expression evaluation is primarily a rendering concern. For Vulcan's purp
 
 Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. These are arbitrary JS programs with access to a Dataview API object (`dv`) that provides methods like `dv.pages()`, `dv.table()`, `dv.list()`, `dv.taskList()`, and direct access to the Dataview index.
 
-**DataviewJS is gated behind the `js_runtime` compile-time feature flag (enabled by default).** The core Dataview support (DQL, inline fields, inline expressions) works without it. The flag adds an embedded JavaScript runtime for vaults that depend on JS-based queries; disable with `--no-default-features` for minimal binary size.
+**DataviewJS is gated behind the `js_runtime` compile-time feature flag (enabled by default).** The core Dataview support (DQL, inline fields, inline expressions) works without it. The flag adds an embedded JavaScript runtime for vaults that depend on JS-based queries; disable it in the CLI build with `cargo build --release -p vulcan-cli --no-default-features` for a smaller binary.
 
 **Detection and fallback (always available):**
 - Detect `dataviewjs` code blocks during parsing and store as block metadata.
@@ -787,7 +787,7 @@ Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. Thes
 
 - Page objects returned by `dv.pages()` expose the same fields as DQL queries: frontmatter, inline fields, and the full `file.*` namespace.
 - CLI surface: `vulcan dataview eval <file> [--block <n>]` evaluates DataviewJS blocks when the feature is compiled in; `vulcan dataview query-js <js-string>` evaluates a JS snippet directly.
-- Build: `js_runtime` is enabled by default. To exclude the JS runtime for minimal binary size: `cargo build --no-default-features`.
+- Build: `js_runtime` is enabled by default. To exclude the JS runtime from the CLI binary: `cargo build --release -p vulcan-cli --no-default-features`.
 
 ### Relationship to existing query surfaces
 

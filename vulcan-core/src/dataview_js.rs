@@ -79,25 +79,26 @@ pub enum DataviewJsOutput {
 
 #[cfg(not(feature = "js_runtime"))]
 pub fn evaluate_dataview_js(
-    _paths: &VaultPaths,
-    _source: &str,
-    _current_file: Option<&str>,
+    paths: &VaultPaths,
+    source: &str,
+    current_file: Option<&str>,
 ) -> Result<DataviewJsResult, DataviewJsError> {
     evaluate_dataview_js_with_options(
-        _paths,
-        _source,
-        _current_file,
+        paths,
+        source,
+        current_file,
         DataviewJsEvalOptions::default(),
     )
 }
 
 #[cfg(not(feature = "js_runtime"))]
 pub fn evaluate_dataview_js_with_options(
-    _paths: &VaultPaths,
-    _source: &str,
-    _current_file: Option<&str>,
-    _options: DataviewJsEvalOptions,
+    paths: &VaultPaths,
+    source: &str,
+    current_file: Option<&str>,
+    options: DataviewJsEvalOptions,
 ) -> Result<DataviewJsResult, DataviewJsError> {
+    let _ = (paths, source, current_file, options);
     Err(DataviewJsError::Disabled)
 }
 

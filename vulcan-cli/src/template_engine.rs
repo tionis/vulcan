@@ -517,7 +517,10 @@ impl<'a> TemplateSession<'a> {
         }
 
         if tag.execution {
+            #[cfg(feature = "js_runtime")]
             return self.evaluate_code(tag.body);
+            #[cfg(not(feature = "js_runtime"))]
+            return Ok(self.evaluate_code(tag.body));
         }
 
         match self.evaluate_native_expression(tag.body, include_depth) {
@@ -544,11 +547,11 @@ impl<'a> TemplateSession<'a> {
     }
 
     #[cfg(not(feature = "js_runtime"))]
-    fn evaluate_code(&mut self, _source: &str) -> Result<String, CliError> {
+    fn evaluate_code(&mut self, _source: &str) -> String {
         self.push_diagnostic(
             "Templater execution tags (`<%* %>`) require the `js_runtime` feature".to_string(),
         );
-        Ok(String::new())
+        String::new()
     }
 
     fn evaluate_native_expression(
@@ -3238,6 +3241,7 @@ fn ensure_allowlisted_url(config: &TemplatesConfig, url: &str) -> Result<(), Str
     }
 }
 
+#[cfg(any(feature = "js_runtime", test))]
 fn random_picture_markdown(size: Option<&str>, query: Option<&str>, include_size: bool) -> String {
     let mut url = "https://source.unsplash.com/random".to_string();
     if let Some(size) = size.filter(|value| !value.trim().is_empty()) {
