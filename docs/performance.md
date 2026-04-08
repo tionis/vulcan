@@ -28,19 +28,19 @@ used instead of symbol-level breakdowns.
 Current measurements:
 
 - Default release build (`cargo build --release -p vulcan-cli`):
-  `31,856,664` bytes on disk, `26,568,376` bytes after `strip`
+  `31,251,280` bytes on disk, `25,992,472` bytes after `strip`
 - No-JS release build (`cargo build --release -p vulcan-cli --no-default-features`):
-  `29,682,952` bytes on disk, `24,670,480` bytes after `strip`
+  `29,058,704` bytes on disk, `24,074,576` bytes after `strip`
 - Stripping alone saves about `5.3 MB` on the default binary
-- Disabling `js_runtime` saves about `2.17 MB` unstripped and `1.90 MB`
+- Disabling `js_runtime` saves about `2.19 MB` unstripped and `1.92 MB`
   stripped once the feature propagation is wired correctly
+- Narrowing `zip` to the `deflate` feature saves about `0.6 MB` in both the
+  default and no-JS release binaries compared with the previous build
 
 Largest contributors identified during the investigation:
 
 - Bundled SQLite from `rusqlite` (`libsqlite3.a`): about `3.2 MB`
 - QuickJS when `js_runtime` is enabled (`libquickjs.a`): about `2.0 MB`
-- `zstd` pulled transitively by `zip` default features (`libzstd.a`): about
-  `1.6 MB`
 - `reqwest` + `rustls` remain a substantial intentional dependency, but are
   already fairly constrained (`default-features = false`, `blocking`, `json`,
   `rustls-tls`)
@@ -50,9 +50,9 @@ Findings:
 - `vulcan-cli` must depend on `vulcan-core` with `default-features = false` so
   `cargo build -p vulcan-cli --no-default-features` actually removes
   `js_runtime` from the final binary.
-- The main remaining low-risk size follow-up is narrowing `zip` features.
-  Vulcan currently writes only stored and deflated archives, but the default
-  `zip` feature set still brings in AES, `bzip2`, and `zstd`.
+- `zip` is now configured with `default-features = false` and `features = ["deflate"]`.
+  Vulcan only reads and writes stored/deflated ZIP archives, so AES, `bzip2`,
+  and `zstd` were unnecessary binary weight.
 - `ratatui`, `rustyline`, bundled SQLite, and the network stack appear to be
   deliberate product tradeoffs rather than accidental binary bloat.
 

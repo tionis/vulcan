@@ -2923,7 +2923,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 11. [x] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
 12. [x] **9.19.12** (plugins) — after permissions design is clear
 13. [x] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
-14. [ ] **9.19.14** (binary size) — informational, anytime
+14. [x] **9.19.14** (binary size) — informational, anytime
 15. [ ] **9.19.15** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
 
 #### 9.19.1 Bug fixes
@@ -3562,11 +3562,11 @@ For the rare case where static config rules are insufficient, a policy hook prov
 
 #### 9.19.14 Binary size analysis
 
-The current Linux x86_64 release binary is about 31.9MB unstripped and 26.6MB stripped. This is acceptable given the portability goal, but worth understanding and trimming where the wins are low-risk.
+The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB stripped. This is acceptable given the portability goal, but worth understanding and trimming where the wins are low-risk.
 
 - [x] Inspect the release binary using `cargo tree`, `size`, `strip`, and built archive sizes (local environment did not have `cargo-bloat`)
 - [x] Fix `js_runtime` feature propagation so `cargo build --release -p vulcan-cli --no-default-features` actually removes QuickJS from the CLI binary
-- [ ] Optional follow-up: narrow `zip` features (`aes`, `bzip2`, `zstd`) now that exports only use stored and deflated entries
+- [x] Narrow `zip` features to `deflate` now that exports only use stored and deflated entries
 - [x] Document findings in `docs/performance.md`
 
 #### 9.19.15 Integration hardening and fuzzing
