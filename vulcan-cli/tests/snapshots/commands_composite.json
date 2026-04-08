@@ -3712,6 +3712,20 @@
                 ]
               },
               {
+                "help": "Table of contents style: tree preserves directory hierarchy, flat lists notes in query order",
+                "id": "toc",
+                "long": "toc",
+                "possible_values": [
+                  "tree",
+                  "flat"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TOC"
+                ]
+              },
+              {
                 "help": "Append indexed backlinks after each exported note chapter",
                 "id": "backlinks",
                 "long": "backlinks",
