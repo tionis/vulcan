@@ -15,7 +15,7 @@ Useful command groups:
 - Querying: `search`, `query`, `ls`, `backlinks`, `links`, `graph ...`
 - Refactors: `refactor rename-alias`, `rename-heading`, `rename-property`, `merge-tags`, `move`
 - Web and git: `web search`, `web fetch`, `git status`, `git diff`, `git log`, `git commit`
-- Periodic notes: `daily ...`, `weekly ...`, `monthly ...`, `periodic ...`
+- Periodic notes: `daily ...`, `periodic weekly`, `periodic monthly`, `periodic ...`
 
 Documentation workflow:
 
