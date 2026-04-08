@@ -2914,7 +2914,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 5. [x] **9.19.8** (scriptability) — CI/automation users, `--quiet` and `--output json` audit
 6. [x] **9.19.6** (missing commands) — filling gaps, MCP server
 7. [x] **9.19.3** (shell completions) — nice-to-have, depends on command surface being stable
-8. [-] **9.19.9** (command clarity) — docs and naming, low effort
+8. [x] **9.19.9** (command clarity) — docs and naming, low effort
 9. [x] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
 10. [ ] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
 11. [ ] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
@@ -3302,7 +3302,7 @@ The command reports note/link/property/embedding changes since the last scan or 
 
 **`vulcan export` expansion**
 
-Currently only supports `export search-index`. Add more useful export targets and archive formats.
+The export surface now covers documents, datasets, archives, and static search indexes. EPUB was the remaining book-friendly gap.
 
 - [x] `vulcan export markdown <query>` — export matched notes as a combined markdown document
 - [x] `vulcan export json <query>` — export note metadata and content as JSON
@@ -3311,7 +3311,7 @@ Currently only supports `export search-index`. Add more useful export targets an
 - [x] `vulcan export graph --format dot|json` — export the link graph in DOT or JSON format
 - [x] `vulcan export zip <query> -o vault.zip` — export matched notes with content, metadata, and attachments as a structured ZIP archive (preserves directory layout)
 - [x] `vulcan export sqlite <query> -o vault.db` — export to a self-contained SQLite database with tables for notes (path, content, frontmatter JSON), links, tags, and tasks
-- [ ] `vulcan export epub <query> -o book.epub` — render matched notes to an EPUB document optionally enriched with backlinks, with table of contents derived from note structure, tags and link ordering
+- [x] `vulcan export epub <query> -o book.epub` — render matched notes to an EPUB document optionally enriched with backlinks, with table of contents derived from note structure, tags and link ordering
 
 **`vulcan tasks` source selection**
 

@@ -17,14 +17,14 @@ pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, ColorMode, Command,
     ConfigCommand, ConfigImportArgs, ConfigImportCommand, ConfigImportSelection,
     ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs,
-    ExportCommand, ExportFormat, GitCommand, GraphCommand, GraphExportFormat, IndexCommand,
-    InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode, OutputFormat,
-    PeriodicOpenArgs, PeriodicSubcommand, PropertySortArg, QueryEngineArg, QueryFormatArg,
-    RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand, SearchBackendArg,
-    SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg,
-    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
-    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand,
-    VectorsCommand, WebCommand, WebFetchMode,
+    ExportCommand, ExportFormat, ExportQueryArgs, GitCommand, GraphCommand, GraphExportFormat,
+    IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode,
+    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PropertySortArg, QueryEngineArg,
+    QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand,
+    SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
+    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
+    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -42,6 +42,10 @@ use crate::template_engine::{
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
+use pulldown_cmark::{
+    html, CowStr, Event as MarkdownEvent, Options as MarkdownOptions, Parser as MarkdownParser,
+    Tag as MarkdownTag,
+};
 use regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::header::AUTHORIZATION;
@@ -79,40 +83,41 @@ use vulcan_core::{
     link_mentions, list_checkpoints, list_daily_note_events, list_saved_reports,
     load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
     load_permission_profiles, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
-    move_kanban_card, move_note, parse_dql_with_diagnostics, parse_tasknote_natural_language,
-    parse_tasknote_reminders, parse_tasknote_time_entries, parse_tasks_query,
-    period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
-    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, render_markdown_fragment_html, render_markdown_html,
-    repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note, save_saved_report,
-    scan_vault_with_progress, search_vault, shape_tasks_query_result, step_period_start,
-    task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
-    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
-    tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
-    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
-    BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
-    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
-    ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic, ConfigImportReport,
-    ConfigPermissionMode, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
-    DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
-    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression,
-    GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport,
-    GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport,
-    GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox,
-    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
-    KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput,
-    PeriodicConfig, PeriodicNotesImporter, PermissionMode, PermissionProfile, PluginImporter,
-    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
-    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
-    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
-    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    move_kanban_card, move_note, parse_document, parse_dql_with_diagnostics,
+    parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
+    parse_tasks_query, period_range_for_date, plan_base_note_create, query_backlinks,
+    query_change_report, query_links, query_notes, rebuild_vault_with_progress, rename_alias,
+    rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
+    render_markdown_html, repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note,
+    save_saved_report, scan_vault_with_progress, search_vault, shape_tasks_query_result,
+    step_period_start, task_upcoming_occurrences, tasknotes_default_date_value,
+    tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
+    tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
+    validate_vulcan_overrides_toml, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
+    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
+    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
+    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
+    ClusterReport, ConfigDiagnostic, ConfigImportReport, ConfigPermissionMode, CoreImporter,
+    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
+    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
+    PermissionMode, PermissionProfile, PluginImporter, QueryAst, QueryReport, RebuildQuery,
+    RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
+    TaskNotesImporter, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
+    TaskNotesSavedViewNode, TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig,
+    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -13264,6 +13269,35 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let report = vulcan_core::export_graph(&paths).map_err(CliError::operation)?;
                 write_graph_export(cli.output, &report, *format, path.as_ref())
             }
+            ExportCommand::Epub {
+                query,
+                path,
+                title,
+                author,
+                backlinks,
+            } => {
+                let report = execute_export_query(
+                    &paths,
+                    query.query.as_deref(),
+                    query.query_json.as_deref(),
+                )?;
+                let notes = load_exported_notes(&paths, &report)?;
+                let summary = write_epub_export(
+                    &paths,
+                    path,
+                    &notes,
+                    title.as_deref(),
+                    author.as_deref(),
+                    *backlinks,
+                )?;
+                match cli.output {
+                    OutputFormat::Human | OutputFormat::Markdown => {
+                        println!("{}", summary.path);
+                        Ok(())
+                    }
+                    OutputFormat::Json => print_json(&summary),
+                }
+            }
             ExportCommand::Zip { query, path } => {
                 let report = execute_export_query(
                     &paths,
@@ -18861,6 +18895,12 @@ struct JsonExportSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct EpubExportSummary {
+    path: String,
+    result_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct ZipExportSummary {
     path: String,
     result_count: usize,
@@ -18898,6 +18938,22 @@ struct ExportLinkRecord {
     byte_offset: i64,
     #[serde(skip_serializing)]
     resolved_target_extension: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct EpubHeading {
+    level: u8,
+    text: String,
+    anchor_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct EpubChapter {
+    title: String,
+    nav_path: String,
+    file_href: String,
+    headings: Vec<EpubHeading>,
+    content: String,
 }
 
 fn resolve_export_query_ast(
@@ -19161,6 +19217,606 @@ fn write_text_export(
         }
         Ok(())
     }
+}
+
+fn default_epub_title(paths: &VaultPaths) -> String {
+    paths
+        .vault_root()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map_or_else(|| "Vulcan Export".to_string(), ToOwned::to_owned)
+}
+
+fn build_epub_link_targets(notes: &[ExportedNoteDocument]) -> HashMap<String, String> {
+    let mut file_name_counts = HashMap::new();
+    for note in notes {
+        *file_name_counts
+            .entry(note.note.file_name.clone())
+            .or_insert(0_usize) += 1;
+    }
+
+    let mut targets = HashMap::new();
+    for (index, note) in notes.iter().enumerate() {
+        let chapter_name = format!("chapter-{:03}.xhtml", index + 1);
+        let path = note.note.document_path.clone();
+        targets.insert(path.clone(), chapter_name.clone());
+        if let Some(stem) = path.strip_suffix(".md") {
+            targets.insert(stem.to_string(), chapter_name.clone());
+        }
+        if file_name_counts
+            .get(&note.note.file_name)
+            .copied()
+            .unwrap_or_default()
+            == 1
+        {
+            targets.insert(note.note.file_name.clone(), chapter_name);
+        }
+    }
+    targets
+}
+
+fn is_external_epub_href(destination: &str) -> bool {
+    destination.starts_with('#')
+        || destination.starts_with("mailto:")
+        || destination.starts_with("tel:")
+        || destination.starts_with("obsidian:")
+        || destination.contains("://")
+}
+
+fn slugify_epub_fragment(text: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+
+    for character in text.trim().chars() {
+        let lower = character.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            slug.push(lower);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "section".to_string()
+    } else {
+        slug
+    }
+}
+
+fn rewrite_epub_link_destination(
+    destination: &str,
+    targets: &HashMap<String, String>,
+) -> Option<String> {
+    if destination.is_empty() || is_external_epub_href(destination) {
+        return None;
+    }
+
+    let (path_part, fragment) = destination
+        .split_once('#')
+        .map_or((destination, None), |(path, fragment)| {
+            (path, Some(fragment))
+        });
+    let normalized = path_part.trim().trim_start_matches("./");
+    let target = targets.get(normalized).or_else(|| {
+        normalized
+            .strip_suffix(".md")
+            .and_then(|stem| targets.get(stem))
+    })?;
+
+    let mut rewritten = target.clone();
+    if let Some(fragment) = fragment
+        .map(slugify_epub_fragment)
+        .filter(|value| !value.is_empty())
+    {
+        rewritten.push('#');
+        rewritten.push_str(&fragment);
+    }
+    Some(rewritten)
+}
+
+fn render_epub_markdown_html(source: &str, targets: &HashMap<String, String>) -> String {
+    let parser = MarkdownParser::new_ext(source, MarkdownOptions::all()).map(|event| match event {
+        MarkdownEvent::Start(MarkdownTag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => MarkdownEvent::Start(MarkdownTag::Link {
+            link_type,
+            dest_url: rewrite_epub_link_destination(&dest_url, targets)
+                .map(CowStr::from)
+                .unwrap_or(dest_url),
+            title,
+            id,
+        }),
+        other => other,
+    });
+
+    let mut rendered = String::new();
+    html::push_html(&mut rendered, parser);
+    rendered
+}
+
+fn collect_epub_headings(
+    source: &str,
+    config: &vulcan_core::config::VaultConfig,
+) -> Vec<EpubHeading> {
+    let parsed = parse_document(source, config);
+    let mut seen = HashMap::new();
+    parsed
+        .headings
+        .into_iter()
+        .map(|heading| {
+            let slug = slugify_epub_fragment(&heading.text);
+            let occurrence = seen.entry(slug.clone()).or_insert(0_usize);
+            *occurrence += 1;
+            let anchor_id = if *occurrence == 1 {
+                slug
+            } else {
+                format!("{slug}-{}", *occurrence)
+            };
+            EpubHeading {
+                level: heading.level,
+                text: heading.text,
+                anchor_id,
+            }
+        })
+        .collect()
+}
+
+fn inject_epub_heading_ids(html: &str, headings: &[EpubHeading]) -> String {
+    let mut rendered = String::with_capacity(html.len() + headings.len() * 16);
+    let mut cursor = 0_usize;
+
+    for heading in headings {
+        let needle = format!("<h{}>", heading.level);
+        let Some(relative_start) = html[cursor..].find(&needle) else {
+            continue;
+        };
+        let start = cursor + relative_start;
+        rendered.push_str(&html[cursor..start]);
+        write!(
+            rendered,
+            "<h{} id=\"{}\">",
+            heading.level, heading.anchor_id
+        )
+        .expect("writing to string cannot fail");
+        cursor = start + needle.len();
+    }
+
+    rendered.push_str(&html[cursor..]);
+    rendered
+}
+
+fn escape_xml_text(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn render_epub_backlinks(
+    backlinks: &[String],
+    link_targets: &HashMap<String, String>,
+) -> Option<String> {
+    let unique = backlinks
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if unique.is_empty() {
+        return None;
+    }
+
+    let mut rendered = String::from("<section class=\"backlinks\"><h2>Backlinks</h2><ul>");
+    for backlink in unique {
+        let (lookup_key, label) = backlink
+            .strip_prefix("[[")
+            .and_then(|value| value.strip_suffix("]]"))
+            .map_or_else(
+                || (backlink.to_string(), backlink.to_string()),
+                |value| {
+                    let target = value.split('|').next().unwrap_or(value);
+                    let target = target.split('#').next().unwrap_or(target).trim();
+                    let label = value
+                        .split('|')
+                        .nth(1)
+                        .map(str::trim)
+                        .filter(|display| !display.is_empty())
+                        .unwrap_or(target);
+                    (target.to_string(), label.to_string())
+                },
+            );
+        rendered.push_str("<li>");
+        if let Some(target) = link_targets.get(&lookup_key) {
+            write!(
+                rendered,
+                "<a href=\"{}\">{}</a>",
+                escape_xml_text(target),
+                escape_xml_text(&label)
+            )
+            .expect("writing to string cannot fail");
+        } else {
+            rendered.push_str(&escape_xml_text(&label));
+        }
+        rendered.push_str("</li>");
+    }
+    rendered.push_str("</ul></section>");
+    Some(rendered)
+}
+
+fn render_epub_chapter_document(
+    chapter_title: &str,
+    note_path: Option<&str>,
+    tags: &[String],
+    html_body: &str,
+    backlinks_html: Option<&str>,
+    stylesheet_href: &str,
+) -> String {
+    let mut rendered = String::from(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\">\n\
+         <head>\n\
+         <meta charset=\"utf-8\" />\n",
+    );
+    write!(
+        rendered,
+        "<title>{}</title>\n<link rel=\"stylesheet\" type=\"text/css\" href=\"{}\" />\n",
+        escape_xml_text(chapter_title),
+        escape_xml_text(stylesheet_href)
+    )
+    .expect("writing to string cannot fail");
+    rendered.push_str("</head>\n<body>\n<article class=\"chapter\">\n");
+    write!(
+        rendered,
+        "<header class=\"chapter-header\"><h1 class=\"chapter-title\">{}</h1>",
+        escape_xml_text(chapter_title)
+    )
+    .expect("writing to string cannot fail");
+    if let Some(note_path) = note_path {
+        write!(
+            rendered,
+            "<p class=\"note-path\">{}</p>",
+            escape_xml_text(note_path)
+        )
+        .expect("writing to string cannot fail");
+    }
+    if !tags.is_empty() {
+        write!(
+            rendered,
+            "<p class=\"note-tags\">Tags: {}</p>",
+            escape_xml_text(&tags.join(", "))
+        )
+        .expect("writing to string cannot fail");
+    }
+    rendered.push_str("</header>\n<section class=\"chapter-body\">");
+    rendered.push_str(html_body);
+    rendered.push_str("</section>\n");
+    if let Some(backlinks_html) = backlinks_html {
+        rendered.push_str(backlinks_html);
+        rendered.push('\n');
+    }
+    rendered.push_str("</article>\n</body>\n</html>\n");
+    rendered
+}
+
+fn build_epub_chapters(
+    paths: &VaultPaths,
+    notes: &[ExportedNoteDocument],
+    backlinks: bool,
+) -> Result<Vec<EpubChapter>, CliError> {
+    let config = load_vault_config(paths).config;
+    let link_targets = build_epub_link_targets(notes);
+
+    let mut chapters = notes
+        .iter()
+        .enumerate()
+        .map(|(index, note)| {
+            let (_, body) =
+                parse_frontmatter_document(&note.content, false).map_err(CliError::operation)?;
+            let headings = collect_epub_headings(&body, &config);
+            let chapter_title = headings
+                .first()
+                .filter(|heading| heading.level == 1)
+                .map_or_else(
+                    || note.note.file_name.clone(),
+                    |heading| heading.text.clone(),
+                );
+            let body_html = inject_epub_heading_ids(
+                &render_epub_markdown_html(&body, &link_targets),
+                &headings,
+            );
+            let backlinks_html = backlinks
+                .then(|| render_epub_backlinks(&note.note.inlinks, &link_targets))
+                .flatten();
+            let file_href = format!("chapter-{:03}.xhtml", index + 1);
+            Ok(EpubChapter {
+                title: chapter_title.clone(),
+                nav_path: format!("text/{file_href}"),
+                file_href,
+                headings,
+                content: render_epub_chapter_document(
+                    &chapter_title,
+                    Some(&note.note.document_path),
+                    &note.note.tags,
+                    &body_html,
+                    backlinks_html.as_deref(),
+                    "../styles.css",
+                ),
+            })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+
+    if chapters.is_empty() {
+        chapters.push(EpubChapter {
+            title: "No results".to_string(),
+            nav_path: "text/chapter-001.xhtml".to_string(),
+            file_href: "chapter-001.xhtml".to_string(),
+            headings: Vec::new(),
+            content: render_epub_chapter_document(
+                "No results",
+                None,
+                &[],
+                "<p>No notes matched this export query.</p>",
+                None,
+                "../styles.css",
+            ),
+        });
+    }
+
+    Ok(chapters)
+}
+
+fn render_epub_nav_headings(chapter: &EpubChapter) -> String {
+    let mut headings = chapter.headings.as_slice();
+    if headings
+        .first()
+        .is_some_and(|heading| heading.level == 1 && heading.text == chapter.title)
+    {
+        headings = &headings[1..];
+    }
+    if headings.is_empty() {
+        return String::new();
+    }
+
+    let mut rendered = String::from("<ol>");
+    for heading in headings {
+        write!(
+            rendered,
+            "<li><a href=\"{}#{}\">{}</a></li>",
+            escape_xml_text(&chapter.nav_path),
+            escape_xml_text(&heading.anchor_id),
+            escape_xml_text(&heading.text)
+        )
+        .expect("writing to string cannot fail");
+    }
+    rendered.push_str("</ol>");
+    rendered
+}
+
+fn render_epub_nav_document(book_title: &str, chapters: &[EpubChapter]) -> String {
+    let mut rendered = String::from(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"en\">\n\
+         <head>\n\
+         <meta charset=\"utf-8\" />\n",
+    );
+    write!(
+        rendered,
+        "<title>{}</title>\n<link rel=\"stylesheet\" type=\"text/css\" href=\"styles.css\" />\n",
+        escape_xml_text(book_title)
+    )
+    .expect("writing to string cannot fail");
+    rendered
+        .push_str("</head>\n<body>\n<nav epub:type=\"toc\" id=\"toc\">\n<h1>Contents</h1>\n<ol>");
+    for chapter in chapters {
+        write!(
+            rendered,
+            "<li><a href=\"{}\">{}</a>",
+            escape_xml_text(&chapter.nav_path),
+            escape_xml_text(&chapter.title)
+        )
+        .expect("writing to string cannot fail");
+        rendered.push_str(&render_epub_nav_headings(chapter));
+        rendered.push_str("</li>");
+    }
+    rendered.push_str("</ol>\n</nav>\n</body>\n</html>\n");
+    rendered
+}
+
+fn render_epub_ncx(book_title: &str, chapters: &[EpubChapter], identifier: &str) -> String {
+    let mut rendered = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\">\n",
+    );
+    writeln!(
+        rendered,
+        "<head><meta name=\"dtb:uid\" content=\"{}\" /></head>",
+        escape_xml_text(identifier)
+    )
+    .expect("writing to string cannot fail");
+    write!(
+        rendered,
+        "<docTitle><text>{}</text></docTitle>\n<navMap>\n",
+        escape_xml_text(book_title)
+    )
+    .expect("writing to string cannot fail");
+    for (index, chapter) in chapters.iter().enumerate() {
+        writeln!(
+            rendered,
+            "<navPoint id=\"nav-{}\" playOrder=\"{}\"><navLabel><text>{}</text></navLabel><content src=\"{}\" /></navPoint>",
+            index + 1,
+            index + 1,
+            escape_xml_text(&chapter.title),
+            escape_xml_text(&chapter.nav_path)
+        )
+        .expect("writing to string cannot fail");
+    }
+    rendered.push_str("</navMap>\n</ncx>\n");
+    rendered
+}
+
+fn render_epub_package(
+    book_title: &str,
+    author: Option<&str>,
+    chapters: &[EpubChapter],
+    identifier: &str,
+) -> String {
+    let modified = current_utc_timestamp_string();
+    let mut rendered = String::from(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+         <package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n\
+         <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n",
+    );
+    write!(
+        rendered,
+        "<dc:identifier id=\"bookid\">{}</dc:identifier>\n<dc:title>{}</dc:title>\n<dc:language>en</dc:language>\n",
+        escape_xml_text(identifier),
+        escape_xml_text(book_title)
+    )
+    .expect("writing to string cannot fail");
+    if let Some(author) = author.filter(|value| !value.trim().is_empty()) {
+        writeln!(
+            rendered,
+            "<dc:creator>{}</dc:creator>",
+            escape_xml_text(author)
+        )
+        .expect("writing to string cannot fail");
+    }
+    write!(
+        rendered,
+        "<meta property=\"dcterms:modified\">{modified}</meta>\n</metadata>\n<manifest>\n\
+         <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\" />\n\
+         <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\" />\n\
+         <item id=\"css\" href=\"styles.css\" media-type=\"text/css\" />\n"
+    )
+    .expect("writing to string cannot fail");
+    for (index, chapter) in chapters.iter().enumerate() {
+        writeln!(
+            rendered,
+            "<item id=\"chapter-{}\" href=\"{}\" media-type=\"application/xhtml+xml\" />",
+            index + 1,
+            escape_xml_text(&chapter.nav_path)
+        )
+        .expect("writing to string cannot fail");
+    }
+    rendered.push_str("</manifest>\n<spine toc=\"ncx\">\n");
+    for index in 0..chapters.len() {
+        writeln!(rendered, "<itemref idref=\"chapter-{}\" />", index + 1)
+            .expect("writing to string cannot fail");
+    }
+    rendered.push_str("</spine>\n</package>\n");
+    rendered
+}
+
+fn epub_stylesheet() -> &'static str {
+    "body { font-family: serif; line-height: 1.5; margin: 0; padding: 0 1rem 2rem; }\n\
+     .chapter-header { border-bottom: 1px solid #d0d0d0; margin-bottom: 1.5rem; padding-bottom: 0.75rem; }\n\
+     .chapter-title { margin-bottom: 0.25rem; }\n\
+     .note-path, .note-tags { color: #555; font-size: 0.95em; margin: 0.15rem 0; }\n\
+     .backlinks { border-top: 1px solid #d0d0d0; margin-top: 2rem; padding-top: 1rem; }\n\
+     code, pre { font-family: monospace; }\n"
+}
+
+fn write_epub_export(
+    paths: &VaultPaths,
+    output_path: &Path,
+    notes: &[ExportedNoteDocument],
+    title: Option<&str>,
+    author: Option<&str>,
+    backlinks: bool,
+) -> Result<EpubExportSummary, CliError> {
+    prepare_export_output_path(output_path)?;
+    let chapters = build_epub_chapters(paths, notes, backlinks)?;
+    let book_title = title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| default_epub_title(paths), ToOwned::to_owned);
+    let identifier = format!("urn:vulcan:{}", current_utc_timestamp_string());
+
+    let file = fs::File::create(output_path).map_err(CliError::operation)?;
+    let mut writer = zip::ZipWriter::new(file);
+    let stored = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let deflated = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    writer
+        .start_file("mimetype", stored)
+        .map_err(CliError::operation)?;
+    writer
+        .write_all(b"application/epub+zip")
+        .map_err(CliError::operation)?;
+
+    writer
+        .start_file("META-INF/container.xml", deflated)
+        .map_err(CliError::operation)?;
+    writer
+        .write_all(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"#,
+        )
+        .map_err(CliError::operation)?;
+
+    writer
+        .start_file("OEBPS/content.opf", deflated)
+        .map_err(CliError::operation)?;
+    writer
+        .write_all(render_epub_package(&book_title, author, &chapters, &identifier).as_bytes())
+        .map_err(CliError::operation)?;
+
+    writer
+        .start_file("OEBPS/nav.xhtml", deflated)
+        .map_err(CliError::operation)?;
+    writer
+        .write_all(render_epub_nav_document(&book_title, &chapters).as_bytes())
+        .map_err(CliError::operation)?;
+
+    writer
+        .start_file("OEBPS/toc.ncx", deflated)
+        .map_err(CliError::operation)?;
+    writer
+        .write_all(render_epub_ncx(&book_title, &chapters, &identifier).as_bytes())
+        .map_err(CliError::operation)?;
+
+    writer
+        .start_file("OEBPS/styles.css", deflated)
+        .map_err(CliError::operation)?;
+    writer
+        .write_all(epub_stylesheet().as_bytes())
+        .map_err(CliError::operation)?;
+
+    for chapter in &chapters {
+        writer
+            .start_file(format!("OEBPS/text/{}", chapter.file_href), deflated)
+            .map_err(CliError::operation)?;
+        writer
+            .write_all(chapter.content.as_bytes())
+            .map_err(CliError::operation)?;
+    }
+
+    writer.finish().map_err(CliError::operation)?;
+
+    Ok(EpubExportSummary {
+        path: output_path.display().to_string(),
+        result_count: notes.len(),
+    })
 }
 
 fn render_graph_export_payload(
@@ -25449,6 +26105,62 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_epub_link_destination_maps_selected_notes_and_fragments() {
+        let targets = HashMap::from([
+            (
+                "Projects/Alpha".to_string(),
+                "chapter-001.xhtml".to_string(),
+            ),
+            (
+                "Projects/Alpha.md".to_string(),
+                "chapter-001.xhtml".to_string(),
+            ),
+            ("Home".to_string(), "chapter-002.xhtml".to_string()),
+        ]);
+
+        assert_eq!(
+            rewrite_epub_link_destination("Projects/Alpha#Status", &targets),
+            Some("chapter-001.xhtml#status".to_string())
+        );
+        assert_eq!(
+            rewrite_epub_link_destination("Home", &targets),
+            Some("chapter-002.xhtml".to_string())
+        );
+        assert_eq!(
+            rewrite_epub_link_destination("https://example.com", &targets),
+            None
+        );
+    }
+
+    #[test]
+    fn inject_epub_heading_ids_applies_unique_anchor_ids_in_order() {
+        let html = "<h1>Home</h1><p>x</p><h2>Status</h2><h2>Status</h2>";
+        let headings = vec![
+            EpubHeading {
+                level: 1,
+                text: "Home".to_string(),
+                anchor_id: "home".to_string(),
+            },
+            EpubHeading {
+                level: 2,
+                text: "Status".to_string(),
+                anchor_id: "status".to_string(),
+            },
+            EpubHeading {
+                level: 2,
+                text: "Status".to_string(),
+                anchor_id: "status-2".to_string(),
+            },
+        ];
+
+        let rendered = inject_epub_heading_ids(html, &headings);
+
+        assert!(rendered.contains("<h1 id=\"home\">Home</h1>"));
+        assert!(rendered.contains("<h2 id=\"status\">Status</h2>"));
+        assert!(rendered.contains("<h2 id=\"status-2\">Status</h2>"));
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn parses_links_and_backlinks_commands() {
         let rebuild =
@@ -25485,6 +26197,20 @@ mod tests {
         let export_search_index =
             Cli::try_parse_from(["vulcan", "export", "search-index", "--pretty"])
                 .expect("cli should parse");
+        let export_epub = Cli::try_parse_from([
+            "vulcan",
+            "export",
+            "epub",
+            "from notes",
+            "-o",
+            "exports/book.epub",
+            "--title",
+            "Team Notes",
+            "--author",
+            "Vulcan",
+            "--backlinks",
+        ])
+        .expect("cli should parse");
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
         let links_picker = Cli::try_parse_from(["vulcan", "links"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
@@ -25731,6 +26457,21 @@ mod tests {
                 command: ExportCommand::SearchIndex {
                     path: None,
                     pretty: true,
+                },
+            }
+        );
+        assert_eq!(
+            export_epub.command,
+            Command::Export {
+                command: ExportCommand::Epub {
+                    query: ExportQueryArgs {
+                        query: Some("from notes".to_string()),
+                        query_json: None,
+                    },
+                    path: PathBuf::from("exports/book.epub"),
+                    title: Some("Team Notes".to_string()),
+                    author: Some("Vulcan".to_string()),
+                    backlinks: true,
                 },
             }
         );
