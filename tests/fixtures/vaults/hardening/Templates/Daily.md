@@ -1,0 +1,7 @@
+---
+status: journal
+---
+
+# {{title}}
+
+## Log
