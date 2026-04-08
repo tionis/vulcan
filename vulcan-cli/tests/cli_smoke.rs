@@ -10144,6 +10144,124 @@ fn export_epub_frontmatter_flag_renders_collapsible_yaml_panel() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
+fn export_profiles_list_and_run_named_epub_profile() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[export.profiles.team_book]
+format = "epub"
+query = 'from notes where file.path matches "^(Home|Projects/Alpha)\.md$"'
+path = "exports/team-book.epub"
+title = "Team Book"
+author = "Vulcan"
+backlinks = true
+frontmatter = true
+"#,
+    )
+    .expect("config should write");
+    run_scan(&vault_root);
+
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let profiles_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profiles",
+        ])
+        .assert()
+        .success();
+    let profiles_json = parse_stdout_json(&profiles_assert);
+    let profiles = profiles_json
+        .as_array()
+        .expect("profiles output should be an array");
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0]["name"], "team_book");
+    assert_eq!(profiles[0]["format"], "epub");
+    assert_eq!(profiles[0]["path"], "exports/team-book.epub");
+    assert_eq!(
+        profiles[0]["resolved_path"],
+        vault_root
+            .join("exports/team-book.epub")
+            .display()
+            .to_string()
+    );
+
+    let export_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "team_book",
+        ])
+        .assert()
+        .success();
+    let export_json = parse_stdout_json(&export_assert);
+    assert_eq!(export_json["name"], "team_book");
+    assert_eq!(export_json["format"], "epub");
+    assert_eq!(
+        export_json["summary"]["path"],
+        vault_root
+            .join("exports/team-book.epub")
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        export_json["summary"]["result_count"],
+        Value::Number(2.into())
+    );
+
+    let export_path = vault_root.join("exports/team-book.epub");
+    let file = fs::File::open(&export_path).expect("epub export should exist");
+    let mut archive = ZipArchive::new(file).expect("epub export should open");
+
+    let mut chapter_paths = Vec::new();
+    for index in 0..archive.len() {
+        let name = archive
+            .by_index(index)
+            .expect("archive entry should be readable")
+            .name()
+            .to_string();
+        if name.starts_with("OEBPS/text/chapter-") {
+            chapter_paths.push(name);
+        }
+    }
+    assert_eq!(chapter_paths.len(), 2);
+
+    let mut saw_frontmatter = false;
+    let mut saw_backlinks = false;
+    for path in chapter_paths {
+        let mut chapter = String::new();
+        archive
+            .by_name(&path)
+            .expect("chapter should exist")
+            .read_to_string(&mut chapter)
+            .expect("chapter should be readable");
+        saw_frontmatter |= chapter.contains("frontmatter-box");
+        saw_backlinks |= chapter.contains("<section class=\"backlinks\">");
+    }
+
+    assert!(saw_frontmatter);
+    assert!(saw_backlinks);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
 fn export_epub_renders_dynamic_content_tag_indexes_and_tree_nav() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

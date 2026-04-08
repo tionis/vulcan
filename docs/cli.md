@@ -802,6 +802,8 @@ vulcan automation list
 vulcan export epub 'from notes where file.path matches "^(People|Projects)/"' -o exports/team.epub --title "Team Notes" --backlinks
 vulcan export epub 'from notes where file.path starts_with "Projects/"' -o exports/projects.epub --toc flat
 vulcan export epub 'from notes where file.path = "Home.md"' -o exports/home.epub --frontmatter
+vulcan export profiles
+vulcan export profile team-book
 vulcan automation run release-dashboard due-soon --scan --doctor
 vulcan automation run --all --verify-cache --fail-on-issues
 ```
@@ -810,6 +812,8 @@ Automation notes:
 
 - `automation run --doctor-fix` applies deterministic doctor fixes before reporting status.
 - `automation run --fail-on-issues` returns exit code `2` when checks complete but issues remain.
+- `export profiles` lists named recipes from `[export.profiles.<name>]` in `.vulcan/config.toml`.
+- `export profile <name>` runs a config-driven export and resolves relative profile paths from the vault root.
 - `export epub` preserves the selected note tree in the table of contents by default and can be flattened with `--toc flat`.
 - `export epub --frontmatter` includes each note's YAML metadata in a styled collapsible panel before the rendered note body.
 - `saved create search` uses the same syntax as `search`.
