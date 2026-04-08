@@ -1,17 +1,24 @@
 use crate::expression::ast::{BinOp, Expr, UnOp};
 use crate::expression::token::{Token, Tokenizer};
 
+const MAX_EXPRESSION_RECURSION_DEPTH: usize = 64;
+
 #[derive(Clone)]
 pub struct Parser<'a> {
     tokenizer: Tokenizer<'a>,
     current: Token,
+    recursion_depth: usize,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str) -> Result<Self, String> {
         let mut tokenizer = Tokenizer::new(source);
         let current = tokenizer.next_token()?;
-        Ok(Self { tokenizer, current })
+        Ok(Self {
+            tokenizer,
+            current,
+            recursion_depth: 0,
+        })
     }
 
     pub fn parse(mut self) -> Result<Expr, String> {
@@ -38,6 +45,21 @@ impl<'a> Parser<'a> {
         } else {
             Err(format!("expected {:?}, got {:?}", expected, self.current))
         }
+    }
+
+    fn with_recursion_guard<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if self.recursion_depth >= MAX_EXPRESSION_RECURSION_DEPTH {
+            return Err(format!(
+                "expression nesting exceeds maximum depth of {MAX_EXPRESSION_RECURSION_DEPTH}"
+            ));
+        }
+        self.recursion_depth += 1;
+        let result = parse(self);
+        self.recursion_depth -= 1;
+        result
     }
 
     // ── Precedence levels (lowest to highest) ────────────────────────
@@ -129,12 +151,12 @@ impl<'a> Parser<'a> {
         match self.current {
             Token::Bang => {
                 self.advance()?;
-                let expr = self.parse_unary()?;
+                let expr = self.with_recursion_guard(Parser::parse_unary)?;
                 Ok(Expr::UnaryOp(UnOp::Not, Box::new(expr)))
             }
             Token::Minus => {
                 self.advance()?;
-                let expr = self.parse_unary()?;
+                let expr = self.with_recursion_guard(Parser::parse_unary)?;
                 Ok(Expr::UnaryOp(UnOp::Neg, Box::new(expr)))
             }
             _ => self.parse_postfix(),
@@ -166,7 +188,7 @@ impl<'a> Parser<'a> {
                 }
                 Token::LBracket => {
                     self.advance()?; // consume `[`
-                    let index = self.parse_or()?;
+                    let index = self.with_recursion_guard(Parser::parse_or)?;
                     self.expect(&Token::RBracket)?;
                     expr = Expr::IndexAccess(Box::new(expr), Box::new(index));
                 }
@@ -241,7 +263,7 @@ impl<'a> Parser<'a> {
                 *self = snapshot;
 
                 self.advance()?;
-                let expr = self.parse_or()?;
+                let expr = self.with_recursion_guard(Parser::parse_or)?;
                 self.expect(&Token::RParen)?;
                 Ok(expr)
             }
@@ -261,7 +283,7 @@ impl<'a> Parser<'a> {
                             other => return Err(format!("expected object key, got {other:?}")),
                         };
                         self.expect(&Token::Colon)?;
-                        let value = self.parse_or()?;
+                        let value = self.with_recursion_guard(Parser::parse_or)?;
                         entries.push((key, value));
                         if self.current != Token::Comma {
                             break;
@@ -282,7 +304,7 @@ impl<'a> Parser<'a> {
             return Ok(args);
         }
         loop {
-            args.push(self.parse_or()?);
+            args.push(self.with_recursion_guard(Parser::parse_or)?);
             if self.current != Token::Comma {
                 break;
             }
@@ -308,7 +330,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(&Token::RParen)?;
         self.expect(&Token::FatArrow)?;
-        let body = self.parse_or()?;
+        let body = self.with_recursion_guard(Parser::parse_or)?;
         Ok(Expr::Lambda(params, Box::new(body)))
     }
 }
@@ -693,6 +715,31 @@ mod tests {
                 BinOp::Add,
                 Box::new(Expr::Identifier("description".to_string())),
             )
+        );
+    }
+
+    #[test]
+    fn reject_expressions_with_excessive_argument_nesting() {
+        let depth = MAX_EXPRESSION_RECURSION_DEPTH + 1;
+        let mut input = "f(".repeat(depth);
+        input.push('0');
+        input.push_str(&")".repeat(depth));
+
+        let err = Parser::new(&input).unwrap().parse().unwrap_err();
+        assert_eq!(
+            err,
+            format!("expression nesting exceeds maximum depth of {MAX_EXPRESSION_RECURSION_DEPTH}")
+        );
+    }
+
+    #[test]
+    fn reject_expressions_with_excessive_unary_nesting() {
+        let input = format!("{}true", "!".repeat(MAX_EXPRESSION_RECURSION_DEPTH + 1));
+
+        let err = Parser::new(&input).unwrap().parse().unwrap_err();
+        assert_eq!(
+            err,
+            format!("expression nesting exceeds maximum depth of {MAX_EXPRESSION_RECURSION_DEPTH}")
         );
     }
 }
