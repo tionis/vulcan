@@ -15891,7 +15891,7 @@ fn fish_completions_include_dynamic_hook() {
         .clone();
     let text = String::from_utf8_lossy(&output);
     assert!(
-        text.contains("vulcan complete bases-file"),
+        text.contains("__fish_vulcan_dynamic_complete bases-file"),
         "fish completions should hook bases-file for bases subcommands"
     );
     assert!(
@@ -15899,7 +15899,7 @@ fn fish_completions_include_dynamic_hook() {
         "fish completions should cover all bases file-taking subcommands"
     );
     assert!(
-        text.contains("vulcan complete note"),
-        "fish completions should include note context hook"
+        text.contains("function __fish_vulcan_completion_prefix_args"),
+        "fish completions should include the helper that replays leading global args"
     );
 }
