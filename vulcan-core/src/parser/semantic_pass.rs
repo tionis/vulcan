@@ -12,23 +12,85 @@ use crate::parser::types::{
 };
 use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 use std::ops::Range;
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::{Mutex, OnceLock};
+
+const PARSER_EVENT_BATCH_SIZE: usize = 128;
 
 pub fn process_events<'a, I>(
     source: &'a str,
     config: &VaultConfig,
     comment_regions: &[Range<usize>],
-    events: I,
+    mut events: I,
 ) -> ParsedDocument
 where
-    I: IntoIterator<Item = (Event<'a>, Range<usize>)>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let mut state = SemanticProcessor::new(source, config, comment_regions);
 
-    for (event, range) in events {
-        state.process_event(event, range);
+    loop {
+        let batch = match collect_event_batch(&mut events) {
+            Ok(batch) => batch,
+            Err(message) => {
+                state.record_parser_panic(&message);
+                break;
+            }
+        };
+        if batch.is_empty() {
+            break;
+        }
+        for (event, range) in batch {
+            state.process_event(event, range);
+        }
     }
 
     state.finish()
+}
+
+fn collect_event_batch<'a, I>(events: &mut I) -> Result<Vec<(Event<'a>, Range<usize>)>, String>
+where
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
+{
+    catch_unwind_quietly(|| {
+        let mut batch = Vec::with_capacity(PARSER_EVENT_BATCH_SIZE);
+        for _ in 0..PARSER_EVENT_BATCH_SIZE {
+            let Some(event) = events.next() else {
+                break;
+            };
+            batch.push(event);
+        }
+        batch
+    })
+    .map_err(|payload| format_panic_payload(payload.as_ref()))
+}
+
+fn catch_unwind_quietly<F, T>(operation: F) -> std::thread::Result<T>
+where
+    F: FnOnce() -> T,
+{
+    let _hook_lock = panic_hook_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let hook = panic::take_hook();
+    panic::set_hook(Box::new(|_| {}));
+    let result = panic::catch_unwind(AssertUnwindSafe(operation));
+    panic::set_hook(hook);
+    result
+}
+
+fn panic_hook_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn format_panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 struct SemanticProcessor<'a> {
@@ -79,6 +141,16 @@ impl<'a> SemanticProcessor<'a> {
             }
             Event::Rule => self.push_text_to_active("\n---\n"),
         }
+    }
+
+    fn record_parser_panic(&mut self, message: &str) {
+        self.parsed.diagnostics.push(ParseDiagnostic {
+            kind: ParseDiagnosticKind::UnsupportedSyntax,
+            message: format!(
+                "Markdown parser panicked on malformed input; partial results may be incomplete: {message}"
+            ),
+            byte_range: None,
+        });
     }
 
     fn handle_start(&mut self, tag: Tag<'a>, range: Range<usize>) {

@@ -205,6 +205,18 @@ mod tests {
     }
 
     #[test]
+    fn pulldown_cmark_panics_become_diagnostics() {
+        let parsed = parse_document("+\t[.]::\r\t\t", &VaultConfig::default());
+
+        assert!(parsed.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == ParseDiagnosticKind::UnsupportedSyntax
+                && diagnostic
+                    .message
+                    .contains("partial results may be incomplete")
+        }));
+    }
+
+    #[test]
     fn frontmatter_repairs_unindented_markdown_lines_in_block_scalars() {
         let source = concat!(
             "---\n",
