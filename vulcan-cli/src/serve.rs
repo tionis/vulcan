@@ -882,6 +882,89 @@ mod tests {
         handle.shutdown().expect("server should shut down");
     }
 
+    #[test]
+    fn serve_applies_permission_filters_and_denies_js_execution() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[permissions.profiles.projects_only]
+read = { allow = ["folder:Projects/**"] }
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "none"
+execute = "deny"
+shell = "deny"
+"#,
+        )
+        .expect("config should be written");
+        scan_vault(&VaultPaths::new(&vault_root), ScanMode::Full).expect("scan should succeed");
+
+        let handle = spawn_server(
+            VaultPaths::new(&vault_root),
+            ServeOptions {
+                bind: "127.0.0.1:0".to_string(),
+                watch: false,
+                debounce_ms: 50,
+                auth_token: None,
+                permissions: Some("projects_only".to_string()),
+            },
+        )
+        .expect("server should start");
+
+        let notes = get_json(handle.addr(), "/notes", None);
+        let paths = notes["result"]["notes"]
+            .as_array()
+            .expect("notes should be an array")
+            .iter()
+            .map(|note| {
+                note["document_path"]
+                    .as_str()
+                    .expect("document path should be a string")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                "Projects/Alpha.md".to_string(),
+                "Projects/Beta.md".to_string()
+            ]
+        );
+
+        let search = get_json(handle.addr(), "/search?q=draft", None);
+        assert_eq!(
+            search["result"]["hits"]
+                .as_array()
+                .expect("hits should be an array")
+                .len(),
+            0
+        );
+
+        let inline = get_json(handle.addr(), "/dataview/inline?file=Dashboard", None);
+        assert_eq!(inline["ok"], false);
+        assert!(inline["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("does not allow read `Dashboard.md`")));
+
+        let query_js = get_json(
+            handle.addr(),
+            "/dataview/query-js?js=dv.current%28%29.status&file=Projects/Alpha",
+            None,
+        );
+        assert_eq!(query_js["ok"], false);
+        assert!(query_js["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("does not allow execute access")));
+
+        handle.shutdown().expect("server should shut down");
+    }
+
     fn copy_fixture_vault(name: &str, destination: &std::path::Path) {
         let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/vaults")

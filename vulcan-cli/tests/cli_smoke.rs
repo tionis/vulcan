@@ -41,6 +41,12 @@ fn cargo_vulcan_fixed_now() -> Command {
     command
 }
 
+fn cargo_vulcan_at_time(fixed_now: &str) -> Command {
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+    command.env("VULCAN_FIXED_NOW", fixed_now);
+    command
+}
+
 fn write_plugin_file(vault_root: &Path, name: &str, source: &str) {
     let plugin_dir = vault_root.join(".vulcan/plugins");
     fs::create_dir_all(&plugin_dir).expect("plugin dir should be created");
@@ -13212,6 +13218,229 @@ fn saved_report_and_export_outputs_match_snapshot() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn hardening_vault_cli_flow_covers_scan_query_mutate_refactor_export_and_rerun() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("hardening", &vault_root);
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+
+    let init_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "index",
+            "init",
+        ])
+        .assert()
+        .success();
+    let init_json = parse_stdout_json(&init_assert);
+    assert_eq!(init_json["vault_root"], vault_root_str);
+
+    let scan_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "scan",
+            "--full",
+        ])
+        .assert()
+        .success();
+    let scan_json = parse_stdout_json(&scan_assert);
+    assert_eq!(scan_json["mode"], "full");
+    assert!(
+        scan_json["discovered"]
+            .as_u64()
+            .is_some_and(|count| count >= 10),
+        "expected the hardening fixture to discover a broad mix of files, got: {scan_json}"
+    );
+
+    let query_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "query",
+            "from notes where status = active order by file.name asc",
+        ])
+        .assert()
+        .success();
+    let query_rows = parse_stdout_json_lines(&query_assert);
+    let query_paths = query_rows
+        .iter()
+        .map(|row| {
+            row["document_path"]
+                .as_str()
+                .expect("document_path should be a string")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(query_paths.contains(&"Projects/Alpha.md".to_string()));
+    assert!(query_paths.contains(&"TaskNotes/Projects/Release.md".to_string()));
+
+    let search_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "--fields",
+            "document_path",
+            "search",
+            "docs",
+        ])
+        .assert()
+        .success();
+    let search_rows = parse_stdout_json_lines(&search_assert);
+    let search_paths = search_rows
+        .iter()
+        .map(|row| {
+            row["document_path"]
+                .as_str()
+                .expect("document_path should be a string")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(search_paths.contains(&"Home.md".to_string()));
+    assert!(search_paths.contains(&"TaskNotes/Tasks/Write Docs.md".to_string()));
+
+    let dataview_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "dataview",
+            "query",
+            "TABLE file.day, project FROM \"Journal/Daily\" SORT file.day ASC",
+        ])
+        .assert()
+        .success();
+    let dataview_json = parse_stdout_json(&dataview_assert);
+    assert_eq!(dataview_json["query_type"], "table");
+    assert_eq!(dataview_json["result_count"], 1);
+
+    let daily_assert = cargo_vulcan_at_time("2026-04-05T12:00:00Z")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "daily",
+            "today",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+    let daily_json = parse_stdout_json(&daily_assert);
+    assert_eq!(daily_json["path"], "Journal/Daily/2026-04-05.md");
+    assert_eq!(daily_json["created"], true);
+    let created_daily = fs::read_to_string(vault_root.join("Journal/Daily/2026-04-05.md"))
+        .expect("daily note should be created");
+    assert!(created_daily.contains("## Log"));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "append",
+            "Home.md",
+            "Escalate [[Projects/Beta]].",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let appended_home =
+        fs::read_to_string(vault_root.join("Home.md")).expect("home note should be readable");
+    assert!(appended_home.contains("Escalate [[Projects/Beta]]."));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "refactor",
+            "move",
+            "Projects/Beta.md",
+            "Archive/Beta.md",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    assert!(!vault_root.join("Projects/Beta.md").exists());
+    assert!(vault_root.join("Archive/Beta.md").exists());
+    let rewritten_home =
+        fs::read_to_string(vault_root.join("Home.md")).expect("home note should be readable");
+    assert!(!rewritten_home.contains("[[Projects/Beta]]"));
+    assert!(
+        rewritten_home.contains("[[Beta]]") || rewritten_home.contains("[[Archive/Beta]]"),
+        "move rewrite should update Home.md to the new target, got: {rewritten_home}"
+    );
+
+    let export_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "export",
+            "json",
+            r#"from notes where file.path = "Archive/Beta.md""#,
+            "--pretty",
+        ])
+        .assert()
+        .success();
+    let export_json = parse_stdout_json(&export_assert);
+    assert_eq!(export_json["result_count"], 1);
+    assert_eq!(export_json["notes"][0]["document_path"], "Archive/Beta.md");
+
+    let doctor_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault_root_str, "--output", "json", "doctor"])
+        .assert()
+        .success();
+    let doctor_json = parse_stdout_json(&doctor_assert);
+    assert_eq!(doctor_json["summary"]["parse_failures"], 1);
+    assert_eq!(doctor_json["summary"]["unresolved_links"], 0);
+
+    for _ in 0..2 {
+        let rerun_assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(["--vault", &vault_root_str, "--output", "json", "scan"])
+            .assert()
+            .success();
+        let rerun_json = parse_stdout_json(&rerun_assert);
+        assert_eq!(rerun_json["mode"], "incremental");
+        assert_eq!(rerun_json["added"], 0);
+        assert_eq!(rerun_json["updated"], 0);
+        assert_eq!(rerun_json["deleted"], 0);
+        assert!(
+            rerun_json["unchanged"]
+                .as_u64()
+                .is_some_and(|count| count >= 10),
+            "incremental reruns should settle into unchanged-only scans, got: {rerun_json}"
+        );
+    }
+}
+
+#[test]
 #[ignore = "regenerates the checked-in composite command snapshot"]
 fn regenerate_command_json_snapshot() {
     write_json_snapshot("commands_composite.json", &build_command_snapshot());
@@ -15100,6 +15329,152 @@ fn readonly_cli_profile_rejects_note_writes() {
         .failure()
         .stderr(predicate::str::contains(
             "permission denied: profile `readonly` does not allow write `Scratch`",
+        ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sandboxed_cli_profile_rejects_refactor_git_network_config_execute_and_index_commands() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    init_git_repo(&vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.sandboxed]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "none"
+execute = "deny"
+shell = "deny"
+"#,
+    )
+    .expect("config should be written");
+
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "sandboxed",
+            "refactor",
+            "move",
+            "Projects/Alpha.md",
+            "Archive/Alpha.md",
+            "--dry-run",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "permission denied: profile `sandboxed` does not allow refactor `Projects/Alpha.md`",
+        ));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "sandboxed",
+            "scan",
+            "--full",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "permission denied: profile `sandboxed` does not allow index access",
+        ));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "sandboxed",
+            "web",
+            "fetch",
+            "https://example.com/article",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "permission denied: profile `sandboxed` does not allow network access to `https://example.com/article`",
+        ));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "sandboxed",
+            "git",
+            "status",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "permission denied: profile `sandboxed` does not allow git access",
+        ));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "sandboxed",
+            "config",
+            "show",
+            "permissions",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "permission denied: profile `sandboxed` does not allow config read access",
+        ));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "sandboxed",
+            "plugin",
+            "enable",
+            "lint",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "permission denied: profile `sandboxed` does not allow config write access",
+        ));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "sandboxed",
+            "plugin",
+            "run",
+            "lint",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "permission denied: profile `sandboxed` does not allow execute access",
         ));
 }
 

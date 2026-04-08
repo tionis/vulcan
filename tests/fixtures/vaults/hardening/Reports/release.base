@@ -1,0 +1,18 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+properties:
+  status:
+    displayName: "Status"
+  due:
+    displayName: "Due"
+views:
+  - name: Release Table
+    type: table
+    filters:
+      - 'status contains "active"'
+    order:
+      - file.name
+      - due
+    formulas:
+      note_name: file.name
