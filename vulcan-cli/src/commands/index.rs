@@ -4,8 +4,8 @@ use crate::{
     IndexCommand, PermissionGuard, RepairCommand, ServeOptions,
 };
 use vulcan_core::{
-    rebuild_vault_with_progress, repair_fts, scan_vault_with_progress, watch_vault, RebuildQuery,
-    RepairFtsQuery, ScanMode, VaultPaths, WatchOptions,
+    rebuild_vault_with_progress, repair_fts, scan_vault_with_progress, watch_vault, PluginEvent,
+    RebuildQuery, RepairFtsQuery, ScanMode, VaultPaths, WatchOptions,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -47,9 +47,20 @@ pub(crate) fn handle_index_command(
             .map_err(CliError::operation)?;
             if summary.added + summary.updated + summary.deleted > 0 {
                 auto_commit
-                    .commit(paths, "scan", &[])
+                    .commit(paths, "scan", &[], cli.permissions.as_deref(), cli.quiet)
                     .map_err(CliError::operation)?;
             }
+            let _ = crate::plugins::dispatch_plugin_event(
+                paths,
+                cli.permissions.as_deref(),
+                PluginEvent::OnScanComplete,
+                &serde_json::json!({
+                    "kind": PluginEvent::OnScanComplete,
+                    "mode": if *full { "full" } else { "incremental" },
+                    "summary": &summary,
+                }),
+                cli.quiet,
+            );
             crate::print_scan_summary(cli.output, &summary, use_stdout_color);
             Ok(())
         }
@@ -97,9 +108,27 @@ pub(crate) fn handle_index_command(
                             > 0
                     {
                         auto_commit
-                            .commit(paths, "scan", &report.paths)
+                            .commit(
+                                paths,
+                                "scan",
+                                &report.paths,
+                                cli.permissions.as_deref(),
+                                cli.quiet,
+                            )
                             .map_err(CliError::operation)?;
                     }
+                    let _ = crate::plugins::dispatch_plugin_event(
+                        paths,
+                        cli.permissions.as_deref(),
+                        PluginEvent::OnScanComplete,
+                        &serde_json::json!({
+                            "kind": PluginEvent::OnScanComplete,
+                            "mode": "watch",
+                            "summary": &report.summary,
+                            "paths": &report.paths,
+                        }),
+                        cli.quiet,
+                    );
                     Ok::<(), CliError>(())
                 },
             )

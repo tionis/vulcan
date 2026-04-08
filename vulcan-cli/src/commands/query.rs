@@ -355,6 +355,8 @@ pub(crate) fn handle_update_command(
                 paths,
                 "update",
                 &crate::bulk_mutation_changed_files(&report),
+                cli.permissions.as_deref(),
+                cli.quiet,
             )
             .map_err(CliError::operation)?;
     }
@@ -398,7 +400,13 @@ pub(crate) fn handle_unset_command(
         .map_err(CliError::operation)?;
     if !dry_run {
         auto_commit
-            .commit(paths, "unset", &crate::bulk_mutation_changed_files(&report))
+            .commit(
+                paths,
+                "unset",
+                &crate::bulk_mutation_changed_files(&report),
+                cli.permissions.as_deref(),
+                cli.quiet,
+            )
             .map_err(CliError::operation)?;
     }
     crate::print_bulk_mutation_report(cli.output, &report)

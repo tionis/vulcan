@@ -32,7 +32,7 @@ The CLI is designed to be self-describing at runtime.
 - `vulcan --help` shows the top-level command groups.
 - `vulcan <command> --help` shows command-specific syntax, caveats, and examples.
 - `vulcan help` shows the integrated topic index, and `vulcan help <topic>` expands one command or concept.
-- Topics include command docs (`help note get`), concepts (`help filters`, `help sandbox`), and JS/runtime reference entries (`help js`, `help js.vault`).
+- Topics include command docs (`help note get`), concepts (`help filters`, `help sandbox`), and JS/runtime reference entries (`help js`, `help js.vault`, `help js.plugins`).
 - `vulcan describe` prints a compact command inventory for humans.
 - `vulcan --output json describe` prints the runtime command schema in machine-oriented JSON.
 - `vulcan --output json describe --format openai-tools` exports OpenAI function-calling tool definitions.
@@ -48,6 +48,7 @@ Useful starting points:
 - `vulcan periodic --help`
 - `vulcan vectors --help`
 - `vulcan saved --help`
+- `vulcan plugin --help`
 - `vulcan edit --help`
 - `vulcan browse --help`
 
@@ -262,6 +263,21 @@ Behavior:
 - `--sandbox strict|fs|net|none` selects the runtime capability tier for one script run or REPL session.
 - The REPL supports multiline input, tab completion, history in `.vulcan/repl_history`, pretty-printed objects, and preserved JS variables between prompts.
 - The runtime exposes `vault.note()`, `vault.notes()`, `vault.query()`, `vault.search()`, `vault.graph.*`, `vault.daily.*`, `vault.events()`, `vault.set/create/append/patch/update/unset`, `vault.transaction()`, `vault.refactor.*`, `web.search()`, `web.fetch()`, and `help(obj)`.
+
+### Plugin commands
+
+- `vulcan plugin list`: list registered plugin definitions plus discovered `.vulcan/plugins/*.js` files.
+- `vulcan plugin enable <name>`: create or update `[plugins.<name>]` in `.vulcan/config.toml` and mark it enabled.
+- `vulcan plugin disable <name>`: keep the plugin registration but disable hook execution.
+- `vulcan plugin run <name>`: execute one plugin's `main(event, ctx)` entrypoint manually.
+
+Behavior:
+
+- Plugin files default to `.vulcan/plugins/<name>.js` unless `[plugins.<name>].path` overrides the location.
+- Plugin registrations live in `.vulcan/config.toml` and can declare `events`, `sandbox`, `permission_profile`, and `description`.
+- `on_note_write` and `on_pre_commit` are blocking hooks; other lifecycle hooks are post-events and only log failures.
+- Vault trust is required for plugin execution. Untrusted vaults skip hooks with a warning and reject manual `plugin run`.
+- `vulcan help js.plugins` documents the handler names, event payloads, and execution context.
 
 ### Web commands
 

@@ -7,6 +7,7 @@ mod editor;
 mod js_repl;
 mod note_picker;
 mod output;
+mod plugins;
 mod resolve;
 mod serve;
 mod template_engine;
@@ -19,10 +20,10 @@ pub use cli::{
     ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs,
     ExportCommand, ExportFormat, ExportQueryArgs, GitCommand, GraphCommand, GraphExportFormat,
     IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode,
-    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PropertySortArg, QueryEngineArg,
-    QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand,
-    SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg,
-    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PropertySortArg,
+    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RepairCommand,
+    SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand,
+    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
     TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
     TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
@@ -109,16 +110,16 @@ use vulcan_core::{
     MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
     NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput,
     PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode,
-    PermissionProfile, PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport, RebuildQuery,
-    RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
-    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
-    ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort,
-    StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
-    TaskNotesSavedViewNode, TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig,
-    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
-    VectorRepairReport, WatchOptions, WatchReport,
+    PermissionProfile, PluginEvent, PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport,
+    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
+    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
+    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -3217,6 +3218,217 @@ fn handle_trust_command(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct PluginListReport {
+    plugins: Vec<plugins::PluginDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct PluginToggleReport {
+    name: String,
+    enabled: bool,
+    updated: bool,
+    registered: bool,
+    config_path: PathBuf,
+    path: PathBuf,
+}
+
+fn handle_plugin_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &PluginCommand,
+    stdout_is_tty: bool,
+    use_stdout_color: bool,
+) -> Result<(), CliError> {
+    match command {
+        PluginCommand::List => {
+            selected_permission_guard(cli, paths)?
+                .check_config_read()
+                .map_err(CliError::operation)?;
+            print_plugin_list_report(
+                cli.output,
+                &PluginListReport {
+                    plugins: plugins::list_plugins(paths),
+                },
+            )
+        }
+        PluginCommand::Enable { name } => {
+            selected_permission_guard(cli, paths)?
+                .check_config_write()
+                .map_err(CliError::operation)?;
+            run_plugin_toggle_command(paths, cli.output, name, true, cli.quiet)
+        }
+        PluginCommand::Disable { name } => {
+            selected_permission_guard(cli, paths)?
+                .check_config_write()
+                .map_err(CliError::operation)?;
+            run_plugin_toggle_command(paths, cli.output, name, false, cli.quiet)
+        }
+        PluginCommand::Run { name } => {
+            selected_permission_guard(cli, paths)?
+                .check_execute()
+                .map_err(CliError::operation)?;
+            let result = plugins::run_plugin(paths, cli.permissions.as_deref(), name)?;
+            print_dataview_js_result(cli.output, &result, false, stdout_is_tty, use_stdout_color)
+        }
+    }
+}
+
+fn run_plugin_toggle_command(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+    enabled: bool,
+    quiet: bool,
+) -> Result<(), CliError> {
+    let config_path = paths.config_file().to_path_buf();
+    let created_config = !config_path.exists();
+    let had_gitignore = paths.gitignore_file().exists();
+    let existing_contents = fs::read_to_string(&config_path).ok();
+    let descriptors = plugins::list_plugins(paths);
+    let descriptor = descriptors
+        .into_iter()
+        .find(|plugin| plugin.name == name)
+        .unwrap_or_else(|| plugins::PluginDescriptor {
+            name: name.to_string(),
+            path: plugins::plugin_default_config_path(name),
+            exists: false,
+            registered: false,
+            enabled: false,
+            events: Vec::new(),
+            sandbox: None,
+            permission_profile: None,
+            description: None,
+        });
+
+    let mut config_value = load_config_file_toml(&config_path)?;
+    set_config_toml_value(
+        &mut config_value,
+        &["plugins", name, "enabled"],
+        TomlValue::Boolean(enabled),
+    )?;
+    let default_path = plugins::plugin_default_config_path(name);
+    if !descriptor.registered && descriptor.path != default_path {
+        set_config_toml_value(
+            &mut config_value,
+            &["plugins", name, "path"],
+            TomlValue::String(descriptor.path.to_string_lossy().into_owned()),
+        )?;
+    }
+
+    let rendered = toml::to_string_pretty(&config_value).map_err(CliError::operation)?;
+    validate_vulcan_overrides_toml(&rendered).map_err(CliError::operation)?;
+    let updated = existing_contents.as_deref() != Some(rendered.as_str());
+
+    if updated {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, false);
+        warn_auto_commit_if_needed(&auto_commit, quiet);
+        ensure_vulcan_dir(paths).map_err(CliError::operation)?;
+        fs::write(&config_path, rendered).map_err(CliError::operation)?;
+        auto_commit
+            .commit(
+                paths,
+                "plugin-config",
+                &config_set_changed_files(paths, had_gitignore),
+                None,
+                quiet,
+            )
+            .map_err(CliError::operation)?;
+    }
+
+    let report = PluginToggleReport {
+        name: name.to_string(),
+        enabled,
+        updated,
+        registered: descriptor.registered || updated || created_config,
+        config_path: relativize_config_import_path(paths, &config_path),
+        path: descriptor.path,
+    };
+    print_plugin_toggle_report(output, &report)
+}
+
+fn print_plugin_list_report(
+    output: OutputFormat,
+    report: &PluginListReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if report.plugins.is_empty() {
+                println!("No plugins.");
+                return Ok(());
+            }
+            for plugin in &report.plugins {
+                let state = if plugin.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                let registration = if plugin.registered {
+                    "registered"
+                } else {
+                    "discovered"
+                };
+                let availability = if plugin.exists {
+                    "available"
+                } else {
+                    "missing"
+                };
+                let events = if plugin.events.is_empty() {
+                    "manual-only".to_string()
+                } else {
+                    plugin
+                        .events
+                        .iter()
+                        .map(|event| event.handler_name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                println!(
+                    "- {} [{}; {}; {}] {}",
+                    plugin.name,
+                    state,
+                    registration,
+                    availability,
+                    plugin.path.display()
+                );
+                println!("  events: {events}");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_plugin_toggle_report(
+    output: OutputFormat,
+    report: &PluginToggleReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            let action = if report.enabled {
+                "Enabled"
+            } else {
+                "Disabled"
+            };
+            if report.updated {
+                println!(
+                    "{action} plugin {} in {}",
+                    report.name,
+                    report.config_path.display()
+                );
+            } else {
+                println!(
+                    "No changes for plugin {} in {}",
+                    report.name,
+                    report.config_path.display()
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 fn run_dataview_eval_command(
@@ -8793,7 +9005,13 @@ fn run_inbox_command(
     fs::write(&absolute_path, updated).map_err(CliError::operation)?;
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     auto_commit
-        .commit(paths, "inbox", std::slice::from_ref(&relative_path))
+        .commit(
+            paths,
+            "inbox",
+            std::slice::from_ref(&relative_path),
+            None,
+            false,
+        )
         .map_err(CliError::operation)?;
 
     Ok(InboxReport {
@@ -8883,7 +9101,7 @@ fn run_template_command(
     changed_paths.sort();
     changed_paths.dedup();
     auto_commit
-        .commit(paths, "template", &changed_paths)
+        .commit(paths, "template", &changed_paths, None, quiet)
         .map_err(CliError::operation)?;
 
     Ok(TemplateCommandResult::Create(TemplateCreateReport {
@@ -8961,7 +9179,7 @@ fn run_template_insert_command(
     changed_paths.sort();
     changed_paths.dedup();
     auto_commit
-        .commit(paths, "template insert", &changed_paths)
+        .commit(paths, "template insert", &changed_paths, None, quiet)
         .map_err(CliError::operation)?;
 
     Ok(TemplateInsertReport {
@@ -9184,6 +9402,7 @@ fn commit_periodic_changes_if_needed(
     paths: &VaultPaths,
     period_type: &str,
     changed_path: &str,
+    quiet: bool,
 ) -> Result<(), CliError> {
     let changed_file = changed_path.to_string();
     auto_commit
@@ -9191,6 +9410,8 @@ fn commit_periodic_changes_if_needed(
             paths,
             &format!("{period_type}-note"),
             std::slice::from_ref(&changed_file),
+            None,
+            quiet,
         )
         .map_err(CliError::operation)?;
     Ok(())
@@ -9222,7 +9443,7 @@ fn run_periodic_open_command(
 
     if created || opened_editor {
         run_incremental_scan(paths, OutputFormat::Human, false, false)?;
-        commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path)?;
+        commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path, quiet)?;
     }
 
     Ok(PeriodicOpenReport {
@@ -9437,7 +9658,7 @@ fn run_daily_append_command(
     fs::write(&absolute_path, updated).map_err(CliError::operation)?;
 
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
-    commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path)?;
+    commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path, quiet)?;
 
     Ok(DailyAppendReport {
         period_type: target.period_type,
@@ -10727,6 +10948,7 @@ fn run_note_set_command(
     file: Option<&PathBuf>,
     no_frontmatter: bool,
     check: bool,
+    permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
     quiet: bool,
@@ -10738,6 +10960,15 @@ fn run_note_set_command(
     } else {
         replacement
     };
+    dispatch_note_write_plugin_hooks(
+        paths,
+        permission_profile,
+        &relative_path,
+        "set",
+        Some(&existing),
+        &updated,
+        quiet,
+    )?;
     fs::write(paths.vault_root().join(&relative_path), &updated).map_err(CliError::operation)?;
     let diagnostics = maybe_check_note(paths, &relative_path, &updated, check)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
@@ -10757,6 +10988,7 @@ fn run_note_create_command(
     template: Option<&str>,
     frontmatter: &[String],
     check: bool,
+    permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
     quiet: bool,
@@ -10815,12 +11047,28 @@ fn run_note_create_command(
 
     let final_content =
         render_note_from_parts(frontmatter_mapping.as_ref(), &body).map_err(CliError::operation)?;
+    dispatch_note_write_plugin_hooks(
+        paths,
+        permission_profile,
+        &final_path,
+        "create",
+        None,
+        &final_content,
+        quiet,
+    )?;
     if let Some(parent) = absolute_path.parent() {
         fs::create_dir_all(parent).map_err(CliError::operation)?;
     }
     fs::write(&absolute_path, &final_content).map_err(CliError::operation)?;
     let diagnostics = maybe_check_note(paths, &final_path, &final_content, check)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+    dispatch_note_create_plugin_hooks(
+        paths,
+        permission_profile,
+        &final_path,
+        &final_content,
+        quiet,
+    );
     changed_paths.push(final_path.clone());
     changed_paths.sort();
     changed_paths.dedup();
@@ -10889,6 +11137,7 @@ struct NoteAppendOptions<'a> {
 fn run_note_append_command(
     paths: &VaultPaths,
     options: NoteAppendOptions<'_>,
+    permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
     quiet: bool,
@@ -10952,10 +11201,28 @@ fn run_note_append_command(
             append_entry_under_heading(&existing, heading.unwrap_or_default(), &rendered.content)
         }
     };
+    dispatch_note_write_plugin_hooks(
+        paths,
+        permission_profile,
+        &relative_path,
+        "append",
+        Some(&existing),
+        &insertion.updated,
+        quiet,
+    )?;
     fs::write(paths.vault_root().join(&relative_path), &insertion.updated)
         .map_err(CliError::operation)?;
     let diagnostics = maybe_check_note(paths, &relative_path, &insertion.updated, check)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+    if created {
+        dispatch_note_create_plugin_hooks(
+            paths,
+            permission_profile,
+            &relative_path,
+            &insertion.updated,
+            quiet,
+        );
+    }
 
     Ok(NoteAppendReport {
         path: relative_path,
@@ -10974,6 +11241,7 @@ fn run_note_append_command(
 fn run_note_patch_command(
     paths: &VaultPaths,
     options: NotePatchOptions<'_>,
+    permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
     quiet: bool,
@@ -10990,6 +11258,15 @@ fn run_note_patch_command(
     let matcher = parse_note_patch_matcher(find)?;
     let application = apply_note_patch(&existing, &matcher, replace, replace_all)?;
     if !dry_run {
+        dispatch_note_write_plugin_hooks(
+            paths,
+            permission_profile,
+            &relative_path,
+            "patch",
+            Some(&existing),
+            &application.updated_content,
+            quiet,
+        )?;
         fs::write(
             paths.vault_root().join(&relative_path),
             &application.updated_content,
@@ -11016,6 +11293,7 @@ fn run_note_delete_command(
     paths: &VaultPaths,
     note: &str,
     dry_run: bool,
+    permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
     quiet: bool,
@@ -11029,6 +11307,7 @@ fn run_note_delete_command(
     if !dry_run {
         fs::remove_file(paths.vault_root().join(&relative_path)).map_err(CliError::operation)?;
         run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+        dispatch_note_delete_plugin_hooks(paths, permission_profile, &relative_path, quiet);
     }
 
     Ok(NoteDeleteReport {
@@ -11248,6 +11527,69 @@ fn note_append_input_text(text: &str) -> Result<String, CliError> {
         .read_to_string(&mut buffer)
         .map_err(CliError::operation)?;
     Ok(buffer)
+}
+
+fn dispatch_note_write_plugin_hooks(
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+    relative_path: &str,
+    operation: &str,
+    existing: Option<&str>,
+    updated: &str,
+    quiet: bool,
+) -> Result<(), CliError> {
+    crate::plugins::dispatch_plugin_event(
+        paths,
+        permission_profile,
+        PluginEvent::OnNoteWrite,
+        &serde_json::json!({
+            "kind": PluginEvent::OnNoteWrite,
+            "path": relative_path,
+            "operation": operation,
+            "existed_before": existing.is_some(),
+            "previous_content": existing,
+            "content": updated,
+        }),
+        quiet,
+    )
+}
+
+fn dispatch_note_create_plugin_hooks(
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+    relative_path: &str,
+    content: &str,
+    quiet: bool,
+) {
+    let _ = crate::plugins::dispatch_plugin_event(
+        paths,
+        permission_profile,
+        PluginEvent::OnNoteCreate,
+        &serde_json::json!({
+            "kind": PluginEvent::OnNoteCreate,
+            "path": relative_path,
+            "content": content,
+        }),
+        quiet,
+    );
+}
+
+fn dispatch_note_delete_plugin_hooks(
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+    relative_path: &str,
+    quiet: bool,
+) {
+    let _ = crate::plugins::dispatch_plugin_event(
+        paths,
+        permission_profile,
+        PluginEvent::OnNoteDelete,
+        &serde_json::json!({
+            "kind": PluginEvent::OnNoteDelete,
+            "path": relative_path,
+        }),
+        quiet,
+    );
 }
 
 fn read_optional_stdin_text() -> io::Result<String> {
@@ -12876,7 +13218,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 new,
             )?;
             auto_commit
-                .commit(&paths, "edit", std::slice::from_ref(&report.path))
+                .commit(
+                    &paths,
+                    "edit",
+                    std::slice::from_ref(&report.path),
+                    cli.permissions.as_deref(),
+                    cli.quiet,
+                )
                 .map_err(CliError::operation)?;
             print_edit_report(cli.output, &report);
             Ok(())
@@ -12921,6 +13269,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Complete { ref context } => {
             run_complete_command(&paths, context);
             Ok(())
+        }
+        Command::Plugin { ref command } => {
+            handle_plugin_command(cli, &paths, command, stdout_is_tty, use_stdout_color)
         }
         Command::Status => {
             let report = run_status_command(&paths)?;
@@ -13037,9 +13388,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let summary = move_note(&paths, source, dest, dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = move_changed_files(&summary);
                 auto_commit
-                    .commit(&paths, "move", &move_changed_files(&summary))
+                    .commit(
+                        &paths,
+                        "move",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                let _ = crate::plugins::dispatch_plugin_event(
+                    &paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnRefactor,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnRefactor,
+                        "action": "move",
+                        "paths": changed_paths,
+                    }),
+                    cli.quiet,
+                );
             }
             print_move_summary(cli.output, &summary)?;
             Ok(())
@@ -13060,9 +13429,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = rename_property(&paths, old, new, dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = refactor_changed_files(&report);
                 auto_commit
-                    .commit(&paths, "rename-property", &refactor_changed_files(&report))
+                    .commit(
+                        &paths,
+                        "rename-property",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                let _ = crate::plugins::dispatch_plugin_event(
+                    &paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnRefactor,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnRefactor,
+                        "action": "rename-property",
+                        "paths": changed_paths,
+                    }),
+                    cli.quiet,
+                );
             }
             print_refactor_report(cli.output, &report)?;
             Ok(())
@@ -13083,9 +13470,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = merge_tags(&paths, source, dest, dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = refactor_changed_files(&report);
                 auto_commit
-                    .commit(&paths, "merge-tags", &refactor_changed_files(&report))
+                    .commit(
+                        &paths,
+                        "merge-tags",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                let _ = crate::plugins::dispatch_plugin_event(
+                    &paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnRefactor,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnRefactor,
+                        "action": "merge-tags",
+                        "paths": changed_paths,
+                    }),
+                    cli.quiet,
+                );
             }
             print_refactor_report(cli.output, &report)?;
             Ok(())
@@ -13111,9 +13516,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let report =
                 rename_alias(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = refactor_changed_files(&report);
                 auto_commit
-                    .commit(&paths, "rename-alias", &refactor_changed_files(&report))
+                    .commit(
+                        &paths,
+                        "rename-alias",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                let _ = crate::plugins::dispatch_plugin_event(
+                    &paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnRefactor,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnRefactor,
+                        "action": "rename-alias",
+                        "paths": changed_paths,
+                    }),
+                    cli.quiet,
+                );
             }
             print_refactor_report(cli.output, &report)?;
             Ok(())
@@ -13139,9 +13562,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let report =
                 rename_heading(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = refactor_changed_files(&report);
                 auto_commit
-                    .commit(&paths, "rename-heading", &refactor_changed_files(&report))
+                    .commit(
+                        &paths,
+                        "rename-heading",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                let _ = crate::plugins::dispatch_plugin_event(
+                    &paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnRefactor,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnRefactor,
+                        "action": "rename-heading",
+                        "paths": changed_paths,
+                    }),
+                    cli.quiet,
+                );
             }
             print_refactor_report(cli.output, &report)?;
             Ok(())
@@ -13167,9 +13608,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let report =
                 rename_block_ref(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = refactor_changed_files(&report);
                 auto_commit
-                    .commit(&paths, "rename-block-ref", &refactor_changed_files(&report))
+                    .commit(
+                        &paths,
+                        "rename-block-ref",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                let _ = crate::plugins::dispatch_plugin_event(
+                    &paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnRefactor,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnRefactor,
+                        "action": "rename-block-ref",
+                        "paths": changed_paths,
+                    }),
+                    cli.quiet,
+                );
             }
             print_refactor_report(cli.output, &report)?;
             Ok(())
@@ -13246,9 +13705,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     && report.summary.added + report.summary.updated + report.summary.deleted > 0
                 {
                     auto_commit
-                        .commit(&paths, "scan", &report.paths)
+                        .commit(
+                            &paths,
+                            "scan",
+                            &report.paths,
+                            cli.permissions.as_deref(),
+                            cli.quiet,
+                        )
                         .map_err(CliError::operation)?;
                 }
+                let _ = crate::plugins::dispatch_plugin_event(
+                    &paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnScanComplete,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnScanComplete,
+                        "mode": "watch",
+                        "summary": &report.summary,
+                        "paths": &report.paths,
+                    }),
+                    cli.quiet,
+                );
                 Ok::<(), CliError>(())
             })
             .map_err(CliError::operation)
@@ -14039,9 +14516,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let report =
                 link_mentions(&paths, note.as_deref(), dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = refactor_changed_files(&report);
                 auto_commit
-                    .commit(&paths, "link-mentions", &refactor_changed_files(&report))
+                    .commit(
+                        &paths,
+                        "link-mentions",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                let _ = crate::plugins::dispatch_plugin_event(
+                    &paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnRefactor,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnRefactor,
+                        "action": "link-mentions",
+                        "paths": changed_paths,
+                    }),
+                    cli.quiet,
+                );
             }
             print_refactor_report(cli.output, &report)
         }
@@ -14066,9 +14561,27 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             .map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = refactor_changed_files(&report);
                 auto_commit
-                    .commit(&paths, "rewrite", &refactor_changed_files(&report))
+                    .commit(
+                        &paths,
+                        "rewrite",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                let _ = crate::plugins::dispatch_plugin_event(
+                    &paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnRefactor,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnRefactor,
+                        "action": "rewrite",
+                        "paths": changed_paths,
+                    }),
+                    cli.quiet,
+                );
             }
             print_refactor_report(cli.output, &report)
         }
@@ -14157,9 +14670,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             .map_err(CliError::operation)?;
             if summary.added + summary.updated + summary.deleted > 0 {
                 auto_commit
-                    .commit(&paths, "scan", &[])
+                    .commit(&paths, "scan", &[], cli.permissions.as_deref(), cli.quiet)
                     .map_err(CliError::operation)?;
             }
+            let _ = crate::plugins::dispatch_plugin_event(
+                &paths,
+                cli.permissions.as_deref(),
+                PluginEvent::OnScanComplete,
+                &serde_json::json!({
+                    "kind": PluginEvent::OnScanComplete,
+                    "mode": if full { "full" } else { "incremental" },
+                    "summary": &summary,
+                }),
+                cli.quiet,
+            );
             print_scan_summary(cli.output, &summary, use_stdout_color);
             Ok(())
         }
@@ -16303,6 +16827,8 @@ fn run_config_set(
                 paths,
                 "config-set",
                 &config_set_changed_files(paths, had_gitignore),
+                None,
+                quiet,
             )
             .map_err(CliError::operation)?;
     }
@@ -16707,6 +17233,8 @@ fn run_config_import(
                     paths,
                     &format!("config-import-{}", importer.name()),
                     &config_import_changed_files(paths, had_gitignore, &report),
+                    None,
+                    quiet,
                 )
                 .map_err(CliError::operation)?;
         }
@@ -16754,7 +17282,7 @@ fn run_config_import_batch(
         if reports.iter().any(|report| report.updated) {
             let changed_files = config_import_batch_changed_files(paths, had_gitignore, &reports);
             auto_commit
-                .commit(paths, "config-import-all", &changed_files)
+                .commit(paths, "config-import-all", &changed_files, None, quiet)
                 .map_err(CliError::operation)?;
         }
     }
@@ -21263,6 +21791,10 @@ fn help_overview() -> HelpTopicReport {
                     "render",
                     "Render markdown from a file or stdin with the terminal renderer",
                 ),
+                (
+                    "plugin",
+                    "List, enable, disable, and manually run JS lifecycle plugins",
+                ),
             ],
         ),
         (
@@ -21318,6 +21850,7 @@ fn help_overview() -> HelpTopicReport {
         - Search full-text: `vulcan search \"meeting notes\"`\n\
         - Daily note: `vulcan daily`\n\
         - Create a note: `vulcan note create Projects/new-idea.md`\n\
+        - List plugins: `vulcan plugin list`\n\
         - Run JS REPL: `vulcan run`\n\n\
         Run `vulcan help <command>` for details on any command.\n\
         Run `vulcan help --search <keyword>` to search all help topics.\n\
@@ -21438,6 +21971,13 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
             "Shape and usage guidance for the planned JS Note object.",
             include_str!("../../docs/reference/js-api/note-object.md"),
             &["js.vault", "note get", "query"],
+        ),
+        static_help_topic(
+            "js.plugins",
+            HelpTopicKind::Concept,
+            "Lifecycle plugin registration, hook names, payloads, and trust requirements.",
+            include_str!("../../docs/reference/js-api/plugins.md"),
+            &["plugin", "run", "trust"],
         ),
         static_help_topic(
             "reports",

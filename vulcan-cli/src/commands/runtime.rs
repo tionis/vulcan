@@ -2,7 +2,7 @@ use crate::{
     js_repl, selected_permission_guard, Cli, CliError, GitCommand, PermissionGuard, WebCommand,
 };
 use std::io::{self, IsTerminal};
-use vulcan_core::{git_commit, VaultPaths};
+use vulcan_core::{git_commit, PluginEvent, VaultPaths};
 
 pub(crate) fn handle_git_command(
     cli: &Cli,
@@ -32,7 +32,33 @@ pub(crate) fn handle_git_command(
             crate::print_git_diff_group_report(cli.output, &report)
         }
         GitCommand::Commit { message } => {
+            crate::plugins::dispatch_plugin_event(
+                paths,
+                cli.permissions.as_deref(),
+                PluginEvent::OnPreCommit,
+                &serde_json::json!({
+                    "kind": PluginEvent::OnPreCommit,
+                    "action": "git-commit",
+                    "message": message,
+                }),
+                cli.quiet,
+            )?;
             let report = git_commit(paths.vault_root(), message).map_err(CliError::operation)?;
+            if report.committed {
+                let _ = crate::plugins::dispatch_plugin_event(
+                    paths,
+                    cli.permissions.as_deref(),
+                    PluginEvent::OnPostCommit,
+                    &serde_json::json!({
+                        "kind": PluginEvent::OnPostCommit,
+                        "action": "git-commit",
+                        "message": report.message,
+                        "files": report.files,
+                        "sha": report.sha,
+                    }),
+                    cli.quiet,
+                );
+            }
             crate::print_git_commit_report(cli.output, &report)
         }
         GitCommand::Blame { path } => {

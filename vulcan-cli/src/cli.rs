@@ -9,6 +9,7 @@ Quick start:
   vulcan today                                         Open today's daily note
   vulcan note create Projects/new-idea.md              Create a note
   vulcan render README.md                              Render markdown in the terminal
+  vulcan plugin list                                   Inspect registered JS plugins
   vulcan run                                           Start the JS REPL
 
 Command groups (run `vulcan help` for the full grouped reference):
@@ -24,7 +25,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   Scripting:   run, web, render
   Git:         git, changes
   Automation:  saved, automation, export, checkpoint
-  Setup:       init, config, trust
+  Setup:       init, config, trust, plugin
 
 Reference:
   vulcan help <command>              Integrated help for any command
@@ -494,6 +495,27 @@ Examples:
   vulcan run --sandbox net -e 'web.search(\"rust async\")'  Web search
   vulcan run --no-startup                        Skip startup.js even if trusted
   cat query.js | vulcan run                      Pipe a script via stdin";
+
+const PLUGIN_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  list            list discovered and registered JS plugins
+  enable <name>   enable one plugin in .vulcan/config.toml
+  disable <name>  disable one plugin in .vulcan/config.toml
+  run <name>      execute one plugin's `main(event, ctx)` entrypoint
+
+Notes:
+  Plugin files live under `.vulcan/plugins/` by default and are registered under `[plugins.<name>]`.
+  Event handlers are named after their subscription keys: `on_note_write`, `on_pre_commit`, etc.
+  `on_note_write` and `on_pre_commit` are blocking hooks; throw an error to abort the operation.
+  Other hooks are post-hooks: Vulcan logs failures as warnings but does not roll back the action.
+  Trusted vaults are required for plugin execution.
+
+Examples:
+  vulcan plugin list
+  vulcan plugin enable lint
+  vulcan plugin disable lint
+  vulcan plugin run lint
+  vulcan --output json plugin list";
 
 const DESCRIBE_COMMAND_AFTER_HELP: &str = "\
 Output:
@@ -1831,6 +1853,27 @@ pub enum ConfigCommand {
     },
     #[command(about = "Import compatible Obsidian plugin settings")]
     Import(ConfigImportSelection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum PluginCommand {
+    #[command(about = "List discovered and registered JS plugins")]
+    List,
+    #[command(about = "Enable one plugin in .vulcan/config.toml")]
+    Enable {
+        #[arg(help = "Plugin name (defaults to .vulcan/plugins/<name>.js)")]
+        name: String,
+    },
+    #[command(about = "Disable one plugin in .vulcan/config.toml")]
+    Disable {
+        #[arg(help = "Plugin name (defaults to .vulcan/plugins/<name>.js)")]
+        name: String,
+    },
+    #[command(about = "Execute one plugin's main(event, ctx) entrypoint")]
+    Run {
+        #[arg(help = "Plugin name to execute")]
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
@@ -3988,6 +4031,14 @@ Examples:
     Complete {
         #[arg(help = "Completion context")]
         context: String,
+    },
+    #[command(
+        about = "Discover, register, and run JS lifecycle plugins",
+        after_help = PLUGIN_COMMAND_AFTER_HELP
+    )]
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
     },
     #[command(
         about = "Manage vault trust for startup scripts and plugin execution",

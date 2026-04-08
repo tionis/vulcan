@@ -113,12 +113,19 @@ pub(crate) fn handle_note_command(
                 file.as_ref(),
                 *no_frontmatter,
                 *check,
+                cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
                 cli.quiet,
             )?;
             auto_commit
-                .commit(paths, "note-set", std::slice::from_ref(&report.path))
+                .commit(
+                    paths,
+                    "note-set",
+                    std::slice::from_ref(&report.path),
+                    cli.permissions.as_deref(),
+                    cli.quiet,
+                )
                 .map_err(CliError::operation)?;
             crate::print_note_set_report(cli.output, &report)
         }
@@ -138,12 +145,19 @@ pub(crate) fn handle_note_command(
                 template.as_deref(),
                 frontmatter,
                 *check,
+                cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
                 cli.quiet,
             )?;
             auto_commit
-                .commit(paths, "note-create", &report.changed_paths)
+                .commit(
+                    paths,
+                    "note-create",
+                    &report.changed_paths,
+                    cli.permissions.as_deref(),
+                    cli.quiet,
+                )
                 .map_err(CliError::operation)?;
             crate::print_note_create_report(cli.output, &report)
         }
@@ -196,12 +210,19 @@ pub(crate) fn handle_note_command(
                     vars,
                     check: *check,
                 },
+                cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
                 cli.quiet,
             )?;
             auto_commit
-                .commit(paths, "note-append", std::slice::from_ref(&report.path))
+                .commit(
+                    paths,
+                    "note-append",
+                    std::slice::from_ref(&report.path),
+                    cli.permissions.as_deref(),
+                    cli.quiet,
+                )
                 .map_err(CliError::operation)?;
             crate::print_note_append_report(cli.output, &report)
         }
@@ -227,13 +248,20 @@ pub(crate) fn handle_note_command(
                     check: *check,
                     dry_run: *dry_run,
                 },
+                cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
                 cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "note-patch", std::slice::from_ref(&report.path))
+                    .commit(
+                        paths,
+                        "note-patch",
+                        std::slice::from_ref(&report.path),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_note_patch_report(cli.output, &report)
@@ -269,13 +297,20 @@ pub(crate) fn handle_note_command(
                 paths,
                 note,
                 *dry_run,
+                cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
                 cli.quiet,
             )?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "note-delete", std::slice::from_ref(&report.path))
+                    .commit(
+                        paths,
+                        "note-delete",
+                        std::slice::from_ref(&report.path),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_note_delete_report(cli.output, &report)
@@ -295,7 +330,13 @@ pub(crate) fn handle_note_command(
                 .map_err(CliError::operation)?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "note-rename", &crate::move_changed_files(&summary))
+                    .commit(
+                        paths,
+                        "note-rename",
+                        &crate::move_changed_files(&summary),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_move_summary(cli.output, &summary)

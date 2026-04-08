@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::thread;
 use tempfile::TempDir;
@@ -39,6 +39,94 @@ fn cargo_vulcan_fixed_now() -> Command {
     let mut command = Command::cargo_bin("vulcan").expect("binary should build");
     command.env("VULCAN_FIXED_NOW", FIXED_NOW);
     command
+}
+
+fn write_plugin_file(vault_root: &Path, name: &str, source: &str) {
+    let plugin_dir = vault_root.join(".vulcan/plugins");
+    fs::create_dir_all(&plugin_dir).expect("plugin dir should be created");
+    fs::write(plugin_dir.join(format!("{name}.js")), source).expect("plugin file should write");
+}
+
+fn cargo_vulcan_with_xdg_config(config_home: &str) -> Command {
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+    command.env("XDG_CONFIG_HOME", config_home);
+    command
+}
+
+struct PluginTestFixture {
+    _temp_dir: TempDir,
+    vault_root: PathBuf,
+    vault_root_str: String,
+    config_home_str: String,
+    blocked_file: PathBuf,
+    allowed_file: PathBuf,
+}
+
+fn build_plugin_test_fixture() -> PluginTestFixture {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+    fs::write(vault_root.join("Projects/Alpha.md"), "hello\n").expect("note should write");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[permissions.profiles.plugin]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "none"
+execute = "allow"
+shell = "deny"
+
+[plugins.lint]
+enabled = true
+events = ["on_note_write"]
+permission_profile = "plugin"
+sandbox = "strict"
+"#,
+    )
+    .expect("config should write");
+    write_plugin_file(
+        &vault_root,
+        "lint",
+        r#"
+function on_note_write(event) {
+  if (!event.content.includes("approved")) {
+    throw new Error("plugin blocked write");
+  }
+}
+
+function main(event, ctx) {
+  return { kind: event.kind, plugin: ctx.plugin.name };
+}
+"#,
+    );
+
+    let config_home = temp_dir.path().join("xdg");
+    fs::create_dir_all(&config_home).expect("xdg dir should exist");
+    let blocked_file = temp_dir.path().join("blocked.md");
+    fs::write(&blocked_file, "draft\n").expect("blocked input should write");
+    let allowed_file = temp_dir.path().join("allowed.md");
+    fs::write(&allowed_file, "approved change\n").expect("allowed input should write");
+
+    PluginTestFixture {
+        _temp_dir: temp_dir,
+        vault_root_str: vault_root
+            .to_str()
+            .expect("vault path should be valid utf-8")
+            .to_string(),
+        config_home_str: config_home
+            .to_str()
+            .expect("config home path should be valid utf-8")
+            .to_string(),
+        vault_root,
+        blocked_file,
+        allowed_file,
+    }
 }
 
 #[test]
@@ -80,6 +168,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("export"))
             .and(predicate::str::contains("config"))
             .and(predicate::str::contains("automation"))
+            .and(predicate::str::contains("plugin"))
             .and(predicate::str::contains("run"))
             .and(predicate::str::contains("render"))
             .and(predicate::str::contains("help"))
@@ -101,6 +190,7 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("Index:"))
             .and(predicate::str::contains("Interactive:"))
             .and(predicate::str::contains("Scripting:"))
+            .and(predicate::str::contains("Setup:"))
             .and(predicate::str::contains("vulcan help <command>"))
             .and(predicate::str::contains(
                 "Machine-readable schema: vulcan describe",
@@ -218,6 +308,7 @@ fn commands_with_new_after_help_include_examples() {
         (&["changes", "--help"], "vulcan changes"),
         (&["periodic", "--help"], "vulcan periodic weekly"),
         (&["automation", "--help"], "vulcan automation list"),
+        (&["plugin", "--help"], "vulcan plugin enable lint"),
         (&["trust", "--help"], "vulcan trust add"),
         (&["refactor", "--help"], "vulcan refactor rename-heading"),
     ];
@@ -229,6 +320,173 @@ fn commands_with_new_after_help_include_examples() {
             .success()
             .stdout(predicate::str::contains(*expected));
     }
+}
+
+#[test]
+fn help_topic_js_plugins_describes_hook_api() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "js.plugins"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("on_note_write(event, ctx)")
+                .and(predicate::str::contains("on_pre_commit"))
+                .and(predicate::str::contains("vulcan plugin run <name>"))
+                .and(predicate::str::contains("trusted vault")),
+        );
+}
+
+#[test]
+fn plugin_list_and_enable_disable_round_trip() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_plugin_file(
+        &vault_root,
+        "lint",
+        "function main() { return { ok: true }; }\n",
+    );
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "plugin",
+            "list",
+        ])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list_assert);
+    let plugins = list_json["plugins"]
+        .as_array()
+        .expect("plugins should be an array");
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0]["name"], "lint");
+    assert_eq!(plugins[0]["registered"], false);
+    assert_eq!(plugins[0]["enabled"], false);
+    assert_eq!(plugins[0]["exists"], true);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault_root_str, "plugin", "enable", "lint"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Enabled plugin lint"));
+
+    let config_text = fs::read_to_string(vault_root.join(".vulcan/config.toml"))
+        .expect("config should be written");
+    assert!(config_text.contains("[plugins.lint]"));
+    assert!(config_text.contains("enabled = true"));
+
+    let disable_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "plugin",
+            "disable",
+            "lint",
+        ])
+        .assert()
+        .success();
+    let disable_json = parse_stdout_json(&disable_assert);
+    assert_eq!(disable_json["name"], "lint");
+    assert_eq!(disable_json["enabled"], false);
+    assert_eq!(disable_json["updated"], true);
+}
+
+#[test]
+fn trusted_plugin_run_and_note_write_hook_work() {
+    let fixture = build_plugin_test_fixture();
+
+    cargo_vulcan_with_xdg_config(&fixture.config_home_str)
+        .args(["--vault", &fixture.vault_root_str, "plugin", "run", "lint"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("trusted vault"));
+
+    cargo_vulcan_with_xdg_config(&fixture.config_home_str)
+        .args(["--vault", &fixture.vault_root_str, "trust", "add"])
+        .assert()
+        .success();
+
+    cargo_vulcan_with_xdg_config(&fixture.config_home_str)
+        .args([
+            "--vault",
+            &fixture.vault_root_str,
+            "index",
+            "scan",
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    let run_assert = cargo_vulcan_with_xdg_config(&fixture.config_home_str)
+        .args([
+            "--vault",
+            &fixture.vault_root_str,
+            "--output",
+            "json",
+            "plugin",
+            "run",
+            "lint",
+        ])
+        .assert()
+        .success();
+    let run_json = parse_stdout_json(&run_assert);
+    assert_eq!(run_json["value"]["kind"], "manual");
+    assert_eq!(run_json["value"]["plugin"], "lint");
+
+    cargo_vulcan_with_xdg_config(&fixture.config_home_str)
+        .args([
+            "--vault",
+            &fixture.vault_root_str,
+            "note",
+            "set",
+            "Projects/Alpha.md",
+            "--file",
+            fixture
+                .blocked_file
+                .to_str()
+                .expect("blocked file path should be valid utf-8"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("plugin blocked write"));
+    assert_eq!(
+        fs::read_to_string(fixture.vault_root.join("Projects/Alpha.md")).expect("note should read"),
+        "hello\n"
+    );
+
+    cargo_vulcan_with_xdg_config(&fixture.config_home_str)
+        .args([
+            "--vault",
+            &fixture.vault_root_str,
+            "note",
+            "set",
+            "Projects/Alpha.md",
+            "--file",
+            fixture
+                .allowed_file
+                .to_str()
+                .expect("allowed file path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(fixture.vault_root.join("Projects/Alpha.md")).expect("note should read"),
+        "approved change\n"
+    );
 }
 
 #[test]

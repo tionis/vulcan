@@ -154,6 +154,14 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # default_sandbox = "strict"  # strict | fs | net | none
 # scripts_folder = ".vulcan/scripts"
 
+# [plugins.lint]
+# enabled = true
+# path = ".vulcan/plugins/lint.js"  # optional; defaults to .vulcan/plugins/<name>.js
+# events = ["on_note_write", "on_pre_commit"]
+# sandbox = "strict"
+# permission_profile = "readonly"
+# description = "Validate note content before write/commit"
+
 # [permissions.profiles.agent]
 # read = "all"
 # write = { allow = ["folder:Projects/**", "folder:Journal/**"], deny = ["folder:Archive/**"] }
@@ -799,6 +807,67 @@ impl Default for JsRuntimeConfig {
             default_timeout_seconds: default_js_runtime_default_timeout_seconds(),
             default_sandbox: JsRuntimeSandbox::default(),
             scripts_folder: default_js_runtime_scripts_folder(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginEvent {
+    OnNoteWrite,
+    OnNoteCreate,
+    OnNoteDelete,
+    OnPreCommit,
+    OnPostCommit,
+    OnScanComplete,
+    OnRefactor,
+}
+
+impl PluginEvent {
+    #[must_use]
+    pub fn handler_name(self) -> &'static str {
+        match self {
+            Self::OnNoteWrite => "on_note_write",
+            Self::OnNoteCreate => "on_note_create",
+            Self::OnNoteDelete => "on_note_delete",
+            Self::OnPreCommit => "on_pre_commit",
+            Self::OnPostCommit => "on_post_commit",
+            Self::OnScanComplete => "on_scan_complete",
+            Self::OnRefactor => "on_refactor",
+        }
+    }
+
+    #[must_use]
+    pub fn is_blocking(self) -> bool {
+        matches!(self, Self::OnNoteWrite | Self::OnPreCommit)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginRegistration {
+    #[serde(default = "default_enabled_plugin_registration")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<PluginEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<JsRuntimeSandbox>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl Default for PluginRegistration {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled_plugin_registration(),
+            path: None,
+            events: Vec::new(),
+            sandbox: None,
+            permission_profile: None,
+            description: None,
         }
     }
 }
@@ -2104,6 +2173,8 @@ pub struct VaultConfig {
     pub web: WebConfig,
     pub periodic: PeriodicConfig,
     #[serde(default)]
+    pub plugins: BTreeMap<String, PluginRegistration>,
+    #[serde(default)]
     pub aliases: BTreeMap<String, String>,
 }
 
@@ -2130,6 +2201,7 @@ impl Default for VaultConfig {
             quickadd: QuickAddConfig::default(),
             web: WebConfig::default(),
             periodic: PeriodicConfig::default(),
+            plugins: BTreeMap::new(),
             aliases: builtin_command_aliases(),
         }
     }
@@ -2353,6 +2425,7 @@ struct PartialVulcanConfig {
     web: Option<PartialWebConfig>,
     periodic: Option<PartialPeriodicConfig>,
     permissions: Option<PartialPermissionsConfig>,
+    plugins: Option<BTreeMap<String, PartialPluginRegistration>>,
     aliases: Option<BTreeMap<String, String>>,
 }
 
@@ -2391,6 +2464,16 @@ struct PartialInboxConfig {
     format: Option<String>,
     timestamp: Option<bool>,
     heading: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialPluginRegistration {
+    enabled: Option<bool>,
+    path: Option<PathBuf>,
+    events: Option<Vec<PluginEvent>>,
+    sandbox: Option<JsRuntimeSandbox>,
+    permission_profile: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -3390,6 +3473,10 @@ fn default_js_runtime_default_timeout_seconds() -> usize {
 
 fn default_js_runtime_scripts_folder() -> PathBuf {
     PathBuf::from(".vulcan/scripts")
+}
+
+fn default_enabled_plugin_registration() -> bool {
+    true
 }
 
 fn bytes_to_megabytes_ceil(bytes: usize) -> usize {
@@ -7317,6 +7404,13 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
     }
 
+    if let Some(plugins) = overrides.plugins {
+        for (name, overrides) in plugins {
+            let plugin = config.plugins.entry(name).or_default();
+            apply_partial_plugin_registration(plugin, overrides);
+        }
+    }
+
     if let Some(aliases) = overrides.aliases {
         config.aliases.extend(aliases);
     }
@@ -7378,6 +7472,33 @@ fn apply_partial_permission_profile(
     }
     if let Some(stack_limit_kb) = overrides.stack_limit_kb {
         profile.stack_limit_kb = stack_limit_kb;
+    }
+}
+
+fn apply_partial_plugin_registration(
+    plugin: &mut PluginRegistration,
+    overrides: PartialPluginRegistration,
+) {
+    if let Some(enabled) = overrides.enabled {
+        plugin.enabled = enabled;
+    }
+    if let Some(path) = overrides.path {
+        plugin.path = normalize_filesystem_pathbuf(&path).or(Some(path));
+    }
+    if let Some(events) = overrides.events {
+        let mut normalized = events;
+        normalized.sort();
+        normalized.dedup();
+        plugin.events = normalized;
+    }
+    if let Some(sandbox) = overrides.sandbox {
+        plugin.sandbox = Some(sandbox);
+    }
+    if let Some(permission_profile) = overrides.permission_profile {
+        plugin.permission_profile = normalize_optional_text(Some(permission_profile));
+    }
+    if let Some(description) = overrides.description {
+        plugin.description = normalize_optional_text(Some(description));
     }
 }
 
@@ -8772,6 +8893,7 @@ intellisense_render = 2
             defaults.aliases.get("today"),
             Some(&"daily today".to_string())
         );
+        assert!(defaults.plugins.is_empty());
     }
 
     #[test]
@@ -8796,6 +8918,80 @@ intellisense_render = 2
             Some(&"query --where 'status = shipped'".to_string())
         );
         assert_eq!(loaded.config.aliases.get("q"), Some(&"query".to_string()));
+    }
+
+    #[test]
+    fn vulcan_config_loads_plugin_registrations() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"
+[plugins.lint]
+events = ["on_note_write", "on_pre_commit", "on_note_write"]
+sandbox = "strict"
+permission_profile = "readonly"
+description = "  Validate note writes  "
+"#,
+        )
+        .expect("config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+        let plugin = loaded
+            .config
+            .plugins
+            .get("lint")
+            .expect("plugin should be loaded");
+
+        assert!(plugin.enabled);
+        assert_eq!(
+            plugin.events,
+            vec![PluginEvent::OnNoteWrite, PluginEvent::OnPreCommit]
+        );
+        assert_eq!(plugin.sandbox, Some(JsRuntimeSandbox::Strict));
+        assert_eq!(plugin.permission_profile.as_deref(), Some("readonly"));
+        assert_eq!(plugin.description.as_deref(), Some("Validate note writes"));
+    }
+
+    #[test]
+    fn local_config_can_override_plugin_registration() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"
+[plugins.lint]
+enabled = true
+events = ["on_note_write"]
+"#,
+        )
+        .expect("shared config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.local.toml"),
+            r#"
+[plugins.lint]
+enabled = false
+events = ["on_scan_complete"]
+path = ".vulcan/plugins/custom-lint.js"
+"#,
+        )
+        .expect("local config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+        let plugin = loaded
+            .config
+            .plugins
+            .get("lint")
+            .expect("plugin should be loaded");
+
+        assert!(!plugin.enabled);
+        assert_eq!(plugin.events, vec![PluginEvent::OnScanComplete]);
+        assert_eq!(
+            plugin.path.as_ref(),
+            Some(&PathBuf::from(".vulcan/plugins/custom-lint.js"))
+        );
     }
 
     #[test]
