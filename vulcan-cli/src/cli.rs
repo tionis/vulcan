@@ -1472,6 +1472,15 @@ pub enum GraphExportFormat {
     Graphml,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum EpubTocStyle {
+    #[default]
+    #[value(name = "tree")]
+    Tree,
+    #[value(name = "flat")]
+    Flat,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum CacheCommand {
     #[command(about = "Inspect cache sizes and row counts")]
@@ -1710,6 +1719,13 @@ pub enum ExportCommand {
         title: Option<String>,
         #[arg(long, help = "Optional EPUB author/creator metadata")]
         author: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = EpubTocStyle::Tree,
+            help = "Table of contents style: tree preserves directory hierarchy, flat lists notes in query order"
+        )]
+        toc: EpubTocStyle,
         #[arg(
             long,
             help = "Append indexed backlinks after each exported note chapter"

@@ -18,15 +18,16 @@ mod trust;
 pub use cli::{
     AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, ColorMode, Command,
     ConfigCommand, ConfigImportArgs, ConfigImportCommand, ConfigImportSelection,
-    ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, ExportArgs,
-    ExportCommand, ExportFormat, ExportQueryArgs, GitCommand, GraphCommand, GraphExportFormat,
-    IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode,
-    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PropertySortArg,
-    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RepairCommand,
-    SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand,
-    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, EpubTocStyle,
+    ExportArgs, ExportCommand, ExportFormat, ExportQueryArgs, GitCommand, GraphCommand,
+    GraphExportFormat, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand,
+    NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
+    PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs,
+    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
+    SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand,
+    WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -14183,6 +14184,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     path,
                     title,
                     author,
+                    toc,
                     backlinks,
                 } => {
                     let report = execute_export_query(
@@ -14199,6 +14201,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         title.as_deref(),
                         author.as_deref(),
                         *backlinks,
+                        *toc,
                     )?;
                     match cli.output {
                         OutputFormat::Human | OutputFormat::Markdown => {
@@ -20219,11 +20222,41 @@ struct EpubHeading {
 
 #[derive(Debug, Clone)]
 struct EpubChapter {
+    document_path: String,
     title: String,
     nav_path: String,
     file_href: String,
     headings: Vec<EpubHeading>,
     content: String,
+}
+
+#[derive(Debug, Clone)]
+struct EpubTagPage {
+    title: String,
+    nav_path: String,
+    file_href: String,
+    content: String,
+}
+
+#[derive(Debug, Clone)]
+enum EpubNavNode {
+    Directory {
+        name: String,
+        children: Vec<EpubNavNode>,
+    },
+    Chapter {
+        chapter: EpubChapter,
+    },
+    TagSection {
+        title: String,
+        pages: Vec<EpubTagPage>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct EpubMarkdownReplacement {
+    range: std::ops::Range<usize>,
+    replacement: String,
 }
 
 fn resolve_export_query_ast(
@@ -20527,6 +20560,250 @@ fn build_epub_link_targets(notes: &[ExportedNoteDocument]) -> HashMap<String, St
     targets
 }
 
+fn build_epub_tag_targets(notes: &[ExportedNoteDocument]) -> HashMap<String, String> {
+    let tags = notes
+        .iter()
+        .flat_map(|note| note.note.tags.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut targets = HashMap::new();
+    let mut seen = HashMap::new();
+
+    for tag in tags {
+        let slug = slugify_epub_fragment(&tag);
+        let occurrence = seen.entry(slug.clone()).or_insert(0_usize);
+        *occurrence += 1;
+        let suffix = if *occurrence == 1 {
+            String::new()
+        } else {
+            format!("-{}", *occurrence)
+        };
+        targets.insert(tag, format!("tag-{slug}{suffix}.xhtml"));
+    }
+
+    targets
+}
+
+fn render_epub_tag_text(tag: &str) -> String {
+    if tag.starts_with('#') {
+        tag.to_string()
+    } else {
+        format!("#{tag}")
+    }
+}
+
+fn render_epub_tag_link_html(tag: &str, href: &str) -> String {
+    format!(
+        "<a class=\"tag-link\" href=\"{}\">{}</a>",
+        escape_xml_text(href),
+        escape_xml_text(&render_epub_tag_text(tag))
+    )
+}
+
+fn strip_epub_paragraph_wrapper(html: &str) -> String {
+    let trimmed = html.trim();
+    trimmed
+        .strip_prefix("<p>")
+        .and_then(|value| value.strip_suffix("</p>"))
+        .unwrap_or(trimmed)
+        .trim()
+        .to_string()
+}
+
+fn render_epub_inline_fragment_html(source: &str, targets: &HashMap<String, String>) -> String {
+    strip_epub_paragraph_wrapper(&render_epub_markdown_html(source, targets))
+}
+
+fn render_epub_message_html(title: &str, message: &str) -> String {
+    format!(
+        "<div class=\"render-message\"><strong>{}</strong> {}</div>",
+        escape_xml_text(title),
+        escape_xml_text(message)
+    )
+}
+
+fn render_epub_inline_field_html(
+    key: &str,
+    value_text: &str,
+    link_targets: &HashMap<String, String>,
+) -> String {
+    let value_html = render_epub_inline_fragment_html(value_text, link_targets);
+    format!(
+        "<span class=\"dataview-inline-field\"><span class=\"dataview-inline-field-key\">{}</span><span class=\"dataview-inline-field-separator\">:</span> <span class=\"dataview-inline-field-value\">{}</span></span>",
+        escape_xml_text(key),
+        value_html
+    )
+}
+
+fn apply_epub_markdown_replacements(
+    source: &str,
+    mut replacements: Vec<EpubMarkdownReplacement>,
+) -> String {
+    replacements.sort_by(|left, right| {
+        left.range
+            .start
+            .cmp(&right.range.start)
+            .then(right.range.end.cmp(&left.range.end))
+    });
+
+    let mut rendered = String::new();
+    let mut cursor = 0_usize;
+    for replacement in replacements {
+        if replacement.range.start < cursor
+            || replacement.range.end < replacement.range.start
+            || replacement.range.end > source.len()
+        {
+            continue;
+        }
+        rendered.push_str(&source[cursor..replacement.range.start]);
+        rendered.push_str(&replacement.replacement);
+        cursor = replacement.range.end;
+    }
+    rendered.push_str(&source[cursor..]);
+    rendered
+}
+
+fn render_epub_dataview_block_markdown(
+    paths: &VaultPaths,
+    note_path: &str,
+    language: &str,
+    source: &str,
+) -> String {
+    if language == "dataview" {
+        match evaluate_dql_with_filter(paths, source, Some(note_path), None) {
+            Ok(result) => render_dql_query_markdown(&result, false),
+            Err(error) => render_epub_message_html("Dataview error:", &error.to_string()),
+        }
+    } else if language == "dataviewjs" {
+        match run_dataview_query_js_command(paths, source, Some(note_path), None) {
+            Ok(result) => render_dataview_js_markdown(&result, false),
+            Err(error) => render_epub_message_html("DataviewJS error:", &error.to_string()),
+        }
+    } else {
+        render_epub_message_html(
+            "Dataview error:",
+            &format!("unsupported block language `{language}`"),
+        )
+    }
+}
+
+fn render_epub_base_embed_markdown(
+    paths: &VaultPaths,
+    base_path: &str,
+    view_name: Option<&str>,
+) -> String {
+    match evaluate_base_file(paths, base_path) {
+        Ok(mut report) => {
+            if let Some(view_name) = view_name.map(str::trim).filter(|value| !value.is_empty()) {
+                if let Some(view) = report
+                    .views
+                    .iter()
+                    .find(|view| view.name.as_deref() == Some(view_name))
+                    .cloned()
+                {
+                    report.views = vec![view];
+                } else {
+                    return render_epub_message_html(
+                        "Bases error:",
+                        &format!("view `{view_name}` was not found in {base_path}"),
+                    );
+                }
+            }
+
+            render_bases_markdown(
+                &report,
+                &ListOutputControls {
+                    fields: None,
+                    limit: None,
+                    offset: 0,
+                },
+            )
+        }
+        Err(error) => render_epub_message_html("Bases error:", &error.to_string()),
+    }
+}
+
+fn render_epub_note_markdown(
+    paths: &VaultPaths,
+    note: &ExportedNoteDocument,
+    body: &str,
+    config: &vulcan_core::config::VaultConfig,
+    note_index: &HashMap<String, NoteRecord>,
+    link_targets: &HashMap<String, String>,
+    tag_targets: &HashMap<String, String>,
+) -> String {
+    let parsed = parse_document(body, config);
+    let inline_results = evaluate_note_inline_expressions(&note.note, note_index);
+    let mut replacements = Vec::new();
+
+    for field in &parsed.inline_fields {
+        replacements.push(EpubMarkdownReplacement {
+            range: field.byte_range.clone(),
+            replacement: render_epub_inline_field_html(&field.key, &field.value_text, link_targets),
+        });
+    }
+
+    for (index, expression) in parsed.inline_expressions.iter().enumerate() {
+        let replacement = inline_results.get(index).map_or_else(
+            || expression.expression.clone(),
+            |result| {
+                result.error.as_ref().map_or_else(
+                    || render_dataview_inline_value(&result.value),
+                    |error| render_epub_message_html("Dataview inline error:", error),
+                )
+            },
+        );
+        replacements.push(EpubMarkdownReplacement {
+            range: expression.byte_range.clone(),
+            replacement,
+        });
+    }
+
+    for block in &parsed.dataview_blocks {
+        replacements.push(EpubMarkdownReplacement {
+            range: block.byte_range.clone(),
+            replacement: render_epub_dataview_block_markdown(
+                paths,
+                &note.note.document_path,
+                &block.language,
+                &block.text,
+            ),
+        });
+    }
+
+    for link in &parsed.links {
+        if link.link_kind != vulcan_core::LinkKind::Embed {
+            continue;
+        }
+        let Some(base_path) = link.target_path_candidate.as_deref().filter(|candidate| {
+            Path::new(candidate)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("base"))
+        }) else {
+            continue;
+        };
+        replacements.push(EpubMarkdownReplacement {
+            range: link.byte_offset..link.byte_offset + link.raw_text.len(),
+            replacement: render_epub_base_embed_markdown(
+                paths,
+                base_path,
+                link.target_heading.as_deref(),
+            ),
+        });
+    }
+
+    for tag in &parsed.tags {
+        let Some(file_href) = tag_targets.get(&tag.tag_text) else {
+            continue;
+        };
+        replacements.push(EpubMarkdownReplacement {
+            range: tag.byte_offset..tag.byte_offset + tag.tag_text.len() + 1,
+            replacement: render_epub_tag_link_html(&tag.tag_text, &format!("../tags/{file_href}")),
+        });
+    }
+
+    apply_epub_markdown_replacements(body, replacements)
+}
+
 fn is_external_epub_href(destination: &str) -> bool {
     destination.starts_with('#')
         || destination.starts_with("mailto:")
@@ -20729,10 +21006,37 @@ fn render_epub_backlinks(
     Some(rendered)
 }
 
+fn render_epub_chapter_tags_html(
+    tags: &[String],
+    tag_targets: &HashMap<String, String>,
+) -> Option<String> {
+    let unique = tags
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if unique.is_empty() {
+        return None;
+    }
+
+    let rendered_tags = unique
+        .into_iter()
+        .map(|tag| {
+            tag_targets.get(tag).map_or_else(
+                || escape_xml_text(&render_epub_tag_text(tag)),
+                |file_href| render_epub_tag_link_html(tag, &format!("../tags/{file_href}")),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!("<p class=\"note-tags\">Tags: {rendered_tags}</p>"))
+}
+
 fn render_epub_chapter_document(
     chapter_title: &str,
     note_path: Option<&str>,
-    tags: &[String],
+    tags_html: Option<&str>,
     html_body: &str,
     backlinks_html: Option<&str>,
     stylesheet_href: &str,
@@ -20765,13 +21069,8 @@ fn render_epub_chapter_document(
         )
         .expect("writing to string cannot fail");
     }
-    if !tags.is_empty() {
-        write!(
-            rendered,
-            "<p class=\"note-tags\">Tags: {}</p>",
-            escape_xml_text(&tags.join(", "))
-        )
-        .expect("writing to string cannot fail");
+    if let Some(tags_html) = tags_html {
+        rendered.push_str(tags_html);
     }
     rendered.push_str("</header>\n<section class=\"chapter-body\">");
     rendered.push_str(html_body);
@@ -20784,12 +21083,55 @@ fn render_epub_chapter_document(
     rendered
 }
 
+fn render_epub_tag_page_document(
+    tag: &str,
+    note_links: &[(String, String)],
+    stylesheet_href: &str,
+) -> String {
+    let title = format!("Tag {}", render_epub_tag_text(tag));
+    let mut rendered = String::from(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\">\n\
+         <head>\n\
+         <meta charset=\"utf-8\" />\n",
+    );
+    write!(
+        rendered,
+        "<title>{}</title>\n<link rel=\"stylesheet\" type=\"text/css\" href=\"{}\" />\n",
+        escape_xml_text(&title),
+        escape_xml_text(stylesheet_href)
+    )
+    .expect("writing to string cannot fail");
+    rendered.push_str("</head>\n<body>\n<article class=\"chapter tag-page\">\n");
+    writeln!(
+        rendered,
+        "<header class=\"chapter-header\"><h1 class=\"chapter-title\">{}</h1><p class=\"note-tags\">{} note(s)</p></header>",
+        escape_xml_text(&title),
+        note_links.len()
+    )
+    .expect("writing to string cannot fail");
+    rendered.push_str("<section class=\"chapter-body\"><ul class=\"tag-note-list\">");
+    for (note_title, href) in note_links {
+        write!(
+            rendered,
+            "<li><a href=\"{}\">{}</a></li>",
+            escape_xml_text(href),
+            escape_xml_text(note_title)
+        )
+        .expect("writing to string cannot fail");
+    }
+    rendered.push_str("</ul></section>\n</article>\n</body>\n</html>\n");
+    rendered
+}
+
 fn build_epub_chapters(
     paths: &VaultPaths,
     notes: &[ExportedNoteDocument],
     backlinks: bool,
+    tag_targets: &HashMap<String, String>,
 ) -> Result<Vec<EpubChapter>, CliError> {
     let config = load_vault_config(paths).config;
+    let note_index = load_note_index(paths).map_err(CliError::operation)?;
     let link_targets = build_epub_link_targets(notes);
 
     let mut chapters = notes
@@ -20798,7 +21140,16 @@ fn build_epub_chapters(
         .map(|(index, note)| {
             let (_, body) =
                 parse_frontmatter_document(&note.content, false).map_err(CliError::operation)?;
-            let headings = collect_epub_headings(&body, &config);
+            let rendered_markdown = render_epub_note_markdown(
+                paths,
+                note,
+                &body,
+                &config,
+                &note_index,
+                &link_targets,
+                tag_targets,
+            );
+            let headings = collect_epub_headings(&rendered_markdown, &config);
             let chapter_title = headings
                 .first()
                 .filter(|heading| heading.level == 1)
@@ -20807,14 +21158,16 @@ fn build_epub_chapters(
                     |heading| heading.text.clone(),
                 );
             let body_html = inject_epub_heading_ids(
-                &render_epub_markdown_html(&body, &link_targets),
+                &render_epub_markdown_html(&rendered_markdown, &link_targets),
                 &headings,
             );
             let backlinks_html = backlinks
                 .then(|| render_epub_backlinks(&note.note.inlinks, &link_targets))
                 .flatten();
+            let tags_html = render_epub_chapter_tags_html(&note.note.tags, tag_targets);
             let file_href = format!("chapter-{:03}.xhtml", index + 1);
             Ok(EpubChapter {
+                document_path: note.note.document_path.clone(),
                 title: chapter_title.clone(),
                 nav_path: format!("text/{file_href}"),
                 file_href,
@@ -20822,7 +21175,7 @@ fn build_epub_chapters(
                 content: render_epub_chapter_document(
                     &chapter_title,
                     Some(&note.note.document_path),
-                    &note.note.tags,
+                    tags_html.as_deref(),
                     &body_html,
                     backlinks_html.as_deref(),
                     "../styles.css",
@@ -20833,6 +21186,7 @@ fn build_epub_chapters(
 
     if chapters.is_empty() {
         chapters.push(EpubChapter {
+            document_path: String::new(),
             title: "No results".to_string(),
             nav_path: "text/chapter-001.xhtml".to_string(),
             file_href: "chapter-001.xhtml".to_string(),
@@ -20840,7 +21194,7 @@ fn build_epub_chapters(
             content: render_epub_chapter_document(
                 "No results",
                 None,
-                &[],
+                None,
                 "<p>No notes matched this export query.</p>",
                 None,
                 "../styles.css",
@@ -20878,7 +21232,273 @@ fn render_epub_nav_headings(chapter: &EpubChapter) -> String {
     rendered
 }
 
-fn render_epub_nav_document(book_title: &str, chapters: &[EpubChapter]) -> String {
+fn build_epub_tag_pages(
+    chapters: &[EpubChapter],
+    notes: &[ExportedNoteDocument],
+    tag_targets: &HashMap<String, String>,
+) -> Vec<EpubTagPage> {
+    let chapters_by_path = chapters
+        .iter()
+        .map(|chapter| (chapter.document_path.as_str(), chapter))
+        .collect::<HashMap<_, _>>();
+    let mut tags = tag_targets.iter().collect::<Vec<_>>();
+    tags.sort_by(|left, right| left.0.cmp(right.0));
+
+    tags.into_iter()
+        .filter_map(|(tag, file_href)| {
+            let note_links = notes
+                .iter()
+                .filter(|note| note.note.tags.iter().any(|candidate| candidate == tag))
+                .filter_map(|note| {
+                    chapters_by_path
+                        .get(note.note.document_path.as_str())
+                        .map(|chapter| (chapter.title.clone(), format!("../{}", chapter.nav_path)))
+                })
+                .collect::<Vec<_>>();
+            if note_links.is_empty() {
+                return None;
+            }
+
+            Some(EpubTagPage {
+                title: format!("Tag {}", render_epub_tag_text(tag)),
+                nav_path: format!("tags/{file_href}"),
+                file_href: file_href.clone(),
+                content: render_epub_tag_page_document(tag, &note_links, "../styles.css"),
+            })
+        })
+        .collect()
+}
+
+fn common_epub_directory_prefix_len(chapters: &[EpubChapter]) -> usize {
+    let directories = chapters
+        .iter()
+        .filter(|chapter| !chapter.document_path.is_empty())
+        .map(|chapter| {
+            let mut segments = chapter.document_path.split('/').collect::<Vec<_>>();
+            let _ = segments.pop();
+            segments
+        })
+        .collect::<Vec<_>>();
+    let Some(first) = directories.first() else {
+        return 0;
+    };
+
+    let mut prefix_len = first.len();
+    for directory in directories.iter().skip(1) {
+        prefix_len = prefix_len.min(directory.len());
+        for index in 0..prefix_len {
+            if first[index] != directory[index] {
+                prefix_len = index;
+                break;
+            }
+        }
+    }
+    prefix_len
+}
+
+fn insert_epub_nav_chapter(
+    nodes: &mut Vec<EpubNavNode>,
+    directories: &[&str],
+    chapter: EpubChapter,
+) {
+    let Some((name, remaining)) = directories.split_first() else {
+        nodes.push(EpubNavNode::Chapter { chapter });
+        return;
+    };
+
+    if let Some(EpubNavNode::Directory { children, .. }) = nodes.iter_mut().find(|node| {
+        matches!(
+            node,
+            EpubNavNode::Directory {
+                name: existing,
+                children: _,
+            } if existing == name
+        )
+    }) {
+        insert_epub_nav_chapter(children, remaining, chapter);
+    } else {
+        let mut children = Vec::new();
+        insert_epub_nav_chapter(&mut children, remaining, chapter);
+        nodes.push(EpubNavNode::Directory {
+            name: (*name).to_string(),
+            children,
+        });
+    }
+}
+
+fn build_epub_nav_nodes(
+    chapters: &[EpubChapter],
+    tag_pages: &[EpubTagPage],
+    toc_style: EpubTocStyle,
+) -> Vec<EpubNavNode> {
+    let mut nodes = Vec::new();
+
+    if toc_style == EpubTocStyle::Flat {
+        nodes.extend(
+            chapters
+                .iter()
+                .cloned()
+                .map(|chapter| EpubNavNode::Chapter { chapter }),
+        );
+    } else {
+        let prefix_len = common_epub_directory_prefix_len(chapters);
+        for chapter in chapters {
+            if chapter.document_path.is_empty() {
+                nodes.push(EpubNavNode::Chapter {
+                    chapter: chapter.clone(),
+                });
+                continue;
+            }
+            let mut segments = chapter.document_path.split('/').collect::<Vec<_>>();
+            let _ = segments.pop();
+            let trimmed = if prefix_len >= segments.len() {
+                &[][..]
+            } else {
+                &segments[prefix_len..]
+            };
+            insert_epub_nav_chapter(&mut nodes, trimmed, chapter.clone());
+        }
+    }
+
+    if !tag_pages.is_empty() {
+        nodes.push(EpubNavNode::TagSection {
+            title: "Tags".to_string(),
+            pages: tag_pages.to_vec(),
+        });
+    }
+
+    nodes
+}
+
+fn render_epub_nav_nodes(nodes: &[EpubNavNode]) -> String {
+    let mut rendered = String::from("<ol>");
+    for node in nodes {
+        match node {
+            EpubNavNode::Directory { name, children } => {
+                write!(
+                    rendered,
+                    "<li class=\"toc-directory\"><span class=\"toc-directory-label\">{}</span>{}</li>",
+                    escape_xml_text(name),
+                    render_epub_nav_nodes(children)
+                )
+                .expect("writing to string cannot fail");
+            }
+            EpubNavNode::Chapter { chapter } => {
+                write!(
+                    rendered,
+                    "<li><a href=\"{}\">{}</a>{}</li>",
+                    escape_xml_text(&chapter.nav_path),
+                    escape_xml_text(&chapter.title),
+                    render_epub_nav_headings(chapter)
+                )
+                .expect("writing to string cannot fail");
+            }
+            EpubNavNode::TagSection { title, pages } => {
+                write!(
+                    rendered,
+                    "<li class=\"toc-directory toc-tag-section\"><span class=\"toc-directory-label\">{}</span><ol>",
+                    escape_xml_text(title)
+                )
+                .expect("writing to string cannot fail");
+                for page in pages {
+                    write!(
+                        rendered,
+                        "<li><a href=\"{}\">{}</a></li>",
+                        escape_xml_text(&page.nav_path),
+                        escape_xml_text(&page.title)
+                    )
+                    .expect("writing to string cannot fail");
+                }
+                rendered.push_str("</ol></li>");
+            }
+        }
+    }
+    rendered.push_str("</ol>");
+    rendered
+}
+
+fn epub_nav_node_primary_path(node: &EpubNavNode) -> Option<&str> {
+    match node {
+        EpubNavNode::Directory { children, .. } => {
+            children.first().and_then(epub_nav_node_primary_path)
+        }
+        EpubNavNode::Chapter { chapter } => Some(chapter.nav_path.as_str()),
+        EpubNavNode::TagSection { pages, .. } => pages.first().map(|page| page.nav_path.as_str()),
+    }
+}
+
+fn render_epub_ncx_nodes(nodes: &[EpubNavNode], play_order: &mut usize) -> String {
+    let mut rendered = String::new();
+    for node in nodes {
+        match node {
+            EpubNavNode::Directory { name, children } => {
+                let current = *play_order;
+                *play_order += 1;
+                let nested = render_epub_ncx_nodes(children, play_order);
+                let src = children
+                    .first()
+                    .and_then(epub_nav_node_primary_path)
+                    .unwrap_or("text/chapter-001.xhtml");
+                writeln!(
+                    rendered,
+                    "<navPoint id=\"nav-{}\" playOrder=\"{}\"><navLabel><text>{}</text></navLabel><content src=\"{}\" />{}</navPoint>",
+                    current,
+                    current,
+                    escape_xml_text(name),
+                    escape_xml_text(src),
+                    nested
+                )
+                .expect("writing to string cannot fail");
+            }
+            EpubNavNode::Chapter { chapter } => {
+                let current = *play_order;
+                *play_order += 1;
+                writeln!(
+                    rendered,
+                    "<navPoint id=\"nav-{}\" playOrder=\"{}\"><navLabel><text>{}</text></navLabel><content src=\"{}\" /></navPoint>",
+                    current,
+                    current,
+                    escape_xml_text(&chapter.title),
+                    escape_xml_text(&chapter.nav_path)
+                )
+                .expect("writing to string cannot fail");
+            }
+            EpubNavNode::TagSection { title, pages } => {
+                let current = *play_order;
+                *play_order += 1;
+                let src = pages
+                    .first()
+                    .map_or("text/chapter-001.xhtml", |page| page.nav_path.as_str());
+                write!(
+                    rendered,
+                    "<navPoint id=\"nav-{}\" playOrder=\"{}\"><navLabel><text>{}</text></navLabel><content src=\"{}\" />",
+                    current,
+                    current,
+                    escape_xml_text(title),
+                    escape_xml_text(src)
+                )
+                .expect("writing to string cannot fail");
+                for page in pages {
+                    let page_order = *play_order;
+                    *play_order += 1;
+                    writeln!(
+                        rendered,
+                        "<navPoint id=\"nav-{}\" playOrder=\"{}\"><navLabel><text>{}</text></navLabel><content src=\"{}\" /></navPoint>",
+                        page_order,
+                        page_order,
+                        escape_xml_text(&page.title),
+                        escape_xml_text(&page.nav_path)
+                    )
+                    .expect("writing to string cannot fail");
+                }
+                rendered.push_str("</navPoint>\n");
+            }
+        }
+    }
+    rendered
+}
+
+fn render_epub_nav_document(book_title: &str, nodes: &[EpubNavNode]) -> String {
     let mut rendered = String::from(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
          <html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"en\">\n\
@@ -20891,24 +21511,13 @@ fn render_epub_nav_document(book_title: &str, chapters: &[EpubChapter]) -> Strin
         escape_xml_text(book_title)
     )
     .expect("writing to string cannot fail");
-    rendered
-        .push_str("</head>\n<body>\n<nav epub:type=\"toc\" id=\"toc\">\n<h1>Contents</h1>\n<ol>");
-    for chapter in chapters {
-        write!(
-            rendered,
-            "<li><a href=\"{}\">{}</a>",
-            escape_xml_text(&chapter.nav_path),
-            escape_xml_text(&chapter.title)
-        )
-        .expect("writing to string cannot fail");
-        rendered.push_str(&render_epub_nav_headings(chapter));
-        rendered.push_str("</li>");
-    }
-    rendered.push_str("</ol>\n</nav>\n</body>\n</html>\n");
+    rendered.push_str("</head>\n<body>\n<nav epub:type=\"toc\" id=\"toc\">\n<h1>Contents</h1>\n");
+    rendered.push_str(&render_epub_nav_nodes(nodes));
+    rendered.push_str("\n</nav>\n</body>\n</html>\n");
     rendered
 }
 
-fn render_epub_ncx(book_title: &str, chapters: &[EpubChapter], identifier: &str) -> String {
+fn render_epub_ncx(book_title: &str, nodes: &[EpubNavNode], identifier: &str) -> String {
     let mut rendered = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\">\n",
@@ -20925,17 +21534,8 @@ fn render_epub_ncx(book_title: &str, chapters: &[EpubChapter], identifier: &str)
         escape_xml_text(book_title)
     )
     .expect("writing to string cannot fail");
-    for (index, chapter) in chapters.iter().enumerate() {
-        writeln!(
-            rendered,
-            "<navPoint id=\"nav-{}\" playOrder=\"{}\"><navLabel><text>{}</text></navLabel><content src=\"{}\" /></navPoint>",
-            index + 1,
-            index + 1,
-            escape_xml_text(&chapter.title),
-            escape_xml_text(&chapter.nav_path)
-        )
-        .expect("writing to string cannot fail");
-    }
+    let mut play_order = 1_usize;
+    rendered.push_str(&render_epub_ncx_nodes(nodes, &mut play_order));
     rendered.push_str("</navMap>\n</ncx>\n");
     rendered
 }
@@ -20944,6 +21544,7 @@ fn render_epub_package(
     book_title: &str,
     author: Option<&str>,
     chapters: &[EpubChapter],
+    tag_pages: &[EpubTagPage],
     identifier: &str,
 ) -> String {
     let modified = current_utc_timestamp_string();
@@ -20984,9 +21585,22 @@ fn render_epub_package(
         )
         .expect("writing to string cannot fail");
     }
+    for (index, page) in tag_pages.iter().enumerate() {
+        writeln!(
+            rendered,
+            "<item id=\"tag-{}\" href=\"{}\" media-type=\"application/xhtml+xml\" />",
+            index + 1,
+            escape_xml_text(&page.nav_path)
+        )
+        .expect("writing to string cannot fail");
+    }
     rendered.push_str("</manifest>\n<spine toc=\"ncx\">\n");
     for index in 0..chapters.len() {
         writeln!(rendered, "<itemref idref=\"chapter-{}\" />", index + 1)
+            .expect("writing to string cannot fail");
+    }
+    for index in 0..tag_pages.len() {
+        writeln!(rendered, "<itemref idref=\"tag-{}\" />", index + 1)
             .expect("writing to string cannot fail");
     }
     rendered.push_str("</spine>\n</package>\n");
@@ -20998,6 +21612,13 @@ fn epub_stylesheet() -> &'static str {
      .chapter-header { border-bottom: 1px solid #d0d0d0; margin-bottom: 1.5rem; padding-bottom: 0.75rem; }\n\
      .chapter-title { margin-bottom: 0.25rem; }\n\
      .note-path, .note-tags { color: #555; font-size: 0.95em; margin: 0.15rem 0; }\n\
+     .tag-link { text-decoration: none; }\n\
+     .toc-directory-label { font-weight: 600; }\n\
+     .toc-directory > ol, .toc-headings { margin-top: 0.35rem; }\n\
+     .dataview-inline-field { background: #f4f4f4; border-radius: 0.3rem; padding: 0.05rem 0.35rem; }\n\
+     .dataview-inline-field-key { font-weight: 600; }\n\
+     .render-message { border-left: 0.2rem solid #888; color: #444; margin: 0.75rem 0; padding: 0.35rem 0.75rem; }\n\
+     .tag-note-list { padding-left: 1.25rem; }\n\
      .backlinks { border-top: 1px solid #d0d0d0; margin-top: 2rem; padding-top: 1rem; }\n\
      code, pre { font-family: monospace; }\n"
 }
@@ -21009,9 +21630,13 @@ fn write_epub_export(
     title: Option<&str>,
     author: Option<&str>,
     backlinks: bool,
+    toc_style: EpubTocStyle,
 ) -> Result<EpubExportSummary, CliError> {
     prepare_export_output_path(output_path)?;
-    let chapters = build_epub_chapters(paths, notes, backlinks)?;
+    let tag_targets = build_epub_tag_targets(notes);
+    let chapters = build_epub_chapters(paths, notes, backlinks, &tag_targets)?;
+    let tag_pages = build_epub_tag_pages(&chapters, notes, &tag_targets);
+    let nav_nodes = build_epub_nav_nodes(&chapters, &tag_pages, toc_style);
     let book_title = title
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -21049,21 +21674,23 @@ fn write_epub_export(
         .start_file("OEBPS/content.opf", deflated)
         .map_err(CliError::operation)?;
     writer
-        .write_all(render_epub_package(&book_title, author, &chapters, &identifier).as_bytes())
+        .write_all(
+            render_epub_package(&book_title, author, &chapters, &tag_pages, &identifier).as_bytes(),
+        )
         .map_err(CliError::operation)?;
 
     writer
         .start_file("OEBPS/nav.xhtml", deflated)
         .map_err(CliError::operation)?;
     writer
-        .write_all(render_epub_nav_document(&book_title, &chapters).as_bytes())
+        .write_all(render_epub_nav_document(&book_title, &nav_nodes).as_bytes())
         .map_err(CliError::operation)?;
 
     writer
         .start_file("OEBPS/toc.ncx", deflated)
         .map_err(CliError::operation)?;
     writer
-        .write_all(render_epub_ncx(&book_title, &chapters, &identifier).as_bytes())
+        .write_all(render_epub_ncx(&book_title, &nav_nodes, &identifier).as_bytes())
         .map_err(CliError::operation)?;
 
     writer
@@ -21079,6 +21706,15 @@ fn write_epub_export(
             .map_err(CliError::operation)?;
         writer
             .write_all(chapter.content.as_bytes())
+            .map_err(CliError::operation)?;
+    }
+
+    for page in &tag_pages {
+        writer
+            .start_file(format!("OEBPS/tags/{}", page.file_href), deflated)
+            .map_err(CliError::operation)?;
+        writer
+            .write_all(page.content.as_bytes())
             .map_err(CliError::operation)?;
     }
 
@@ -27526,6 +28162,101 @@ mod tests {
     }
 
     #[test]
+    fn epub_tag_targets_are_slugged_and_unique() {
+        let notes = vec![
+            ExportedNoteDocument {
+                note: NoteRecord {
+                    document_id: "1".to_string(),
+                    document_path: "Home.md".to_string(),
+                    file_name: "Home".to_string(),
+                    file_ext: "md".to_string(),
+                    file_mtime: 0,
+                    file_ctime: 0,
+                    file_size: 0,
+                    properties: Value::Object(Map::new()),
+                    tags: vec!["project".to_string(), "Project".to_string()],
+                    links: Vec::new(),
+                    starred: false,
+                    inlinks: Vec::new(),
+                    aliases: Vec::new(),
+                    frontmatter: Value::Null,
+                    periodic_type: None,
+                    periodic_date: None,
+                    list_items: Vec::new(),
+                    tasks: Vec::new(),
+                    raw_inline_expressions: Vec::new(),
+                    inline_expressions: Vec::new(),
+                },
+                content: String::new(),
+            },
+            ExportedNoteDocument {
+                note: NoteRecord {
+                    document_id: "2".to_string(),
+                    document_path: "Nested/Deep.md".to_string(),
+                    file_name: "Deep".to_string(),
+                    file_ext: "md".to_string(),
+                    file_mtime: 0,
+                    file_ctime: 0,
+                    file_size: 0,
+                    properties: Value::Object(Map::new()),
+                    tags: vec!["project/alpha".to_string()],
+                    links: Vec::new(),
+                    starred: false,
+                    inlinks: Vec::new(),
+                    aliases: Vec::new(),
+                    frontmatter: Value::Null,
+                    periodic_type: None,
+                    periodic_date: None,
+                    list_items: Vec::new(),
+                    tasks: Vec::new(),
+                    raw_inline_expressions: Vec::new(),
+                    inline_expressions: Vec::new(),
+                },
+                content: String::new(),
+            },
+        ];
+
+        let targets = build_epub_tag_targets(&notes);
+
+        assert_ne!(targets["project"], targets["Project"]);
+        assert!(targets["project"].starts_with("tag-project"));
+        assert!(targets["Project"].starts_with("tag-project"));
+        assert_eq!(targets["project/alpha"], "tag-project-alpha.xhtml");
+    }
+
+    #[test]
+    fn epub_tree_nav_trims_common_prefix_and_keeps_nested_directories() {
+        let chapters = vec![
+            EpubChapter {
+                document_path: "Guides/Intro.md".to_string(),
+                title: "Intro".to_string(),
+                nav_path: "text/chapter-001.xhtml".to_string(),
+                file_href: "chapter-001.xhtml".to_string(),
+                headings: Vec::new(),
+                content: String::new(),
+            },
+            EpubChapter {
+                document_path: "Guides/Nested/Deep.md".to_string(),
+                title: "Deep".to_string(),
+                nav_path: "text/chapter-002.xhtml".to_string(),
+                file_href: "chapter-002.xhtml".to_string(),
+                headings: Vec::new(),
+                content: String::new(),
+            },
+        ];
+
+        let nav = render_epub_nav_document(
+            "Guide Export",
+            &build_epub_nav_nodes(&chapters, &[], EpubTocStyle::Tree),
+        );
+
+        assert!(!nav.contains("toc-directory-label\">Guides<"));
+        assert!(nav.contains("toc-directory-label\">Nested<"));
+        assert!(nav.contains("href=\"text/chapter-001.xhtml\">Intro</a>"));
+        assert!(nav.contains("href=\"text/chapter-002.xhtml\">Deep</a>"));
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn parses_links_and_backlinks_commands() {
         let rebuild =
@@ -27848,6 +28579,7 @@ mod tests {
                     path: PathBuf::from("exports/book.epub"),
                     title: Some("Team Notes".to_string()),
                     author: Some("Vulcan".to_string()),
+                    toc: EpubTocStyle::Tree,
                     backlinks: true,
                 },
             }

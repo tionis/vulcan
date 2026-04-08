@@ -800,6 +800,7 @@ vulcan saved create notes due-soon --where 'due <= 2026-04-01' --sort due
 vulcan saved run release-dashboard --output json
 vulcan automation list
 vulcan export epub 'from notes where file.path matches "^(People|Projects)/"' -o exports/team.epub --title "Team Notes" --backlinks
+vulcan export epub 'from notes where file.path starts_with "Projects/"' -o exports/projects.epub --toc flat
 vulcan automation run release-dashboard due-soon --scan --doctor
 vulcan automation run --all --verify-cache --fail-on-issues
 ```
@@ -808,6 +809,7 @@ Automation notes:
 
 - `automation run --doctor-fix` applies deterministic doctor fixes before reporting status.
 - `automation run --fail-on-issues` returns exit code `2` when checks complete but issues remain.
+- `export epub` preserves the selected note tree in the table of contents by default and can be flattened with `--toc flat`.
 - `saved create search` uses the same syntax as `search`.
 - `saved create notes` uses the same `--where` and `--sort` shortcut shape as `query`.
 - Hidden compatibility aliases such as `batch` and the legacy `saved search|notes|bases` forms still work, but the preferred public forms are `automation ...` and `saved create ...`.

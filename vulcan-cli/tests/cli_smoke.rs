@@ -10096,6 +10096,163 @@ fn export_epub_writes_book_archive_with_nav_and_backlinks() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn export_epub_renders_dynamic_content_tag_indexes_and_tree_nav() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("bases", &vault_root);
+    fs::create_dir_all(vault_root.join("Guides/Nested")).expect("guides dir should exist");
+    fs::create_dir_all(vault_root.join("People")).expect("people dir should exist");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+
+    fs::write(
+        vault_root.join("Guides/Intro.md"),
+        concat!(
+            "---\n",
+            "status: draft\n",
+            "tags:\n",
+            "  - guide\n",
+            "  - project\n",
+            "---\n",
+            "# Intro\n\n",
+            "owner:: [[People/Bob]]\n\n",
+            "`= this.status`\n\n",
+            "See #guide and #project.\n\n",
+            "```dataview\n",
+            "TABLE status, reviewed\n",
+            "FROM \"Projects\"\n",
+            "SORT file.name ASC\n",
+            "```\n\n",
+            "```dataviewjs\n",
+            "dv.table([\"Person\"], [[dv.page(\"People/Bob\").file.name]])\n",
+            "```\n\n",
+            "![[release.base#Release Table]]\n",
+        ),
+    )
+    .expect("Intro.md should be written");
+    fs::write(
+        vault_root.join("Guides/Nested/Deep.md"),
+        concat!(
+            "---\n",
+            "tags:\n",
+            "  - guide/deep\n",
+            "---\n",
+            "# Deep\n\n",
+            "Nested guide links [[Guides/Intro]].\n",
+        ),
+    )
+    .expect("Deep.md should be written");
+    fs::write(
+        vault_root.join("People/Bob.md"),
+        concat!(
+            "---\n",
+            "tags:\n",
+            "  - people/team\n",
+            "---\n",
+            "# Bob\n\n",
+            "Bob is here.\n",
+        ),
+    )
+    .expect("Bob.md should be written");
+    fs::write(
+        vault_root.join("Projects/Alpha.md"),
+        concat!(
+            "---\n",
+            "status: active\n",
+            "reviewed: true\n",
+            "---\n",
+            "# Alpha\n",
+        ),
+    )
+    .expect("Alpha.md should be written");
+    fs::write(
+        vault_root.join("Projects/Beta.md"),
+        concat!(
+            "---\n",
+            "status: backlog\n",
+            "reviewed: true\n",
+            "---\n",
+            "# Beta\n",
+        ),
+    )
+    .expect("Beta.md should be written");
+
+    run_scan(&vault_root);
+
+    let export_path = temp_dir.path().join("guides.epub");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "epub",
+            r#"from notes where file.path starts_with "Guides/""#,
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+            "--title",
+            "Guides",
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("epub export should exist");
+    let mut archive = ZipArchive::new(file).expect("epub export should open");
+
+    let mut nav = String::new();
+    archive
+        .by_name("OEBPS/nav.xhtml")
+        .expect("nav should exist")
+        .read_to_string(&mut nav)
+        .expect("nav should be readable");
+    assert!(!nav.contains("toc-directory-label\">Guides<"));
+    assert!(nav.contains("toc-directory-label\">Nested<"));
+    assert!(nav.contains("toc-directory-label\">Tags<"));
+    assert!(nav.contains("tags/tag-guide.xhtml"));
+
+    let mut intro_chapter = String::new();
+    archive
+        .by_name("OEBPS/text/chapter-001.xhtml")
+        .expect("intro chapter should exist")
+        .read_to_string(&mut intro_chapter)
+        .expect("intro chapter should be readable");
+    assert!(intro_chapter.contains("dataview-inline-field"));
+    assert!(intro_chapter.contains(">owner<"));
+    assert!(intro_chapter.contains("People/Bob</a>"));
+    assert!(!intro_chapter.contains("owner:: [[People/Bob]]"));
+    assert!(!intro_chapter.contains("`= this.status`"));
+    assert!(intro_chapter.contains(">draft<"));
+    assert!(intro_chapter.contains("<table>"));
+    assert!(intro_chapter.contains(">active<"));
+    assert!(intro_chapter.contains(">backlog<"));
+    assert!(intro_chapter.contains(">Person<"));
+    assert!(intro_chapter.contains("Columns: Name, Due, note_name"));
+    assert!(intro_chapter.contains("href=\"../tags/tag-guide.xhtml\""));
+    assert!(intro_chapter.contains("href=\"../tags/tag-project.xhtml\""));
+
+    let mut deep_chapter = String::new();
+    archive
+        .by_name("OEBPS/text/chapter-002.xhtml")
+        .expect("deep chapter should exist")
+        .read_to_string(&mut deep_chapter)
+        .expect("deep chapter should be readable");
+    assert!(deep_chapter.contains("Guides/Nested/Deep.md"));
+
+    let mut guide_tag = String::new();
+    archive
+        .by_name("OEBPS/tags/tag-guide.xhtml")
+        .expect("guide tag page should exist")
+        .read_to_string(&mut guide_tag)
+        .expect("guide tag page should be readable");
+    assert!(guide_tag.contains("Tag #guide"));
+    assert!(guide_tag.contains(">Intro</a>"));
+}
+
+#[test]
 fn export_sqlite_writes_notes_links_tags_and_tasks_tables() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
