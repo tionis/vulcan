@@ -846,8 +846,7 @@ Examples:
 
 const EXPORT_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
-  profiles      List configured export profiles
-  profile       Run a named export profile from config
+  profile       Run or manage named export profiles
   markdown      Export matched notes as one combined Markdown document
   json          Export matched notes with metadata and raw content as JSON
   csv           Export note query results as CSV
@@ -859,7 +858,8 @@ Subcommands:
 
 Notes:
   Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.
-  `export profile <name>` resolves relative profile paths from the vault root.
+  `export profile run <name>` resolves relative profile paths from the vault root.
+  `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.
   `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
   `epub --backlinks` appends indexed inlinks after each exported note chapter.
@@ -868,8 +868,11 @@ Notes:
   Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.
 
 Examples:
-  vulcan export profiles
-  vulcan export profile team-book
+  vulcan export profile list
+  vulcan export profile run team-book
+  vulcan export profile show team-book
+  vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'
+  vulcan export profile delete team-book --dry-run
   vulcan export markdown 'from notes where file.path matches \"^Projects/\"'
   vulcan export json 'from notes where status = done' --pretty -o exports/done.json
   vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv
@@ -1487,6 +1490,98 @@ pub enum EpubTocStyle {
     Flat,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ExportProfileFormatArg {
+    #[value(name = "markdown")]
+    Markdown,
+    #[value(name = "json")]
+    Json,
+    #[value(name = "csv")]
+    Csv,
+    #[value(name = "graph")]
+    Graph,
+    #[value(name = "epub")]
+    Epub,
+    #[value(name = "zip")]
+    Zip,
+    #[value(name = "sqlite")]
+    Sqlite,
+    #[value(name = "search-index")]
+    SearchIndex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ExportProfileCommand {
+    #[command(about = "List configured export profiles")]
+    List,
+    #[command(about = "Run a named export profile from config")]
+    Run {
+        #[arg(help = "Export profile name from [export.profiles.<name>]")]
+        name: String,
+    },
+    #[command(about = "Show the effective config for one export profile")]
+    Show {
+        #[arg(help = "Export profile name from [export.profiles.<name>]")]
+        name: String,
+    },
+    #[command(about = "Create or replace an export profile in .vulcan/config.toml")]
+    Create {
+        #[arg(help = "Export profile name")]
+        name: String,
+        #[arg(long, value_enum, help = "Export format to run for this profile")]
+        format: ExportProfileFormatArg,
+        #[arg(
+            help = "Native note query DSL string; omit with --query-json",
+            conflicts_with = "query_json"
+        )]
+        query: Option<String>,
+        #[arg(
+            long = "query-json",
+            help = "JSON note query payload; mutually exclusive with the positional query",
+            conflicts_with = "query"
+        )]
+        query_json: Option<String>,
+        #[arg(
+            short = 'o',
+            long = "path",
+            help = "Destination file path stored in the profile"
+        )]
+        path: PathBuf,
+        #[arg(long, help = "Optional heading or book title stored in the profile")]
+        title: Option<String>,
+        #[arg(
+            long,
+            help = "Optional EPUB author/creator metadata stored in the profile"
+        )]
+        author: Option<String>,
+        #[arg(long, value_enum, help = "EPUB table of contents style")]
+        toc: Option<EpubTocStyle>,
+        #[arg(long, help = "Enable EPUB backlinks in the stored profile")]
+        backlinks: bool,
+        #[arg(long, help = "Include EPUB frontmatter panels in the stored profile")]
+        frontmatter: bool,
+        #[arg(long, help = "Pretty-print JSON or search-index profile output")]
+        pretty: bool,
+        #[arg(long, value_enum, help = "Graph export format stored in the profile")]
+        graph_format: Option<GraphExportFormat>,
+        #[arg(long, help = "Replace an existing profile with the same name")]
+        replace: bool,
+        #[arg(long, help = "Preview the config change without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit for this config mutation")]
+        no_commit: bool,
+    },
+    #[command(about = "Delete an export profile from .vulcan/config.toml")]
+    Delete {
+        #[arg(help = "Export profile name")]
+        name: String,
+        #[arg(long, help = "Preview the config change without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit for this config mutation")]
+        no_commit: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum CacheCommand {
     #[command(about = "Inspect cache sizes and row counts")]
@@ -1657,12 +1752,10 @@ pub enum CheckpointCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ExportCommand {
-    #[command(about = "List configured export profiles")]
-    Profiles,
-    #[command(about = "Run a named export profile from config")]
+    #[command(about = "Run or manage named export profiles from config")]
     Profile {
-        #[arg(help = "Export profile name from [export.profiles.<name>]")]
-        name: String,
+        #[command(subcommand)]
+        command: ExportProfileCommand,
     },
     #[command(about = "Export matched notes as one combined Markdown document")]
     Markdown {

@@ -10148,27 +10148,48 @@ fn export_profiles_list_and_run_named_epub_profile() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
-    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
-    fs::write(
-        vault_root.join(".vulcan/config.toml"),
-        r#"
-[export.profiles.team_book]
-format = "epub"
-query = 'from notes where file.path matches "^(Home|Projects/Alpha)\.md$"'
-path = "exports/team-book.epub"
-title = "Team Book"
-author = "Vulcan"
-backlinks = true
-frontmatter = true
-"#,
-    )
-    .expect("config should write");
     run_scan(&vault_root);
 
     let vault_root_str = vault_root
         .to_str()
         .expect("vault path should be valid utf-8")
         .to_string();
+
+    let create_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "create",
+            "team_book",
+            "--format",
+            "epub",
+            r#"from notes where file.path matches "^(Home|Projects/Alpha)\.md$""#,
+            "-o",
+            "exports/team-book.epub",
+            "--title",
+            "Team Book",
+            "--author",
+            "Vulcan",
+            "--backlinks",
+            "--frontmatter",
+        ])
+        .assert()
+        .success();
+    let create_json = parse_stdout_json(&create_assert);
+    assert_eq!(create_json["name"], "team_book");
+    assert_eq!(create_json["created_config"], Value::Bool(true));
+    assert_eq!(create_json["action"], "created");
+    assert_eq!(create_json["profile"]["format"], "epub");
+    assert_eq!(create_json["profile"]["path"], "exports/team-book.epub");
+    assert_eq!(create_json["profile"]["title"], "Team Book");
+    assert_eq!(create_json["profile"]["author"], "Vulcan");
+    assert_eq!(create_json["profile"]["backlinks"], Value::Bool(true));
+    assert_eq!(create_json["profile"]["frontmatter"], Value::Bool(true));
 
     let profiles_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -10178,7 +10199,8 @@ frontmatter = true
             "--output",
             "json",
             "export",
-            "profiles",
+            "profile",
+            "list",
         ])
         .assert()
         .success();
@@ -10207,6 +10229,7 @@ frontmatter = true
             "json",
             "export",
             "profile",
+            "run",
             "team_book",
         ])
         .assert()
@@ -10225,6 +10248,26 @@ frontmatter = true
         export_json["summary"]["result_count"],
         Value::Number(2.into())
     );
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "show",
+            "team_book",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["name"], "team_book");
+    assert_eq!(show_json["profile"]["format"], "epub");
+    assert_eq!(show_json["profile"]["path"], "exports/team-book.epub");
+    assert_eq!(show_json["profile"]["title"], "Team Book");
 
     let export_path = vault_root.join("exports/team-book.epub");
     let file = fs::File::open(&export_path).expect("epub export should exist");
@@ -10258,6 +10301,80 @@ frontmatter = true
 
     assert!(saw_frontmatter);
     assert!(saw_backlinks);
+
+    let delete_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "delete",
+            "team_book",
+        ])
+        .assert()
+        .success();
+    let delete_json = parse_stdout_json(&delete_assert);
+    assert_eq!(delete_json["name"], "team_book");
+    assert_eq!(delete_json["deleted"], Value::Bool(true));
+
+    let profiles_after_delete_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "list",
+        ])
+        .assert()
+        .success();
+    let profiles_after_delete_json = parse_stdout_json(&profiles_after_delete_assert);
+    assert_eq!(
+        profiles_after_delete_json
+            .as_array()
+            .expect("profiles output should be an array")
+            .len(),
+        0
+    );
+    let config_contents =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(!config_contents.contains("team_book"));
+}
+
+#[test]
+fn export_profile_create_rejects_format_specific_invalid_flags() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "profile",
+            "create",
+            "graph_bad",
+            "--format",
+            "graph",
+            "from notes",
+            "-o",
+            "exports/graph.json",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "does not use `query` or `query_json` for graph exports",
+        ));
 }
 
 #[test]
