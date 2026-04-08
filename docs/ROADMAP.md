@@ -2868,6 +2868,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.19.12 (plugin system)  ← 9.19.1,9.19.2,9.19.6│── Wave 8+ (after fixes+trust+cmds)
 9.19.13 (permissions)    ← 9.19.6,9.19.12│── Wave 9 (after full cmd surface+plugins)
 9.19.14 (binary size)    ← standalone  │── anytime (research)
+9.19.15 (test hardening) ← 9.19.6,9.19.7,9.19.13,9.19.12│── final hardening wave before 9.20/10
 ```
 
 **Recommended implementation order:**
@@ -2921,6 +2922,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 12. [ ] **9.19.12** (plugins) — after permissions design is clear
 13. [ ] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
 14. [ ] **9.19.14** (binary size) — informational, anytime
+15. [ ] **9.19.15** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
 
 #### 9.19.1 Bug fixes
 
@@ -3563,6 +3565,60 @@ The release binary is 28MB. This is acceptable given the portability goal, but w
 - [ ] Run `cargo bloat --release` and document the top contributors (rquickjs/QuickJS, SQLite, regex, reqwest/TLS, etc.)
 - [ ] Identify any low-hanging optimizations (unused features, redundant dependencies)
 - [ ] Document findings in `docs/performance.md` — no action required unless easy wins are found
+
+#### 9.19.15 Integration hardening and fuzzing
+
+**Goal:** Make the application difficult to break by expanding automated coverage far beyond per-command happy paths. This phase focuses on end-to-end integration flows, edge cases, regression harnesses, and parser/query fuzzing so later phases inherit a stable base rather than stacking on brittle behavior.
+
+**Depends on:** 9.19.6 (full CLI surface), 9.19.7 (command reorg stabilized), 9.19.13 (permission layer), and ideally 9.19.12 once plugin flows exist. Work can start earlier, but this phase should be treated as the final hardening pass before Phase 9.20 and Phase 10 become the main focus.
+
+**Principle:** Prefer tests that reflect how real users and external runtimes actually drive Vulcan:
+
+- Full command sequences, not isolated function calls
+- Cross-feature flows, not single-module correctness only
+- Failure-mode assertions, not just success snapshots
+- Deterministic fixtures first, then synthetic stress/property/fuzz coverage where parser surfaces justify it
+
+**Coverage targets**
+
+- [ ] Add a dedicated `tests/fixtures/vaults/polish/` or `hardening/` vault that combines the major feature families in one place: Dataview, Tasks, Kanban, TaskNotes, Periodic notes, templates, saved reports, permissions, aliases, ambiguous links, attachments, extracted text, and malformed edge cases
+- [ ] Add end-to-end CLI flow tests that cover realistic workflows: `init -> scan -> query/search -> note mutate -> refactor -> export`, including rescans and idempotent reruns
+- [ ] Add regression suites for uninitialized and partially initialized vaults: missing cache, missing `.vulcan/`, malformed config, stale derived indexes, and mixed tracked/untracked git state
+- [ ] Expand permission-profile integration coverage across CLI, serve, MCP, JS runtime, and future plugin boundaries: read/write/refactor/git/network/config/execute denials plus filtered-result assertions
+- [ ] Add cross-feature integration tests for the main combinations users actually rely on:
+  - Dataview and DQL over Periodic notes, TaskNotes, Tasks, and Bases
+  - refactors followed by search/query/graph validation
+  - template rendering combined with QuickAdd variables, daily note creation, and note mutations
+  - vector indexing/search with permission filters and cache rebuild/repair paths
+  - exports after refactors, permissions, and filtered queries
+- [ ] Add refresh/watch/serve stability tests: repeated requests, background refresh interactions, cache rebuild after file churn, and request behavior while scans are in flight
+- [ ] Add broader output-contract tests for `--output json`, line-delimited JSON, markdown, CSV/TSV, and human output where users depend on exact machine-readable fields or stable semantics
+- [ ] Add migration and repair hardening tests: open old schemas, run migrations, rebuild derived state, verify no data leaks or orphaned rows, and assert rebuild-idempotency across all major cache-backed tables
+- [ ] Add synthetic large-vault integration tests or stress harnesses for performance-sensitive paths that have already regressed once: graph queries, search, vectors, note loading, and multi-feature scans
+
+**Property-based and fuzz testing**
+
+- [ ] Introduce property-based tests where invariants are clear and deterministic:
+  - path normalization and round-tripping
+  - move/rewrite round trips
+  - query AST parse/serialize/parse stability
+  - config merge precedence invariants
+  - permission filter allow/deny precedence
+- [ ] Add parser/query fuzz targets using `cargo fuzz` or an equivalent harness for the most exposed text surfaces:
+  - Markdown/document parser
+  - DQL tokenizer/parser
+  - expression parser
+  - Tasks query parser
+  - config/TOML ingestion where malformed input should never panic
+- [ ] Make fuzzing outputs actionable: minimized crashing inputs should be checked into regression fixtures or unit tests immediately after triage
+- [ ] Document how to run the fuzz/property suites locally and in CI, including which jobs are required on every PR vs. nightly/periodic hardening runs
+
+**Exit criteria**
+
+- [ ] Every critical command family has at least one realistic multi-step integration flow test, not just isolated output snapshots
+- [ ] Every parser or text-ingestion surface that handles untrusted or user-authored input has either dedicated fuzz/property coverage or a documented reason it does not
+- [ ] Previously fixed regressions are captured as permanent regression tests before the phase is considered complete
+- [ ] CI coverage is intentionally layered: fast required tests on every change, heavier integration/fuzz/stress suites on scheduled or opt-in jobs
 
 ---
 
