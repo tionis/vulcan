@@ -759,17 +759,34 @@ mod tests {
             "/dataview/query-js?js=dv.current%28%29.status&file=Dashboard",
             None,
         );
-        assert_eq!(query_js["ok"], true);
-        assert_eq!(query_js["result"]["value"], "draft");
+        if cfg!(feature = "js_runtime") {
+            assert_eq!(query_js["ok"], true);
+            assert_eq!(query_js["result"]["value"], "draft");
+        } else {
+            assert_eq!(query_js["ok"], false);
+            assert!(query_js["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("js_runtime")));
+        }
 
         let eval = get_json(handle.addr(), "/dataview/eval?file=Dashboard", None);
         assert_eq!(eval["ok"], true);
         assert_eq!(eval["result"]["blocks"].as_array().map(Vec::len), Some(2));
-        assert_eq!(eval["result"]["blocks"][1]["result"]["engine"], "js");
-        assert_eq!(
-            eval["result"]["blocks"][1]["result"]["data"]["outputs"][0]["rows"],
-            serde_json::json!([["draft"]])
-        );
+        if cfg!(feature = "js_runtime") {
+            assert_eq!(eval["result"]["blocks"][1]["result"]["engine"], "js");
+            assert_eq!(
+                eval["result"]["blocks"][1]["result"]["data"]["outputs"][0]["rows"],
+                serde_json::json!([["draft"]])
+            );
+        } else {
+            assert_eq!(
+                eval["result"]["blocks"][1]["result"],
+                serde_json::Value::Null
+            );
+            assert!(eval["result"]["blocks"][1]["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("js_runtime")));
+        }
 
         handle.shutdown().expect("server should shut down");
     }

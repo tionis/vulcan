@@ -3562,11 +3562,12 @@ For the rare case where static config rules are insufficient, a policy hook prov
 
 #### 9.19.14 Binary size analysis
 
-The release binary is 28MB. This is acceptable given the portability goal, but worth understanding the breakdown.
+The current Linux x86_64 release binary is about 31.9MB unstripped and 26.6MB stripped. This is acceptable given the portability goal, but worth understanding and trimming where the wins are low-risk.
 
-- [ ] Run `cargo bloat --release` and document the top contributors (rquickjs/QuickJS, SQLite, regex, reqwest/TLS, etc.)
-- [ ] Identify any low-hanging optimizations (unused features, redundant dependencies)
-- [ ] Document findings in `docs/performance.md` — no action required unless easy wins are found
+- [x] Inspect the release binary using `cargo tree`, `size`, `strip`, and built archive sizes (local environment did not have `cargo-bloat`)
+- [x] Fix `js_runtime` feature propagation so `cargo build --release -p vulcan-cli --no-default-features` actually removes QuickJS from the CLI binary
+- [ ] Optional follow-up: narrow `zip` features (`aes`, `bzip2`, `zstd`) now that exports only use stored and deflated entries
+- [x] Document findings in `docs/performance.md`
 
 #### 9.19.15 Integration hardening and fuzzing
 
