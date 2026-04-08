@@ -3738,6 +3738,20 @@
                 "value_names": [
                   "BACKLINKS"
                 ]
+              },
+              {
+                "help": "Include each note's YAML frontmatter in a styled collapsible panel",
+                "id": "frontmatter",
+                "long": "frontmatter",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FRONTMATTER"
+                ]
               }
             ],
             "subcommands": []

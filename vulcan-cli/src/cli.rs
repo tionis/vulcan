@@ -1731,6 +1731,11 @@ pub enum ExportCommand {
             help = "Append indexed backlinks after each exported note chapter"
         )]
         backlinks: bool,
+        #[arg(
+            long,
+            help = "Include each note's YAML frontmatter in a styled collapsible panel"
+        )]
+        frontmatter: bool,
     },
     #[command(about = "Export matched notes and linked attachments as a ZIP archive")]
     Zip {

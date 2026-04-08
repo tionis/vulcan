@@ -10089,10 +10089,57 @@ fn export_epub_writes_book_archive_with_nav_and_backlinks() {
         .expect("alpha chapter should be captured")
         .1;
 
+    assert!(!alpha_chapter.contains("frontmatter-box"));
     assert!(bob_chapter.contains(&format!("href=\"{alpha_file}#status\"")));
     assert!(alpha_chapter.contains("<section class=\"backlinks\">"));
     assert!(alpha_chapter.contains(">Home</a>"));
     assert!(alpha_chapter.contains(">People/Bob</a>"));
+}
+
+#[test]
+fn export_epub_frontmatter_flag_renders_collapsible_yaml_panel() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("home.epub");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "epub",
+            r#"from notes where file.path = "Home.md""#,
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+            "--frontmatter",
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("epub export should exist");
+    let mut archive = ZipArchive::new(file).expect("epub export should open");
+    let mut chapter = String::new();
+    archive
+        .by_name("OEBPS/text/chapter-001.xhtml")
+        .expect("chapter should exist")
+        .read_to_string(&mut chapter)
+        .expect("chapter should be readable");
+
+    assert!(chapter.contains("<details class=\"frontmatter-box\">"));
+    assert!(chapter.contains("<summary>Frontmatter</summary>"));
+    assert!(chapter.contains("<pre><code>---"));
+    assert!(chapter.contains("aliases:"));
+    assert!(chapter.contains("- Start"));
+    assert!(chapter.contains("tags:"));
+    assert!(chapter.contains("- dashboard"));
+    assert!(chapter.contains("<h1 id=\"home\">Home</h1>"));
 }
 
 #[test]
