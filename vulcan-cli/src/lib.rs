@@ -3,6 +3,7 @@ mod browse_tui;
 mod cli;
 mod commands;
 mod commit;
+mod config_tui;
 mod editor;
 mod js_repl;
 mod note_picker;
@@ -1680,6 +1681,24 @@ struct ConfigImportBatchReport {
     imported_count: usize,
     updated_count: usize,
     reports: Vec<ConfigImportReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ConfigImportRenderedReport {
+    #[serde(flatten)]
+    report: ConfigImportReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview_diff: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ConfigImportRenderedBatchReport {
+    dry_run: bool,
+    target: ImportTarget,
+    detected_count: usize,
+    imported_count: usize,
+    updated_count: usize,
+    reports: Vec<ConfigImportRenderedReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -14249,6 +14268,21 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     .map_err(CliError::operation)?;
                 run_config_get(&paths, cli.output, key)
             }
+            ConfigCommand::Edit { no_commit } => {
+                selected_permission_guard(cli, &paths)?
+                    .check_config_write()
+                    .map_err(CliError::operation)?;
+                if cli.output != OutputFormat::Human
+                    || !stdout_is_tty
+                    || !std::io::stdin().is_terminal()
+                {
+                    return Err(CliError::operation(
+                        "config edit requires an interactive terminal with `--output human`",
+                    ));
+                }
+                config_tui::run_config_tui(&paths, *no_commit, cli.quiet)
+                    .map_err(CliError::operation)
+            }
             ConfigCommand::Set {
                 key,
                 value,
@@ -17354,6 +17388,7 @@ fn print_config_import_batch_report(
             .map(|item| normalize_config_import_report(paths, item))
             .collect(),
     };
+    let rendered = render_config_import_batch_report(&normalized);
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
             println!(
@@ -17410,10 +17445,21 @@ fn print_config_import_batch_report(
                 for skipped in &item.skipped {
                     println!("    skipped: {} ({})", skipped.source, skipped.reason);
                 }
+                if let Some(diff) = rendered
+                    .reports
+                    .iter()
+                    .find(|rendered_report| rendered_report.report.plugin == item.plugin)
+                    .and_then(|rendered_report| rendered_report.preview_diff.as_deref())
+                {
+                    println!("    diff:");
+                    for line in diff.lines() {
+                        println!("      {line}");
+                    }
+                }
             }
             Ok(())
         }
-        OutputFormat::Json => print_json(&normalized),
+        OutputFormat::Json => print_json(&rendered),
     }
 }
 
@@ -17439,6 +17485,7 @@ fn print_config_import_report(
     report: &ConfigImportReport,
 ) -> Result<(), CliError> {
     let report = normalize_config_import_report(paths, report);
+    let rendered = render_config_import_report(&report);
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
             println!(
@@ -17509,9 +17556,15 @@ fn print_config_import_report(
             for skipped in &report.skipped {
                 println!("  skipped: {} ({})", skipped.source, skipped.reason);
             }
+            if let Some(diff) = rendered.preview_diff.as_deref() {
+                println!("  diff:");
+                for line in diff.lines() {
+                    println!("    {line}");
+                }
+            }
             Ok(())
         }
-        OutputFormat::Json => print_json(&report),
+        OutputFormat::Json => print_json(&rendered),
     }
 }
 
@@ -17538,6 +17591,99 @@ fn normalize_config_import_report(
         })
         .collect();
     report
+}
+
+fn render_config_import_report(report: &ConfigImportReport) -> ConfigImportRenderedReport {
+    ConfigImportRenderedReport {
+        report: report.clone(),
+        preview_diff: config_import_preview_diff(report),
+    }
+}
+
+fn render_config_import_batch_report(
+    report: &ConfigImportBatchReport,
+) -> ConfigImportRenderedBatchReport {
+    ConfigImportRenderedBatchReport {
+        dry_run: report.dry_run,
+        target: report.target,
+        detected_count: report.detected_count,
+        imported_count: report.imported_count,
+        updated_count: report.updated_count,
+        reports: report
+            .reports
+            .iter()
+            .map(render_config_import_report)
+            .collect(),
+    }
+}
+
+fn config_import_preview_diff(report: &ConfigImportReport) -> Option<String> {
+    if !report.dry_run {
+        return None;
+    }
+    let after = report.rendered_contents.as_deref()?;
+    let before = report.previous_contents.as_deref().unwrap_or("");
+    if before == after {
+        return None;
+    }
+    Some(render_unified_diff(
+        before,
+        after,
+        &format!("a/{}", report.target_file.display()),
+        &format!("b/{}", report.target_file.display()),
+    ))
+}
+
+fn render_unified_diff(before: &str, after: &str, before_label: &str, after_label: &str) -> String {
+    let before_lines = before.lines().collect::<Vec<_>>();
+    let after_lines = after.lines().collect::<Vec<_>>();
+    let operations = diff_lines(&before_lines, &after_lines);
+    let mut rendered = format!("--- {before_label}\n+++ {after_label}\n");
+    for (prefix, line) in operations {
+        rendered.push(prefix);
+        rendered.push_str(line);
+        rendered.push('\n');
+    }
+    rendered
+}
+
+fn diff_lines<'a>(before: &[&'a str], after: &[&'a str]) -> Vec<(char, &'a str)> {
+    let mut lcs = vec![vec![0usize; after.len() + 1]; before.len() + 1];
+    for before_index in (0..before.len()).rev() {
+        for after_index in (0..after.len()).rev() {
+            lcs[before_index][after_index] = if before[before_index] == after[after_index] {
+                lcs[before_index + 1][after_index + 1] + 1
+            } else {
+                lcs[before_index + 1][after_index].max(lcs[before_index][after_index + 1])
+            };
+        }
+    }
+
+    let mut before_index = 0;
+    let mut after_index = 0;
+    let mut operations = Vec::new();
+    while before_index < before.len() && after_index < after.len() {
+        if before[before_index] == after[after_index] {
+            operations.push((' ', before[before_index]));
+            before_index += 1;
+            after_index += 1;
+        } else if lcs[before_index + 1][after_index] >= lcs[before_index][after_index + 1] {
+            operations.push(('-', before[before_index]));
+            before_index += 1;
+        } else {
+            operations.push(('+', after[after_index]));
+            after_index += 1;
+        }
+    }
+    while before_index < before.len() {
+        operations.push(('-', before[before_index]));
+        before_index += 1;
+    }
+    while after_index < after.len() {
+        operations.push(('+', after[after_index]));
+        after_index += 1;
+    }
+    operations
 }
 
 fn relativize_config_import_path(paths: &VaultPaths, path: &Path) -> PathBuf {
@@ -26185,6 +26331,7 @@ mod tests {
                     list: false,
                     args: ConfigImportArgs {
                         dry_run: false,
+                        apply: false,
                         target: ConfigImportTargetArg::Shared,
                         no_commit: false,
                     },
@@ -26219,6 +26366,19 @@ mod tests {
                 command: ConfigCommand::Get {
                     key: "periodic.daily.template".to_string(),
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_edit_command() {
+        let cli = Cli::try_parse_from(["vulcan", "config", "edit", "--no-commit"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Edit { no_commit: true },
             }
         );
     }
@@ -26308,6 +26468,7 @@ mod tests {
                     list: false,
                     args: ConfigImportArgs {
                         dry_run: false,
+                        apply: false,
                         target: ConfigImportTargetArg::Shared,
                         no_commit: false,
                     },
@@ -26330,6 +26491,7 @@ mod tests {
                     list: false,
                     args: ConfigImportArgs {
                         dry_run: false,
+                        apply: false,
                         target: ConfigImportTargetArg::Shared,
                         no_commit: false,
                     },
@@ -26352,6 +26514,7 @@ mod tests {
                     list: false,
                     args: ConfigImportArgs {
                         dry_run: false,
+                        apply: false,
                         target: ConfigImportTargetArg::Shared,
                         no_commit: false,
                     },
@@ -26374,6 +26537,7 @@ mod tests {
                     list: false,
                     args: ConfigImportArgs {
                         dry_run: false,
+                        apply: false,
                         target: ConfigImportTargetArg::Shared,
                         no_commit: false,
                     },
@@ -26435,6 +26599,7 @@ mod tests {
                     list: false,
                     args: ConfigImportArgs {
                         dry_run: false,
+                        apply: false,
                         target: ConfigImportTargetArg::Shared,
                         no_commit: false,
                     },
@@ -26450,7 +26615,7 @@ mod tests {
             "config",
             "import",
             "core",
-            "--dry-run",
+            "--preview",
             "--target",
             "local",
             "--no-commit",
@@ -26466,8 +26631,32 @@ mod tests {
                     list: false,
                     args: ConfigImportArgs {
                         dry_run: true,
+                        apply: false,
                         target: ConfigImportTargetArg::Local,
                         no_commit: true,
+                    },
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_import_apply_command() {
+        let cli = Cli::try_parse_from(["vulcan", "config", "import", "tasks", "--apply"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Import(ConfigImportSelection {
+                    command: Some(ConfigImportCommand::Tasks),
+                    all: false,
+                    list: false,
+                    args: ConfigImportArgs {
+                        dry_run: false,
+                        apply: true,
+                        target: ConfigImportTargetArg::Shared,
+                        no_commit: false,
                     },
                 }),
             }
@@ -26488,6 +26677,7 @@ mod tests {
                     list: false,
                     args: ConfigImportArgs {
                         dry_run: false,
+                        apply: false,
                         target: ConfigImportTargetArg::Shared,
                         no_commit: false,
                     },
@@ -26518,6 +26708,7 @@ mod tests {
                     list: false,
                     args: ConfigImportArgs {
                         dry_run: true,
+                        apply: false,
                         target: ConfigImportTargetArg::Local,
                         no_commit: false,
                     },

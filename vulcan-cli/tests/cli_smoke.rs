@@ -591,6 +591,34 @@ fn query_auto_detection_announces_dataview_queries() {
 }
 
 #[test]
+fn config_edit_requires_an_interactive_terminal() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[web.search]\nbackend = \"duckduckgo\"\n",
+    )
+    .expect("config should write");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "config",
+            "edit",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "config edit requires an interactive terminal",
+        ));
+}
+
+#[test]
 fn config_aliases_expand_before_clap_parsing() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -4078,6 +4106,7 @@ fn config_import_tasks_json_output_writes_config_and_reports_mapping() {
             "config",
             "import",
             "tasks",
+            "--apply",
         ])
         .assert()
         .success();
@@ -4100,6 +4129,38 @@ fn config_import_tasks_json_output_writes_config_and_reports_mapping() {
     assert!(rendered.contains("remove_global_filter = true"));
     assert!(rendered.contains("[[tasks.statuses.definitions]]"));
     assert!(rendered.contains("name = \"Waiting\""));
+}
+
+#[test]
+fn config_import_preview_shows_diff_without_writing_files() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    write_tasks_import_fixture(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "config",
+            "import",
+            "tasks",
+            "--preview",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("diff:")
+                .and(predicate::str::contains("--- a/.vulcan/config.toml"))
+                .and(predicate::str::contains("+++ b/.vulcan/config.toml"))
+                .and(predicate::str::contains("+[tasks]"))
+                .and(predicate::str::contains("+global_filter = \"#task\"")),
+        );
+
+    assert!(!vault_root.join(".vulcan/config.toml").exists());
 }
 
 #[test]
