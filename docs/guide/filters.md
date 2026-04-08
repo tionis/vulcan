@@ -1,4 +1,4 @@
-Vulcan uses a shared typed filter grammar across `notes`, `search --where`, `ls`, report definitions, and several mutation commands.
+Vulcan uses a shared typed filter grammar across `query --where`, `search --where`, `ls`, report definitions, and several mutation commands.
 
 Common operators:
 
@@ -20,6 +20,6 @@ Notes:
 
 - Property typing is lenient, but mismatches surface through `doctor`.
 - `matches` is regex and `matches_i` is case-insensitive regex.
-- Use `search` for free text and `query` or `notes --where` for metadata precision.
+- Use `search` for free text and `query --where` for metadata precision.
 
-See also: `help query-dsl`, `help query`, `help notes`.
+See also: `help query-dsl`, `help query`, `help filters`.

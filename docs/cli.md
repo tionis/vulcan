@@ -21,7 +21,7 @@ Typical first run against a vault:
 ```bash
 ./target/release/vulcan --vault ~/wikis/mimir index init
 ./target/release/vulcan --vault ~/wikis/mimir index scan
-./target/release/vulcan --vault ~/wikis/mimir notes --limit 5
+./target/release/vulcan --vault ~/wikis/mimir --limit 5 query --where 'status = open'
 ./target/release/vulcan --vault ~/wikis/mimir browse
 ```
 
@@ -41,26 +41,31 @@ The CLI is designed to be self-describing at runtime.
 
 Useful starting points:
 
-- `vulcan notes --help`
+- `vulcan note --help`
 - `vulcan search --help`
 - `vulcan help filters`
 - `vulcan help query`
+- `vulcan periodic --help`
+- `vulcan vectors --help`
+- `vulcan saved --help`
 - `vulcan edit --help`
 - `vulcan browse --help`
-- `vulcan query --help`
 
 ## Global options and output behavior
 
 These global flags are available on all commands:
 
 - `--vault <PATH>`: vault root directory
-- `--output <human|json>`: output format
+- `--output <human|markdown|json>`: output format
 - `--refresh <off|blocking|background>`: override automatic cache refresh for cache-backed commands
 - `--fields <a,b,c>`: select columns on list-style output
 - `--provider <NAME>`: override the embedding provider for vector commands
 - `--limit <N>`: cap returned rows
 - `--offset <N>`: paginate list output
 - `--verbose`: enable extra diagnostic output
+- `--quiet`: suppress non-essential stderr output
+- `--no-header`: suppress table headers for tabular human output
+- `--color <auto|always|never>`: control ANSI color output
 
 Output rules:
 
@@ -97,7 +102,7 @@ browse_mode = "background"
 
 Meaning:
 
-- `default_mode` controls one-shot cache-backed commands such as `note backlinks`, `note links`, `notes`, `search`, `graph`, `diff`, `query`, and refactor commands that depend on current cache state.
+- `default_mode` controls one-shot cache-backed commands such as `note backlinks`, `note links`, `note diff`, `query`, `search`, `graph`, and refactor commands that depend on current cache state.
 - `browse_mode` controls `vulcan browse`.
 - `off` uses the current cache as-is.
 - `blocking` runs an incremental scan before the command continues.
@@ -115,6 +120,27 @@ Note resolution rules:
 - Commands that take a note reference accept a vault-relative path, filename, or alias.
 - Some single-note commands allow omitting the note in a TTY and will open the built-in picker instead.
 - When `--output json` is active, or when stdin/stdout is not interactive, Vulcan will not auto-prompt.
+
+### Command aliases
+
+Vulcan expands command aliases before clap parses the final argv. Aliases live under `[aliases]` in `.vulcan/config.toml` and are merged with a small built-in default set.
+
+Example:
+
+```toml
+[aliases]
+q = "query"
+t = "tasks list"
+today = "daily today"
+ship = "query --where 'status = shipped'"
+```
+
+Behavior:
+
+- Built-in defaults currently include `q`, `t`, and `today`.
+- Vault-local aliases override built-in aliases when they use the same name.
+- Use `vulcan config show aliases` to inspect the effective alias map.
+- Alias expansion happens before clap parsing, so aliases can target grouped commands such as `tasks list` or `query --where ...`.
 
 ## Command catalogue
 
@@ -134,10 +160,13 @@ Note resolution rules:
 - `vulcan export markdown|json|csv|epub|zip|sqlite <query> ...`: materialize matched notes as combined documents, datasets, books, or archives.
 - `vulcan export search-index [--path <FILE>] [--pretty]`: write the cached search corpus as a static JSON index.
 - `vulcan changes [--checkpoint <name>]`: report note, link, property, and embedding changes since the last scan or a named checkpoint.
-- `vulcan diff [note] [--since <checkpoint>]`: show one note's changes since git `HEAD`, the last scan, or a named checkpoint.
+- `vulcan note diff <note> [--since <checkpoint>]`: show one note's changes since git `HEAD`, the last scan, or a named checkpoint.
 
-### Config import commands
+### Config and import commands
 
+- `vulcan config show [section]`: show the effective merged config or one section such as `periodic` or `aliases`.
+- `vulcan config get <key>`: read one config value.
+- `vulcan config set <key> <value> [--dry-run] [--no-commit]`: validate and write one config value.
 - `vulcan config import core [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian core settings from `.obsidian/app.json`, `.obsidian/templates.json`, and `.obsidian/types.json`.
 - `vulcan config import dataview [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Dataview plugin settings.
 - `vulcan config import kanban [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Kanban plugin settings.
@@ -165,21 +194,21 @@ Shared behavior:
 - `vulcan graph components`: weakly connected components.
 - `vulcan graph stats`: note-graph and vault analytics summary.
 - `vulcan graph trends [--limit <N>]`: trends across saved scan checkpoints.
-- `vulcan notes ...`: property and file-metadata queries.
 - `vulcan search <query> [--regex <pattern>] ...`: full-text search with optional typed property filters, explicit result sorting, and explicit regex mode.
-- `vulcan query ...`: run the human DSL or JSON query payload with `--format table|paths|detail|count` and optional `--glob`.
+- `vulcan query [QUERY] [--where <filter>] [--sort <field>] [--desc] [--language <auto|vulcan|dql>] ...`: run the human DSL, Dataview DQL, or JSON query payload with `--format table|paths|detail|count` and optional `--glob`.
 - `vulcan ls [--where <filter>] [--tag <tag>] [--glob <pattern>] [--format <paths|detail|count>]`: thin alias for `query 'from notes'`.
 - `vulcan refactor suggest mentions [note]`: plain-text mentions that could become links.
 - `vulcan refactor suggest duplicates`: duplicate titles, alias collisions, and merge candidates.
 - `vulcan refactor ...`: grouped cross-vault mutation commands (`rename-*`, `merge-tags`, `rewrite`, `move`, `link-mentions`, `suggest`).
 - `vulcan saved list`: list saved query/report definitions from `.vulcan/reports`.
 - `vulcan saved show <name>`: show one saved report definition.
-- `vulcan saved search ...`: save a search definition.
-- `vulcan saved notes ...`: save a property query definition.
-- `vulcan saved bases <name> <file.base>`: save a `.base` evaluation definition.
+- `vulcan saved create search <name> ...`: save a search definition.
+- `vulcan saved create notes <name> ...`: save a query shortcut built from `query --where/--sort`.
+- `vulcan saved create bases <name> <file.base>`: save a `.base` evaluation definition.
+- `vulcan saved delete <name>`: remove one saved report definition.
 - `vulcan saved run <name>`: execute one saved report.
-- `vulcan batch [<name> ...] [--all]`: run several saved reports at once.
-- `vulcan automation run ...`: run saved reports plus optional scan, doctor, verify, or FTS repair steps for CI and scripts.
+- `vulcan automation list`: list saved reports automation can run.
+- `vulcan automation run [<name> ...] [--all] ...`: run saved reports plus optional scan, doctor, verify, or FTS repair steps for CI and scripts.
 
 ### Periodic note commands
 
@@ -188,8 +217,8 @@ Shared behavior:
 - `vulcan daily list [--from <date>] [--to <date>] [--week] [--month]`: list daily notes and extracted schedule events across a date window.
 - `vulcan daily export-ics [--from <date>] [--to <date>] [--week] [--month] [--path <file.ics>] [--calendar-name <name>]`: export extracted daily-note events as an ICS calendar. Without `--path`, the calendar is written to stdout.
 - `vulcan daily append <text> [--heading <heading>] [--date <date>] [--no-commit]`: append text to one daily note, creating it first when needed.
-- `vulcan weekly [date] [--no-edit] [--no-commit]`: open or create the weekly note containing the given date.
-- `vulcan monthly [date] [--no-edit] [--no-commit]`: open or create the monthly note containing the given date.
+- `vulcan periodic weekly [date] [--no-edit] [--no-commit]`: open or create the weekly note containing the given date.
+- `vulcan periodic monthly [date] [--no-edit] [--no-commit]`: open or create the monthly note containing the given date.
 - `vulcan periodic <type> [date] [--no-edit] [--no-commit]`: generic open-or-create command for any configured period type.
 - `vulcan periodic list [--type <period>]`: list indexed periodic notes from the cache.
 - `vulcan periodic gaps [--type <period>] [--from <date>] [--to <date>]`: show missing periodic notes by expected path.
@@ -201,6 +230,7 @@ Behavior:
 - `daily list` uses the configured weekly start when `--week` is selected and includes parsed schedule events from the `events` cache table.
 - `daily export-ics` uses the same cached events and emits a one-way RFC 5545 calendar export.
 - Periodic note creation uses the configured periodic template name when it resolves successfully; otherwise Vulcan creates a blank note and reports the template warning.
+- Hidden compatibility aliases `weekly` and `monthly` still work for existing scripts, but the preferred public forms are `periodic weekly` and `periodic monthly`.
 - These commands participate in auto-commit when they mutate note files and vault git auto-commit is enabled.
 
 ### Git commands
@@ -276,15 +306,18 @@ Important behavior:
 - `vulcan vectors queue run [--dry-run]`: execute the explicit vector queue.
 - `vulcan vectors neighbors [query] [--note <NOTE>]`: nearest indexed chunks for ad hoc text or an existing note.
 - `vulcan vectors related [note]`: semantically related notes for one seed note.
+- `vulcan vectors cluster [--clusters <N>] [--dry-run]`: group indexed vectors into topical clusters.
 - `vulcan vectors duplicates [--threshold <F32>]`: highly similar chunk pairs.
 - `vulcan vectors models`: list stored embedding models.
 - `vulcan vectors drop-model <cache-key>`: drop one model and its vectors.
-- `vulcan cluster [--clusters <N>] [--dry-run]`: group indexed vectors into topical clusters.
-- `vulcan related [note]`: top-level shortcut for note-to-note semantic recommendations.
+
+Compatibility note:
+
+- Hidden top-level compatibility aliases `cluster` and `related` still exist, but the preferred public forms are `vectors cluster` and `vectors related`.
 
 ## Query and filter syntax
 
-`vulcan notes`, `vulcan search --where`, `vulcan refactor rewrite`, `vulcan update`, `vulcan unset`, and `bases view-*` filters all use the same typed filter grammar.
+`vulcan query --where`, `vulcan search --where`, `vulcan refactor rewrite`, `vulcan note update`, `vulcan note unset`, and `bases view-*` filters all use the same typed filter grammar.
 
 Each filter uses this form:
 
@@ -337,12 +370,12 @@ Supported value types:
 Examples:
 
 ```bash
-vulcan notes --where 'status = done'
-vulcan notes --where 'tags contains sprint' --sort due
-vulcan notes --where 'file.path starts_with "Projects/"'
-vulcan notes --where 'file.name matches "^2026-"'
-vulcan notes --where 'owner matches_i "alice"'
-vulcan update --where 'status = draft' --key status --value done --dry-run
+vulcan query --where 'status = done'
+vulcan query --where 'tags contains sprint' --sort due
+vulcan query --where 'file.path starts_with "Projects/"'
+vulcan query --where 'file.name matches "^2026-"'
+vulcan query --where 'owner matches_i "alice"'
+vulcan note update --where 'status = draft' --key status --value done --dry-run
 vulcan refactor rewrite --where 'file.path starts_with "Archive/"' --find TODO --replace DONE
 vulcan bases view-add release.base Inbox --filter 'status = idea'
 ```
@@ -443,13 +476,23 @@ JSON payload example:
 Examples:
 
 ```bash
+vulcan query
+vulcan query --where 'status = done' --sort due
 vulcan query 'from notes where status = done order by file.mtime desc limit 10'
 vulcan query 'from notes where tags contains sprint and reviewed = true'
 vulcan query --format paths 'from notes where file.name matches "^2026-"'
+vulcan query --language dql 'TABLE status FROM #project'
 vulcan query --glob 'Projects/**' 'from notes'
 vulcan query --json '{"source":"notes","predicates":[{"field":"status","operator":"eq","value":"done"}]}'
 vulcan query --explain 'from notes where status = backlog'
 ```
+
+Behavior:
+
+- Bare `vulcan query` defaults to `from notes`.
+- `query --where ... --sort ...` builds a note query without writing the DSL explicitly.
+- `--language auto` detects Dataview DQL when the query starts with `TABLE`, `LIST`, `TASK`, or `CALENDAR`.
+- Use `--language dql` or `--language vulcan` to force the parser when auto-detection is not what you want.
 
 Use `vulcan describe` when you need the runtime schema for the JSON form rather than prose.
 
@@ -462,9 +505,8 @@ These commands can resolve a note interactively when you omit the note in a TTY 
 - `note links`
 - `note backlinks`
 - `graph path`
-- `related`
 - `vectors related`
-- `diff`
+- `note diff`
 - `edit`
 - `open`
 
@@ -559,13 +601,9 @@ Common mutating commands:
 - `refactor rename-alias`
 - `refactor rename-heading`
 - `refactor rename-block-ref`
-- `update`
-- `unset`
 - `edit`
 - `browse`
 - `daily`
-- `weekly`
-- `monthly`
 - `periodic`
 - `inbox`
 - `template`
@@ -664,7 +702,7 @@ If `.obsidian/templates.json` or the Templater plugin configures a template fold
 Examples:
 
 ```bash
-vulcan template --list
+vulcan template list
 vulcan template daily --path Daily/2026-03-26 --engine auto
 vulcan template meeting
 vulcan template insert daily Projects/Alpha --engine templater --var project=Vulcan
@@ -725,32 +763,35 @@ Saved report definitions live under `.vulcan/reports`.
 
 Relevant commands:
 
-- `vulcan saved search ...`
-- `vulcan saved notes ...`
-- `vulcan saved bases ...`
+- `vulcan saved create search ...`
+- `vulcan saved create notes ...`
+- `vulcan saved create bases ...`
 - `vulcan saved run <name>`
 - `vulcan saved list`
 - `vulcan saved show <name>`
-- `vulcan batch <name>...`
-- `vulcan batch --all`
-- `vulcan automation run ...`
+- `vulcan saved delete <name>`
+- `vulcan automation list`
+- `vulcan automation run [<name> ...] [--all] ...`
 
 Examples:
 
 ```bash
-vulcan saved search release-dashboard 'dashboard "release notes"' --description "Release dashboard hits"
-vulcan saved notes due-soon --where 'due <= 2026-04-01' --sort due
+vulcan saved create search release-dashboard 'dashboard "release notes"' --description "Release dashboard hits"
+vulcan saved create notes due-soon --where 'due <= 2026-04-01' --sort due
 vulcan saved run release-dashboard --output json
+vulcan automation list
 vulcan export epub 'from notes where file.path matches "^(People|Projects)/"' -o exports/team.epub --title "Team Notes" --backlinks
-vulcan batch release-dashboard due-soon
-vulcan automation run --scan --doctor --verify-cache --fail-on-issues
+vulcan automation run release-dashboard due-soon --scan --doctor
+vulcan automation run --all --verify-cache --fail-on-issues
 ```
 
 Automation notes:
 
 - `automation run --doctor-fix` applies deterministic doctor fixes before reporting status.
 - `automation run --fail-on-issues` returns exit code `2` when checks complete but issues remain.
-- `saved search` and `saved notes` use the same syntax as `search` and `notes`.
+- `saved create search` uses the same syntax as `search`.
+- `saved create notes` uses the same `--where` and `--sort` shortcut shape as `query`.
+- Hidden compatibility aliases such as `batch` and the legacy `saved search|notes|bases` forms still work, but the preferred public forms are `automation ...` and `saved create ...`.
 
 ### Query output modes
 
