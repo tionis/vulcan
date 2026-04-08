@@ -7,16 +7,17 @@ use crate::output::{
 };
 use crate::resolve::resolve_note_argument;
 use crate::{
-    resolve_bulk_note_selection, warn_auto_commit_if_needed, BulkNoteSelection, Cli, CliError,
-    QueryEngineArg,
+    resolve_bulk_note_selection, selected_permission_guard, selected_read_permission_filter,
+    warn_auto_commit_if_needed, BulkNoteSelection, Cli, CliError, QueryEngineArg,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use vulcan_core::{
-    bulk_set_property, bulk_set_property_on_paths, evaluate_dql, execute_query_report,
-    list_properties, list_query_fields, load_vault_config, query_backlinks, query_links,
-    query_notes, search_vault, NamedCount, NoteQuery, PropertyCatalogEntry, QueryAst, QueryReport,
-    SearchQuery, VaultPaths,
+    bulk_set_property_on_paths, evaluate_dql_with_filter, execute_query_report_with_filter,
+    list_properties, list_query_fields, load_vault_config, query_backlinks_with_filter,
+    query_links_with_filter, query_notes_with_filter, search_vault_with_filter, NamedCount,
+    NoteQuery, PermissionGuard, PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery,
+    VaultPaths,
 };
 
 pub(crate) fn handle_backlinks_command(
@@ -30,7 +31,9 @@ pub(crate) fn handle_backlinks_command(
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
     let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
-    let report = query_backlinks(paths, &note).map_err(CliError::operation)?;
+    let read_filter = selected_read_permission_filter(cli, paths)?;
+    let report = query_backlinks_with_filter(paths, &note, read_filter.as_ref())
+        .map_err(CliError::operation)?;
     let export = crate::resolve_cli_export(export)?;
     crate::print_backlinks_report(
         cli.output,
@@ -54,7 +57,9 @@ pub(crate) fn handle_links_command(
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
     let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
-    let report = query_links(paths, &note).map_err(CliError::operation)?;
+    let read_filter = selected_read_permission_filter(cli, paths)?;
+    let report =
+        query_links_with_filter(paths, &note, read_filter.as_ref()).map_err(CliError::operation)?;
     let export = crate::resolve_cli_export(export)?;
     crate::print_links_report(
         cli.output,
@@ -117,7 +122,9 @@ pub(crate) fn handle_query_command(
         {
             eprintln!("(detected as Dataview query)");
         }
-        let result = evaluate_dql(paths, dql, None).map_err(CliError::operation)?;
+        let read_filter = selected_read_permission_filter(cli, paths)?;
+        let result = evaluate_dql_with_filter(paths, dql, None, read_filter.as_ref())
+            .map_err(CliError::operation)?;
         let display_result_count = load_vault_config(paths)
             .config
             .dataview
@@ -131,6 +138,7 @@ pub(crate) fn handle_query_command(
         );
     }
 
+    let read_filter = selected_read_permission_filter(cli, paths)?;
     let ast = match (dsl, json) {
         (Some(_), Some(_)) => {
             return Err(CliError::operation(
@@ -168,7 +176,8 @@ pub(crate) fn handle_query_command(
         })
         .map_err(CliError::operation)?,
     };
-    let report = execute_query_report(paths, ast).map_err(CliError::operation)?;
+    let report = execute_query_report_with_filter(paths, ast, read_filter.as_ref())
+        .map_err(CliError::operation)?;
     let effective_controls = ListOutputControls {
         limit: list_controls.limit.or(report.query.limit),
         offset: if list_controls.offset > 0 {
@@ -221,7 +230,9 @@ pub(crate) fn handle_ls_command(
         sort_by: Some("file.path".to_string()),
         sort_descending: false,
     };
-    let notes_report = query_notes(paths, &note_query).map_err(CliError::operation)?;
+    let read_filter = selected_read_permission_filter(cli, paths)?;
+    let notes_report = query_notes_with_filter(paths, &note_query, read_filter.as_ref())
+        .map_err(CliError::operation)?;
     let ast = QueryAst::from_note_query(&note_query).map_err(CliError::operation)?;
     let export = crate::resolve_cli_export(export)?;
     crate::print_query_report(
@@ -253,13 +264,15 @@ pub(crate) fn handle_tags_command(
     show_count: bool,
     list_controls: &ListOutputControls,
 ) -> Result<(), CliError> {
-    let report = query_notes(
+    let read_filter = selected_read_permission_filter(cli, paths)?;
+    let report = query_notes_with_filter(
         paths,
         &NoteQuery {
             filters: filters.to_vec(),
             sort_by: None,
             sort_descending: false,
         },
+        read_filter.as_ref(),
     )
     .map_err(CliError::operation)?;
 
@@ -312,16 +325,30 @@ pub(crate) fn handle_update_command(
 ) -> Result<(), CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+    let guard = selected_permission_guard(cli, paths)?;
     let selection = resolve_bulk_note_selection(filters, stdin)?;
-    let report = match &selection {
-        BulkNoteSelection::Filters(filters) => {
-            bulk_set_property(paths, filters, key, Some(value), dry_run)
-        }
-        BulkNoteSelection::Paths(note_paths) => {
-            bulk_set_property_on_paths(paths, note_paths, key, Some(value), dry_run)
-        }
+    let note_paths = match &selection {
+        BulkNoteSelection::Filters(filters) => query_notes_with_filter(
+            paths,
+            &NoteQuery {
+                filters: filters.clone(),
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+            Some(&guard.read_filter()),
+        )
+        .map_err(CliError::operation)?
+        .notes
+        .into_iter()
+        .map(|note| note.document_path)
+        .collect::<Vec<_>>(),
+        BulkNoteSelection::Paths(note_paths) => note_paths.clone(),
+    };
+    for path in &note_paths {
+        guard.check_write_path(path).map_err(CliError::operation)?;
     }
-    .map_err(CliError::operation)?;
+    let report = bulk_set_property_on_paths(paths, &note_paths, key, Some(value), dry_run)
+        .map_err(CliError::operation)?;
     if !dry_run {
         auto_commit
             .commit(
@@ -345,16 +372,30 @@ pub(crate) fn handle_unset_command(
 ) -> Result<(), CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+    let guard = selected_permission_guard(cli, paths)?;
     let selection = resolve_bulk_note_selection(filters, stdin)?;
-    let report = match &selection {
-        BulkNoteSelection::Filters(filters) => {
-            bulk_set_property(paths, filters, key, None, dry_run)
-        }
-        BulkNoteSelection::Paths(note_paths) => {
-            bulk_set_property_on_paths(paths, note_paths, key, None, dry_run)
-        }
+    let note_paths = match &selection {
+        BulkNoteSelection::Filters(filters) => query_notes_with_filter(
+            paths,
+            &NoteQuery {
+                filters: filters.clone(),
+                sort_by: Some("file.path".to_string()),
+                sort_descending: false,
+            },
+            Some(&guard.read_filter()),
+        )
+        .map_err(CliError::operation)?
+        .notes
+        .into_iter()
+        .map(|note| note.document_path)
+        .collect::<Vec<_>>(),
+        BulkNoteSelection::Paths(note_paths) => note_paths.clone(),
+    };
+    for path in &note_paths {
+        guard.check_write_path(path).map_err(CliError::operation)?;
     }
-    .map_err(CliError::operation)?;
+    let report = bulk_set_property_on_paths(paths, &note_paths, key, None, dry_run)
+        .map_err(CliError::operation)?;
     if !dry_run {
         auto_commit
             .commit(paths, "unset", &crate::bulk_mutation_changed_files(&report))
@@ -374,13 +415,15 @@ pub(crate) fn handle_notes_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
-    let report = query_notes(
+    let read_filter = selected_read_permission_filter(cli, paths)?;
+    let report = query_notes_with_filter(
         paths,
         &NoteQuery {
             filters: filters.to_vec(),
             sort_by: sort.cloned(),
             sort_descending: desc,
         },
+        read_filter.as_ref(),
     )
     .map_err(CliError::operation)?;
     let export = crate::resolve_cli_export(export)?;
@@ -432,7 +475,8 @@ pub(crate) fn handle_search_command(
             ));
         }
     };
-    let report = search_vault(
+    let read_filter = selected_read_permission_filter(cli, paths)?;
+    let report = search_vault_with_filter(
         paths,
         &SearchQuery {
             text: effective_query,
@@ -450,6 +494,7 @@ pub(crate) fn handle_search_command(
             fuzzy,
             explain,
         },
+        read_filter.as_ref(),
     )
     .map_err(CliError::operation)?;
     let export = crate::resolve_cli_export(export)?;

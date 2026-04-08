@@ -1,5 +1,6 @@
 use crate::config::EmbeddingProviderConfig;
 use crate::graph::resolve_note_reference;
+use crate::permissions::{PermissionError, PermissionFilter};
 use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, CacheError, VaultPaths};
 use rusqlite::{params, Connection};
@@ -40,6 +41,7 @@ pub enum VectorError {
         requested_model: String,
     },
     InvalidQuery(String),
+    Permission(PermissionError),
 }
 
 impl Display for VectorError {
@@ -71,6 +73,7 @@ impl Display for VectorError {
                 "active vector index model '{indexed_model}' does not match requested model '{requested_model}'; rerun `vulcan vectors index`"
             ),
             Self::InvalidQuery(message) => formatter.write_str(message),
+            Self::Permission(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -91,6 +94,7 @@ impl Error for VectorError {
             | Self::UnsupportedProvider { .. }
             | Self::VectorIndexModelMismatch { .. }
             | Self::InvalidQuery(_) => None,
+            Self::Permission(error) => Some(error),
         }
     }
 }
@@ -104,6 +108,12 @@ impl From<CacheError> for VectorError {
 impl From<crate::GraphQueryError> for VectorError {
     fn from(error: crate::GraphQueryError) -> Self {
         Self::Graph(error)
+    }
+}
+
+impl From<PermissionError> for VectorError {
+    fn from(error: PermissionError) -> Self {
+        Self::Permission(error)
     }
 }
 
@@ -843,7 +853,15 @@ pub fn query_related_notes(
     paths: &VaultPaths,
     query: &RelatedNotesQuery,
 ) -> Result<RelatedNotesReport, VectorError> {
-    let neighbor_report = query_vector_neighbors(
+    query_related_notes_with_filter(paths, query, None)
+}
+
+pub fn query_related_notes_with_filter(
+    paths: &VaultPaths,
+    query: &RelatedNotesQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<RelatedNotesReport, VectorError> {
+    let neighbor_report = query_vector_neighbors_with_filter(
         paths,
         &VectorNeighborsQuery {
             provider: query.provider.clone(),
@@ -851,6 +869,7 @@ pub fn query_related_notes(
             note: Some(query.note.clone()),
             limit: query.limit.max(1).saturating_mul(8),
         },
+        filter,
     )?;
 
     let note_path = neighbor_report.note_path.clone().ok_or_else(|| {
@@ -903,6 +922,14 @@ pub fn query_vector_neighbors(
     paths: &VaultPaths,
     query: &VectorNeighborsQuery,
 ) -> Result<VectorNeighborsReport, VectorError> {
+    query_vector_neighbors_with_filter(paths, query, None)
+}
+
+pub fn query_vector_neighbors_with_filter(
+    paths: &VaultPaths,
+    query: &VectorNeighborsQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<VectorNeighborsReport, VectorError> {
     if query.text.is_some() == query.note.is_some() {
         return Err(VectorError::InvalidQuery(
             "provide exactly one of a query text or --note".to_string(),
@@ -939,6 +966,14 @@ pub fn query_vector_neighbors(
             .as_deref()
             .expect("validated note query should be present");
         let note = resolve_note_reference(paths, note_identifier)?;
+        if filter.is_some_and(|filter| !filter.is_allowed(&note.path)) {
+            return Err(PermissionError::PathDenied {
+                profile: "selected profile".to_string(),
+                action: "read",
+                path: note.path,
+            }
+            .into());
+        }
         let chunk_text = load_note_chunk_text(connection, &note.id)?;
         if chunk_text.trim().is_empty() {
             return Err(VectorError::NoteHasNoChunks { path: note.path });
@@ -980,6 +1015,7 @@ pub fn query_vector_neighbors(
         })
         .map_err(VectorError::Store)?;
     let hydrated_hits = hydrate_vector_hits(connection, &hits, note_path.as_deref())?;
+    let filtered_hits = filter_vector_neighbor_hits(hydrated_hits, filter);
 
     Ok(VectorNeighborsReport {
         provider_name: active_model.provider_name,
@@ -987,7 +1023,7 @@ pub fn query_vector_neighbors(
         dimensions: active_model.dimensions,
         query_text: query.text.clone(),
         note_path,
-        hits: hydrated_hits,
+        hits: filtered_hits,
     })
 }
 
@@ -1240,6 +1276,43 @@ pub fn cluster_vectors(
     })
 }
 
+pub fn cluster_vectors_with_filter(
+    paths: &VaultPaths,
+    query: &ClusterQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<ClusterReport, ClusterError> {
+    let mut report = cluster_vectors(paths, query)?;
+    if let Some(filter) = filter {
+        report
+            .assignments
+            .retain(|assignment| filter.is_allowed(&assignment.document_path));
+        let allowed_paths = report
+            .assignments
+            .iter()
+            .map(|assignment| assignment.document_path.clone())
+            .collect::<HashSet<_>>();
+        report.clusters.retain(|cluster| {
+            allowed_paths.contains(&cluster.exemplar_document_path)
+                || cluster
+                    .top_documents
+                    .iter()
+                    .any(|document| allowed_paths.contains(&document.document_path))
+        });
+        for cluster in &mut report.clusters {
+            cluster
+                .top_documents
+                .retain(|document| allowed_paths.contains(&document.document_path));
+            cluster.document_count = cluster.top_documents.len();
+            cluster.chunk_count = report
+                .assignments
+                .iter()
+                .filter(|assignment| assignment.cluster_id == cluster.cluster_id)
+                .count();
+        }
+    }
+    Ok(report)
+}
+
 pub(crate) fn query_hybrid_candidates(
     paths: &VaultPaths,
     provider: Option<&str>,
@@ -1256,6 +1329,18 @@ pub(crate) fn query_hybrid_candidates(
         },
     )
     .map(|report| report.hits)
+}
+
+fn filter_vector_neighbor_hits(
+    hits: Vec<VectorNeighborHit>,
+    filter: Option<&PermissionFilter>,
+) -> Vec<VectorNeighborHit> {
+    let Some(filter) = filter else {
+        return hits;
+    };
+    hits.into_iter()
+        .filter(|hit| filter.is_allowed(&hit.document_path))
+        .collect()
 }
 
 #[derive(Debug, Clone)]

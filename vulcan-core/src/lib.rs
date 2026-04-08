@@ -18,6 +18,7 @@ pub mod move_rewrite;
 pub mod parser;
 pub mod paths;
 pub mod periodic;
+pub mod permissions;
 pub mod properties;
 pub mod query;
 pub mod refactor;
@@ -75,22 +76,28 @@ pub use doctor::{
     DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
 };
 pub use dql::{
-    evaluate_dql, evaluate_parsed_dql, load_dataview_blocks, parse_dql_with_diagnostics,
-    DataviewBlockRecord, DqlDiagnostic, DqlEvalError, DqlParseOutput, DqlQueryResult,
+    evaluate_dql, evaluate_dql_with_filter, evaluate_parsed_dql, evaluate_parsed_dql_with_filter,
+    load_dataview_blocks, parse_dql_with_diagnostics, DataviewBlockRecord, DqlDiagnostic,
+    DqlEvalError, DqlParseOutput, DqlQueryResult,
 };
 pub use git::{
     auto_commit, git_blame, git_commit, git_diff, git_log, git_recent_log, git_status, is_git_repo,
     AutoCommitReport, GitBlameLine, GitCommitReport, GitError, GitLogEntry, GitStatusReport,
 };
 pub use graph::{
-    export_graph, list_note_identities, list_tagged_note_identities, list_tags, query_backlinks,
-    query_graph_analytics, query_graph_components, query_graph_dead_ends, query_graph_hubs,
-    query_graph_moc_candidates, query_graph_path, query_links, resolve_note_reference,
-    BacklinkRecord, BacklinksReport, GraphAnalyticsReport, GraphComponent, GraphComponentsReport,
-    GraphDeadEndsReport, GraphExportEdge, GraphExportNode, GraphExportReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphNodeScore, GraphPathReport, GraphQueryError,
-    LineContext, NamedCount, NoteIdentity, NoteMatchKind, NoteReference, OutgoingLinkRecord,
-    OutgoingLinksReport, ResolutionStatus,
+    export_graph, export_graph_with_filter, list_note_identities, list_note_identities_with_filter,
+    list_tagged_note_identities, list_tagged_note_identities_with_filter, list_tags,
+    list_tags_with_filter, query_backlinks, query_backlinks_with_filter, query_graph_analytics,
+    query_graph_analytics_with_filter, query_graph_components, query_graph_components_with_filter,
+    query_graph_dead_ends, query_graph_dead_ends_with_filter, query_graph_hubs,
+    query_graph_hubs_with_filter, query_graph_moc_candidates,
+    query_graph_moc_candidates_with_filter, query_graph_path, query_graph_path_with_filter,
+    query_links, query_links_with_filter, resolve_note_reference,
+    resolve_note_reference_with_filter, BacklinkRecord, BacklinksReport, GraphAnalyticsReport,
+    GraphComponent, GraphComponentsReport, GraphDeadEndsReport, GraphExportEdge, GraphExportNode,
+    GraphExportReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphNodeScore,
+    GraphPathReport, GraphQueryError, LineContext, NamedCount, NoteIdentity, NoteMatchKind,
+    NoteReference, OutgoingLinkRecord, OutgoingLinksReport, ResolutionStatus,
 };
 pub use history::{
     create_checkpoint, list_checkpoints, query_change_report, query_graph_trends, ChangeAnchor,
@@ -126,16 +133,23 @@ pub use periodic::{
     DailyNoteEvents, PeriodicError, PeriodicEvent, PeriodicEventOccurrence, PeriodicIcsExport,
     PeriodicNoteMatch,
 };
+pub use permissions::{
+    combine_cte_fragments, resolve_permission_profile, PathPermission, PermissionError,
+    PermissionFilter, PermissionGrant, PermissionGuard, PermissionSql, ProfilePermissionGuard,
+    ResolvedPermissionProfile, ResourceLimits, ResourceSpecifier,
+};
 pub use properties::{
     evaluate_note_inline_expressions, extract_indexed_properties, list_properties,
-    list_query_fields, query_notes, EvaluatedInlineExpression, IndexedProperties,
-    IndexedPropertyListItem, IndexedPropertyValue, NoteQuery, NoteRecord, NotesReport,
-    PropertyCatalogEntry, PropertyError, PropertyTypeDiagnostic, QueryFieldCatalogEntry,
+    list_query_fields, query_notes, query_notes_with_filter, EvaluatedInlineExpression,
+    IndexedProperties, IndexedPropertyListItem, IndexedPropertyValue, NoteQuery, NoteRecord,
+    NotesReport, PropertyCatalogEntry, PropertyError, PropertyTypeDiagnostic,
+    QueryFieldCatalogEntry,
 };
 pub use query::{
-    execute_query, execute_query_dsl, execute_query_json, execute_query_report, QueryAst,
-    QueryError, QueryOperator, QueryPredicate, QueryProjection, QueryReport, QuerySort,
-    QuerySource, QueryValue,
+    execute_query, execute_query_dsl, execute_query_json, execute_query_report,
+    execute_query_report_with_filter, execute_query_with_filter, QueryAst, QueryError,
+    QueryOperator, QueryPredicate, QueryProjection, QueryReport, QuerySort, QuerySource,
+    QueryValue,
 };
 pub use refactor::{
     bulk_set_property, bulk_set_property_on_paths, merge_tags, rename_alias, rename_block_ref,
@@ -157,9 +171,9 @@ pub use scan::{
     ScanPhase, ScanProgress, ScanSummary,
 };
 pub use search::{
-    export_static_search_index, search_vault, SearchError, SearchFuzzyExpansion, SearchHit,
-    SearchHitExplain, SearchPlan, SearchQuery, SearchReport, SearchSort, StaticSearchIndexEntry,
-    StaticSearchIndexReport,
+    export_static_search_index, search_vault, search_vault_with_filter, SearchError,
+    SearchFuzzyExpansion, SearchHit, SearchHitExplain, SearchPlan, SearchQuery, SearchReport,
+    SearchSort, StaticSearchIndexEntry, StaticSearchIndexReport,
 };
 pub use suggestions::{
     bulk_replace, bulk_replace_on_paths, link_mentions, suggest_duplicates, suggest_mentions,
@@ -183,8 +197,9 @@ pub use tasks::{
     TasksTextField,
 };
 pub use vector::{
-    cluster_vectors, drop_vector_model, index_vectors, index_vectors_with_progress,
-    inspect_vector_queue, list_vector_models, query_related_notes, query_vector_neighbors,
+    cluster_vectors, cluster_vectors_with_filter, drop_vector_model, index_vectors,
+    index_vectors_with_progress, inspect_vector_queue, list_vector_models, query_related_notes,
+    query_related_notes_with_filter, query_vector_neighbors, query_vector_neighbors_with_filter,
     rebuild_vectors, rebuild_vectors_with_progress, repair_vectors, repair_vectors_with_progress,
     vector_duplicates, vector_duplicates_with_progress, ClusterAssignment, ClusterDocumentCount,
     ClusterError, ClusterQuery, ClusterReport, ClusterSummary, RelatedNoteHit, RelatedNotesQuery,

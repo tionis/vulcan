@@ -114,10 +114,19 @@ pub(crate) fn run_js_repl(
     output: OutputFormat,
     timeout: Option<Duration>,
     sandbox: Option<JsRuntimeSandbox>,
+    permission_profile: Option<&str>,
     no_startup: bool,
 ) -> Result<(), CliError> {
-    let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout, sandbox })
-        .map_err(CliError::operation)?;
+    let session = DataviewJsSession::new(
+        paths,
+        None,
+        DataviewJsEvalOptions {
+            timeout,
+            sandbox,
+            permission_profile: permission_profile.map(ToOwned::to_owned),
+        },
+    )
+    .map_err(CliError::operation)?;
     fs::create_dir_all(paths.vulcan_dir()).map_err(CliError::operation)?;
 
     // Auto-load startup script when the vault is trusted and the file exists.
@@ -157,10 +166,19 @@ pub(crate) fn run_js_repl_with_preload(
     output: OutputFormat,
     timeout: Option<Duration>,
     sandbox: Option<JsRuntimeSandbox>,
+    permission_profile: Option<&str>,
     preload_path: &str,
 ) -> Result<(), CliError> {
-    let session = DataviewJsSession::new(paths, None, DataviewJsEvalOptions { timeout, sandbox })
-        .map_err(CliError::operation)?;
+    let session = DataviewJsSession::new(
+        paths,
+        None,
+        DataviewJsEvalOptions {
+            timeout,
+            sandbox,
+            permission_profile: permission_profile.map(ToOwned::to_owned),
+        },
+    )
+    .map_err(CliError::operation)?;
 
     // Load and evaluate the preload file before entering the REPL.
     let source = std::fs::read_to_string(preload_path).map_err(|error| {

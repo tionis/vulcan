@@ -1,9 +1,11 @@
 use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
-use crate::{Cli, CliError, GraphCommand};
+use crate::{selected_read_permission_filter, Cli, CliError, GraphCommand};
 use vulcan_core::{
-    export_graph, query_graph_analytics, query_graph_components, query_graph_dead_ends,
-    query_graph_hubs, query_graph_moc_candidates, query_graph_path, query_graph_trends, VaultPaths,
+    export_graph_with_filter, query_graph_analytics_with_filter,
+    query_graph_components_with_filter, query_graph_dead_ends_with_filter,
+    query_graph_hubs_with_filter, query_graph_moc_candidates_with_filter,
+    query_graph_path_with_filter, query_graph_trends, VaultPaths,
 };
 
 pub(crate) fn handle_graph_command(
@@ -17,6 +19,7 @@ pub(crate) fn handle_graph_command(
 ) -> Result<(), CliError> {
     match command {
         GraphCommand::Path { from, to } => {
+            let read_filter = selected_read_permission_filter(cli, paths)?;
             let from = resolve_note_argument(
                 paths,
                 from.as_deref(),
@@ -25,11 +28,14 @@ pub(crate) fn handle_graph_command(
             )?;
             let to =
                 resolve_note_argument(paths, to.as_deref(), interactive_note_selection, "to note")?;
-            let report = query_graph_path(paths, &from, &to).map_err(CliError::operation)?;
+            let report = query_graph_path_with_filter(paths, &from, &to, read_filter.as_ref())
+                .map_err(CliError::operation)?;
             crate::print_graph_path_report(cli.output, &report)
         }
         GraphCommand::Hubs { export } => {
-            let report = query_graph_hubs(paths).map_err(CliError::operation)?;
+            let read_filter = selected_read_permission_filter(cli, paths)?;
+            let report = query_graph_hubs_with_filter(paths, read_filter.as_ref())
+                .map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             crate::print_graph_hubs_report(
                 cli.output,
@@ -41,7 +47,9 @@ pub(crate) fn handle_graph_command(
             )
         }
         GraphCommand::Moc { export } => {
-            let report = query_graph_moc_candidates(paths).map_err(CliError::operation)?;
+            let read_filter = selected_read_permission_filter(cli, paths)?;
+            let report = query_graph_moc_candidates_with_filter(paths, read_filter.as_ref())
+                .map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             crate::print_graph_moc_report(
                 cli.output,
@@ -53,7 +61,9 @@ pub(crate) fn handle_graph_command(
             )
         }
         GraphCommand::DeadEnds { export } => {
-            let report = query_graph_dead_ends(paths).map_err(CliError::operation)?;
+            let read_filter = selected_read_permission_filter(cli, paths)?;
+            let report = query_graph_dead_ends_with_filter(paths, read_filter.as_ref())
+                .map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             crate::print_graph_dead_ends_report(
                 cli.output,
@@ -65,7 +75,9 @@ pub(crate) fn handle_graph_command(
             )
         }
         GraphCommand::Components { export } => {
-            let report = query_graph_components(paths).map_err(CliError::operation)?;
+            let read_filter = selected_read_permission_filter(cli, paths)?;
+            let report = query_graph_components_with_filter(paths, read_filter.as_ref())
+                .map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             crate::print_graph_components_report(
                 cli.output,
@@ -77,7 +89,9 @@ pub(crate) fn handle_graph_command(
             )
         }
         GraphCommand::Stats { export } => {
-            let report = query_graph_analytics(paths).map_err(CliError::operation)?;
+            let read_filter = selected_read_permission_filter(cli, paths)?;
+            let report = query_graph_analytics_with_filter(paths, read_filter.as_ref())
+                .map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             crate::print_graph_analytics_report(cli.output, &report, export.as_ref())
         }
@@ -87,7 +101,9 @@ pub(crate) fn handle_graph_command(
             crate::print_graph_trends_report(cli.output, &report, list_controls, export.as_ref())
         }
         GraphCommand::Export { format } => {
-            let report = export_graph(paths).map_err(CliError::operation)?;
+            let read_filter = selected_read_permission_filter(cli, paths)?;
+            let report = export_graph_with_filter(paths, read_filter.as_ref())
+                .map_err(CliError::operation)?;
             crate::print_graph_export_report(cli.output, &report, *format)
         }
     }

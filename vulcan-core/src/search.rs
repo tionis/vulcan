@@ -1,3 +1,4 @@
+use crate::permissions::{combine_cte_fragments, PermissionFilter};
 use crate::properties::{
     build_note_filter_clause_from_expressions, parse_note_filter_expression, FilterExpression,
     FilterField, FilterOperator, FilterValue, ParsedFilter,
@@ -341,16 +342,24 @@ struct SearchCandidate {
 }
 
 pub fn search_vault(paths: &VaultPaths, query: &SearchQuery) -> Result<SearchReport, SearchError> {
+    search_vault_with_filter(paths, query, None)
+}
+
+pub fn search_vault_with_filter(
+    paths: &VaultPaths,
+    query: &SearchQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<SearchReport, SearchError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let mut prepared = prepare_search_query(query)?;
-    let mut hits = execute_search(paths, connection, query, &prepared)?;
+    let mut hits = execute_search(paths, connection, query, &prepared, filter)?;
 
     if hits.is_empty() && query.fuzzy && !query.raw_query {
         let expansions = fuzzy_expansions(connection, &prepared)?;
         if !expansions.is_empty() {
             prepared.apply_fuzzy_expansions(expansions);
-            hits = execute_search(paths, connection, query, &prepared)?;
+            hits = execute_search(paths, connection, query, &prepared, filter)?;
         }
     }
     let suggestions = if query.explain && hits.is_empty() {
@@ -442,10 +451,13 @@ fn execute_search(
     connection: &Connection,
     query: &SearchQuery,
     prepared: &PreparedSearchQuery,
+    filter: Option<&PermissionFilter>,
 ) -> Result<Vec<SearchHit>, SearchError> {
     match query.mode {
-        SearchMode::Keyword => keyword_search_hits(connection, query, prepared, query.limit),
-        SearchMode::Hybrid => hybrid_search_hits(paths, connection, query, prepared),
+        SearchMode::Keyword => {
+            keyword_search_hits(connection, query, prepared, query.limit, filter)
+        }
+        SearchMode::Hybrid => hybrid_search_hits(paths, connection, query, prepared, filter),
     }
 }
 
@@ -455,6 +467,7 @@ fn keyword_search_hits(
     query: &SearchQuery,
     prepared: &PreparedSearchQuery,
     limit_override: Option<usize>,
+    filter: Option<&PermissionFilter>,
 ) -> Result<Vec<SearchHit>, SearchError> {
     let sort = prepared.sort;
     let has_section_scope = prepared
@@ -480,8 +493,11 @@ fn keyword_search_hits(
         limit
     };
     let filter_sql = build_note_filter_clause_from_expressions(&prepared.filter_expressions)?;
+    let permission_sql = filter
+        .map(|filter| filter.document_scope_sql("_permission_documents"))
+        .unwrap_or_default();
     let use_fts = !full_scan_for_regex && !candidate_query.trim().is_empty();
-    let mut sql = filter_sql.cte;
+    let mut sql = combine_cte_fragments([filter_sql.cte, permission_sql.cte.clone()]);
     if use_fts {
         let _ = write!(
             sql,
@@ -521,7 +537,11 @@ fn keyword_search_hits(
         );
     }
 
-    let mut params = Vec::<SqlValue>::new();
+    let mut params = permission_sql
+        .params
+        .into_iter()
+        .map(SqlValue::Text)
+        .collect::<Vec<_>>();
     if use_fts {
         params.push(SqlValue::Text(candidate_query));
     }
@@ -556,6 +576,7 @@ fn keyword_search_hits(
         params.push(SqlValue::Text(format!("%{term}%")));
     }
     sql.push_str(&filter_sql.clause);
+    sql.push_str(&permission_sql.clause);
     sql.push_str(keyword_order_clause(sort, use_fts));
     params.extend(filter_sql.params.clone());
     sql.push_str(" LIMIT ?");
@@ -1217,17 +1238,19 @@ fn hybrid_search_hits(
     connection: &Connection,
     query: &SearchQuery,
     prepared: &PreparedSearchQuery,
+    filter: Option<&PermissionFilter>,
 ) -> Result<Vec<SearchHit>, SearchError> {
     let requested_limit = query.limit.unwrap_or(10).max(1);
     let candidate_limit = requested_limit.saturating_mul(4).max(10);
-    let keyword_hits = keyword_search_hits(connection, query, prepared, Some(candidate_limit))?;
+    let keyword_hits =
+        keyword_search_hits(connection, query, prepared, Some(candidate_limit), filter)?;
     let vector_hits = query_hybrid_candidates(
         paths,
         query.provider.as_deref(),
         &prepared.semantic_text,
         candidate_limit,
     )?;
-    let filtered_paths = matching_note_paths(connection, &prepared.filter_expressions)?;
+    let filtered_paths = matching_note_paths(connection, &prepared.filter_expressions, filter)?;
     let filtered_vector_hits =
         batch_filter_vector_hits(connection, vector_hits, prepared, filtered_paths.as_ref())?;
 
@@ -1533,12 +1556,16 @@ fn batch_filter_vector_hits(
 fn matching_note_paths(
     connection: &Connection,
     filters: &[FilterExpression],
+    filter: Option<&PermissionFilter>,
 ) -> Result<Option<HashSet<String>>, SearchError> {
-    if filters.is_empty() {
+    if filters.is_empty() && filter.is_none() {
         return Ok(None);
     }
     let filter_sql = build_note_filter_clause_from_expressions(filters)?;
-    let mut sql = filter_sql.cte;
+    let permission_sql = filter
+        .map(|filter| filter.document_scope_sql("_permission_documents"))
+        .unwrap_or_default();
+    let mut sql = combine_cte_fragments([filter_sql.cte, permission_sql.cte.clone()]);
     sql.push_str(
         "SELECT documents.path
         FROM documents
@@ -1546,8 +1573,15 @@ fn matching_note_paths(
         WHERE documents.extension = 'md'",
     );
     sql.push_str(&filter_sql.clause);
+    sql.push_str(&permission_sql.clause);
     let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(filter_sql.params.iter()), |row| {
+    let params = permission_sql
+        .params
+        .into_iter()
+        .map(SqlValue::Text)
+        .chain(filter_sql.params)
+        .collect::<Vec<_>>();
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
         row.get::<_, String>(0)
     })?;
     Ok(Some(rows.collect::<Result<HashSet<_>, _>>()?))

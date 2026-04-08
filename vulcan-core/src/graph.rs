@@ -1,5 +1,6 @@
+use crate::permissions::{PermissionError, PermissionFilter};
 use crate::VaultPaths;
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, Connection};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
@@ -17,6 +18,7 @@ pub enum GraphQueryError {
     NoteNotFound {
         identifier: String,
     },
+    Permission(PermissionError),
     Sqlite(rusqlite::Error),
 }
 
@@ -38,6 +40,7 @@ impl Display for GraphQueryError {
             Self::NoteNotFound { identifier } => {
                 write!(formatter, "note not found: {identifier}")
             }
+            Self::Permission(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
         }
     }
@@ -47,6 +50,7 @@ impl Error for GraphQueryError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
+            Self::Permission(error) => Some(error),
             Self::Sqlite(error) => Some(error),
             Self::AmbiguousIdentifier { .. } | Self::CacheMissing | Self::NoteNotFound { .. } => {
                 None
@@ -64,6 +68,12 @@ impl From<std::io::Error> for GraphQueryError {
 impl From<rusqlite::Error> for GraphQueryError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
+    }
+}
+
+impl From<PermissionError> for GraphQueryError {
+    fn from(error: PermissionError) -> Self {
+        Self::Permission(error)
     }
 }
 
@@ -429,6 +439,20 @@ impl GraphAdjacency {
         adjacency
     }
 
+    fn from_filtered(adjacency: GraphAdjacency, allowed_ids: &HashSet<String>) -> Self {
+        let mut edges = Vec::new();
+        let mut counts = HashMap::<String, (usize, usize)>::new();
+        for (source_id, target_id) in adjacency.edges {
+            if !(allowed_ids.contains(&source_id) && allowed_ids.contains(&target_id)) {
+                continue;
+            }
+            counts.entry(source_id.clone()).or_insert((0, 0)).1 += 1;
+            counts.entry(target_id.clone()).or_insert((0, 0)).0 += 1;
+            edges.push((source_id, target_id));
+        }
+        Self { edges, counts }
+    }
+
     fn hubs(&self, notes: &[IndexedNote], min_degree: usize) -> Vec<GraphNodeScore> {
         notes
             .iter()
@@ -451,9 +475,27 @@ pub fn resolve_note_reference(
     paths: &VaultPaths,
     identifier: &str,
 ) -> Result<NoteReference, GraphQueryError> {
+    resolve_note_reference_with_filter(paths, identifier, None)
+}
+
+pub fn resolve_note_reference_with_filter(
+    paths: &VaultPaths,
+    identifier: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<NoteReference, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
     let notes = load_indexed_notes(&connection)?;
     let note = notes.resolve(identifier)?;
+    if let Some(filter) = filter {
+        if !filter.is_allowed(&note.path) {
+            return Err(PermissionError::PathDenied {
+                profile: "active".to_string(),
+                action: "read",
+                path: note.path,
+            }
+            .into());
+        }
+    }
 
     Ok(NoteReference {
         id: note.id,
@@ -463,8 +505,15 @@ pub fn resolve_note_reference(
 }
 
 pub fn list_note_identities(paths: &VaultPaths) -> Result<Vec<NoteIdentity>, GraphQueryError> {
+    list_note_identities_with_filter(paths, None)
+}
+
+pub fn list_note_identities_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<Vec<NoteIdentity>, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
+    let notes = filtered_note_set(&connection, filter)?;
 
     Ok(notes
         .notes
@@ -478,16 +527,37 @@ pub fn list_note_identities(paths: &VaultPaths) -> Result<Vec<NoteIdentity>, Gra
 }
 
 pub fn list_tags(paths: &VaultPaths) -> Result<Vec<NamedCount>, GraphQueryError> {
+    list_tags_with_filter(paths, None)
+}
+
+pub fn list_tags_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<Vec<NamedCount>, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    tag_counts(&connection, None)
+    match filter {
+        Some(filter) => {
+            let notes = filtered_note_set(&connection, Some(filter))?;
+            tag_counts_for_ids(&connection, &allowed_note_ids(&notes), None)
+        }
+        None => tag_counts(&connection, None),
+    }
 }
 
 pub fn list_tagged_note_identities(
     paths: &VaultPaths,
     tag: &str,
 ) -> Result<Vec<NoteIdentity>, GraphQueryError> {
+    list_tagged_note_identities_with_filter(paths, tag, None)
+}
+
+pub fn list_tagged_note_identities_with_filter(
+    paths: &VaultPaths,
+    tag: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<Vec<NoteIdentity>, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
+    let notes = filtered_note_set(&connection, filter)?;
     let mut indexed = notes
         .notes
         .into_iter()
@@ -526,9 +596,27 @@ pub fn query_links(
     paths: &VaultPaths,
     identifier: &str,
 ) -> Result<OutgoingLinksReport, GraphQueryError> {
+    query_links_with_filter(paths, identifier, None)
+}
+
+pub fn query_links_with_filter(
+    paths: &VaultPaths,
+    identifier: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<OutgoingLinksReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
     let notes = load_indexed_notes(&connection)?;
     let note = notes.resolve(identifier)?;
+    if let Some(filter) = filter {
+        if !filter.is_allowed(&note.path) {
+            return Err(PermissionError::PathDenied {
+                profile: "selected profile".to_string(),
+                action: "read",
+                path: note.path,
+            }
+            .into());
+        }
+    }
     let mut source_cache = HashMap::new();
     let mut statement = connection.prepare(
         "
@@ -563,6 +651,13 @@ pub fn query_links(
         .map(|row| {
             let row = row?;
             let has_resolved_target = row.resolved_target_path.is_some();
+            let resolved_target_path = row.resolved_target_path.and_then(|path| {
+                if filter.map_or(true, |filter| filter.is_allowed(&path)) {
+                    Some(path)
+                } else {
+                    None
+                }
+            });
             Ok(OutgoingLinkRecord {
                 raw_text: row.raw_text,
                 link_kind: row.link_kind.clone(),
@@ -570,8 +665,11 @@ pub fn query_links(
                 target_path_candidate: row.target_path_candidate,
                 target_heading: row.target_heading,
                 target_block: row.target_block,
-                resolved_target_path: row.resolved_target_path,
-                resolution_status: resolution_status(&row.link_kind, has_resolved_target),
+                resolved_target_path: resolved_target_path.clone(),
+                resolution_status: resolution_status(
+                    &row.link_kind,
+                    resolved_target_path.is_some() && has_resolved_target,
+                ),
                 context: load_context(paths, &note.path, row.byte_offset, &mut source_cache),
             })
         })
@@ -588,9 +686,27 @@ pub fn query_backlinks(
     paths: &VaultPaths,
     identifier: &str,
 ) -> Result<BacklinksReport, GraphQueryError> {
+    query_backlinks_with_filter(paths, identifier, None)
+}
+
+pub fn query_backlinks_with_filter(
+    paths: &VaultPaths,
+    identifier: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<BacklinksReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
     let notes = load_indexed_notes(&connection)?;
     let note = notes.resolve(identifier)?;
+    if let Some(filter) = filter {
+        if !filter.is_allowed(&note.path) {
+            return Err(PermissionError::PathDenied {
+                profile: "selected profile".to_string(),
+                action: "read",
+                path: note.path,
+            }
+            .into());
+        }
+    }
     let mut source_cache = HashMap::new();
     let mut statement = connection.prepare(
         "
@@ -618,15 +734,21 @@ pub fn query_backlinks(
     let backlinks = rows
         .map(|row| {
             let row = row?;
-            Ok(BacklinkRecord {
+            if filter.is_some_and(|filter| !filter.is_allowed(&row.source_path)) {
+                return Ok(None);
+            }
+            Ok(Some(BacklinkRecord {
                 source_path: row.source_path.clone(),
                 raw_text: row.raw_text,
                 link_kind: row.link_kind,
                 display_text: row.display_text,
                 context: load_context(paths, &row.source_path, row.byte_offset, &mut source_cache),
-            })
+            }))
         })
-        .collect::<Result<Vec<_>, GraphQueryError>>()?;
+        .collect::<Result<Vec<_>, GraphQueryError>>()?
+        .into_iter()
+        .flatten()
+        .collect();
 
     Ok(BacklinksReport {
         note_path: note.path,
@@ -640,46 +762,90 @@ pub fn query_graph_path(
     from_identifier: &str,
     to_identifier: &str,
 ) -> Result<GraphPathReport, GraphQueryError> {
+    query_graph_path_with_filter(paths, from_identifier, to_identifier, None)
+}
+
+pub fn query_graph_path_with_filter(
+    paths: &VaultPaths,
+    from_identifier: &str,
+    to_identifier: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<GraphPathReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let adjacency = GraphAdjacency::load(&connection)?;
+    let notes = filtered_note_set(&connection, filter)?;
+    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
     build_graph_path_report(&notes, &adjacency, from_identifier, to_identifier)
 }
 
 pub fn query_graph_hubs(paths: &VaultPaths) -> Result<GraphHubsReport, GraphQueryError> {
+    query_graph_hubs_with_filter(paths, None)
+}
+
+pub fn query_graph_hubs_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<GraphHubsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let adjacency = GraphAdjacency::load(&connection)?;
+    let notes = filtered_note_set(&connection, filter)?;
+    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
     Ok(build_graph_hubs_report(&notes, &adjacency))
 }
 
 pub fn query_graph_moc_candidates(paths: &VaultPaths) -> Result<GraphMocReport, GraphQueryError> {
+    query_graph_moc_candidates_with_filter(paths, None)
+}
+
+pub fn query_graph_moc_candidates_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<GraphMocReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let adjacency = GraphAdjacency::load(&connection)?;
+    let notes = filtered_note_set(&connection, filter)?;
+    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
     Ok(build_graph_moc_report(&notes, &adjacency))
 }
 
 pub fn query_graph_dead_ends(paths: &VaultPaths) -> Result<GraphDeadEndsReport, GraphQueryError> {
+    query_graph_dead_ends_with_filter(paths, None)
+}
+
+pub fn query_graph_dead_ends_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<GraphDeadEndsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let adjacency = GraphAdjacency::load(&connection)?;
+    let notes = filtered_note_set(&connection, filter)?;
+    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
     Ok(build_graph_dead_ends_report(&notes, &adjacency))
 }
 
 pub fn query_graph_components(
     paths: &VaultPaths,
 ) -> Result<GraphComponentsReport, GraphQueryError> {
+    query_graph_components_with_filter(paths, None)
+}
+
+pub fn query_graph_components_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<GraphComponentsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let adjacency = GraphAdjacency::load(&connection)?;
+    let notes = filtered_note_set(&connection, filter)?;
+    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
     Ok(build_graph_components_report(&notes, &adjacency))
 }
 
 pub fn query_graph_analytics(paths: &VaultPaths) -> Result<GraphAnalyticsReport, GraphQueryError> {
+    query_graph_analytics_with_filter(paths, None)
+}
+
+pub fn query_graph_analytics_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<GraphAnalyticsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let adjacency = GraphAdjacency::load(&connection)?;
+    let notes = filtered_note_set(&connection, filter)?;
+    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
     build_graph_analytics_report(&connection, &notes, &adjacency)
 }
 
@@ -702,9 +868,16 @@ pub struct GraphExportReport {
 }
 
 pub fn export_graph(paths: &VaultPaths) -> Result<GraphExportReport, GraphQueryError> {
+    export_graph_with_filter(paths, None)
+}
+
+pub fn export_graph_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<GraphExportReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let adjacency = GraphAdjacency::load(&connection)?;
+    let notes = filtered_note_set(&connection, filter)?;
+    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
     let id_to_path: HashMap<&str, &str> = notes
         .notes
         .iter()
@@ -902,6 +1075,7 @@ fn build_graph_analytics_report(
     notes: &IndexedNoteSet,
     adjacency: &GraphAdjacency,
 ) -> Result<GraphAnalyticsReport, GraphQueryError> {
+    let allowed_ids = allowed_note_ids(notes);
     let resolved_note_links = adjacency.total_resolved_links();
     let orphan_notes = notes
         .notes
@@ -921,8 +1095,8 @@ fn build_graph_analytics_report(
             count_as_f64(resolved_note_links) / count_as_f64(note_count)
         },
         orphan_notes,
-        top_tags: top_tag_counts(connection)?,
-        top_properties: top_property_counts(connection)?,
+        top_tags: tag_counts_for_ids(connection, &allowed_ids, Some(10))?,
+        top_properties: top_property_counts_for_ids(connection, &allowed_ids)?,
     })
 }
 
@@ -965,6 +1139,36 @@ fn load_indexed_notes(connection: &Connection) -> Result<IndexedNoteSet, GraphQu
         .collect::<Result<Vec<_>, _>>()
         .map_err(GraphQueryError::from)?;
     Ok(IndexedNoteSet::build(notes))
+}
+
+fn filtered_note_set(
+    connection: &Connection,
+    filter: Option<&PermissionFilter>,
+) -> Result<IndexedNoteSet, GraphQueryError> {
+    let notes = load_indexed_notes(connection)?;
+    let Some(filter) = filter else {
+        return Ok(notes);
+    };
+    Ok(IndexedNoteSet::build(
+        notes
+            .notes
+            .into_iter()
+            .filter(|note| filter.is_allowed(&note.path))
+            .collect(),
+    ))
+}
+
+fn allowed_note_ids(notes: &IndexedNoteSet) -> HashSet<String> {
+    notes.notes.iter().map(|note| note.id.clone()).collect()
+}
+
+fn filtered_graph_adjacency(
+    connection: &Connection,
+    notes: &IndexedNoteSet,
+) -> Result<GraphAdjacency, GraphQueryError> {
+    let allowed_ids = allowed_note_ids(notes);
+    let adjacency = GraphAdjacency::load(connection)?;
+    Ok(GraphAdjacency::from_filtered(adjacency, &allowed_ids))
 }
 
 fn strip_markdown_extension(path: &str) -> &str {
@@ -1053,10 +1257,6 @@ fn count_documents_by_extension_group(
     Ok(usize::try_from(count).unwrap_or(usize::MAX))
 }
 
-fn top_tag_counts(connection: &Connection) -> Result<Vec<NamedCount>, GraphQueryError> {
-    tag_counts(connection, Some(10))
-}
-
 fn tag_counts(
     connection: &Connection,
     limit: Option<usize>,
@@ -1094,17 +1294,62 @@ fn tag_counts(
         .map_err(GraphQueryError::from)
 }
 
-fn top_property_counts(connection: &Connection) -> Result<Vec<NamedCount>, GraphQueryError> {
-    let mut statement = connection.prepare(
+fn tag_counts_for_ids(
+    connection: &Connection,
+    allowed_ids: &HashSet<String>,
+    limit: Option<usize>,
+) -> Result<Vec<NamedCount>, GraphQueryError> {
+    if allowed_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; allowed_ids.len()].join(", ");
+    let limit_sql = limit.map_or_else(String::new, |limit| format!(" LIMIT {limit}"));
+    let sql = format!(
         "
-        SELECT key, SUM(usage_count) AS total_usage
-        FROM property_catalog
+        SELECT tags.tag_text, COUNT(DISTINCT tags.document_id) AS usage_count
+        FROM tags
+        JOIN documents ON documents.id = tags.document_id
+        WHERE documents.extension = 'md'
+          AND tags.document_id IN ({placeholders})
+        GROUP BY tags.tag_text
+        ORDER BY usage_count DESC, tags.tag_text ASC{limit_sql}
+        "
+    );
+    let mut params = allowed_ids.iter().collect::<Vec<_>>();
+    params.sort();
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
+        Ok(NamedCount {
+            name: row.get(0)?,
+            count: usize::try_from(row.get::<_, i64>(1)?).unwrap_or(usize::MAX),
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(GraphQueryError::from)
+}
+
+fn top_property_counts_for_ids(
+    connection: &Connection,
+    allowed_ids: &HashSet<String>,
+) -> Result<Vec<NamedCount>, GraphQueryError> {
+    if allowed_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; allowed_ids.len()].join(", ");
+    let sql = format!(
+        "
+        SELECT key, COUNT(*) AS total_usage
+        FROM property_values
+        WHERE document_id IN ({placeholders})
         GROUP BY key
         ORDER BY total_usage DESC, key ASC
         LIMIT 10
-        ",
-    )?;
-    let rows = statement.query_map([], |row| {
+        "
+    );
+    let mut params = allowed_ids.iter().collect::<Vec<_>>();
+    params.sort();
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
         Ok(NamedCount {
             name: row.get(0)?,
             count: usize::try_from(row.get::<_, i64>(1)?).unwrap_or(usize::MAX),

@@ -1,4 +1,6 @@
-use crate::{js_repl, Cli, CliError, GitCommand, WebCommand};
+use crate::{
+    js_repl, selected_permission_guard, Cli, CliError, GitCommand, PermissionGuard, WebCommand,
+};
 use std::io::{self, IsTerminal};
 use vulcan_core::{git_commit, VaultPaths};
 
@@ -7,6 +9,9 @@ pub(crate) fn handle_git_command(
     paths: &VaultPaths,
     command: &GitCommand,
 ) -> Result<(), CliError> {
+    selected_permission_guard(cli, paths)?
+        .check_git()
+        .map_err(CliError::operation)?;
     match command {
         GitCommand::Status => {
             let mut report = crate::git_status(paths.vault_root()).map_err(CliError::operation)?;
@@ -56,11 +61,15 @@ pub(crate) fn handle_run_command(
 ) -> Result<(), CliError> {
     let timeout = crate::parse_run_timeout(args.timeout)?;
     let sandbox = crate::parse_run_sandbox(args.sandbox)?;
+    selected_permission_guard(cli, paths)?
+        .check_execute()
+        .map_err(CliError::operation)?;
 
     // --eval/-e: evaluate one or more code snippets sequentially and print each result.
     if !args.eval.is_empty() {
         for code in args.eval {
-            let result = crate::run_js_eval(paths, code, timeout, sandbox)?;
+            let result =
+                crate::run_js_eval(paths, code, timeout, sandbox, cli.permissions.as_deref())?;
             crate::print_dataview_js_result(
                 cli.output,
                 &result,
@@ -74,11 +83,32 @@ pub(crate) fn handle_run_command(
 
     // --eval-file: load a file into the JS context, then start the REPL.
     if let Some(path) = args.eval_file {
-        js_repl::run_js_repl_with_preload(paths, cli.output, timeout, sandbox, path)
+        js_repl::run_js_repl_with_preload(
+            paths,
+            cli.output,
+            timeout,
+            sandbox,
+            cli.permissions.as_deref(),
+            path,
+        )
     } else if args.script.is_none() && io::stdin().is_terminal() {
-        js_repl::run_js_repl(paths, cli.output, timeout, sandbox, args.no_startup)
+        js_repl::run_js_repl(
+            paths,
+            cli.output,
+            timeout,
+            sandbox,
+            cli.permissions.as_deref(),
+            args.no_startup,
+        )
     } else {
-        let result = crate::run_js_command(paths, args.script, args.script_mode, timeout, sandbox)?;
+        let result = crate::run_js_command(
+            paths,
+            args.script,
+            args.script_mode,
+            timeout,
+            sandbox,
+            cli.permissions.as_deref(),
+        )?;
         crate::print_dataview_js_result(cli.output, &result, false, stdout_is_tty, use_stdout_color)
     }
 }
@@ -90,13 +120,15 @@ pub(crate) fn handle_web_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let guard = selected_permission_guard(cli, paths)?;
     match command {
         WebCommand::Search {
             query,
             backend,
             limit,
         } => {
-            let report = crate::run_web_search_command(paths, query, *backend, *limit)?;
+            let report =
+                crate::run_web_search_command(paths, query, *backend, *limit, Some(&guard))?;
             crate::print_web_search_report(cli.output, &report)
         }
         WebCommand::Fetch {
@@ -105,8 +137,14 @@ pub(crate) fn handle_web_command(
             save,
             extract_article,
         } => {
-            let report =
-                crate::run_web_fetch_command(paths, url, *mode, save.as_ref(), *extract_article)?;
+            let report = crate::run_web_fetch_command(
+                paths,
+                url,
+                *mode,
+                save.as_ref(),
+                *extract_article,
+                Some(&guard),
+            )?;
             crate::print_web_fetch_report(cli.output, &report, stdout_is_tty, use_stdout_color)
         }
     }

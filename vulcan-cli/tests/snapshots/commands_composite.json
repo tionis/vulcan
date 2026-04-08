@@ -7823,19 +7823,7 @@
         "about": "Start an MCP (Model Context Protocol) server over stdio",
         "after_help": "Protocol:\n  Speaks JSON-RPC 2.0 over stdio (stdin → stdout).\n  Each request and response is a single UTF-8 JSON line.\n\nSupported methods:\n  initialize      Negotiate protocol version and report server capabilities\n  tools/list      Return all tool definitions (mirrors `vulcan describe --format mcp`)\n  tools/call      Execute a Vulcan command and return its JSON output as content\n\nNotes:\n  Start with `--vault <path>` so all tool calls operate on the correct vault.\n  `--permissions <profile>` filters the exposed tool set before requests are handled.\n  Tool names use underscore-joined command paths: note_get, graph_stats, etc.\n  Each tools/call runs synchronously; long operations block until complete.\n  All tool output is returned as JSON (--output json is applied automatically).\n\nExamples:\n  vulcan mcp --vault ~/notes\n  vulcan mcp --vault ~/notes --permissions readonly\n  vulcan mcp | jq .",
         "name": "mcp",
-        "options": [
-          {
-            "help": "Restrict MCP tools to a named permission profile",
-            "id": "permissions",
-            "long": "permissions",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "PERMISSIONS"
-            ]
-          }
-        ],
+        "options": [],
         "subcommands": []
       }
     ],
@@ -7901,6 +7889,17 @@
         "short": null,
         "value_names": [
           "PROVIDER"
+        ]
+      },
+      {
+        "help": "Restrict the command to a named permission profile",
+        "id": "permissions",
+        "long": "permissions",
+        "possible_values": [],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "PERMISSIONS"
         ]
       },
       {

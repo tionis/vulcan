@@ -33,10 +33,11 @@ pub struct DataviewJsResult {
     pub value: Option<Value>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DataviewJsEvalOptions {
     pub timeout: Option<Duration>,
     pub sandbox: Option<JsRuntimeSandbox>,
+    pub permission_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -210,23 +211,25 @@ mod runtime {
     };
     use crate::file_metadata::FileMetadataResolver;
     use crate::graph::{
-        query_graph_components, query_graph_dead_ends, query_graph_hubs, query_graph_path,
+        query_graph_components_with_filter, query_graph_dead_ends_with_filter,
+        query_graph_hubs_with_filter, query_graph_path_with_filter,
     };
     use crate::periodic::{
         list_daily_note_events, list_events_between, load_events_for_periodic_note,
         resolve_periodic_note, today_utc_string,
     };
+    use crate::permissions::{resolve_permission_profile, PermissionGuard, ProfilePermissionGuard};
     use crate::properties::{load_note_index, NoteRecord};
     use crate::refactor::{
         merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property,
         set_note_property,
     };
     use crate::resolve_note_reference;
-    use crate::search::{search_vault, SearchQuery};
+    use crate::search::{search_vault_with_filter, SearchQuery};
     use crate::VaultPaths;
     use crate::{
-        move_note, parse_document, query_backlinks, query_links, render_markdown_html, scan_vault,
-        ScanMode,
+        move_note, parse_document, query_backlinks_with_filter, query_links_with_filter,
+        render_markdown_html, scan_vault, ScanMode,
     };
     use serde_json::{Map, Value};
     use std::cmp::Ordering;
@@ -240,6 +243,7 @@ mod runtime {
         inbox_config: crate::InboxConfig,
         web_config: WebConfig,
         sandbox: JsRuntimeSandbox,
+        permissions: Option<ProfilePermissionGuard>,
         transaction: Mutex<Option<JsTransactionState>>,
     }
 
@@ -2626,6 +2630,7 @@ globalThis.Function = undefined;
     }
 
     impl DataviewJsSession {
+        #[allow(clippy::needless_pass_by_value)]
         pub fn new(
             paths: &VaultPaths,
             current_file: Option<&str>,
@@ -2636,8 +2641,24 @@ globalThis.Function = undefined;
                 return Err(DataviewJsError::Disabled);
             }
 
-            let note_index = load_note_index(paths)
+            let permissions = options
+                .permission_profile
+                .as_deref()
+                .map(|profile| resolve_permission_profile(paths, Some(profile)))
+                .transpose()
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?
+                .map(ProfilePermissionGuard::new);
+            if let Some(permissions) = permissions.as_ref() {
+                permissions
+                    .check_execute()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            }
+            let mut note_index = load_note_index(paths)
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            if let Some(permissions) = permissions.as_ref() {
+                let read_filter = permissions.read_filter();
+                note_index.retain(|_, note| read_filter.is_allowed(&note.document_path));
+            }
             let sandbox = options
                 .sandbox
                 .unwrap_or(loaded_config.js_runtime.default_sandbox);
@@ -2649,17 +2670,29 @@ globalThis.Function = undefined;
                 inbox_config: loaded_config.inbox.clone(),
                 web_config: loaded_config.web.clone(),
                 sandbox,
+                permissions,
                 transaction: Mutex::new(None),
             });
             let outputs = Arc::new(Mutex::new(Vec::new()));
             let runtime =
                 Runtime::new().map_err(|error| DataviewJsError::Message(error.to_string()))?;
             if sandbox_uses_resource_limits(sandbox) {
-                runtime.set_memory_limit(runtime_memory_limit_bytes(&loaded_config.js_runtime));
-                runtime.set_max_stack_size(runtime_stack_limit_bytes(&loaded_config.js_runtime));
+                runtime.set_memory_limit(runtime_memory_limit_bytes(
+                    &loaded_config.js_runtime,
+                    state.permissions.as_ref(),
+                ));
+                runtime.set_max_stack_size(runtime_stack_limit_bytes(
+                    &loaded_config.js_runtime,
+                    state.permissions.as_ref(),
+                ));
             }
 
-            let timeout = effective_timeout(&loaded_config, sandbox, options.timeout)?;
+            let timeout = effective_timeout(
+                &loaded_config,
+                sandbox,
+                options.timeout,
+                state.permissions.as_ref(),
+            )?;
             if timeout.is_some_and(|timeout| timeout.is_zero()) {
                 return Err(DataviewJsError::Message(
                     "DataviewJS timeout must be greater than 0ms".to_string(),
@@ -2844,6 +2877,7 @@ globalThis.Function = undefined;
                                 note_index,
                                 &path,
                                 &direction,
+                                note_links_state.permissions.as_ref(),
                             )
                             .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                         )
@@ -2865,6 +2899,7 @@ globalThis.Function = undefined;
                                 note_index,
                                 &path,
                                 depth,
+                                note_neighbors_state.permissions.as_ref(),
                             )
                             .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                         )
@@ -2974,15 +3009,20 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_search_json",
                 Func::from(move |ctx: Ctx<'_>, query: String, limit: Option<usize>| {
+                    let read_filter = search_state
+                        .permissions
+                        .as_ref()
+                        .map(PermissionGuard::read_filter);
                     to_json_string(
                         &ctx,
-                        search_vault(
+                        search_vault_with_filter(
                             &search_state.paths,
                             &SearchQuery {
                                 text: query,
                                 limit,
                                 ..SearchQuery::default()
                             },
+                            read_filter.as_ref(),
                         )
                         .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                     )
@@ -2995,10 +3035,19 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_graph_path_json",
                 Func::from(move |ctx: Ctx<'_>, from: String, to: String| {
+                    let read_filter = graph_path_state
+                        .permissions
+                        .as_ref()
+                        .map(PermissionGuard::read_filter);
                     to_json_string(
                         &ctx,
-                        query_graph_path(&graph_path_state.paths, &from, &to)
-                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                        query_graph_path_with_filter(
+                            &graph_path_state.paths,
+                            &from,
+                            &to,
+                            read_filter.as_ref(),
+                        )
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                     )
                 }),
             )
@@ -3009,8 +3058,13 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_graph_hubs_json",
                 Func::from(move |ctx: Ctx<'_>, limit: Option<usize>| {
-                    let mut report = query_graph_hubs(&graph_hubs_state.paths)
-                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+                    let read_filter = graph_hubs_state
+                        .permissions
+                        .as_ref()
+                        .map(PermissionGuard::read_filter);
+                    let mut report =
+                        query_graph_hubs_with_filter(&graph_hubs_state.paths, read_filter.as_ref())
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
                     if let Some(limit) = limit {
                         report.notes.truncate(limit);
                     }
@@ -3024,8 +3078,15 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_graph_components_json",
                 Func::from(move |ctx: Ctx<'_>, limit: Option<usize>| {
-                    let mut report = query_graph_components(&graph_components_state.paths)
-                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+                    let read_filter = graph_components_state
+                        .permissions
+                        .as_ref()
+                        .map(PermissionGuard::read_filter);
+                    let mut report = query_graph_components_with_filter(
+                        &graph_components_state.paths,
+                        read_filter.as_ref(),
+                    )
+                    .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
                     if let Some(limit) = limit {
                         report.components.truncate(limit);
                     }
@@ -3039,8 +3100,15 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_graph_dead_ends_json",
                 Func::from(move |ctx: Ctx<'_>, limit: Option<usize>| {
-                    let mut report = query_graph_dead_ends(&graph_dead_ends_state.paths)
-                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+                    let read_filter = graph_dead_ends_state
+                        .permissions
+                        .as_ref()
+                        .map(PermissionGuard::read_filter);
+                    let mut report = query_graph_dead_ends_with_filter(
+                        &graph_dead_ends_state.paths,
+                        read_filter.as_ref(),
+                    )
+                    .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
                     if let Some(limit) = limit {
                         report.notes.truncate(limit);
                     }
@@ -3386,10 +3454,12 @@ globalThis.Function = undefined;
         note_index: &HashMap<String, NoteRecord>,
         note: &str,
         direction: &str,
+        permissions: Option<&ProfilePermissionGuard>,
     ) -> Result<Vec<Value>, DataviewJsError> {
         let path = resolve_existing_note_path(paths, note)?;
+        let read_filter = permissions.map(PermissionGuard::read_filter);
         match direction {
-            "outgoing" => query_links(paths, &path)
+            "outgoing" => query_links_with_filter(paths, &path, read_filter.as_ref())
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?
                 .links
                 .into_iter()
@@ -3412,7 +3482,7 @@ globalThis.Function = undefined;
                     }))
                 })
                 .collect(),
-            "incoming" => query_backlinks(paths, &path)
+            "incoming" => query_backlinks_with_filter(paths, &path, read_filter.as_ref())
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?
                 .backlinks
                 .into_iter()
@@ -3440,8 +3510,10 @@ globalThis.Function = undefined;
         note_index: &HashMap<String, NoteRecord>,
         note: &str,
         depth: i32,
+        permissions: Option<&ProfilePermissionGuard>,
     ) -> Result<Vec<Value>, DataviewJsError> {
         let path = resolve_existing_note_path(paths, note)?;
+        let read_filter = permissions.map(PermissionGuard::read_filter);
         let max_depth = usize::try_from(depth.max(1)).unwrap_or(1);
         let mut seen = HashSet::from([path.clone()]);
         let mut queue = VecDeque::from([(path.clone(), 0_usize)]);
@@ -3451,13 +3523,13 @@ globalThis.Function = undefined;
             if current_depth >= max_depth {
                 continue;
             }
-            let outgoing = query_links(paths, &current)
+            let outgoing = query_links_with_filter(paths, &current, read_filter.as_ref())
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?
                 .links
                 .into_iter()
                 .filter_map(|record| record.resolved_target_path)
                 .collect::<Vec<_>>();
-            let incoming = query_backlinks(paths, &current)
+            let incoming = query_backlinks_with_filter(paths, &current, read_filter.as_ref())
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?
                 .backlinks
                 .into_iter()
@@ -3560,6 +3632,7 @@ globalThis.Function = undefined;
                 let content = payload_string(&payload, "content")?.to_string();
                 let preserve_frontmatter = payload_bool(&payload, "preserveFrontmatter");
                 let resolved_path = resolve_existing_note_path(&state.paths, path)?;
+                ensure_write_access(state, &resolved_path, "vault.set()")?;
                 record_transaction_original(state, &resolved_path)?;
                 let existing = fs::read_to_string(state.paths.vault_root().join(&resolved_path))
                     .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3577,6 +3650,7 @@ globalThis.Function = undefined;
                 ensure_fs_access(state, "vault.create()")?;
                 let path =
                     normalize_note_path_for_write(&state.paths, payload_string(&payload, "path")?)?;
+                ensure_write_access(state, &path, "vault.create()")?;
                 let absolute = state.paths.vault_root().join(&path);
                 if absolute.exists() {
                     return Err(DataviewJsError::Message(format!(
@@ -3602,6 +3676,7 @@ globalThis.Function = undefined;
                 ensure_fs_access(state, "vault.append()")?;
                 let path =
                     resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
+                ensure_write_access(state, &path, "vault.append()")?;
                 let absolute = state.paths.vault_root().join(&path);
                 let existing = fs::read_to_string(&absolute)
                     .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3625,6 +3700,7 @@ globalThis.Function = undefined;
                 ensure_fs_access(state, "vault.patch()")?;
                 let path =
                     resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
+                ensure_write_access(state, &path, "vault.patch()")?;
                 let absolute = state.paths.vault_root().join(&path);
                 let existing = fs::read_to_string(&absolute)
                     .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3651,6 +3727,7 @@ globalThis.Function = undefined;
                 ensure_fs_access(state, "vault.update()")?;
                 let path =
                     resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
+                ensure_write_access(state, &path, "vault.update()")?;
                 record_transaction_original(state, &path)?;
                 let key = payload_string(&payload, "key")?;
                 let value = render_property_value(payload.get("value").unwrap_or(&Value::Null))?;
@@ -3663,6 +3740,7 @@ globalThis.Function = undefined;
                 ensure_fs_access(state, "vault.unset()")?;
                 let path =
                     resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
+                ensure_write_access(state, &path, "vault.unset()")?;
                 record_transaction_original(state, &path)?;
                 let key = payload_string(&payload, "key")?;
                 set_note_property(&state.paths, &path, key, None, false)
@@ -3673,6 +3751,7 @@ globalThis.Function = undefined;
             "inbox" => {
                 ensure_fs_access(state, "vault.inbox()")?;
                 let path = normalize_note_path_for_write(&state.paths, &state.inbox_config.path)?;
+                ensure_write_access(state, &path, "vault.inbox()")?;
                 record_transaction_original(state, &path)?;
                 let absolute = state.paths.vault_root().join(&path);
                 if let Some(parent) = absolute.parent() {
@@ -3710,6 +3789,7 @@ globalThis.Function = undefined;
                                 "failed to resolve daily note path for {date}"
                             ))
                         })?;
+                ensure_write_access(state, &path, "vault.daily.append()")?;
                 record_transaction_original(state, &path)?;
                 let absolute = state.paths.vault_root().join(&path);
                 if let Some(parent) = absolute.parent() {
@@ -3731,6 +3811,8 @@ globalThis.Function = undefined;
                 ensure_fs_access(state, "vault.refactor.renameAlias()")?;
                 ensure_no_transaction(state, "vault.refactor.renameAlias()")?;
                 let note = payload_string(&payload, "note")?;
+                let resolved_note = resolve_existing_note_path(&state.paths, note)?;
+                ensure_refactor_access(state, &resolved_note, "vault.refactor.renameAlias()")?;
                 let old_alias = payload_string(&payload, "oldAlias")?;
                 let new_alias = payload_string(&payload, "newAlias")?;
                 let report = rename_alias(&state.paths, note, old_alias, new_alias, false)
@@ -3743,6 +3825,8 @@ globalThis.Function = undefined;
                 ensure_fs_access(state, "vault.refactor.renameHeading()")?;
                 ensure_no_transaction(state, "vault.refactor.renameHeading()")?;
                 let note = payload_string(&payload, "note")?;
+                let resolved_note = resolve_existing_note_path(&state.paths, note)?;
+                ensure_refactor_access(state, &resolved_note, "vault.refactor.renameHeading()")?;
                 let old_heading = payload_string(&payload, "oldHeading")?;
                 let new_heading = payload_string(&payload, "newHeading")?;
                 let report = rename_heading(&state.paths, note, old_heading, new_heading, false)
@@ -3755,6 +3839,8 @@ globalThis.Function = undefined;
                 ensure_fs_access(state, "vault.refactor.renameBlockRef()")?;
                 ensure_no_transaction(state, "vault.refactor.renameBlockRef()")?;
                 let note = payload_string(&payload, "note")?;
+                let resolved_note = resolve_existing_note_path(&state.paths, note)?;
+                ensure_refactor_access(state, &resolved_note, "vault.refactor.renameBlockRef()")?;
                 let old_block_id = payload_string(&payload, "oldBlockId")?;
                 let new_block_id = payload_string(&payload, "newBlockId")?;
                 let report =
@@ -3767,6 +3853,7 @@ globalThis.Function = undefined;
             "refactor.renameProperty" => {
                 ensure_fs_access(state, "vault.refactor.renameProperty()")?;
                 ensure_no_transaction(state, "vault.refactor.renameProperty()")?;
+                ensure_unrestricted_refactor_scope(state, "vault.refactor.renameProperty()")?;
                 let old_key = payload_string(&payload, "oldKey")?;
                 let new_key = payload_string(&payload, "newKey")?;
                 let report = rename_property(&state.paths, old_key, new_key, false)
@@ -3778,6 +3865,7 @@ globalThis.Function = undefined;
             "refactor.mergeTags" => {
                 ensure_fs_access(state, "vault.refactor.mergeTags()")?;
                 ensure_no_transaction(state, "vault.refactor.mergeTags()")?;
+                ensure_unrestricted_refactor_scope(state, "vault.refactor.mergeTags()")?;
                 let from_tag = payload_string(&payload, "fromTag")?;
                 let to_tag = payload_string(&payload, "toTag")?;
                 let report = merge_tags(&state.paths, from_tag, to_tag, false)
@@ -3790,10 +3878,13 @@ globalThis.Function = undefined;
                 ensure_fs_access(state, "vault.refactor.move()")?;
                 ensure_no_transaction(state, "vault.refactor.move()")?;
                 let source = payload_string(&payload, "source")?;
+                let resolved_source = resolve_existing_note_path(&state.paths, source)?;
+                ensure_refactor_access(state, &resolved_source, "vault.refactor.move()")?;
                 let destination = normalize_note_path_for_write(
                     &state.paths,
                     payload_string(&payload, "destination")?,
                 )?;
+                ensure_refactor_access(state, &destination, "vault.refactor.move()")?;
                 let report = move_note(&state.paths, source, &destination, false)
                     .map_err(|error| DataviewJsError::Message(error.to_string()))?;
                 reload_note_index(state)?;
@@ -3807,23 +3898,73 @@ globalThis.Function = undefined;
     }
 
     fn ensure_fs_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
-        if sandbox_allows_fs(state.sandbox) {
-            Ok(())
-        } else {
-            Err(DataviewJsError::Message(format!(
+        if !sandbox_allows_fs(state.sandbox) {
+            return Err(DataviewJsError::Message(format!(
                 "{operation} requires --sandbox fs or higher"
-            )))
+            )));
         }
+        Ok(())
     }
 
     fn ensure_network_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
-        if sandbox_allows_network(state.sandbox) {
-            Ok(())
-        } else {
-            Err(DataviewJsError::Message(format!(
+        if !sandbox_allows_network(state.sandbox) {
+            return Err(DataviewJsError::Message(format!(
                 "{operation} requires --sandbox net or higher"
-            )))
+            )));
         }
+        if state
+            .permissions
+            .as_ref()
+            .is_some_and(|permissions| !permissions.grant().network)
+        {
+            return Err(DataviewJsError::Message(format!(
+                "permission denied: {operation} requires network access under the selected profile"
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_write_access(
+        state: &JsEvalState,
+        path: &str,
+        operation: &str,
+    ) -> Result<(), DataviewJsError> {
+        ensure_fs_access(state, operation)?;
+        if let Some(permissions) = state.permissions.as_ref() {
+            permissions
+                .check_write_path(path)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn ensure_refactor_access(
+        state: &JsEvalState,
+        path: &str,
+        operation: &str,
+    ) -> Result<(), DataviewJsError> {
+        ensure_fs_access(state, operation)?;
+        if let Some(permissions) = state.permissions.as_ref() {
+            permissions
+                .check_refactor_path(path)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn ensure_unrestricted_refactor_scope(
+        state: &JsEvalState,
+        operation: &str,
+    ) -> Result<(), DataviewJsError> {
+        if let Some(permissions) = state.permissions.as_ref() {
+            let filter = permissions.refactor_filter();
+            if !filter.path_permission().is_unrestricted() {
+                return Err(DataviewJsError::Message(format!(
+                    "permission denied: {operation} requires unrestricted refactor scope under the selected profile"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn ensure_no_transaction(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
@@ -4135,6 +4276,11 @@ globalThis.Function = undefined;
         let client = build_web_client(&state.web_config.user_agent)?;
         let search_cfg = &state.web_config.search;
         let base_url = search_cfg.effective_base_url();
+        if let Some(permissions) = state.permissions.as_ref() {
+            permissions
+                .check_network(base_url)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        }
         let results = match search_cfg.backend {
             SearchBackendKind::Duckduckgo | SearchBackendKind::Auto => {
                 let response = client
@@ -4373,6 +4519,11 @@ globalThis.Function = undefined;
         extract_article: bool,
     ) -> Result<WebFetchReport, DataviewJsError> {
         ensure_network_access(state, "web.fetch()")?;
+        if let Some(permissions) = state.permissions.as_ref() {
+            permissions
+                .check_network(url)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        }
         let client = build_web_client(&state.web_config.user_agent)?;
         if !robots_allow_fetch(&client, url, &state.web_config.user_agent) {
             return Err(DataviewJsError::Message(
@@ -4991,33 +5142,59 @@ globalThis.Function = undefined;
         matches!(sandbox, JsRuntimeSandbox::Net | JsRuntimeSandbox::None)
     }
 
-    fn runtime_memory_limit_bytes(config: &JsRuntimeConfig) -> usize {
-        config.memory_limit_mb.saturating_mul(1024 * 1024)
+    fn runtime_memory_limit_bytes(
+        config: &JsRuntimeConfig,
+        permissions: Option<&ProfilePermissionGuard>,
+    ) -> usize {
+        let configured = config.memory_limit_mb;
+        permissions
+            .and_then(|permissions| permissions.resource_limits().memory_limit_mb)
+            .map_or(configured, |limit| configured.min(limit))
+            .saturating_mul(1024 * 1024)
     }
 
-    fn runtime_stack_limit_bytes(config: &JsRuntimeConfig) -> usize {
-        config.stack_limit_kb.saturating_mul(1024)
+    fn runtime_stack_limit_bytes(
+        config: &JsRuntimeConfig,
+        permissions: Option<&ProfilePermissionGuard>,
+    ) -> usize {
+        let configured = config.stack_limit_kb;
+        permissions
+            .and_then(|permissions| permissions.resource_limits().stack_limit_kb)
+            .map_or(configured, |limit| configured.min(limit))
+            .saturating_mul(1024)
     }
 
     fn effective_timeout(
         config: &VaultConfig,
         sandbox: JsRuntimeSandbox,
         requested: Option<Duration>,
+        permissions: Option<&ProfilePermissionGuard>,
     ) -> Result<Option<Duration>, DataviewJsError> {
-        if let Some(timeout) = requested {
+        let timeout = if let Some(timeout) = requested {
             if timeout.is_zero() {
                 return Err(DataviewJsError::Message(
                     "DataviewJS timeout must be greater than 0ms".to_string(),
                 ));
             }
-            return Ok(Some(timeout));
-        }
-        if sandbox == JsRuntimeSandbox::None {
+            Some(timeout)
+        } else if sandbox == JsRuntimeSandbox::None {
+            None
+        } else {
+            Some(Duration::from_secs(
+                u64::try_from(config.js_runtime.default_timeout_seconds).unwrap_or(u64::MAX),
+            ))
+        };
+        let Some(timeout) = timeout else {
             return Ok(None);
-        }
-        Ok(Some(Duration::from_secs(
-            u64::try_from(config.js_runtime.default_timeout_seconds).unwrap_or(u64::MAX),
-        )))
+        };
+        let timeout = permissions
+            .and_then(|permissions| permissions.resource_limits().cpu_limit_ms)
+            .map_or(timeout, |limit_ms| {
+                timeout.min(Duration::from_millis(
+                    u64::try_from(limit_ms).unwrap_or(u64::MAX),
+                ))
+            });
+        Ok(Some(timeout))
     }
 
     fn map_runtime_message(message: &str, timeout_description: &str) -> DataviewJsError {
@@ -5095,7 +5272,7 @@ globalThis.Function = undefined;
         use std::net::TcpListener;
         use std::path::Path;
         use std::thread;
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
         use tempfile::tempdir;
 
@@ -5426,6 +5603,49 @@ globalThis.Function = undefined;
         }
 
         #[test]
+        fn dataviewjs_permission_profile_caps_runtime_timeout() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+            fs::write(
+                vault_root.join(".vulcan/config.toml"),
+                r#"[dataview]
+js_timeout_seconds = 5
+
+[permissions.profiles.fast]
+read = "all"
+execute = "allow"
+cpu_limit_ms = 25
+"#,
+            )
+            .expect("config should be written");
+
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let started = Instant::now();
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                "while (true) {}",
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: None,
+                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    permission_profile: Some("fast".to_string()),
+                },
+            )
+            .expect_err("permission profile should cap JS runtime");
+
+            assert!(matches!(
+                error,
+                DataviewJsError::Message(message)
+                    if message.contains("timed out after 25 ms")
+            ));
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
+
+        #[test]
         fn dataviewjs_session_preserves_values_between_evaluations() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
@@ -5553,6 +5773,7 @@ globalThis.Function = undefined;
                 DataviewJsEvalOptions {
                     timeout: None,
                     sandbox: Some(JsRuntimeSandbox::Strict),
+                    permission_profile: None,
                 },
             )
             .expect_err("strict sandbox should reject writes");
@@ -5568,6 +5789,7 @@ globalThis.Function = undefined;
                 DataviewJsEvalOptions {
                     timeout: None,
                     sandbox: Some(JsRuntimeSandbox::Fs),
+                    permission_profile: None,
                 },
             )
             .expect("fs sandbox session should initialize");
@@ -5678,6 +5900,7 @@ globalThis.Function = undefined;
                 DataviewJsEvalOptions {
                     timeout: None,
                     sandbox: Some(JsRuntimeSandbox::Strict),
+                    permission_profile: None,
                 },
             )
             .expect_err("strict sandbox should reject network");
@@ -5700,6 +5923,7 @@ globalThis.Function = undefined;
                 DataviewJsEvalOptions {
                     timeout: None,
                     sandbox: Some(JsRuntimeSandbox::Net),
+                    permission_profile: None,
                 },
             )
             .expect("net sandbox should allow web helpers");

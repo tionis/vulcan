@@ -4,13 +4,13 @@ use crate::commit::AutoCommitPolicy;
 use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
 use crate::{
-    resolve_bulk_note_selection, warn_auto_commit_if_needed, BulkNoteSelection, Cli, CliError,
-    RefactorCommand, SuggestCommand,
+    resolve_bulk_note_selection, selected_permission_guard, warn_auto_commit_if_needed,
+    BulkNoteSelection, Cli, CliError, RefactorCommand, SuggestCommand,
 };
 use vulcan_core::{
-    bulk_replace, bulk_replace_on_paths, link_mentions, merge_tags, move_note, rename_alias,
-    rename_block_ref, rename_heading, rename_property, suggest_duplicates, suggest_mentions,
-    VaultPaths,
+    bulk_replace_on_paths, link_mentions, merge_tags, move_note, query_notes_with_filter,
+    rename_alias, rename_block_ref, rename_heading, rename_property, suggest_duplicates,
+    suggest_mentions, NoteQuery, PermissionGuard, VaultPaths,
 };
 
 pub(crate) fn handle_refactor_command(
@@ -31,6 +31,9 @@ pub(crate) fn handle_refactor_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            selected_permission_guard(cli, paths)?
+                .check_refactor_path(note)
+                .map_err(CliError::operation)?;
             let report =
                 rename_alias(paths, note, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -53,6 +56,9 @@ pub(crate) fn handle_refactor_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            selected_permission_guard(cli, paths)?
+                .check_refactor_path(note)
+                .map_err(CliError::operation)?;
             let report =
                 rename_heading(paths, note, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -75,6 +81,9 @@ pub(crate) fn handle_refactor_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            selected_permission_guard(cli, paths)?
+                .check_refactor_path(note)
+                .map_err(CliError::operation)?;
             let report =
                 rename_block_ref(paths, note, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -96,6 +105,12 @@ pub(crate) fn handle_refactor_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let guard = selected_permission_guard(cli, paths)?;
+            if !guard.refactor_filter().path_permission().is_unrestricted() {
+                return Err(CliError::operation(
+                    "permission denied: rename-property requires unrestricted refactor scope under the selected profile",
+                ));
+            }
             let report = rename_property(paths, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
@@ -116,6 +131,12 @@ pub(crate) fn handle_refactor_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let guard = selected_permission_guard(cli, paths)?;
+            if !guard.refactor_filter().path_permission().is_unrestricted() {
+                return Err(CliError::operation(
+                    "permission denied: merge-tags requires unrestricted refactor scope under the selected profile",
+                ));
+            }
             let report = merge_tags(paths, source, dest, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
@@ -134,16 +155,32 @@ pub(crate) fn handle_refactor_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let guard = selected_permission_guard(cli, paths)?;
             let selection = resolve_bulk_note_selection(filters, *stdin)?;
-            let report = match &selection {
-                BulkNoteSelection::Filters(filters) => {
-                    bulk_replace(paths, filters, find, replace, *dry_run)
-                }
-                BulkNoteSelection::Paths(note_paths) => {
-                    bulk_replace_on_paths(paths, note_paths, find, replace, *dry_run)
-                }
+            let note_paths = match &selection {
+                BulkNoteSelection::Filters(filters) => query_notes_with_filter(
+                    paths,
+                    &NoteQuery {
+                        filters: filters.clone(),
+                        sort_by: None,
+                        sort_descending: false,
+                    },
+                    Some(&guard.read_filter()),
+                )
+                .map_err(CliError::operation)?
+                .notes
+                .into_iter()
+                .map(|note| note.document_path)
+                .collect::<Vec<_>>(),
+                BulkNoteSelection::Paths(note_paths) => note_paths.clone(),
+            };
+            for path in &note_paths {
+                guard
+                    .check_refactor_path(path)
+                    .map_err(CliError::operation)?;
             }
-            .map_err(CliError::operation)?;
+            let report = bulk_replace_on_paths(paths, &note_paths, find, replace, *dry_run)
+                .map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
                     .commit(paths, "rewrite", &crate::refactor_changed_files(&report))
@@ -159,6 +196,13 @@ pub(crate) fn handle_refactor_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let guard = selected_permission_guard(cli, paths)?;
+            guard
+                .check_refactor_path(source)
+                .map_err(CliError::operation)?;
+            guard
+                .check_refactor_path(dest)
+                .map_err(CliError::operation)?;
             let summary = move_note(paths, source, dest, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 auto_commit
@@ -174,6 +218,12 @@ pub(crate) fn handle_refactor_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let guard = selected_permission_guard(cli, paths)?;
+            if !guard.refactor_filter().path_permission().is_unrestricted() {
+                return Err(CliError::operation(
+                    "permission denied: link-mentions requires unrestricted refactor scope under the selected profile",
+                ));
+            }
             let report =
                 link_mentions(paths, note.as_deref(), *dry_run).map_err(CliError::operation)?;
             if !dry_run {
