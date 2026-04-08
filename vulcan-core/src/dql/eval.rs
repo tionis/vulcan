@@ -15,6 +15,7 @@ use crate::expression::eval::{
 use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
+use crate::permissions::{combine_cte_fragments, PermissionFilter};
 use crate::properties::{
     build_note_filter_clause_from_expressions, load_note_index, FilterExpression, FilterField,
     FilterOperator, FilterValue, NoteRecord, ParsedFilter, PropertyError,
@@ -112,8 +113,17 @@ pub fn evaluate_dql(
     source: &str,
     current_file: Option<&str>,
 ) -> Result<DqlQueryResult, DqlEvalError> {
+    evaluate_dql_with_filter(paths, source, current_file, None)
+}
+
+pub fn evaluate_dql_with_filter(
+    paths: &VaultPaths,
+    source: &str,
+    current_file: Option<&str>,
+    filter: Option<&PermissionFilter>,
+) -> Result<DqlQueryResult, DqlEvalError> {
     let query = parse_dql(source).map_err(DqlEvalError::Parse)?;
-    evaluate_parsed_dql(paths, &query, current_file)
+    evaluate_parsed_dql_with_filter(paths, &query, current_file, filter)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -122,11 +132,24 @@ pub fn evaluate_parsed_dql(
     query: &DqlQuery,
     current_file: Option<&str>,
 ) -> Result<DqlQueryResult, DqlEvalError> {
+    evaluate_parsed_dql_with_filter(paths, query, current_file, None)
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn evaluate_parsed_dql_with_filter(
+    paths: &VaultPaths,
+    query: &DqlQuery,
+    current_file: Option<&str>,
+    filter: Option<&PermissionFilter>,
+) -> Result<DqlQueryResult, DqlEvalError> {
     let config = load_vault_config(paths).config;
     let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
     let compiled = compile_dql(query);
     let mut diagnostics = DqlDiagnosticCollector::default();
-    let note_lookup = load_note_index(paths)?;
+    let mut note_lookup = load_note_index(paths)?;
+    if let Some(filter) = filter {
+        note_lookup.retain(|_, note| filter.is_allowed(&note.document_path));
+    }
     let all_notes = sorted_notes(&note_lookup);
     let from_sources = compiled
         .commands
@@ -144,7 +167,15 @@ pub fn evaluate_parsed_dql(
     }
 
     let mut rows = if let Some(source) = from_sources.first() {
-        rows_for_source(paths, query, source, current_file, &note_lookup, &all_notes)?
+        rows_for_source(
+            paths,
+            query,
+            source,
+            current_file,
+            &note_lookup,
+            &all_notes,
+            filter,
+        )?
     } else {
         default_rows(query, &all_notes)
     };
@@ -179,6 +210,7 @@ pub fn evaluate_parsed_dql(
                             .filters
                             .as_deref()
                             .expect("filters presence checked above"),
+                        filter,
                     )?;
                     rows.retain(|row| matching_paths.contains(row.note.document_path.as_str()));
                 } else {
@@ -453,8 +485,9 @@ fn rows_for_source(
     current_file: Option<&str>,
     note_lookup: &HashMap<String, NoteRecord>,
     all_notes: &[NoteRecord],
+    filter: Option<&PermissionFilter>,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
-    let source_paths = source_paths(paths, source, current_file, note_lookup, all_notes)?;
+    let source_paths = source_paths(paths, source, current_file, note_lookup, all_notes, filter)?;
     let mut notes = all_notes
         .iter()
         .filter(|note| source_paths.contains(note.document_path.as_str()))
@@ -615,14 +648,17 @@ fn source_paths(
     current_file: Option<&str>,
     note_lookup: &HashMap<String, NoteRecord>,
     all_notes: &[NoteRecord],
+    permission_filter: Option<&PermissionFilter>,
 ) -> Result<HashSet<String>, DqlEvalError> {
     Ok(match source {
         CompiledDqlSourceExpr::Filter(filter) => {
-            matching_note_paths_for_filters(paths, std::slice::from_ref(filter))?
+            matching_note_paths_for_filters(paths, std::slice::from_ref(filter), permission_filter)?
         }
-        CompiledDqlSourceExpr::Path(path) => {
-            matching_note_paths_for_filters(paths, &[path_source_filter(path, all_notes)])?
-        }
+        CompiledDqlSourceExpr::Path(path) => matching_note_paths_for_filters(
+            paths,
+            &[path_source_filter(path, all_notes)],
+            permission_filter,
+        )?,
         CompiledDqlSourceExpr::IncomingLink(target) => {
             let target_note = resolve_source_target(target, current_file, note_lookup)?;
             incoming_link_sources(paths, target_note)?
@@ -632,7 +668,14 @@ fn source_paths(
             outgoing_link_sources(paths, target_note)?
         }
         CompiledDqlSourceExpr::Not(inner) => {
-            let inner_paths = source_paths(paths, inner, current_file, note_lookup, all_notes)?;
+            let inner_paths = source_paths(
+                paths,
+                inner,
+                current_file,
+                note_lookup,
+                all_notes,
+                permission_filter,
+            )?;
             all_notes
                 .iter()
                 .filter(|note| !inner_paths.contains(note.document_path.as_str()))
@@ -640,18 +683,40 @@ fn source_paths(
                 .collect()
         }
         CompiledDqlSourceExpr::And(left, right) => {
-            let left_paths = source_paths(paths, left, current_file, note_lookup, all_notes)?;
-            let right_paths = source_paths(paths, right, current_file, note_lookup, all_notes)?;
+            let left_paths = source_paths(
+                paths,
+                left,
+                current_file,
+                note_lookup,
+                all_notes,
+                permission_filter,
+            )?;
+            let right_paths = source_paths(
+                paths,
+                right,
+                current_file,
+                note_lookup,
+                all_notes,
+                permission_filter,
+            )?;
             left_paths.intersection(&right_paths).cloned().collect()
         }
         CompiledDqlSourceExpr::Or(left, right) => {
-            let mut left_paths = source_paths(paths, left, current_file, note_lookup, all_notes)?;
+            let mut left_paths = source_paths(
+                paths,
+                left,
+                current_file,
+                note_lookup,
+                all_notes,
+                permission_filter,
+            )?;
             left_paths.extend(source_paths(
                 paths,
                 right,
                 current_file,
                 note_lookup,
                 all_notes,
+                permission_filter,
             )?);
             left_paths
         }
@@ -802,6 +867,7 @@ fn outgoing_link_sources(
 fn matching_note_paths_for_filters(
     paths: &VaultPaths,
     filters: &[FilterExpression],
+    filter: Option<&PermissionFilter>,
 ) -> Result<HashSet<String>, DqlEvalError> {
     if filters.is_empty() {
         return Ok(HashSet::new());
@@ -810,7 +876,13 @@ fn matching_note_paths_for_filters(
     let database =
         CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
     let filter_sql = build_note_filter_clause_from_expressions(filters)?;
-    let mut sql = filter_sql.cte;
+    let permission_sql = filter.map(|filter| filter.document_scope_sql("_permission_documents"));
+    let mut sql = combine_cte_fragments([
+        filter_sql.cte,
+        permission_sql
+            .as_ref()
+            .map_or_else(String::new, |sql| sql.cte.clone()),
+    ]);
     sql.push_str(
         "SELECT documents.path
         FROM documents
@@ -818,15 +890,27 @@ fn matching_note_paths_for_filters(
         WHERE documents.extension = 'md'",
     );
     sql.push_str(&filter_sql.clause);
+    if let Some(permission_sql) = permission_sql.as_ref() {
+        sql.push_str(&permission_sql.clause);
+    }
+    let mut params = filter_sql.params;
+    if let Some(permission_sql) = permission_sql.as_ref() {
+        params.extend(
+            permission_sql
+                .params
+                .iter()
+                .cloned()
+                .map(rusqlite::types::Value::from),
+        );
+    }
     let mut statement = database
         .connection()
         .prepare(&sql)
         .map_err(|error| DqlEvalError::Message(error.to_string()))?;
     let rows = statement
-        .query_map(
-            rusqlite::params_from_iter(filter_sql.params.iter()),
-            |row| row.get::<_, String>(0),
-        )
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, String>(0)
+        })
         .map_err(|error| DqlEvalError::Message(error.to_string()))?;
     rows.collect::<Result<HashSet<_>, _>>()
         .map_err(|error| DqlEvalError::Message(error.to_string()))
@@ -1354,6 +1438,7 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use crate::permissions::{PathPermission, PermissionFilter, ResourceSpecifier};
     use crate::{scan_vault, ScanMode, VaultPaths};
 
     use super::*;
@@ -1389,6 +1474,33 @@ LIMIT 1"#,
             Value::String("backlog".to_string())
         );
         assert_eq!(result.rows[0]["priority"].as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn evaluate_dql_with_filter_restricts_visible_notes() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Note("Projects/Alpha.md".to_string())],
+            deny: Vec::new(),
+        });
+        let result = evaluate_dql_with_filter(
+            &paths,
+            r#"LIST file.name SORT file.name ASC"#,
+            None,
+            Some(&filter),
+        )
+        .expect("filtered DQL should evaluate");
+
+        assert_eq!(result.result_count, 1);
+        assert_eq!(
+            result.rows[0]["File"],
+            Value::String("[[Projects/Alpha]]".to_string())
+        );
     }
 
     #[test]

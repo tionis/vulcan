@@ -6,10 +6,14 @@
 
 use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
-use crate::{Cli, CliError, OutputFormat, VectorQueueCommand, VectorsCommand};
+use crate::{
+    selected_read_permission_filter, Cli, CliError, OutputFormat, VectorQueueCommand,
+    VectorsCommand,
+};
 use vulcan_core::{
-    cluster_vectors, drop_vector_model, index_vectors_with_progress, inspect_vector_queue,
-    list_vector_models, query_related_notes, query_vector_neighbors, rebuild_vectors_with_progress,
+    cluster_vectors_with_filter, drop_vector_model, index_vectors_with_progress,
+    inspect_vector_queue, list_vector_models, query_related_notes_with_filter,
+    query_vector_neighbors_with_filter, rebuild_vectors_with_progress,
     repair_vectors_with_progress, vector_duplicates_with_progress, ClusterQuery, RelatedNotesQuery,
     VaultPaths, VectorDuplicatesQuery, VectorIndexQuery, VectorNeighborsQuery, VectorRebuildQuery,
     VectorRepairQuery,
@@ -25,13 +29,15 @@ pub(crate) fn handle_cluster_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
-    let report = cluster_vectors(
+    let read_filter = selected_read_permission_filter(cli, paths)?;
+    let report = cluster_vectors_with_filter(
         paths,
         &ClusterQuery {
             provider: cli.provider.clone(),
             clusters,
             dry_run,
         },
+        read_filter.as_ref(),
     )
     .map_err(CliError::operation)?;
     let export = crate::resolve_cli_export(export)?;
@@ -57,13 +63,15 @@ pub(crate) fn handle_related_command(
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
     let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
-    let report = query_related_notes(
+    let read_filter = selected_read_permission_filter(cli, paths)?;
+    let report = query_related_notes_with_filter(
         paths,
         &RelatedNotesQuery {
             provider: cli.provider.clone(),
             note,
             limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
         },
+        read_filter.as_ref(),
     )
     .map_err(CliError::operation)?;
     let export = crate::resolve_cli_export(export)?;
@@ -180,6 +188,7 @@ pub(crate) fn handle_vectors_command(
             note,
             export,
         } => {
+            let read_filter = selected_read_permission_filter(cli, paths)?;
             let resolved_note = if note.is_some() || query.is_none() {
                 Some(resolve_note_argument(
                     paths,
@@ -190,7 +199,7 @@ pub(crate) fn handle_vectors_command(
             } else {
                 None
             };
-            let report = query_vector_neighbors(
+            let report = query_vector_neighbors_with_filter(
                 paths,
                 &VectorNeighborsQuery {
                     provider: cli.provider.clone(),
@@ -198,6 +207,7 @@ pub(crate) fn handle_vectors_command(
                     note: resolved_note,
                     limit: cli.limit.unwrap_or(10).saturating_add(cli.offset),
                 },
+                read_filter.as_ref(),
             )
             .map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;

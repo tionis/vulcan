@@ -4006,10 +4006,7 @@ Examples:
         about = "Start an MCP (Model Context Protocol) server over stdio",
         after_help = MCP_COMMAND_AFTER_HELP
     )]
-    Mcp {
-        #[arg(long, help = "Restrict MCP tools to a named permission profile")]
-        permissions: Option<String>,
-    },
+    Mcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -4071,6 +4068,13 @@ pub struct Cli {
         help = "Embedding provider override for vector commands"
     )]
     pub provider: Option<String>,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Restrict the command to a named permission profile"
+    )]
+    pub permissions: Option<String>,
 
     #[arg(long, global = true, help = "Maximum number of rows to return")]
     pub limit: Option<usize>,

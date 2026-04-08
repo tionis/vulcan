@@ -1,13 +1,14 @@
 use crate::commit::AutoCommitPolicy;
 use crate::{
-    serve_forever, warn_auto_commit_if_needed, Cli, CliError, IndexCommand, RepairCommand,
-    ServeOptions,
+    selected_permission_guard, serve_forever, warn_auto_commit_if_needed, Cli, CliError,
+    IndexCommand, PermissionGuard, RepairCommand, ServeOptions,
 };
 use vulcan_core::{
     rebuild_vault_with_progress, repair_fts, scan_vault_with_progress, watch_vault, RebuildQuery,
     RepairFtsQuery, ScanMode, VaultPaths, WatchOptions,
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_index_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -16,6 +17,9 @@ pub(crate) fn handle_index_command(
     use_stderr_color: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    selected_permission_guard(cli, paths)?
+        .check_index()
+        .map_err(CliError::operation)?;
     match command {
         IndexCommand::Init(args) => {
             let report = crate::run_init_command(paths, args)?;
@@ -113,6 +117,7 @@ pub(crate) fn handle_index_command(
                 watch: !no_watch,
                 debounce_ms: *debounce_ms,
                 auth_token: auth_token.clone(),
+                permissions: cli.permissions.clone(),
             },
         ),
     }

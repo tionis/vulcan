@@ -12,8 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use vulcan_core::{
-    query_graph_analytics, query_notes, query_related_notes, search_vault, watch_vault_until,
-    NoteQuery, RelatedNotesQuery, SearchQuery, SearchSort, VaultPaths, WatchOptions, WatchReport,
+    query_graph_analytics_with_filter, query_notes_with_filter, query_related_notes_with_filter,
+    resolve_permission_profile, search_vault_with_filter, watch_vault_until, NoteQuery,
+    PermissionFilter, PermissionGuard, ProfilePermissionGuard, RelatedNotesQuery, SearchQuery,
+    SearchSort, VaultPaths, WatchOptions, WatchReport,
 };
 
 #[derive(Debug, Clone)]
@@ -22,6 +24,7 @@ pub struct ServeOptions {
     pub watch: bool,
     pub debounce_ms: u64,
     pub auth_token: Option<String>,
+    pub permissions: Option<String>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -207,6 +210,14 @@ fn route_request(
             return Response::error(401, "missing or invalid X-Vulcan-Token header");
         }
     }
+    let permissions = match serve_permission_guard(paths, options) {
+        Ok(permissions) => permissions,
+        Err(error) => return Response::error(500, error),
+    };
+    let read_filter = match serve_read_filter(paths, options) {
+        Ok(filter) => filter,
+        Err(error) => return Response::error(500, error),
+    };
 
     match request.path.as_str() {
         "/" => Response::ok(json!({
@@ -264,7 +275,7 @@ fn route_request(
                 fuzzy: parse_optional_bool(&request.query, "fuzzy").unwrap_or(false),
                 explain: parse_optional_bool(&request.query, "explain").unwrap_or(false),
             };
-            match search_vault(paths, &search_query) {
+            match search_vault_with_filter(paths, &search_query, read_filter.as_ref()) {
                 Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
                 Err(error) => Response::error(500, error.to_string()),
             }
@@ -276,7 +287,7 @@ fn route_request(
                 sort_by: first_param(&request.query, "sort").map(ToOwned::to_owned),
                 sort_descending: parse_optional_bool(&request.query, "desc").unwrap_or(false),
             };
-            match query_notes(paths, &query) {
+            match query_notes_with_filter(paths, &query, read_filter.as_ref()) {
                 Ok(mut report) => {
                     let offset = parse_optional_usize(&request.query, "offset").unwrap_or(0);
                     let limit = parse_optional_usize(&request.query, "limit");
@@ -290,7 +301,7 @@ fn route_request(
                 Err(error) => Response::error(500, error.to_string()),
             }
         }
-        "/graph/stats" => match query_graph_analytics(paths) {
+        "/graph/stats" => match query_graph_analytics_with_filter(paths, read_filter.as_ref()) {
             Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
             Err(error) => Response::error(500, error.to_string()),
         },
@@ -303,7 +314,7 @@ fn route_request(
                 note: note.to_string(),
                 limit: parse_optional_usize(&request.query, "limit").unwrap_or(10),
             };
-            match query_related_notes(paths, &query) {
+            match query_related_notes_with_filter(paths, &query, read_filter.as_ref()) {
                 Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
                 Err(error) => Response::error(500, error.to_string()),
             }
@@ -312,7 +323,7 @@ fn route_request(
             let Some(file) = first_param(&request.query, "file") else {
                 return Response::error(400, "missing required query parameter: file");
             };
-            match run_dataview_inline_command(paths, file) {
+            match run_dataview_inline_command(paths, file, Some(&permissions)) {
                 Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
                 Err(error) => Response::error(500, error.to_string()),
             }
@@ -321,7 +332,7 @@ fn route_request(
             let Some(dql) = first_param(&request.query, "dql") else {
                 return Response::error(400, "missing required query parameter: dql");
             };
-            match run_dataview_query_command(paths, dql) {
+            match run_dataview_query_command(paths, dql, read_filter.as_ref()) {
                 Ok(result) => Response::ok(json!({ "ok": true, "result": result })),
                 Err(error) => Response::error(500, error.to_string()),
             }
@@ -330,7 +341,12 @@ fn route_request(
             let Some(js) = first_param(&request.query, "js") else {
                 return Response::error(400, "missing required query parameter: js");
             };
-            match run_dataview_query_js_command(paths, js, first_param(&request.query, "file")) {
+            match run_dataview_query_js_command(
+                paths,
+                js,
+                first_param(&request.query, "file"),
+                options.permissions.as_deref(),
+            ) {
                 Ok(result) => Response::ok(json!({ "ok": true, "result": result })),
                 Err(error) => Response::error(500, error.to_string()),
             }
@@ -343,6 +359,8 @@ fn route_request(
                 paths,
                 file,
                 parse_optional_usize(&request.query, "block"),
+                options.permissions.as_deref(),
+                Some(&permissions),
             ) {
                 Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
                 Err(error) => Response::error(500, error.to_string()),
@@ -350,6 +368,23 @@ fn route_request(
         }
         _ => Response::error(404, "unknown endpoint"),
     }
+}
+
+fn serve_read_filter(
+    paths: &VaultPaths,
+    options: &ServeOptions,
+) -> Result<Option<PermissionFilter>, String> {
+    let filter = serve_permission_guard(paths, options)?.read_filter();
+    Ok((!filter.path_permission().is_unrestricted()).then_some(filter))
+}
+
+fn serve_permission_guard(
+    paths: &VaultPaths,
+    options: &ServeOptions,
+) -> Result<ProfilePermissionGuard, String> {
+    let selection = resolve_permission_profile(paths, options.permissions.as_deref())
+        .map_err(|error| error.to_string())?;
+    Ok(ProfilePermissionGuard::new(selection))
 }
 
 fn parse_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr, CliError> {
@@ -562,6 +597,7 @@ mod tests {
                 watch: false,
                 debounce_ms: 50,
                 auth_token: None,
+                permissions: None,
             },
         )
         .expect("server should start");
@@ -617,6 +653,7 @@ mod tests {
                 watch: false,
                 debounce_ms: 50,
                 auth_token: None,
+                permissions: None,
             },
         )
         .expect("server should start");
@@ -668,6 +705,7 @@ mod tests {
                 watch: false,
                 debounce_ms: 50,
                 auth_token: None,
+                permissions: None,
             },
         )
         .expect("server should start");
@@ -697,6 +735,7 @@ mod tests {
                 watch: false,
                 debounce_ms: 50,
                 auth_token: None,
+                permissions: None,
             },
         )
         .expect("server should start");
@@ -753,6 +792,7 @@ mod tests {
                 watch: true,
                 debounce_ms: 50,
                 auth_token: None,
+                permissions: None,
             },
         )
         .expect("server should start");
@@ -811,6 +851,7 @@ mod tests {
                 watch: false,
                 debounce_ms: 50,
                 auth_token: Some("secret".to_string()),
+                permissions: None,
             },
         )
         .expect("server should start");

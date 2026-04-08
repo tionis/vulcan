@@ -5,6 +5,7 @@ use crate::expression::parse::Parser;
 use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::synthetic_file_link;
 use crate::parser::{parse_document, types::InlineFieldKind};
+use crate::permissions::{combine_cte_fragments, PermissionFilter};
 use crate::tasknotes::{extract_tasknote, tasknotes_priority_weight, tasknotes_status_state};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
 use regex::Regex;
@@ -487,6 +488,15 @@ fn parse_frontmatter_json_object(raw_yaml: &str) -> Value {
 
 #[allow(clippy::too_many_lines)]
 pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport, PropertyError> {
+    query_notes_with_filter(paths, query, None)
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn query_notes_with_filter(
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<NotesReport, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
@@ -498,10 +508,15 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     let NoteFilterSql {
         cte,
         clause: filter_clause,
-        params,
+        mut params,
     } = build_note_filter_clause(&sql_filters)?;
+    let permission_sql = filter
+        .map(|filter| filter.document_scope_sql("_permission_documents"))
+        .unwrap_or_default();
+    let combined_cte = combine_cte_fragments([cte, permission_sql.cte.clone()]);
+    params.extend(permission_sql.params.into_iter().map(SqlValue::Text));
 
-    let mut sql = cte;
+    let mut sql = combined_cte;
     sql.push_str(
         "SELECT
             documents.id,
@@ -519,6 +534,7 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
         WHERE documents.extension = 'md'",
     );
     sql.push_str(&filter_clause);
+    sql.push_str(&permission_sql.clause);
     sql.push_str(" ORDER BY documents.path ASC");
 
     let mut statement = connection.prepare(&sql)?;

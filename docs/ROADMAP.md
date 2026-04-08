@@ -2917,7 +2917,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 8. [x] **9.19.9** (command clarity) — docs and naming, low effort
 9. [x] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
 10. [x] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
-11. [ ] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
+11. [x] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
 12. [ ] **9.19.12** (plugins) — after permissions design is clear
 13. [ ] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
 14. [ ] **9.19.14** (binary size) — informational, anytime
@@ -3504,40 +3504,40 @@ If both `--sandbox` and `--permissions` are specified, the more restrictive of t
 
 **Application points:**
 
-- [ ] **CLI global flag:** `--permissions <profile>` — activate a named profile for this invocation
-- [ ] **`index serve` / MCP server:** `--permissions <profile>` — all requests gated by this profile. Auth-token remains for authentication; permissions for authorization.
-- [ ] **JS runtime:** permission guard is threaded into the runtime context. All vault API calls (`vault.note()`, `vault.set()`, `web.fetch()`, etc.) check the active guard before executing. Resource limits (CPU, memory, stack) are applied via rquickjs `Runtime::set_memory_limit()`, `set_max_stack_size()`, and `set_interrupt_handler()`.
+- [x] **CLI global flag:** `--permissions <profile>` — activate a named profile for this invocation
+- [x] **`index serve` / MCP server:** `--permissions <profile>` — all requests gated by this profile. Auth-token remains for authentication; permissions for authorization.
+- [x] **JS runtime:** permission guard is threaded into the runtime context. All vault API calls (`vault.note()`, `vault.set()`, `web.fetch()`, etc.) check the active guard before executing. Resource limits (CPU, memory, stack) are applied via rquickjs `Runtime::set_memory_limit()`, `set_max_stack_size()`, and `set_interrupt_handler()`.
 - [ ] **Plugin system (9.19.12):** each plugin declares required permissions in its manifest. Execution is denied if requirements exceed the active profile. Plugins can request a *subset* of the active profile's permissions.
 - [ ] **AI integrations (9.12):** external runtimes and any future native assistant operate under a configurable permission profile (default: `agent`). Tool dispatch checks permissions before executing. This is the primary consumer.
-- [ ] **Phase 17 integration point:** Phase 17 implements `PermissionGuard` with a `UserPermissionGuard` that resolves user → vault role → ACL rules → `PermissionGrant`. The guard trait, resource specifiers, grant type, and `PermissionFilter` from 9.19.13 are reused without modification.
+- [x] **Phase 17 integration point:** Phase 17 implements `PermissionGuard` with a `UserPermissionGuard` that resolves user → vault role → ACL rules → `PermissionGrant`. The guard trait, resource specifiers, grant type, and `PermissionFilter` from 9.19.13 are reused without modification.
 
 **Implementation:**
 
 Core types in `vulcan-core`:
 
-- [ ] **`ResourceSpecifier`** enum: `Folder(GlobPattern)`, `Tag(String)`, `Note(String)`, `All`. Shared by 9.19.13 profiles and Phase 17 ACL rules.
-- [ ] **`PathPermission`** struct: `allow: Vec<ResourceSpecifier>`, `deny: Vec<ResourceSpecifier>`. Deny-wins-on-conflict semantics.
-- [ ] **`PermissionGrant`** struct: all dimensions (read, write, refactor as `PathPermission`; git, network, index, config, execute, shell as capability flags; network domain allowlist; CPU/memory/stack limits). This is the **resolved** permission set — it has no concept of users or roles.
-- [ ] **`PermissionGuard`** trait: `check_read(path) -> Result<()>`, `check_write(path) -> Result<()>`, `check_refactor(path) -> Result<()>`, `check_network(domain) -> Result<()>`, `check_git() -> Result<()>`, `check_shell() -> Result<()>`, `resource_limits() -> ResourceLimits`. Two implementations:
+- [x] **`ResourceSpecifier`** enum: `Folder(GlobPattern)`, `Tag(String)`, `Note(String)`, `All`. Shared by 9.19.13 profiles and Phase 17 ACL rules.
+- [x] **`PathPermission`** struct: `allow: Vec<ResourceSpecifier>`, `deny: Vec<ResourceSpecifier>`. Deny-wins-on-conflict semantics.
+- [x] **`PermissionGrant`** struct: all dimensions (read, write, refactor as `PathPermission`; git, network, index, config, execute, shell as capability flags; network domain allowlist; CPU/memory/stack limits). This is the **resolved** permission set — it has no concept of users or roles.
+- [x] **`PermissionGuard`** trait: `check_read(path) -> Result<()>`, `check_write(path) -> Result<()>`, `check_refactor(path) -> Result<()>`, `check_network(domain) -> Result<()>`, `check_git() -> Result<()>`, `check_shell() -> Result<()>`, `resource_limits() -> ResourceLimits`. Two implementations:
   - `ProfilePermissionGuard` (9.19.13): resolves from a static `PermissionGrant` loaded from config
   - `UserPermissionGuard` (Phase 17): resolves from user identity + vault role + ACL rules → `PermissionGrant`
-- [ ] **`PermissionFilter`** struct: takes a `&dyn PermissionGuard`, generates a set of allowed/denied paths. Provides `fn sql_cte() -> String` for filtered queries and `fn is_allowed(path) -> bool` for single-path checks. Phase 17.3 uses this exact type — it doesn't need to know whether the guard is profile-based or user-based.
+- [x] **`PermissionFilter`** struct: takes a `&dyn PermissionGuard`, generates a set of allowed/denied paths. Provides `fn sql_cte() -> String` for filtered queries and `fn is_allowed(path) -> bool` for single-path checks. Phase 17.3 uses this exact type — it doesn't need to know whether the guard is profile-based or user-based.
 
 Integration:
 
-- [ ] Thread `&dyn PermissionGuard` through the command dispatch layer — every command handler receives a reference
-- [ ] Gate all file read operations in vulcan-core through `check_read()`
-- [ ] Gate all file write/create/delete operations through `check_write()`
-- [ ] Gate refactor operations through `check_refactor()` (checks all affected paths)
-- [ ] Gate JS runtime API functions through the guard (replace current `sandbox_allows_fs`/`sandbox_allows_network` boolean checks)
-- [ ] Apply resource limits from the guard to rquickjs runtime configuration
-- [ ] Map `JsRuntimeSandbox` enum to `PermissionGrant`; keep `--sandbox` as convenience alias
-- [ ] Build `PermissionFilter` from guard for query functions (search, notes, graph, vectors) — returns all results when unrestricted, filters when restricted. Phase 17 reuses this without changes.
-- [ ] Add `[permissions]` section to `.vulcan/config.toml` with named profiles
-- [ ] `vulcan config show permissions` to inspect active and available profiles
-- [ ] Clear error messages on denial: `"permission denied: write to 'Archive/old-note.md' not allowed by profile 'agent' (write allows: folder:Projects/**, folder:Journal/**, folder:AI/**)"`
-- [ ] Unit tests: each dimension, resource specifier matching (folder globs, tags, note paths), deny-overrides-allow, domain allowlist, resource limit application
-- [ ] Integration tests: CLI with `--permissions readonly` rejects writes, serve API respects profile, JS runtime obeys resource limits from profile, `PermissionFilter` correctly restricts query results
+- [x] Thread `&dyn PermissionGuard` through the command dispatch layer — every command handler receives a reference
+- [x] Gate all file read operations in vulcan-core through `check_read()`
+- [x] Gate all file write/create/delete operations through `check_write()`
+- [x] Gate refactor operations through `check_refactor()` (checks all affected paths)
+- [x] Gate JS runtime API functions through the guard (replace current `sandbox_allows_fs`/`sandbox_allows_network` boolean checks)
+- [x] Apply resource limits from the guard to rquickjs runtime configuration
+- [x] Map `JsRuntimeSandbox` enum to `PermissionGrant`; keep `--sandbox` as convenience alias
+- [x] Build `PermissionFilter` from guard for query functions (search, notes, graph, vectors) — returns all results when unrestricted, filters when restricted. Phase 17 reuses this without changes.
+- [x] Add `[permissions]` section to `.vulcan/config.toml` with named profiles
+- [x] `vulcan config show permissions` to inspect active and available profiles
+- [x] Clear error messages on denial: `"permission denied: write to 'Archive/old-note.md' not allowed by profile 'agent' (write allows: folder:Projects/**, folder:Journal/**, folder:AI/**)"`
+- [x] Unit tests: each dimension, resource specifier matching (folder globs, tags, note paths), deny-overrides-allow, domain allowlist, resource limit application
+- [x] Integration tests: CLI with `--permissions readonly` rejects writes, serve API respects profile, JS runtime obeys resource limits from profile, `PermissionFilter` correctly restricts query results
 
 **Design note: why not Cedar/Casbin/JS?**
 

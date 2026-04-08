@@ -154,6 +154,30 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # default_sandbox = "strict"  # strict | fs | net | none
 # scripts_folder = ".vulcan/scripts"
 
+# [permissions.profiles.agent]
+# read = "all"
+# write = { allow = ["folder:Projects/**", "folder:Journal/**"], deny = ["folder:Archive/**"] }
+# refactor = { allow = ["folder:Projects/**"] }
+# git = "allow"
+# network = { allow = true, domains = ["api.tavily.com", "raw.githubusercontent.com"] }
+# index = "deny"
+# config = "read"
+# execute = "allow"
+# shell = "deny"
+# cpu_limit_ms = 5000
+# memory_limit_mb = 64
+# stack_limit_kb = 256
+
+# [permissions.profiles.readonly]
+# read = "all"
+# write = "none"
+# refactor = "none"
+# git = "deny"
+# network = "deny"
+# index = "deny"
+# config = "read"
+# execute = "deny"
+
 # [templates]
 # date_format = "YYYY-MM-DD"
 # time_format = "HH:mm"
@@ -9860,6 +9884,16 @@ default_mode = "off"
         assert!(template.contains("backend = \"duckduckgo\""));
         assert!(template.contains("KAGI_API_KEY"));
         assert!(template.contains("https://html.duckduckgo.com/html/"));
+    }
+
+    #[test]
+    fn default_config_template_documents_permission_profiles() {
+        let template = default_config_template();
+
+        assert!(template.contains("[permissions.profiles.agent]"));
+        assert!(template.contains("[permissions.profiles.readonly]"));
+        assert!(template.contains("write = { allow = [\"folder:Projects/**\""));
+        assert!(template.contains("network = { allow = true, domains = ["));
     }
 
     #[test]

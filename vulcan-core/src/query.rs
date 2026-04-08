@@ -9,6 +9,7 @@ use std::fmt::{self, Display, Formatter};
 
 use serde::{Deserialize, Serialize};
 
+use crate::permissions::PermissionFilter;
 use crate::properties::{NoteQuery, NotesReport, PropertyError};
 use crate::{CacheError, VaultPaths};
 
@@ -258,13 +259,22 @@ impl QueryAst {
 
 /// Execute a `QueryAst` against the vault and return a `NotesReport`.
 pub fn execute_query(paths: &VaultPaths, ast: &QueryAst) -> Result<NotesReport, QueryError> {
+    execute_query_with_filter(paths, ast, None)
+}
+
+/// Execute a `QueryAst` with an optional permission filter applied to note reads.
+pub fn execute_query_with_filter(
+    paths: &VaultPaths,
+    ast: &QueryAst,
+    filter: Option<&PermissionFilter>,
+) -> Result<NotesReport, QueryError> {
     let note_query = ast.to_note_query();
 
     if !paths.cache_db().exists() {
         return Err(QueryError::CacheMissing);
     }
 
-    crate::properties::query_notes(paths, &note_query).map_err(QueryError::from)
+    crate::properties::query_notes_with_filter(paths, &note_query, filter).map_err(QueryError::from)
 }
 
 /// Execute a `QueryAst` from a DSL string.
@@ -572,7 +582,15 @@ pub struct QueryReport {
 
 /// Execute a `QueryAst` and return a `QueryReport` (AST + results).
 pub fn execute_query_report(paths: &VaultPaths, ast: QueryAst) -> Result<QueryReport, QueryError> {
-    let report = execute_query(paths, &ast)?;
+    execute_query_report_with_filter(paths, ast, None)
+}
+
+pub fn execute_query_report_with_filter(
+    paths: &VaultPaths,
+    ast: QueryAst,
+    filter: Option<&PermissionFilter>,
+) -> Result<QueryReport, QueryError> {
+    let report = execute_query_with_filter(paths, &ast, filter)?;
     Ok(QueryReport {
         query: ast,
         notes: report.notes,

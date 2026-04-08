@@ -8,11 +8,55 @@ use crate::commit::AutoCommitPolicy;
 use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
 use crate::{
-    warn_auto_commit_if_needed, Cli, CliError, NoteAppendMode, NoteAppendOptions, NoteCommand,
-    NoteGetOptions, NotePatchOptions,
+    selected_permission_guard, selected_read_permission_filter, warn_auto_commit_if_needed, Cli,
+    CliError, NoteAppendMode, NoteAppendOptions, NoteCommand, NoteGetOptions, NotePatchOptions,
 };
 use std::path::Path;
-use vulcan_core::{move_note, query_backlinks, query_links, resolve_note_reference, VaultPaths};
+use vulcan_core::{
+    move_note, query_backlinks_with_filter, query_links_with_filter, resolve_note_reference,
+    PermissionGuard, VaultPaths,
+};
+
+fn check_read_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
+    let guard = selected_permission_guard(cli, paths)?;
+    if guard.read_filter().path_permission().is_unrestricted() {
+        return Ok(());
+    }
+    let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
+    guard
+        .check_read_path(&resolved.path)
+        .map_err(CliError::operation)
+}
+
+fn check_write_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
+    let guard = selected_permission_guard(cli, paths)?;
+    if guard.write_filter().path_permission().is_unrestricted() {
+        return Ok(());
+    }
+    let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
+    guard
+        .check_write_path(&resolved.path)
+        .map_err(CliError::operation)
+}
+
+fn check_write_path_access(cli: &Cli, paths: &VaultPaths, path: &str) -> Result<(), CliError> {
+    let guard = selected_permission_guard(cli, paths)?;
+    if guard.write_filter().path_permission().is_unrestricted() {
+        return Ok(());
+    }
+    guard.check_write_path(path).map_err(CliError::operation)
+}
+
+fn check_refactor_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
+    let guard = selected_permission_guard(cli, paths)?;
+    if guard.refactor_filter().path_permission().is_unrestricted() {
+        return Ok(());
+    }
+    let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
+    guard
+        .check_refactor_path(&resolved.path)
+        .map_err(CliError::operation)
+}
 
 pub(crate) fn handle_note_command(
     cli: &Cli,
@@ -36,6 +80,7 @@ pub(crate) fn handle_note_command(
             no_frontmatter,
             raw,
         } => {
+            check_read_note_access(cli, paths, note)?;
             let report = crate::run_note_get_command(
                 paths,
                 NoteGetOptions {
@@ -61,6 +106,7 @@ pub(crate) fn handle_note_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            check_write_note_access(cli, paths, note)?;
             let report = crate::run_note_set_command(
                 paths,
                 note,
@@ -85,6 +131,7 @@ pub(crate) fn handle_note_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            check_write_path_access(cli, paths, path)?;
             let report = crate::run_note_create_command(
                 paths,
                 path,
@@ -128,6 +175,9 @@ pub(crate) fn handle_note_command(
                     )));
                 }
             };
+            if let Some(note) = note {
+                check_write_note_access(cli, paths, note)?;
+            }
             let report = crate::run_note_append_command(
                 paths,
                 NoteAppendOptions {
@@ -166,6 +216,7 @@ pub(crate) fn handle_note_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            check_write_note_access(cli, paths, note)?;
             let report = crate::run_note_patch_command(
                 paths,
                 NotePatchOptions {
@@ -213,6 +264,7 @@ pub(crate) fn handle_note_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            check_write_note_access(cli, paths, note)?;
             let report = crate::run_note_delete_command(
                 paths,
                 note,
@@ -236,6 +288,7 @@ pub(crate) fn handle_note_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            check_refactor_note_access(cli, paths, note)?;
             let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
             let destination = note_rename_destination(&resolved.path, new_name);
             let summary = move_note(paths, &resolved.path, &destination, *dry_run)
@@ -248,17 +301,28 @@ pub(crate) fn handle_note_command(
             crate::print_move_summary(cli.output, &summary)
         }
         NoteCommand::Info { note } => {
+            check_read_note_access(cli, paths, note)?;
             let report = crate::run_note_info_command(paths, note)?;
             crate::print_note_info_report(cli.output, &report)
         }
         NoteCommand::History { note, limit } => {
+            let guard = selected_permission_guard(cli, paths)?;
+            if !guard.read_filter().path_permission().is_unrestricted() {
+                let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
+                guard
+                    .check_read_path(&resolved.path)
+                    .map_err(CliError::operation)?;
+            }
+            guard.check_git().map_err(CliError::operation)?;
             let report = crate::run_note_history_command(paths, note, *limit)?;
             crate::print_note_history_report(cli.output, &report)
         }
         NoteCommand::Links { note, export } => {
+            let read_filter = selected_read_permission_filter(cli, paths)?;
             let note =
                 resolve_note_argument(paths, note.as_deref(), interactive_note_selection, "note")?;
-            let report = query_links(paths, &note).map_err(CliError::operation)?;
+            let report = query_links_with_filter(paths, &note, read_filter.as_ref())
+                .map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             crate::print_links_report(
                 cli.output,
@@ -271,9 +335,11 @@ pub(crate) fn handle_note_command(
             Ok(())
         }
         NoteCommand::Backlinks { note, export } => {
+            let read_filter = selected_read_permission_filter(cli, paths)?;
             let note =
                 resolve_note_argument(paths, note.as_deref(), interactive_note_selection, "note")?;
-            let report = query_backlinks(paths, &note).map_err(CliError::operation)?;
+            let report = query_backlinks_with_filter(paths, &note, read_filter.as_ref())
+                .map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             crate::print_backlinks_report(
                 cli.output,
@@ -286,10 +352,19 @@ pub(crate) fn handle_note_command(
             Ok(())
         }
         NoteCommand::Doctor { note } => {
+            check_read_note_access(cli, paths, note)?;
             let report = crate::run_note_doctor_command(paths, note)?;
             crate::print_note_doctor_report(cli.output, &report)
         }
         NoteCommand::Diff { note, since } => {
+            let guard = selected_permission_guard(cli, paths)?;
+            if !guard.read_filter().path_permission().is_unrestricted() {
+                let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
+                guard
+                    .check_read_path(&resolved.path)
+                    .map_err(CliError::operation)?;
+            }
+            guard.check_git().map_err(CliError::operation)?;
             let report = crate::run_diff_command(paths, Some(note), since.as_deref(), false)?;
             crate::print_diff_report(cli.output, &report)
         }

@@ -14245,6 +14245,117 @@ fn mcp_server_filters_and_rejects_tools_under_readonly_permissions() {
 }
 
 #[test]
+fn readonly_cli_profile_rejects_note_writes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--permissions",
+            "readonly",
+            "note",
+            "create",
+            "Scratch",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "permission denied: profile `readonly` does not allow write `Scratch`",
+        ));
+}
+
+#[test]
+fn permission_profile_filters_query_results() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.projects_only]
+read = { allow = ["folder:Projects/**"] }
+"#,
+    )
+    .expect("config should be written");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--permissions",
+            "projects_only",
+            "--output",
+            "json",
+            "query",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&assert);
+    let paths = rows
+        .iter()
+        .map(|note| {
+            note["document_path"]
+                .as_str()
+                .expect("document path should be a string")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(paths, vec!["Projects/Alpha.md".to_string()]);
+}
+
+#[test]
+fn config_show_permissions_lists_active_and_available_profiles() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.projects_only]
+read = { allow = ["folder:Projects/**"] }
+"#,
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "config",
+            "show",
+            "permissions",
+        ])
+        .assert()
+        .success();
+    let report = parse_stdout_json(&assert);
+    let available = report["available_permission_profiles"]
+        .as_array()
+        .expect("available profiles should be an array")
+        .iter()
+        .map(|value| value.as_str().expect("profile should be a string"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        report["active_permission_profile"].as_str(),
+        Some("unrestricted")
+    );
+    assert!(available.contains(&"projects_only"));
+    assert!(available.contains(&"readonly"));
+    assert!(available.contains(&"unrestricted"));
+    assert!(report["config"]["profiles"]["projects_only"].is_object());
+}
+
+#[test]
 fn complete_note_context_returns_note_paths() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

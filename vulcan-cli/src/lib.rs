@@ -75,9 +75,9 @@ use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, add_kanban_card, all_importers, annotate_import_conflicts,
     archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint, delete_saved_report,
-    doctor_fix, doctor_vault, ensure_vulcan_dir, evaluate_base_file, evaluate_dataview_js_query,
-    evaluate_dataview_js_with_options, evaluate_dql, evaluate_note_inline_expressions,
-    evaluate_tasks_query, execute_query_report, expected_periodic_note_path,
+    doctor_fix, doctor_vault, ensure_vulcan_dir, evaluate_base_file,
+    evaluate_dataview_js_with_options, evaluate_dql_with_filter, evaluate_note_inline_expressions,
+    evaluate_tasks_query, execute_query_report_with_filter, expected_periodic_note_path,
     export_daily_events_to_ics, export_static_search_index, extract_tasknote, git_blame, git_diff,
     git_log, git_recent_log, git_status, initialize_vault, inspect_base_file, inspect_cache,
     link_mentions, list_checkpoints, list_daily_note_events, list_saved_reports,
@@ -89,31 +89,32 @@ use vulcan_core::{
     query_change_report, query_links, query_notes, rebuild_vault_with_progress, rename_alias,
     rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
     render_markdown_html, repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note,
-    save_saved_report, scan_vault_with_progress, search_vault, shape_tasks_query_result,
-    step_period_start, task_upcoming_occurrences, tasknotes_default_date_value,
-    tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
-    tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
-    validate_vulcan_overrides_toml, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
-    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
-    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
-    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
-    ClusterReport, ConfigDiagnostic, ConfigImportReport, ConfigPermissionMode, CoreImporter,
-    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkResolutionProblem, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
-    PermissionMode, PermissionProfile, PluginImporter, QueryAst, QueryReport, RebuildQuery,
+    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
+    shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
+    tasknotes_default_date_value, tasknotes_default_recurrence_rule,
+    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
+    tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
+    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
+    BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
+    ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic, ConfigImportReport,
+    ConfigPermissionMode, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
+    DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
+    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression,
+    GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport,
+    GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport,
+    GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox,
+    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
+    KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput,
+    PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode,
+    PermissionProfile, PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport, RebuildQuery,
     RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport,
-    RepairFtsQuery, RepairFtsReport, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
-    TaskNotesImporter, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
+    RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort,
+    StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
     TaskNotesSavedViewNode, TasksImporter, TasksQueryResult, TemplaterImporter, TemplatesConfig,
     VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
     VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
@@ -194,6 +195,33 @@ impl Display for CliError {
 }
 
 impl std::error::Error for CliError {}
+
+fn permission_error_to_cli(error: impl Display) -> CliError {
+    CliError::operation(error)
+}
+
+pub(crate) fn selected_permission_profile(
+    cli: &Cli,
+    paths: &VaultPaths,
+) -> Result<ResolvedPermissionProfile, CliError> {
+    resolve_permission_profile(paths, cli.permissions.as_deref()).map_err(permission_error_to_cli)
+}
+
+pub(crate) fn selected_permission_guard(
+    cli: &Cli,
+    paths: &VaultPaths,
+) -> Result<ProfilePermissionGuard, CliError> {
+    selected_permission_profile(cli, paths).map(ProfilePermissionGuard::new)
+}
+
+pub(crate) fn selected_read_permission_filter(
+    cli: &Cli,
+    paths: &VaultPaths,
+) -> Result<Option<PermissionFilter>, CliError> {
+    let guard = selected_permission_guard(cli, paths)?;
+    let filter = guard.read_filter();
+    Ok((!filter.path_permission().is_unrestricted()).then_some(filter))
+}
 
 const SCAN_PROGRESS_STEP: usize = 250;
 
@@ -1618,6 +1646,10 @@ struct ConfigShowReport {
     section: Option<String>,
     config: Value,
     diagnostics: Vec<ConfigDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_permission_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    available_permission_profiles: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2538,11 +2570,13 @@ fn build_search_backend(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_web_search_command(
     paths: &VaultPaths,
     query: &str,
     backend_override: Option<SearchBackendArg>,
     limit: usize,
+    permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<WebSearchReport, CliError> {
     use vulcan_core::SearchBackendKind;
 
@@ -2564,6 +2598,11 @@ fn run_web_search_command(
         let mut found: Option<Box<dyn SearchBackend>> = None;
         for &(kind, env_var, base_url) in AUTO_DETECT_ORDER {
             if std::env::var(env_var).is_ok() {
+                if let Some(permissions) = permissions {
+                    permissions
+                        .check_network(base_url)
+                        .map_err(CliError::operation)?;
+                }
                 found = Some(build_search_backend(
                     client.clone(),
                     kind,
@@ -2576,16 +2615,17 @@ fn run_web_search_command(
         if let Some(found) = found {
             found
         } else {
-            build_search_backend(
-                client,
-                SearchBackendArg::Duckduckgo,
-                None,
-                config
-                    .search
-                    .base_url
-                    .as_deref()
-                    .unwrap_or(DUCKDUCKGO_SEARCH_URL),
-            )?
+            let base_url = config
+                .search
+                .base_url
+                .as_deref()
+                .unwrap_or(DUCKDUCKGO_SEARCH_URL);
+            if let Some(permissions) = permissions {
+                permissions
+                    .check_network(base_url)
+                    .map_err(CliError::operation)?;
+            }
+            build_search_backend(client, SearchBackendArg::Duckduckgo, None, base_url)?
         }
     } else {
         let api_key_env = if backend_override.is_none() {
@@ -2632,6 +2672,11 @@ fn run_web_search_command(
                 SearchBackendArg::Kagi | SearchBackendArg::Auto => "https://kagi.com/api/v0/search",
             }
         };
+        if let Some(permissions) = permissions {
+            permissions
+                .check_network(base_url)
+                .map_err(CliError::operation)?;
+        }
         build_search_backend(client, effective_kind, api_key_env, base_url)?
     };
 
@@ -2706,7 +2751,13 @@ fn run_web_fetch_command(
     mode: WebFetchMode,
     save: Option<&PathBuf>,
     extract_article: bool,
+    permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<WebFetchReport, CliError> {
+    if let Some(permissions) = permissions {
+        permissions
+            .check_network(url)
+            .map_err(CliError::operation)?;
+    }
     let config = load_vault_config(paths).config.web;
     let client = build_web_client(&config.user_agent)?;
     if !robots_allow_fetch(&client, url, &config.user_agent) {
@@ -2930,8 +2981,14 @@ fn decode_html_entities(input: &str) -> String {
 fn run_dataview_inline_command(
     paths: &VaultPaths,
     file: &str,
+    permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<DataviewInlineReport, CliError> {
     let resolved = resolve_note_reference(paths, file).map_err(CliError::operation)?;
+    if let Some(permissions) = permissions {
+        permissions
+            .check_read_path(&resolved.path)
+            .map_err(CliError::operation)?;
+    }
     let note_index = load_note_index(paths).map_err(CliError::operation)?;
     let note = note_index
         .values()
@@ -2945,16 +3002,31 @@ fn run_dataview_inline_command(
     })
 }
 
-fn run_dataview_query_command(paths: &VaultPaths, dql: &str) -> Result<DqlQueryResult, CliError> {
-    evaluate_dql(paths, dql, None).map_err(CliError::operation)
+fn run_dataview_query_command(
+    paths: &VaultPaths,
+    dql: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<DqlQueryResult, CliError> {
+    evaluate_dql_with_filter(paths, dql, None, filter).map_err(CliError::operation)
 }
 
 fn run_dataview_query_js_command(
     paths: &VaultPaths,
     js: &str,
     file: Option<&str>,
+    permission_profile: Option<&str>,
 ) -> Result<DataviewJsResult, CliError> {
-    evaluate_dataview_js_query(paths, js, file).map_err(CliError::operation)
+    evaluate_dataview_js_with_options(
+        paths,
+        js,
+        file,
+        DataviewJsEvalOptions {
+            timeout: None,
+            sandbox: None,
+            permission_profile: permission_profile.map(ToOwned::to_owned),
+        },
+    )
+    .map_err(CliError::operation)
 }
 
 fn strip_shebang_line(source: &str) -> &str {
@@ -3053,13 +3125,18 @@ fn run_js_command(
     script_mode: bool,
     timeout: Option<Duration>,
     sandbox: Option<JsRuntimeSandbox>,
+    permission_profile: Option<&str>,
 ) -> Result<DataviewJsResult, CliError> {
     let source = load_run_script_source(paths, script, script_mode)?;
     evaluate_dataview_js_with_options(
         paths,
         strip_shebang_line(&source),
         None,
-        DataviewJsEvalOptions { timeout, sandbox },
+        DataviewJsEvalOptions {
+            timeout,
+            sandbox,
+            permission_profile: permission_profile.map(ToOwned::to_owned),
+        },
     )
     .map_err(CliError::operation)
 }
@@ -3069,12 +3146,17 @@ fn run_js_eval(
     code: &str,
     timeout: Option<Duration>,
     sandbox: Option<JsRuntimeSandbox>,
+    permission_profile: Option<&str>,
 ) -> Result<DataviewJsResult, CliError> {
     evaluate_dataview_js_with_options(
         paths,
         code,
         None,
-        DataviewJsEvalOptions { timeout, sandbox },
+        DataviewJsEvalOptions {
+            timeout,
+            sandbox,
+            permission_profile: permission_profile.map(ToOwned::to_owned),
+        },
     )
     .map_err(CliError::operation)
 }
@@ -3141,21 +3223,40 @@ fn run_dataview_eval_command(
     paths: &VaultPaths,
     file: &str,
     block: Option<usize>,
+    permission_profile: Option<&str>,
+    permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<DataviewEvalReport, CliError> {
+    let resolved = resolve_note_reference(paths, file).map_err(CliError::operation)?;
+    if let Some(permissions) = permissions {
+        permissions
+            .check_read_path(&resolved.path)
+            .map_err(CliError::operation)?;
+    }
     let blocks = load_dataview_blocks(paths, file, block).map_err(CliError::operation)?;
     let file = blocks
         .first()
         .map_or_else(|| file.to_string(), |block| block.file.clone());
     let mut reports = Vec::with_capacity(blocks.len());
+    let read_filter = permissions.map(PermissionGuard::read_filter);
 
     for block in blocks {
         let (result, error) = if block.language == "dataview" {
-            match evaluate_dql(paths, &block.source, Some(&block.file)) {
+            match evaluate_dql_with_filter(
+                paths,
+                &block.source,
+                Some(&block.file),
+                read_filter.as_ref(),
+            ) {
                 Ok(result) => (Some(DataviewBlockResult::Dql(result)), None),
                 Err(error) => (None, Some(error.to_string())),
             }
         } else if block.language == "dataviewjs" {
-            match run_dataview_query_js_command(paths, &block.source, Some(&block.file)) {
+            match run_dataview_query_js_command(
+                paths,
+                &block.source,
+                Some(&block.file),
+                permission_profile,
+            ) {
                 Ok(result) => (Some(DataviewBlockResult::Js(result)), None),
                 Err(error) => (None, Some(error.to_string())),
             }
@@ -12515,6 +12616,7 @@ fn command_index_for_alias_expansion(args: &[OsString]) -> Option<usize> {
                 | "--refresh"
                 | "--fields"
                 | "--provider"
+                | "--permissions"
                 | "--limit"
                 | "--offset"
                 | "--color"
@@ -12534,6 +12636,7 @@ fn command_index_for_alias_expansion(args: &[OsString]) -> Option<usize> {
             || rendered.starts_with("--refresh=")
             || rendered.starts_with("--fields=")
             || rendered.starts_with("--provider=")
+            || rendered.starts_with("--permissions=")
             || rendered.starts_with("--limit=")
             || rendered.starts_with("--offset=")
             || rendered.starts_with("--color=")
@@ -12823,7 +12926,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let report = run_status_command(&paths)?;
             print_status_report(cli.output, &report, use_stdout_color)
         }
-        Command::Mcp { ref permissions } => run_mcp_server(&paths, permissions.as_deref()),
+        Command::Mcp => run_mcp_server(&paths, cli.permissions.as_deref()),
         Command::Trust { ref command } => handle_trust_command(cli, &paths, command.as_ref()),
         Command::Bases { ref command } => commands::bases::handle_bases_command(
             cli,
@@ -12904,6 +13007,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Rebuild { dry_run } => {
+            selected_permission_guard(cli, &paths)?
+                .check_index()
+                .map_err(CliError::operation)?;
             let mut progress = (cli.output == OutputFormat::Human)
                 .then(|| ScanProgressReporter::new(use_stderr_color));
             let report = rebuild_vault_with_progress(&paths, &RebuildQuery { dry_run }, |event| {
@@ -12920,6 +13026,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             dry_run,
             no_commit,
         } => {
+            let guard = selected_permission_guard(cli, &paths)?;
+            guard
+                .check_refactor_path(source)
+                .map_err(CliError::operation)?;
+            guard
+                .check_refactor_path(dest)
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let summary = move_note(&paths, source, dest, dry_run).map_err(CliError::operation)?;
@@ -12937,6 +13050,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             dry_run,
             no_commit,
         } => {
+            let guard = selected_permission_guard(cli, &paths)?;
+            if !guard.refactor_filter().path_permission().is_unrestricted() {
+                return Err(CliError::operation(
+                    "permission denied: rename-property requires unrestricted refactor scope under the selected profile",
+                ));
+            }
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = rename_property(&paths, old, new, dry_run).map_err(CliError::operation)?;
@@ -12954,6 +13073,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             dry_run,
             no_commit,
         } => {
+            let guard = selected_permission_guard(cli, &paths)?;
+            if !guard.refactor_filter().path_permission().is_unrestricted() {
+                return Err(CliError::operation(
+                    "permission denied: merge-tags requires unrestricted refactor scope under the selected profile",
+                ));
+            }
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = merge_tags(&paths, source, dest, dry_run).map_err(CliError::operation)?;
@@ -12980,6 +13105,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 interactive_note_selection,
                 "note to update",
             )?;
+            selected_permission_guard(cli, &paths)?
+                .check_refactor_path(&note)
+                .map_err(CliError::operation)?;
             let report =
                 rename_alias(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -13005,6 +13133,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 interactive_note_selection,
                 "note containing heading",
             )?;
+            selected_permission_guard(cli, &paths)?
+                .check_refactor_path(&note)
+                .map_err(CliError::operation)?;
             let report =
                 rename_heading(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -13030,6 +13161,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 interactive_note_selection,
                 "note containing block ref",
             )?;
+            selected_permission_guard(cli, &paths)?
+                .check_refactor_path(&note)
+                .map_err(CliError::operation)?;
             let report =
                 rename_block_ref(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -13062,6 +13196,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         },
         Command::Repair { ref command } => match command {
             RepairCommand::Fts { dry_run } => {
+                selected_permission_guard(cli, &paths)?
+                    .check_index()
+                    .map_err(CliError::operation)?;
                 let report = repair_fts(&paths, &RepairFtsQuery { dry_run: *dry_run })
                     .map_err(CliError::operation)?;
                 print_repair_fts_report(cli.output, &report)
@@ -13072,19 +13209,28 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_watch,
             debounce_ms,
             ref auth_token,
-        } => serve_forever(
-            &paths,
-            &ServeOptions {
-                bind: bind.clone(),
-                watch: !no_watch,
-                debounce_ms,
-                auth_token: auth_token.clone(),
-            },
-        ),
+        } => {
+            selected_permission_guard(cli, &paths)?
+                .check_index()
+                .map_err(CliError::operation)?;
+            serve_forever(
+                &paths,
+                &ServeOptions {
+                    bind: bind.clone(),
+                    watch: !no_watch,
+                    debounce_ms,
+                    auth_token: auth_token.clone(),
+                    permissions: cli.permissions.clone(),
+                },
+            )
+        }
         Command::Watch {
             debounce_ms,
             no_commit,
         } => {
+            selected_permission_guard(cli, &paths)?
+                .check_index()
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             if cli.output == OutputFormat::Human && stdout_is_tty {
@@ -13467,146 +13613,178 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 )
             }
         },
-        Command::Export { ref command } => match command {
-            ExportCommand::Markdown { query, path, title } => {
-                let report = execute_export_query(
-                    &paths,
-                    query.query.as_deref(),
-                    query.query_json.as_deref(),
-                )?;
-                let notes = load_exported_notes(&paths, &report)?;
-                let payload = render_markdown_export_payload(&report, &notes, title.as_deref());
-                let summary = MarkdownExportSummary {
-                    path: path
-                        .as_ref()
-                        .map_or_else(String::new, |path| path.display().to_string()),
-                    result_count: notes.len(),
-                };
-                write_text_export(cli.output, path.as_ref(), &payload, &summary)
-            }
-            ExportCommand::Json {
-                query,
-                path,
-                pretty,
-            } => {
-                let report = execute_export_query(
-                    &paths,
-                    query.query.as_deref(),
-                    query.query_json.as_deref(),
-                )?;
-                let notes = load_exported_notes(&paths, &report)?;
-                let payload = render_json_export_payload(&report, &notes, *pretty)?;
-                let summary = JsonExportSummary {
-                    path: path
-                        .as_ref()
-                        .map_or_else(String::new, |path| path.display().to_string()),
-                    result_count: notes.len(),
-                };
-                write_text_export(cli.output, path.as_ref(), &payload, &summary)
-            }
-            ExportCommand::Csv { query, path } => {
-                let report = execute_export_query(
-                    &paths,
-                    query.query.as_deref(),
-                    query.query_json.as_deref(),
-                )?;
-                let rows = query_export_rows(&report);
-                let fields = query_export_fields();
-                let payload = render_csv_export_payload(&rows, &fields)?;
-                let summary = CsvExportSummary {
-                    path: path
-                        .as_ref()
-                        .map_or_else(String::new, |path| path.display().to_string()),
-                    result_count: report.notes.len(),
-                };
-                write_text_export(cli.output, path.as_ref(), &payload, &summary)
-            }
-            ExportCommand::Graph { format, path } => {
-                let report = vulcan_core::export_graph(&paths).map_err(CliError::operation)?;
-                write_graph_export(cli.output, &report, *format, path.as_ref())
-            }
-            ExportCommand::Epub {
-                query,
-                path,
-                title,
-                author,
-                backlinks,
-            } => {
-                let report = execute_export_query(
-                    &paths,
-                    query.query.as_deref(),
-                    query.query_json.as_deref(),
-                )?;
-                let notes = load_exported_notes(&paths, &report)?;
-                let summary = write_epub_export(
-                    &paths,
+        Command::Export { ref command } => {
+            let read_filter = selected_read_permission_filter(cli, &paths)?;
+            match command {
+                ExportCommand::Markdown { query, path, title } => {
+                    let report = execute_export_query(
+                        &paths,
+                        query.query.as_deref(),
+                        query.query_json.as_deref(),
+                        read_filter.as_ref(),
+                    )?;
+                    let notes = load_exported_notes(&paths, &report)?;
+                    let payload = render_markdown_export_payload(&report, &notes, title.as_deref());
+                    let summary = MarkdownExportSummary {
+                        path: path
+                            .as_ref()
+                            .map_or_else(String::new, |path| path.display().to_string()),
+                        result_count: notes.len(),
+                    };
+                    write_text_export(cli.output, path.as_ref(), &payload, &summary)
+                }
+                ExportCommand::Json {
+                    query,
                     path,
-                    &notes,
-                    title.as_deref(),
-                    author.as_deref(),
-                    *backlinks,
-                )?;
-                match cli.output {
-                    OutputFormat::Human | OutputFormat::Markdown => {
-                        println!("{}", summary.path);
-                        Ok(())
+                    pretty,
+                } => {
+                    let report = execute_export_query(
+                        &paths,
+                        query.query.as_deref(),
+                        query.query_json.as_deref(),
+                        read_filter.as_ref(),
+                    )?;
+                    let notes = load_exported_notes(&paths, &report)?;
+                    let payload = render_json_export_payload(&report, &notes, *pretty)?;
+                    let summary = JsonExportSummary {
+                        path: path
+                            .as_ref()
+                            .map_or_else(String::new, |path| path.display().to_string()),
+                        result_count: notes.len(),
+                    };
+                    write_text_export(cli.output, path.as_ref(), &payload, &summary)
+                }
+                ExportCommand::Csv { query, path } => {
+                    let report = execute_export_query(
+                        &paths,
+                        query.query.as_deref(),
+                        query.query_json.as_deref(),
+                        read_filter.as_ref(),
+                    )?;
+                    let rows = query_export_rows(&report);
+                    let fields = query_export_fields();
+                    let payload = render_csv_export_payload(&rows, &fields)?;
+                    let summary = CsvExportSummary {
+                        path: path
+                            .as_ref()
+                            .map_or_else(String::new, |path| path.display().to_string()),
+                        result_count: report.notes.len(),
+                    };
+                    write_text_export(cli.output, path.as_ref(), &payload, &summary)
+                }
+                ExportCommand::Graph { format, path } => {
+                    let report =
+                        vulcan_core::export_graph_with_filter(&paths, read_filter.as_ref())
+                            .map_err(CliError::operation)?;
+                    write_graph_export(cli.output, &report, *format, path.as_ref())
+                }
+                ExportCommand::Epub {
+                    query,
+                    path,
+                    title,
+                    author,
+                    backlinks,
+                } => {
+                    let report = execute_export_query(
+                        &paths,
+                        query.query.as_deref(),
+                        query.query_json.as_deref(),
+                        read_filter.as_ref(),
+                    )?;
+                    let notes = load_exported_notes(&paths, &report)?;
+                    let summary = write_epub_export(
+                        &paths,
+                        path,
+                        &notes,
+                        title.as_deref(),
+                        author.as_deref(),
+                        *backlinks,
+                    )?;
+                    match cli.output {
+                        OutputFormat::Human | OutputFormat::Markdown => {
+                            println!("{}", summary.path);
+                            Ok(())
+                        }
+                        OutputFormat::Json => print_json(&summary),
                     }
-                    OutputFormat::Json => print_json(&summary),
+                }
+                ExportCommand::Zip { query, path } => {
+                    let report = execute_export_query(
+                        &paths,
+                        query.query.as_deref(),
+                        query.query_json.as_deref(),
+                        read_filter.as_ref(),
+                    )?;
+                    let notes = load_exported_notes(&paths, &report)?;
+                    let links = load_export_links(&paths, &notes)?;
+                    let summary = write_zip_export(&paths, path, &report, &notes, &links)?;
+                    match cli.output {
+                        OutputFormat::Human | OutputFormat::Markdown => {
+                            println!("{}", summary.path);
+                            Ok(())
+                        }
+                        OutputFormat::Json => print_json(&summary),
+                    }
+                }
+                ExportCommand::Sqlite { query, path } => {
+                    let report = execute_export_query(
+                        &paths,
+                        query.query.as_deref(),
+                        query.query_json.as_deref(),
+                        read_filter.as_ref(),
+                    )?;
+                    let notes = load_exported_notes(&paths, &report)?;
+                    let links = load_export_links(&paths, &notes)?;
+                    let summary = write_sqlite_export(path, &report, &notes, &links)?;
+                    match cli.output {
+                        OutputFormat::Human | OutputFormat::Markdown => {
+                            println!("{}", summary.path);
+                            Ok(())
+                        }
+                        OutputFormat::Json => print_json(&summary),
+                    }
+                }
+                ExportCommand::SearchIndex { path, pretty } => {
+                    let report = export_static_search_index(&paths).map_err(CliError::operation)?;
+                    print_static_search_index_report(cli.output, &report, path.as_ref(), *pretty)
                 }
             }
-            ExportCommand::Zip { query, path } => {
-                let report = execute_export_query(
-                    &paths,
-                    query.query.as_deref(),
-                    query.query_json.as_deref(),
-                )?;
-                let notes = load_exported_notes(&paths, &report)?;
-                let links = load_export_links(&paths, &notes)?;
-                let summary = write_zip_export(&paths, path, &report, &notes, &links)?;
-                match cli.output {
-                    OutputFormat::Human | OutputFormat::Markdown => {
-                        println!("{}", summary.path);
-                        Ok(())
-                    }
-                    OutputFormat::Json => print_json(&summary),
-                }
-            }
-            ExportCommand::Sqlite { query, path } => {
-                let report = execute_export_query(
-                    &paths,
-                    query.query.as_deref(),
-                    query.query_json.as_deref(),
-                )?;
-                let notes = load_exported_notes(&paths, &report)?;
-                let links = load_export_links(&paths, &notes)?;
-                let summary = write_sqlite_export(path, &report, &notes, &links)?;
-                match cli.output {
-                    OutputFormat::Human | OutputFormat::Markdown => {
-                        println!("{}", summary.path);
-                        Ok(())
-                    }
-                    OutputFormat::Json => print_json(&summary),
-                }
-            }
-            ExportCommand::SearchIndex { path, pretty } => {
-                let report = export_static_search_index(&paths).map_err(CliError::operation)?;
-                print_static_search_index_report(cli.output, &report, path.as_ref(), *pretty)
-            }
-        },
+        }
         Command::Config { ref command } => match command {
             ConfigCommand::Show { section } => {
-                run_config_show(&paths, cli.output, section.as_deref())
+                selected_permission_guard(cli, &paths)?
+                    .check_config_read()
+                    .map_err(CliError::operation)?;
+                run_config_show(
+                    &paths,
+                    cli.output,
+                    section.as_deref(),
+                    cli.permissions.as_deref(),
+                )
             }
-            ConfigCommand::Get { key } => run_config_get(&paths, cli.output, key),
+            ConfigCommand::Get { key } => {
+                selected_permission_guard(cli, &paths)?
+                    .check_config_read()
+                    .map_err(CliError::operation)?;
+                run_config_get(&paths, cli.output, key)
+            }
             ConfigCommand::Set {
                 key,
                 value,
                 dry_run,
                 no_commit,
-            } => run_config_set(
-                &paths, cli.output, key, value, *dry_run, *no_commit, cli.quiet,
-            ),
+            } => {
+                selected_permission_guard(cli, &paths)?
+                    .check_config_write()
+                    .map_err(CliError::operation)?;
+                run_config_set(
+                    &paths, cli.output, key, value, *dry_run, *no_commit, cli.quiet,
+                )
+            }
             ConfigCommand::Import(selection) => {
+                selected_permission_guard(cli, &paths)?
+                    .check_config_write()
+                    .map_err(CliError::operation)?;
                 if selection.command.is_some() && (selection.all || selection.list) {
                     return Err(CliError::operation(
                         "config import accepts either a subcommand, --all, or --list",
@@ -13739,6 +13917,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref note,
             ref since,
         } => {
+            if let Some(note) = note.as_deref() {
+                let guard = selected_permission_guard(cli, &paths)?;
+                let resolved = resolve_note_reference(&paths, note).map_err(CliError::operation)?;
+                guard
+                    .check_read_path(&resolved.path)
+                    .map_err(CliError::operation)?;
+                guard.check_git().map_err(CliError::operation)?;
+            }
             let report = run_diff_command(
                 &paths,
                 note.as_deref(),
@@ -13948,6 +14134,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             use_stderr_color,
         ),
         Command::Scan { full, no_commit } => {
+            selected_permission_guard(cli, &paths)?
+                .check_index()
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let mut progress = (cli.output == OutputFormat::Human)
@@ -15943,30 +16132,137 @@ fn run_config_show(
     paths: &VaultPaths,
     output: OutputFormat,
     section: Option<&str>,
+    selected_permission_profile: Option<&str>,
 ) -> Result<(), CliError> {
-    let loaded = load_vault_config(paths);
-    let json_config = serde_json::to_value(&loaded.config).map_err(CliError::operation)?;
-    let toml_config = TomlValue::try_from(&loaded.config).map_err(CliError::operation)?;
-    let selected_json = select_config_json_section(&json_config, section)?;
-    let selected_toml = select_config_toml_section(&toml_config, section)?;
+    let display_config = load_display_config_state(paths)?;
+    let selected_json = select_config_json_section(&display_config.json, section)?;
+    let selected_toml = select_config_toml_section(&display_config.toml, section)?;
+    let permission_metadata =
+        config_permission_metadata(section, selected_permission_profile, &display_config);
     let report = ConfigShowReport {
         section: section.map(ToOwned::to_owned),
         config: selected_json,
-        diagnostics: normalize_config_diagnostics(paths, &loaded.diagnostics),
+        diagnostics: normalize_config_diagnostics(paths, &display_config.diagnostics),
+        active_permission_profile: permission_metadata
+            .as_ref()
+            .map(|metadata| metadata.active_profile.clone()),
+        available_permission_profiles: permission_metadata
+            .map_or_else(Vec::new, |metadata| metadata.available_profiles),
     };
     print_config_show_report(output, &report, &selected_toml)
 }
 
 fn run_config_get(paths: &VaultPaths, output: OutputFormat, key: &str) -> Result<(), CliError> {
-    let loaded = load_vault_config(paths);
-    let json_config = serde_json::to_value(&loaded.config).map_err(CliError::operation)?;
-    let value = select_config_json_value(&json_config, key)?;
+    let display_config = load_display_config_state(paths)?;
+    let value = select_config_json_value(&display_config.json, key)?;
     let report = ConfigGetReport {
         key: key.to_string(),
         value,
-        diagnostics: normalize_config_diagnostics(paths, &loaded.diagnostics),
+        diagnostics: normalize_config_diagnostics(paths, &display_config.diagnostics),
     };
     print_config_get_report(output, &report)
+}
+
+struct DisplayConfigState {
+    json: Value,
+    toml: TomlValue,
+    diagnostics: Vec<ConfigDiagnostic>,
+    permission_profiles: Vec<String>,
+}
+
+struct PermissionConfigMetadata {
+    active_profile: String,
+    available_profiles: Vec<String>,
+}
+
+fn load_display_config_state(paths: &VaultPaths) -> Result<DisplayConfigState, CliError> {
+    let loaded = load_vault_config(paths);
+    let permission_profiles = load_permission_profiles(paths);
+    let json = display_config_json(&loaded.config, &permission_profiles.profiles)?;
+    let toml = display_config_toml(&loaded.config, &permission_profiles.profiles)?;
+    Ok(DisplayConfigState {
+        json,
+        toml,
+        diagnostics: merge_config_diagnostics(
+            &loaded.diagnostics,
+            &permission_profiles.diagnostics,
+        ),
+        permission_profiles: permission_profiles.profiles.keys().cloned().collect(),
+    })
+}
+
+fn display_config_json(
+    config: &vulcan_core::VaultConfig,
+    permission_profiles: &BTreeMap<String, PermissionProfile>,
+) -> Result<Value, CliError> {
+    let mut json = serde_json::to_value(config).map_err(CliError::operation)?;
+    let Value::Object(object) = &mut json else {
+        return Err(CliError::operation(
+            "vault config did not serialize to an object",
+        ));
+    };
+    object.insert(
+        "permissions".to_string(),
+        serde_json::json!({ "profiles": permission_profiles }),
+    );
+    Ok(json)
+}
+
+fn display_config_toml(
+    config: &vulcan_core::VaultConfig,
+    permission_profiles: &BTreeMap<String, PermissionProfile>,
+) -> Result<TomlValue, CliError> {
+    let mut toml_config = TomlValue::try_from(config).map_err(CliError::operation)?;
+    let TomlValue::Table(table) = &mut toml_config else {
+        return Err(CliError::operation(
+            "vault config did not serialize to a TOML table",
+        ));
+    };
+
+    let mut permissions_table = toml::map::Map::new();
+    permissions_table.insert(
+        "profiles".to_string(),
+        TomlValue::try_from(permission_profiles).map_err(CliError::operation)?,
+    );
+    table.insert(
+        "permissions".to_string(),
+        TomlValue::Table(permissions_table),
+    );
+    Ok(toml_config)
+}
+
+fn merge_config_diagnostics(
+    left: &[ConfigDiagnostic],
+    right: &[ConfigDiagnostic],
+) -> Vec<ConfigDiagnostic> {
+    let mut merged = left.to_vec();
+    for diagnostic in right {
+        if merged.iter().any(|existing| {
+            existing.path == diagnostic.path && existing.message == diagnostic.message
+        }) {
+            continue;
+        }
+        merged.push(diagnostic.clone());
+    }
+    merged
+}
+
+fn config_permission_metadata(
+    section: Option<&str>,
+    selected_permission_profile: Option<&str>,
+    display_config: &DisplayConfigState,
+) -> Option<PermissionConfigMetadata> {
+    let section = section?;
+    if section != "permissions" && !section.starts_with("permissions.") {
+        return None;
+    }
+
+    Some(PermissionConfigMetadata {
+        active_profile: selected_permission_profile
+            .unwrap_or("unrestricted")
+            .to_string(),
+        available_profiles: display_config.permission_profiles.clone(),
+    })
 }
 
 fn run_config_set(
@@ -16203,6 +16499,20 @@ fn print_config_show_report(
             };
             let rendered = toml::to_string_pretty(&rendered_value).map_err(CliError::operation)?;
             print!("{rendered}");
+            if let Some(active_profile) = report.active_permission_profile.as_deref() {
+                println!("# active_permission_profile = \"{active_profile}\"");
+                if !report.available_permission_profiles.is_empty() {
+                    println!(
+                        "# available_permission_profiles = [{}]",
+                        report
+                            .available_permission_profiles
+                            .iter()
+                            .map(|name| format!("\"{name}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+            }
             for diagnostic in &report.diagnostics {
                 eprintln!(
                     "warning: {}: {}",
@@ -19258,9 +19568,10 @@ fn execute_export_query(
     paths: &VaultPaths,
     query: Option<&str>,
     query_json: Option<&str>,
+    filter: Option<&PermissionFilter>,
 ) -> Result<QueryReport, CliError> {
     let ast = resolve_export_query_ast(query, query_json)?;
-    execute_query_report(paths, ast).map_err(CliError::operation)
+    execute_query_report_with_filter(paths, ast, filter).map_err(CliError::operation)
 }
 
 fn load_exported_notes(
@@ -23340,35 +23651,13 @@ fn resolve_mcp_permission_selection(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
 ) -> Result<McpPermissionSelection, CliError> {
-    let requested_name = requested_profile.unwrap_or("unrestricted");
-    let loaded = load_permission_profiles(paths);
-    let Some(profile) = loaded.profiles.get(requested_name) else {
-        let available = loaded
-            .profiles
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut message = format!(
-            "unknown permission profile `{requested_name}` for `vulcan mcp`; available profiles: {available}"
-        );
-        if !loaded.diagnostics.is_empty() {
-            let diagnostics = loaded
-                .diagnostics
-                .iter()
-                .map(|diagnostic| format!("{}: {}", diagnostic.path.display(), diagnostic.message))
-                .collect::<Vec<_>>()
-                .join("; ");
-            let _ = write!(message, "; config diagnostics: {diagnostics}");
-        }
-        return Err(CliError::operation(message));
-    };
-
-    ensure_mcp_permission_profile_supported(requested_name, profile)?;
+    let resolved =
+        resolve_permission_profile(paths, requested_profile).map_err(permission_error_to_cli)?;
+    ensure_mcp_permission_profile_supported(&resolved.name, &resolved.profile)?;
 
     Ok(McpPermissionSelection {
-        name: requested_name.to_string(),
-        profile: profile.clone(),
+        name: resolved.name,
+        profile: resolved.profile,
     })
 }
 
@@ -27415,7 +27704,7 @@ mod tests {
             .expect("help should parse");
         let describe = Cli::try_parse_from(["vulcan", "describe", "--format", "openai-tools"])
             .expect("describe should parse");
-        let mcp = Cli::try_parse_from(["vulcan", "mcp", "--permissions", "readonly"])
+        let mcp = Cli::try_parse_from(["vulcan", "--permissions", "readonly", "mcp"])
             .expect("mcp should parse");
 
         assert_eq!(
@@ -27431,12 +27720,8 @@ mod tests {
                 format: DescribeFormatArg::OpenaiTools,
             }
         );
-        assert_eq!(
-            mcp.command,
-            Command::Mcp {
-                permissions: Some("readonly".to_string()),
-            }
-        );
+        assert_eq!(mcp.command, Command::Mcp);
+        assert_eq!(mcp.permissions.as_deref(), Some("readonly"));
     }
 
     #[test]
