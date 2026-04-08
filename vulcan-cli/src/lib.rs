@@ -14186,6 +14186,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     author,
                     toc,
                     backlinks,
+                    frontmatter,
                 } => {
                     let report = execute_export_query(
                         &paths,
@@ -14198,10 +14199,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &paths,
                         path,
                         &notes,
-                        title.as_deref(),
-                        author.as_deref(),
-                        *backlinks,
-                        *toc,
+                        EpubExportOptions {
+                            title: title.as_deref(),
+                            author: author.as_deref(),
+                            backlinks: *backlinks,
+                            frontmatter: *frontmatter,
+                            toc_style: *toc,
+                        },
                     )?;
                     match cli.output {
                         OutputFormat::Human | OutputFormat::Markdown => {
@@ -20173,6 +20177,15 @@ struct EpubExportSummary {
     result_count: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct EpubExportOptions<'a> {
+    title: Option<&'a str>,
+    author: Option<&'a str>,
+    backlinks: bool,
+    frontmatter: bool,
+    toc_style: EpubTocStyle,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ZipExportSummary {
     path: String,
@@ -21037,6 +21050,7 @@ fn render_epub_chapter_document(
     chapter_title: &str,
     note_path: Option<&str>,
     tags_html: Option<&str>,
+    frontmatter_html: Option<&str>,
     html_body: &str,
     backlinks_html: Option<&str>,
     stylesheet_href: &str,
@@ -21073,6 +21087,10 @@ fn render_epub_chapter_document(
         rendered.push_str(tags_html);
     }
     rendered.push_str("</header>\n<section class=\"chapter-body\">");
+    if let Some(frontmatter_html) = frontmatter_html {
+        rendered.push_str(frontmatter_html);
+        rendered.push('\n');
+    }
     rendered.push_str(html_body);
     rendered.push_str("</section>\n");
     if let Some(backlinks_html) = backlinks_html {
@@ -21081,6 +21099,14 @@ fn render_epub_chapter_document(
     }
     rendered.push_str("</article>\n</body>\n</html>\n");
     rendered
+}
+
+fn render_epub_frontmatter_html(frontmatter: &YamlMapping) -> Result<String, CliError> {
+    let yaml = format_frontmatter_block(frontmatter).map_err(CliError::operation)?;
+    Ok(format!(
+        "<details class=\"frontmatter-box\"><summary>Frontmatter</summary><pre><code>{}</code></pre></details>",
+        escape_xml_text(&yaml)
+    ))
 }
 
 fn render_epub_tag_page_document(
@@ -21128,6 +21154,7 @@ fn build_epub_chapters(
     paths: &VaultPaths,
     notes: &[ExportedNoteDocument],
     backlinks: bool,
+    include_frontmatter: bool,
     tag_targets: &HashMap<String, String>,
 ) -> Result<Vec<EpubChapter>, CliError> {
     let config = load_vault_config(paths).config;
@@ -21138,7 +21165,7 @@ fn build_epub_chapters(
         .iter()
         .enumerate()
         .map(|(index, note)| {
-            let (_, body) =
+            let (frontmatter, body) =
                 parse_frontmatter_document(&note.content, false).map_err(CliError::operation)?;
             let rendered_markdown = render_epub_note_markdown(
                 paths,
@@ -21165,6 +21192,14 @@ fn build_epub_chapters(
                 .then(|| render_epub_backlinks(&note.note.inlinks, &link_targets))
                 .flatten();
             let tags_html = render_epub_chapter_tags_html(&note.note.tags, tag_targets);
+            let frontmatter_html = if include_frontmatter {
+                frontmatter
+                    .as_ref()
+                    .map(render_epub_frontmatter_html)
+                    .transpose()?
+            } else {
+                None
+            };
             let file_href = format!("chapter-{:03}.xhtml", index + 1);
             Ok(EpubChapter {
                 document_path: note.note.document_path.clone(),
@@ -21176,6 +21211,7 @@ fn build_epub_chapters(
                     &chapter_title,
                     Some(&note.note.document_path),
                     tags_html.as_deref(),
+                    frontmatter_html.as_deref(),
                     &body_html,
                     backlinks_html.as_deref(),
                     "../styles.css",
@@ -21193,6 +21229,7 @@ fn build_epub_chapters(
             headings: Vec::new(),
             content: render_epub_chapter_document(
                 "No results",
+                None,
                 None,
                 None,
                 "<p>No notes matched this export query.</p>",
@@ -21612,6 +21649,9 @@ fn epub_stylesheet() -> &'static str {
      .chapter-header { border-bottom: 1px solid #d0d0d0; margin-bottom: 1.5rem; padding-bottom: 0.75rem; }\n\
      .chapter-title { margin-bottom: 0.25rem; }\n\
      .note-path, .note-tags { color: #555; font-size: 0.95em; margin: 0.15rem 0; }\n\
+     .frontmatter-box { background: #f6f4ef; border: 1px solid #d7d2c7; border-radius: 0.45rem; margin: 0 0 1.25rem; padding: 0.75rem 0.9rem; }\n\
+     .frontmatter-box summary { cursor: pointer; font-weight: 600; }\n\
+     .frontmatter-box pre { background: #fffdf8; border: 1px solid #e3ddd2; margin: 0.75rem 0 0; overflow-x: auto; padding: 0.75rem; white-space: pre-wrap; }\n\
      .tag-link { text-decoration: none; }\n\
      .toc-directory-label { font-weight: 600; }\n\
      .toc-directory > ol, .toc-headings { margin-top: 0.35rem; }\n\
@@ -21627,17 +21667,21 @@ fn write_epub_export(
     paths: &VaultPaths,
     output_path: &Path,
     notes: &[ExportedNoteDocument],
-    title: Option<&str>,
-    author: Option<&str>,
-    backlinks: bool,
-    toc_style: EpubTocStyle,
+    options: EpubExportOptions<'_>,
 ) -> Result<EpubExportSummary, CliError> {
     prepare_export_output_path(output_path)?;
     let tag_targets = build_epub_tag_targets(notes);
-    let chapters = build_epub_chapters(paths, notes, backlinks, &tag_targets)?;
+    let chapters = build_epub_chapters(
+        paths,
+        notes,
+        options.backlinks,
+        options.frontmatter,
+        &tag_targets,
+    )?;
     let tag_pages = build_epub_tag_pages(&chapters, notes, &tag_targets);
-    let nav_nodes = build_epub_nav_nodes(&chapters, &tag_pages, toc_style);
-    let book_title = title
+    let nav_nodes = build_epub_nav_nodes(&chapters, &tag_pages, options.toc_style);
+    let book_title = options
+        .title
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map_or_else(|| default_epub_title(paths), ToOwned::to_owned);
@@ -21675,7 +21719,14 @@ fn write_epub_export(
         .map_err(CliError::operation)?;
     writer
         .write_all(
-            render_epub_package(&book_title, author, &chapters, &tag_pages, &identifier).as_bytes(),
+            render_epub_package(
+                &book_title,
+                options.author,
+                &chapters,
+                &tag_pages,
+                &identifier,
+            )
+            .as_bytes(),
         )
         .map_err(CliError::operation)?;
 
@@ -28581,6 +28632,7 @@ mod tests {
                     author: Some("Vulcan".to_string()),
                     toc: EpubTocStyle::Tree,
                     backlinks: true,
+                    frontmatter: false,
                 },
             }
         );
