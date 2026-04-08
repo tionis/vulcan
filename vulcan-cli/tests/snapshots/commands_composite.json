@@ -3470,33 +3470,310 @@
       },
       {
         "about": "Write static export artifacts derived from the cache",
-        "after_help": "Subcommands:\n  profiles      List configured export profiles\n  profile       Run a named export profile from config\n  markdown      Export matched notes as one combined Markdown document\n  json          Export matched notes with metadata and raw content as JSON\n  csv           Export note query results as CSV\n  graph         Export the resolved link graph for external tools\n  epub          Render matched notes as an EPUB book\n  zip           Export matched notes and linked attachments as a ZIP archive\n  sqlite        Export matched notes into a standalone SQLite database\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.\n  `export profile <name>` resolves relative profile paths from the vault root.\n  `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.\n  Text exports print to stdout by default; pass `-o/--path` to write a file instead.\n  `epub --backlinks` appends indexed inlinks after each exported note chapter.\n  Archive exports require `-o/--path` because they produce binary or database files.\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export profiles\n  vulcan export profile team-book\n  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'\n  vulcan export json 'from notes where status = done' --pretty -o exports/done.json\n  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv\n  vulcan export graph --format dot -o exports/graph.dot\n  vulcan export epub 'from notes where file.path matches \"^(Projects|People)/\"' -o exports/team.epub --title 'Team Notes' --backlinks\n  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip\n  vulcan export sqlite 'from notes where status = done' -o exports/done.db\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
+        "after_help": "Subcommands:\n  profile       Run or manage named export profiles\n  markdown      Export matched notes as one combined Markdown document\n  json          Export matched notes with metadata and raw content as JSON\n  csv           Export note query results as CSV\n  graph         Export the resolved link graph for external tools\n  epub          Render matched notes as an EPUB book\n  zip           Export matched notes and linked attachments as a ZIP archive\n  sqlite        Export matched notes into a standalone SQLite database\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.\n  `export profile run <name>` resolves relative profile paths from the vault root.\n  `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.\n  `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.\n  Text exports print to stdout by default; pass `-o/--path` to write a file instead.\n  `epub --backlinks` appends indexed inlinks after each exported note chapter.\n  Archive exports require `-o/--path` because they produce binary or database files.\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export profile list\n  vulcan export profile run team-book\n  vulcan export profile show team-book\n  vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'\n  vulcan export profile delete team-book --dry-run\n  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'\n  vulcan export json 'from notes where status = done' --pretty -o exports/done.json\n  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv\n  vulcan export graph --format dot -o exports/graph.dot\n  vulcan export epub 'from notes where file.path matches \"^(Projects|People)/\"' -o exports/team.epub --title 'Team Notes' --backlinks\n  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip\n  vulcan export sqlite 'from notes where status = done' -o exports/done.db\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
         "name": "export",
         "options": [],
         "subcommands": [
           {
-            "about": "List configured export profiles",
-            "name": "profiles",
-            "options": [],
-            "subcommands": []
-          },
-          {
-            "about": "Run a named export profile from config",
+            "about": "Run or manage named export profiles from config",
             "name": "profile",
-            "options": [
+            "options": [],
+            "subcommands": [
               {
-                "help": "Export profile name from [export.profiles.<name>]",
-                "id": "name",
-                "long": null,
-                "possible_values": [],
-                "required": true,
-                "short": null,
-                "value_names": [
-                  "NAME"
-                ]
+                "about": "List configured export profiles",
+                "name": "list",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Run a named export profile from config",
+                "name": "run",
+                "options": [
+                  {
+                    "help": "Export profile name from [export.profiles.<name>]",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Show the effective config for one export profile",
+                "name": "show",
+                "options": [
+                  {
+                    "help": "Export profile name from [export.profiles.<name>]",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Create or replace an export profile in .vulcan/config.toml",
+                "name": "create",
+                "options": [
+                  {
+                    "help": "Export profile name",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Export format to run for this profile",
+                    "id": "format",
+                    "long": "format",
+                    "possible_values": [
+                      "markdown",
+                      "json",
+                      "csv",
+                      "graph",
+                      "epub",
+                      "zip",
+                      "sqlite",
+                      "search-index"
+                    ],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "FORMAT"
+                    ]
+                  },
+                  {
+                    "help": "Native note query DSL string; omit with --query-json",
+                    "id": "query",
+                    "long": null,
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "QUERY"
+                    ]
+                  },
+                  {
+                    "help": "JSON note query payload; mutually exclusive with the positional query",
+                    "id": "query_json",
+                    "long": "query-json",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "QUERY_JSON"
+                    ]
+                  },
+                  {
+                    "help": "Destination file path stored in the profile",
+                    "id": "path",
+                    "long": "path",
+                    "possible_values": [],
+                    "required": true,
+                    "short": "o",
+                    "value_names": [
+                      "PATH"
+                    ]
+                  },
+                  {
+                    "help": "Optional heading or book title stored in the profile",
+                    "id": "title",
+                    "long": "title",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TITLE"
+                    ]
+                  },
+                  {
+                    "help": "Optional EPUB author/creator metadata stored in the profile",
+                    "id": "author",
+                    "long": "author",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "AUTHOR"
+                    ]
+                  },
+                  {
+                    "help": "EPUB table of contents style",
+                    "id": "toc",
+                    "long": "toc",
+                    "possible_values": [
+                      "tree",
+                      "flat"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TOC"
+                    ]
+                  },
+                  {
+                    "help": "Enable EPUB backlinks in the stored profile",
+                    "id": "backlinks",
+                    "long": "backlinks",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "BACKLINKS"
+                    ]
+                  },
+                  {
+                    "help": "Include EPUB frontmatter panels in the stored profile",
+                    "id": "frontmatter",
+                    "long": "frontmatter",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FRONTMATTER"
+                    ]
+                  },
+                  {
+                    "help": "Pretty-print JSON or search-index profile output",
+                    "id": "pretty",
+                    "long": "pretty",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PRETTY"
+                    ]
+                  },
+                  {
+                    "help": "Graph export format stored in the profile",
+                    "id": "graph_format",
+                    "long": "graph-format",
+                    "possible_values": [
+                      "json",
+                      "dot",
+                      "graphml"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "GRAPH_FORMAT"
+                    ]
+                  },
+                  {
+                    "help": "Replace an existing profile with the same name",
+                    "id": "replace",
+                    "long": "replace",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REPLACE"
+                    ]
+                  },
+                  {
+                    "help": "Preview the config change without writing the file",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Skip auto-commit for this config mutation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Delete an export profile from .vulcan/config.toml",
+                "name": "delete",
+                "options": [
+                  {
+                    "help": "Export profile name",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Preview the config change without writing the file",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Skip auto-commit for this config mutation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
               }
-            ],
-            "subcommands": []
+            ]
           },
           {
             "about": "Export matched notes as one combined Markdown document",
