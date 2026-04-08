@@ -47,6 +47,13 @@ fn cargo_vulcan_at_time(fixed_now: &str) -> Command {
     command
 }
 
+fn has_extension(path: &str, extension: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+}
+
 fn write_plugin_file(vault_root: &Path, name: &str, source: &str) {
     let plugin_dir = vault_root.join(".vulcan/plugins");
     fs::create_dir_all(&plugin_dir).expect("plugin dir should be created");
@@ -10154,9 +10161,9 @@ fn export_epub_bundles_and_rewrites_referenced_assets() {
         .cloned()
         .collect::<Vec<_>>();
     assert_eq!(media_entries.len(), 3);
-    assert!(media_entries.iter().any(|name| name.ends_with(".png")));
-    assert!(media_entries.iter().any(|name| name.ends_with(".pdf")));
-    assert!(media_entries.iter().any(|name| name.ends_with(".mp3")));
+    assert!(media_entries.iter().any(|name| has_extension(name, "png")));
+    assert!(media_entries.iter().any(|name| has_extension(name, "pdf")));
+    assert!(media_entries.iter().any(|name| has_extension(name, "mp3")));
 
     let mut content_opf = String::new();
     archive
