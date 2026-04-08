@@ -47,20 +47,23 @@ Install `cargo-fuzz` once:
 
 ```bash
 cargo install cargo-fuzz
+rustup toolchain install nightly
 ```
 
-Run any target for a bounded local pass:
+Run any target for a bounded local pass from the repository root with nightly enabled:
 
 ```bash
-cargo fuzz run parser -- -max_total_time=30
-cargo fuzz run frontmatter -- -max_total_time=30
-cargo fuzz run links -- -max_total_time=30
-cargo fuzz run chunker -- -max_total_time=30
-cargo fuzz run dql -- -max_total_time=30
-cargo fuzz run expression -- -max_total_time=30
-cargo fuzz run tasks -- -max_total_time=30
-cargo fuzz run config -- -max_total_time=30
+cargo +nightly fuzz run parser -- -max_total_time=30
+cargo +nightly fuzz run frontmatter -- -max_total_time=30
+cargo +nightly fuzz run links -- -max_total_time=30
+cargo +nightly fuzz run chunker -- -max_total_time=30
+cargo +nightly fuzz run dql -- -max_total_time=30
+cargo +nightly fuzz run expression -- -max_total_time=30
+cargo +nightly fuzz run tasks -- -max_total_time=30
+cargo +nightly fuzz run config -- -max_total_time=30
 ```
+
+`cargo-fuzz` relies on nightly-only sanitizer flags, so plain `cargo fuzz ...` from the stable repo root will fail. If you want to avoid `+nightly`, `cd fuzz` first; that subtree pins nightly in `fuzz/rust-toolchain.toml`.
 
 Covered parser and text-ingestion surfaces:
 
@@ -80,7 +83,7 @@ Fuzz artifacts are only useful if they become permanent regressions.
 
 When a crash or panic is found:
 
-1. Minimize it with `cargo fuzz tmin <target> <artifact>`.
+1. Minimize it with `cargo +nightly fuzz tmin <target> <artifact>` from the repo root, or `cargo fuzz tmin <target> <artifact>` from inside `fuzz/`.
 2. Add a unit test or fixture that reproduces the minimized input.
 3. Keep the regression test in-tree before merging the fix.
 
