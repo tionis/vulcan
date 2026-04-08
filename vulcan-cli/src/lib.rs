@@ -212,7 +212,8 @@ pub(crate) fn selected_permission_guard(
     cli: &Cli,
     paths: &VaultPaths,
 ) -> Result<ProfilePermissionGuard, CliError> {
-    selected_permission_profile(cli, paths).map(ProfilePermissionGuard::new)
+    selected_permission_profile(cli, paths)
+        .map(|selection| ProfilePermissionGuard::new(paths, selection))
 }
 
 pub(crate) fn selected_read_permission_filter(
@@ -3025,6 +3026,7 @@ fn run_dataview_query_js_command(
             timeout: None,
             sandbox: None,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            ..DataviewJsEvalOptions::default()
         },
     )
     .map_err(CliError::operation)
@@ -3137,6 +3139,7 @@ fn run_js_command(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            ..DataviewJsEvalOptions::default()
         },
     )
     .map_err(CliError::operation)
@@ -3157,6 +3160,7 @@ fn run_js_eval(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            ..DataviewJsEvalOptions::default()
         },
     )
     .map_err(CliError::operation)

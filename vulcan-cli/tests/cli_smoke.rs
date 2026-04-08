@@ -53,6 +53,18 @@ fn cargo_vulcan_with_xdg_config(config_home: &str) -> Command {
     command
 }
 
+fn trust_and_scan_vault(config_home: &str, vault_root: &str) {
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["--vault", vault_root, "trust", "add"])
+        .assert()
+        .success();
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["--vault", vault_root, "index", "scan", "--full"])
+        .assert()
+        .success();
+}
+
 struct PluginTestFixture {
     _temp_dir: TempDir,
     vault_root: PathBuf,
@@ -415,21 +427,7 @@ fn trusted_plugin_run_and_note_write_hook_work() {
         .failure()
         .stderr(predicate::str::contains("trusted vault"));
 
-    cargo_vulcan_with_xdg_config(&fixture.config_home_str)
-        .args(["--vault", &fixture.vault_root_str, "trust", "add"])
-        .assert()
-        .success();
-
-    cargo_vulcan_with_xdg_config(&fixture.config_home_str)
-        .args([
-            "--vault",
-            &fixture.vault_root_str,
-            "index",
-            "scan",
-            "--full",
-        ])
-        .assert()
-        .success();
+    trust_and_scan_vault(&fixture.config_home_str, &fixture.vault_root_str);
 
     let run_assert = cargo_vulcan_with_xdg_config(&fixture.config_home_str)
         .args([
@@ -487,6 +485,85 @@ fn trusted_plugin_run_and_note_write_hook_work() {
         fs::read_to_string(fixture.vault_root.join("Projects/Alpha.md")).expect("note should read"),
         "approved change\n"
     );
+}
+
+#[test]
+fn trusted_plugin_run_accepts_subset_permission_profiles() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(vault_root.join("Home.md"), "hello\n").expect("note should write");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[permissions.profiles.agent]
+read = "all"
+write = { allow = ["folder:Projects/**"] }
+refactor = "none"
+git = "deny"
+network = { allow = true, domains = ["example.com"] }
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+cpu_limit_ms = 5000
+memory_limit_mb = 64
+
+[permissions.profiles.plugin]
+read = { allow = ["note:Home.md"] }
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "none"
+execute = "allow"
+shell = "deny"
+cpu_limit_ms = 100
+memory_limit_mb = 32
+
+[plugins.lint]
+enabled = true
+permission_profile = "plugin"
+sandbox = "strict"
+"#,
+    )
+    .expect("config should write");
+    write_plugin_file(
+        &vault_root,
+        "lint",
+        "function main(event, ctx) { return { profile: ctx.plugin.permission_profile, kind: event.kind }; }\n",
+    );
+    let config_home = temp_dir.path().join("xdg");
+    fs::create_dir_all(&config_home).expect("xdg dir should exist");
+    let config_home_str = config_home
+        .to_str()
+        .expect("config home path should be valid utf-8")
+        .to_string();
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    let assert = cargo_vulcan_with_xdg_config(&config_home_str)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "agent",
+            "--output",
+            "json",
+            "plugin",
+            "run",
+            "lint",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["value"]["profile"], "plugin");
+    assert_eq!(json["value"]["kind"], "manual");
 }
 
 #[test]
@@ -14611,6 +14688,87 @@ read = { allow = ["folder:Projects/**"] }
     assert!(available.contains(&"readonly"));
     assert!(available.contains(&"unrestricted"));
     assert!(report["config"]["profiles"]["projects_only"].is_object());
+}
+
+#[test]
+fn policy_hooks_can_deny_reads_after_static_profile_checks() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/plugins")).expect("plugin dir should exist");
+    fs::write(vault_root.join("Home.md"), "home\n").expect("home note should write");
+    fs::write(vault_root.join("Secrets.md"), "secret\n").expect("secret note should write");
+    fs::write(
+        vault_root.join(".vulcan/plugins/guard.js"),
+        r#"
+function policy_hook(input) {
+  if (input.action === "read" && input.resource === "Secrets.md") {
+    return { decision: "deny", reason: "secret note blocked" };
+  }
+  return "pass";
+}
+"#,
+    )
+    .expect("policy hook should write");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.guarded]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "deny"
+shell = "deny"
+policy_hook = ".vulcan/plugins/guard.js"
+"#,
+    )
+    .expect("config should be written");
+
+    let config_home = temp_dir.path().join("xdg");
+    fs::create_dir_all(&config_home).expect("xdg dir should exist");
+    let config_home_str = config_home
+        .to_str()
+        .expect("config home path should be valid utf-8")
+        .to_string();
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    cargo_vulcan_with_xdg_config(&config_home_str)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "guarded",
+            "note",
+            "get",
+            "Secrets.md",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("secret note blocked"));
+
+    let assert = cargo_vulcan_with_xdg_config(&config_home_str)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--permissions",
+            "guarded",
+            "--output",
+            "json",
+            "note",
+            "get",
+            "Home.md",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["path"], "Home.md");
 }
 
 #[test]

@@ -1683,6 +1683,7 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
   - dynamic discovery for the rest of the command surface via `help --output json`
 - [ ] Normalize stdout/stderr parsing, exit-code handling, and timeout errors so `pi` sees stable tool failures
 - [ ] Support both read-only and write-enabled profiles
+- [ ] External-runtime launch contract includes `--permissions <profile>` on every `vulcan` invocation, with `agent` as the default write-capable profile and `readonly` as the default browse-only profile
 
 #### 9.12.2 Tool boundary and trust model
 
@@ -1692,6 +1693,7 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 - [ ] Preserve CLI-to-tool 1:1 mapping; the `pi` layer must not invent a second vault API
 - [ ] Document how `--dry-run`, `--check`, and git auto-commit fit into the agent workflow
 - [ ] Document a recommended least-privilege profile for read-only browsing, note editing, and high-trust refactoring
+- [ ] Tool wrappers and any future native assistant dispatch must treat Vulcan permission profiles as the authorization boundary: select a profile per session/tool call, pass it through unchanged, and rely on Vulcan-side denials instead of reimplementing policy in the runtime
 
 #### 9.12.3 Prompts, skills, and vault context
 
@@ -3509,8 +3511,8 @@ If both `--sandbox` and `--permissions` are specified, the more restrictive of t
 - [x] **CLI global flag:** `--permissions <profile>` — activate a named profile for this invocation
 - [x] **`index serve` / MCP server:** `--permissions <profile>` — all requests gated by this profile. Auth-token remains for authentication; permissions for authorization.
 - [x] **JS runtime:** permission guard is threaded into the runtime context. All vault API calls (`vault.note()`, `vault.set()`, `web.fetch()`, etc.) check the active guard before executing. Resource limits (CPU, memory, stack) are applied via rquickjs `Runtime::set_memory_limit()`, `set_max_stack_size()`, and `set_interrupt_handler()`.
-- [ ] **Plugin system (9.19.12):** each plugin declares required permissions in its manifest. Execution is denied if requirements exceed the active profile. Plugins can request a *subset* of the active profile's permissions.
-- [ ] **AI integrations (9.12):** external runtimes and any future native assistant operate under a configurable permission profile (default: `agent`). Tool dispatch checks permissions before executing. This is the primary consumer.
+- [x] **Plugin system (9.19.12):** each plugin declares required permissions in its manifest. Execution is denied if requirements exceed the active profile. Plugins can request a *subset* of the active profile's permissions.
+- [-] **AI integrations (9.12):** moved to 9.12.1 and 9.12.2 now that the assistant path is an external-runtime/tool-contract layer rather than an in-process permission consumer.
 - [x] **Phase 17 integration point:** Phase 17 implements `PermissionGuard` with a `UserPermissionGuard` that resolves user → vault role → ACL rules → `PermissionGrant`. The guard trait, resource specifiers, grant type, and `PermissionFilter` from 9.19.13 are reused without modification.
 
 **Implementation:**
@@ -3549,14 +3551,14 @@ A general-purpose policy engine (Cedar, Casbin) or the JS VM was considered and 
 
 For the rare case where static config rules are insufficient, a policy hook provides custom authorization logic. This is separate from the event plugin hooks (9.19.12) — it runs at a lower level during permission evaluation, not as a side effect of vault operations.
 
-- [ ] Optional `policy_hook` field in permission profiles pointing to a JS file in `.vulcan/plugins/`
-- [ ] Hook receives `{ principal, action, resource, profile_decision }` — the profile's allow/deny decision is already resolved before the hook runs
-- [ ] Hook can return `"deny"` (with reason) or `"pass"` (accept the profile's decision). **Cannot return `"allow"`** — hooks can only narrow permissions, never widen them. This prevents a compromised hook from bypassing restrictions.
-- [ ] Hook runs in a restricted JS context: read-only vault access, no network, no recursion into permission checks, short timeout (100ms). Uses its own `PermissionGrant` that is hardcoded to read-only + no-network + no-shell.
-- [ ] Only executes in trusted vaults (9.19.2 trust model)
-- [ ] Hook failures (timeout, error) are treated as `"deny"` — fail-closed
-- [ ] Example use case: a GM's campaign wiki hook that denies access to notes containing `[!secret gm]` callouts for non-GM users, before Phase 17's document-level secrets (17.4) is implemented
-- [ ] Performance: hooks are opt-in per profile. The default `unrestricted` profile has no hook. When present, the hook is called only after the static rules produce `"allow"` — denied requests never reach the hook.
+- [x] Optional `policy_hook` field in permission profiles pointing to a JS file in `.vulcan/plugins/`
+- [x] Hook receives `{ principal, action, resource, profile_decision }` — the profile's allow/deny decision is already resolved before the hook runs
+- [x] Hook can return `"deny"` (with reason) or `"pass"` (accept the profile's decision). **Cannot return `"allow"`** — hooks can only narrow permissions, never widen them. This prevents a compromised hook from bypassing restrictions.
+- [x] Hook runs in a restricted JS context: read-only vault access, no network, no recursion into permission checks, short timeout (100ms). Uses its own `PermissionGrant` that is hardcoded to read-only + no-network + no-shell.
+- [x] Only executes in trusted vaults (9.19.2 trust model)
+- [x] Hook failures (timeout, error) are treated as `"deny"` — fail-closed
+- [x] Example use case: a GM's campaign wiki hook that denies access to notes containing `[!secret gm]` callouts for non-GM users, before Phase 17's document-level secrets (17.4) is implemented
+- [x] Performance: hooks are opt-in per profile. The default `unrestricted` profile has no hook. When present, the hook is called only after the static rules produce `"allow"` — denied requests never reach the hook.
 
 #### 9.19.14 Binary size analysis
 

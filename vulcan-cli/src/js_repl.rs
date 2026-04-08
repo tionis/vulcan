@@ -124,6 +124,7 @@ pub(crate) fn run_js_repl(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            ..DataviewJsEvalOptions::default()
         },
     )
     .map_err(CliError::operation)?;
@@ -176,6 +177,7 @@ pub(crate) fn run_js_repl_with_preload(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            ..DataviewJsEvalOptions::default()
         },
     )
     .map_err(CliError::operation)?;
