@@ -52,7 +52,6 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("--verbose"))
             .and(predicate::str::contains("index"))
             .and(predicate::str::contains("graph"))
-            .and(predicate::str::contains("notes"))
             .and(predicate::str::contains("ls"))
             .and(predicate::str::contains("dataview"))
             .and(predicate::str::contains("tasks"))
@@ -64,8 +63,6 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("tags"))
             .and(predicate::str::contains("properties"))
             .and(predicate::str::contains("vectors"))
-            .and(predicate::str::contains("cluster"))
-            .and(predicate::str::contains("related"))
             .and(predicate::str::contains("edit"))
             .and(predicate::str::contains("doctor"))
             .and(predicate::str::contains("cache"))
@@ -73,17 +70,13 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("saved"))
             .and(predicate::str::contains("checkpoint"))
             .and(predicate::str::contains("changes"))
-            .and(predicate::str::contains("diff"))
             .and(predicate::str::contains("today"))
             .and(predicate::str::contains("daily"))
-            .and(predicate::str::contains("weekly"))
-            .and(predicate::str::contains("monthly"))
             .and(predicate::str::contains("periodic"))
             .and(predicate::str::contains("git"))
             .and(predicate::str::contains("web"))
             .and(predicate::str::contains("inbox"))
             .and(predicate::str::contains("template"))
-            .and(predicate::str::contains("batch"))
             .and(predicate::str::contains("export"))
             .and(predicate::str::contains("config"))
             .and(predicate::str::contains("automation"))
@@ -106,6 +99,8 @@ fn help_mentions_global_flags_and_core_commands() {
             .and(predicate::str::contains("Query:"))
             .and(predicate::str::contains("Tasks:"))
             .and(predicate::str::contains("Index:"))
+            .and(predicate::str::contains("Interactive:"))
+            .and(predicate::str::contains("Scripting:"))
             .and(predicate::str::contains("vulcan help <command>"))
             .and(predicate::str::contains(
                 "Machine-readable schema: vulcan describe",
@@ -114,7 +109,26 @@ fn help_mentions_global_flags_and_core_commands() {
                 "Override automatic cache refresh with --refresh <off|blocking|background>",
             ))
             .and(predicate::str::contains("--color <COLOR>"))
-            .and(predicate::str::contains("--color always|never|auto")),
+            .and(predicate::str::contains("--color always|never|auto"))
+            .and(predicate::str::is_match(r"(?m)^\s+notes\s").unwrap().not())
+            .and(
+                predicate::str::is_match(r"(?m)^\s+cluster\s")
+                    .unwrap()
+                    .not(),
+            )
+            .and(
+                predicate::str::is_match(r"(?m)^\s+related\s")
+                    .unwrap()
+                    .not(),
+            )
+            .and(predicate::str::is_match(r"(?m)^\s+weekly\s").unwrap().not())
+            .and(
+                predicate::str::is_match(r"(?m)^\s+monthly\s")
+                    .unwrap()
+                    .not(),
+            )
+            .and(predicate::str::is_match(r"(?m)^\s+diff\s").unwrap().not())
+            .and(predicate::str::is_match(r"(?m)^\s+batch\s").unwrap().not()),
     );
 }
 
@@ -127,7 +141,8 @@ fn help_markdown_output_emits_raw_markdown() {
         .success()
         .stdout(
             predicate::str::contains("# help")
-                .and(predicate::str::contains("## JavaScript & Web"))
+                .and(predicate::str::contains("## Interactive"))
+                .and(predicate::str::contains("## Scripting & Tools"))
                 .and(predicate::str::contains("- `render`"))
                 .and(predicate::str::contains('\x1b').not()),
         );
@@ -198,10 +213,11 @@ fn commands_with_new_after_help_include_examples() {
         (&["doctor", "--help"], "vulcan doctor"),
         (&["doctor", "--help"], "vulcan doctor --fix"),
         (&["vectors", "--help"], "vulcan vectors index"),
+        (&["vectors", "--help"], "vulcan vectors cluster"),
         (&["vectors", "--help"], "vulcan vectors neighbors"),
         (&["changes", "--help"], "vulcan changes"),
-        (&["cluster", "--help"], "vulcan cluster"),
-        (&["related", "--help"], "vulcan related"),
+        (&["periodic", "--help"], "vulcan periodic weekly"),
+        (&["automation", "--help"], "vulcan automation list"),
         (&["trust", "--help"], "vulcan trust add"),
         (&["refactor", "--help"], "vulcan refactor rename-heading"),
     ];
@@ -213,6 +229,101 @@ fn commands_with_new_after_help_include_examples() {
             .success()
             .stdout(predicate::str::contains(*expected));
     }
+}
+
+#[test]
+fn query_auto_detection_announces_dataview_queries() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--refresh",
+            "off",
+            "query",
+            "LIST FROM #index",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("(detected as Dataview query)"));
+}
+
+#[test]
+fn config_aliases_expand_before_clap_parsing() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[aliases]\ntoday = \"query --format count\"\n",
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "today",
+        ])
+        .assert()
+        .success();
+    let payload = parse_stdout_json(&assert);
+
+    assert!(
+        payload["count"].as_u64().is_some_and(|count| count > 0),
+        "expanded alias should execute the replacement command"
+    );
+}
+
+#[test]
+fn config_show_aliases_includes_builtin_and_overridden_aliases() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[aliases]\ntoday = \"daily show\"\nship = \"query --where 'status = shipped'\"\n",
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "show",
+            "aliases",
+        ])
+        .assert()
+        .success();
+    let payload = parse_stdout_json(&assert);
+
+    assert_eq!(payload["config"]["today"], "daily show");
+    assert_eq!(payload["config"]["q"], "query");
+    assert_eq!(payload["config"]["t"], "tasks list");
+    assert_eq!(
+        payload["config"]["ship"],
+        "query --where 'status = shipped'"
+    );
 }
 
 #[test]
@@ -10838,10 +10949,10 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .as_array()
         .expect("commands should be an array")
         .iter()
-        .find(|command| command["name"] == "notes")
+        .find(|command| command["name"] == "query")
         .and_then(|command| command["after_help"].as_str())
-        .expect("notes after_help should be present")
-        .contains("Filter syntax:"));
+        .expect("query after_help should be present")
+        .contains("Shortcuts:"));
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")
@@ -10979,9 +11090,10 @@ fn saved_and_automation_help_document_end_to_end_workflow() {
         .stdout(
             predicate::str::contains("Saved report definitions live under .vulcan/reports.")
                 .and(predicate::str::contains(
-                    "vulcan saved search weekly dashboard --where 'reviewed = true' --description 'weekly dashboard'",
+                    "vulcan saved create search weekly dashboard --where 'reviewed = true' --description 'weekly dashboard'",
                 ))
                 .and(predicate::str::contains("vulcan saved list"))
+                .and(predicate::str::contains("vulcan saved delete weekly"))
                 .and(predicate::str::contains(
                     "vulcan saved run weekly --export jsonl --export-path exports/weekly.jsonl",
                 ))
@@ -10997,10 +11109,11 @@ fn saved_and_automation_help_document_end_to_end_workflow() {
         .success()
         .stdout(
             predicate::str::contains("`automation run` is intended for CI, cron jobs")
-                .and(predicate::str::contains("--all-reports"))
+                .and(predicate::str::contains("vulcan automation list"))
+                .and(predicate::str::contains("--all / --all-reports"))
                 .and(predicate::str::contains("--fail-on-issues"))
                 .and(predicate::str::contains(
-                    "vulcan automation run --all-reports --verify-cache --repair-fts --fail-on-issues",
+                    "vulcan automation run --all --verify-cache --repair-fts --fail-on-issues",
                 )),
         );
 }
@@ -12216,6 +12329,43 @@ fn edit_new_creates_note_and_updates_cache() {
     assert!(note_rows
         .iter()
         .any(|row| row["document_path"] == "Notes/Idea.md"));
+}
+
+#[test]
+fn saved_create_and_delete_manage_report_files() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "saved",
+            "create",
+            "notes",
+            "open-notes",
+            "--where",
+            "status = open",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Saved report: open-notes"));
+    assert!(vault_root.join(".vulcan/reports/open-notes.toml").exists());
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault_root_str, "saved", "delete", "open-notes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted saved report open-notes"));
+    assert!(!vault_root.join(".vulcan/reports/open-notes.toml").exists());
 }
 
 #[test]

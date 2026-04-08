@@ -67,11 +67,15 @@ pub(crate) fn handle_links_command(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_query_command(
     cli: &Cli,
     paths: &VaultPaths,
     dsl: Option<&str>,
     json: Option<&str>,
+    filters: &[String],
+    sort: Option<&String>,
+    desc: bool,
     list_fields: bool,
     engine: QueryEngineArg,
     format: crate::QueryFormatArg,
@@ -102,6 +106,17 @@ pub(crate) fn handle_query_command(
         let dql = dsl.ok_or_else(|| {
             CliError::operation("DQL engine requires a positional query string, not --json")
         })?;
+        if !filters.is_empty() || sort.is_some() || desc {
+            return Err(CliError::operation(
+                "`query --where/--sort/--desc` cannot be combined with DQL mode",
+            ));
+        }
+        if cli.output == crate::OutputFormat::Human
+            && !cli.quiet
+            && matches!(engine, QueryEngineArg::Auto)
+        {
+            eprintln!("(detected as Dataview query)");
+        }
         let result = evaluate_dql(paths, dql, None).map_err(CliError::operation)?;
         let display_result_count = load_vault_config(paths)
             .config
@@ -122,13 +137,36 @@ pub(crate) fn handle_query_command(
                 "provide either a DSL argument or --json, not both",
             ));
         }
-        (Some(dsl), None) => QueryAst::from_dsl(dsl).map_err(CliError::operation)?,
-        (None, Some(json)) => QueryAst::from_json(json).map_err(CliError::operation)?,
-        (None, None) => {
-            return Err(CliError::operation(
-                "provide a DSL query argument or --json payload",
-            ));
+        (Some(dsl), None) => {
+            if !filters.is_empty() || sort.is_some() || desc {
+                return Err(CliError::operation(
+                    "`query --where/--sort/--desc` cannot be combined with a DSL string or --json",
+                ));
+            }
+            QueryAst::from_dsl(dsl).map_err(CliError::operation)?
         }
+        (None, Some(json)) => {
+            if !filters.is_empty() || sort.is_some() || desc {
+                return Err(CliError::operation(
+                    "`query --where/--sort/--desc` cannot be combined with a DSL string or --json",
+                ));
+            }
+            QueryAst::from_json(json).map_err(CliError::operation)?
+        }
+        (None, None) if !filters.is_empty() || sort.is_some() || desc => {
+            QueryAst::from_note_query(&NoteQuery {
+                filters: filters.to_vec(),
+                sort_by: sort.cloned(),
+                sort_descending: desc,
+            })
+            .map_err(CliError::operation)?
+        }
+        (None, None) => QueryAst::from_note_query(&NoteQuery {
+            filters: Vec::new(),
+            sort_by: None,
+            sort_descending: false,
+        })
+        .map_err(CliError::operation)?,
     };
     let report = execute_query_report(paths, ast).map_err(CliError::operation)?;
     let effective_controls = ListOutputControls {

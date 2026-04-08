@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox\n  Query:       query, search, ls, notes, backlinks, links, changes\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, weekly, monthly, periodic, template\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, cluster, related, doctor\n  Index:       index, vectors, cache, repair\n  Runtime:     run, web, render\n  Git:         git\n  Automation:  saved, automation, batch, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render\n  Git:         git, changes\n  Automation:  saved, automation, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -769,75 +769,6 @@
             "short": null,
             "value_names": [
               "EXIT_CODE"
-            ]
-          },
-          {
-            "help": "Write query rows to a CSV or JSONL file",
-            "id": "export",
-            "long": "export",
-            "possible_values": [
-              "csv",
-              "jsonl"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT"
-            ]
-          },
-          {
-            "help": "Destination file for CSV or JSONL exports",
-            "id": "export_path",
-            "long": "export-path",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT_PATH"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Query notes by typed properties",
-        "after_help": "Sort keys:\n  Any property key, or one of file.path, file.name, file.ext, file.mtime\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan notes --where 'status = done'\n  vulcan notes --where 'tags contains sprint'\n  vulcan notes --where 'file.path starts_with \"Projects/\"' --sort due\n\nSee also:\n  `vulcan note` — single-note CRUD (get, set, create, append, patch, delete, rename)\n  `vulcan query` — full DQL query language with FROM/WHERE/SELECT/ORDER BY\n  `vulcan help filters` — complete filter grammar reference",
-        "name": "notes",
-        "options": [
-          {
-            "help": "Filter expression such as `status = done`; repeatable and combined with AND",
-            "id": "filters",
-            "long": "where",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "FILTERS"
-            ]
-          },
-          {
-            "help": "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by",
-            "id": "sort",
-            "long": "sort",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "SORT"
-            ]
-          },
-          {
-            "help": "Sort descending instead of ascending",
-            "id": "desc",
-            "long": "desc",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DESC"
             ]
           },
           {
@@ -3029,7 +2960,7 @@
       },
       {
         "about": "Persist and run saved reports from .vulcan/reports",
-        "after_help": "Subcommands:\n  list        list saved query and report definitions\n  show        display one saved report definition\n  search      save a search report definition\n  notes       save a notes/property report definition\n  bases       save a Bases report definition\n  run         execute one saved report\n\nNotes:\n  Saved report definitions live under .vulcan/reports.\n  `saved run` uses the same execution path as the one-shot commands and supports the same export options.\n  Use `automation run` when you want saved reports plus health checks in one non-interactive step.\n\nExamples:\n  vulcan saved search weekly dashboard --where 'reviewed = true' --description 'weekly dashboard'\n  vulcan saved list\n  vulcan saved run weekly --export jsonl --export-path exports/weekly.jsonl\n  vulcan automation run weekly --scan --doctor",
+        "after_help": "Subcommands:\n  list        list saved query and report definitions\n  show        display one saved report definition\n  create      save a new search, notes, or Bases report definition\n  delete      remove one saved report definition\n  run         execute one saved report\n\nNotes:\n  Saved report definitions live under .vulcan/reports.\n  `saved run` uses the same execution path as the one-shot commands and supports the same export options.\n  Use `automation run` when you want saved reports plus health checks in one non-interactive step.\n\nExamples:\n  vulcan saved create search weekly dashboard --where 'reviewed = true' --description 'weekly dashboard'\n  vulcan saved create notes active --where 'status = active' --sort due\n  vulcan saved list\n  vulcan saved delete weekly\n  vulcan saved run weekly --export jsonl --export-path exports/weekly.jsonl\n  vulcan automation run weekly --scan --doctor",
         "name": "saved",
         "options": [],
         "subcommands": [
@@ -3058,205 +2989,367 @@
             "subcommands": []
           },
           {
-            "about": "Persist a saved search definition in .vulcan/reports",
-            "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    ignore-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n  Use --regex for an explicit regex search without /pattern/ delimiters.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'\n  vulcan search Bob --match-case\n  vulcan search dashboard --sort path-desc\n  vulcan search dashboard --sort modified-newest",
-            "name": "search",
-            "options": [
+            "about": "Create a saved search, notes query, or Bases report",
+            "name": "create",
+            "options": [],
+            "subcommands": [
               {
-                "help": "Saved report name",
-                "id": "name",
-                "long": null,
-                "possible_values": [],
-                "required": true,
-                "short": null,
-                "value_names": [
-                  "NAME"
-                ]
-              },
-              {
-                "help": "Full-text query string; supports phrases, `or`, `-term`, and inline tag:/path:/has: filters",
-                "id": "query",
-                "long": null,
-                "possible_values": [],
-                "required": true,
-                "short": null,
-                "value_names": [
-                  "QUERY"
-                ]
-              },
-              {
-                "help": "Typed property filter such as `status = done`; repeatable and combined with AND",
-                "id": "filters",
-                "long": "where",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "FILTERS"
-                ]
-              },
-              {
-                "help": "Search strategy to store",
-                "id": "mode",
-                "long": "mode",
-                "possible_values": [
-                  "keyword",
-                  "hybrid"
+                "about": "Persist a saved search definition in .vulcan/reports",
+                "after_help": "Search query syntax:\n  plain terms are ANDed: dashboard status\n  group terms with parentheses: (dashboard or summary) release\n  quoted phrases stay together: \"owned by\"\n  use `or` between positive terms: dashboard or summary\n  prefix a term or phrase with - to exclude it: dashboard -draft -\"old version\"\n  negate grouped terms too: dashboard -(draft archived)\n  scope terms to one line, block, or heading section:\n    line:(mix flour), block:(release notes), section:(dog cat)\n  inline filters on unquoted positive terms:\n    tag:index\n    path:People/\n    has:status\n    property:status\n    [aliases]\n    [status:done]\n    /\\d{4}-\\d{2}-\\d{2}/\n    path:/2026-03-\\d{2}/\n    file:meeting\n    content:release\n    match-case:Bob\n    ignore-case:Bob\n    task:docs\n    task-todo:followup\n    task-done:ship\n\nNotes:\n  Use --where for typed property filters and list membership.\n  --explain prints the parsed boolean tree plus active filters.\n  Use --raw-query to pass SQLite FTS5 syntax through unchanged.\n  Use --regex for an explicit regex search without /pattern/ delimiters.\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan search 'dashboard \"release notes\" -draft'\n  vulcan search 'tag:index path:People/ owned'\n  vulcan search 'release [status:done]'\n  vulcan search '/\\d{4}-\\d{2}-\\d{2}/'\n  vulcan search 'file:meeting content:release'\n  vulcan search 'section:(dog cat)'\n  vulcan search 'task-todo:followup task-done:ship'\n  vulcan search 'line:(mix flour) block:(oven timer)'\n  vulcan search dashboard --where 'reviewed = true'\n  vulcan search Bob --match-case\n  vulcan search dashboard --sort path-desc\n  vulcan search dashboard --sort modified-newest",
+                "name": "search",
+                "options": [
+                  {
+                    "help": "Saved report name",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Full-text query string; supports phrases, `or`, `-term`, and inline tag:/path:/has: filters",
+                    "id": "query",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "QUERY"
+                    ]
+                  },
+                  {
+                    "help": "Typed property filter such as `status = done`; repeatable and combined with AND",
+                    "id": "filters",
+                    "long": "where",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FILTERS"
+                    ]
+                  },
+                  {
+                    "help": "Search strategy to store",
+                    "id": "mode",
+                    "long": "mode",
+                    "possible_values": [
+                      "keyword",
+                      "hybrid"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "MODE"
+                    ]
+                  },
+                  {
+                    "help": "Restrict matches to notes carrying the given tag",
+                    "id": "tag",
+                    "long": "tag",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TAG"
+                    ]
+                  },
+                  {
+                    "help": "Restrict matches to paths under this prefix",
+                    "id": "path_prefix",
+                    "long": "path-prefix",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PATH_PREFIX"
+                    ]
+                  },
+                  {
+                    "help": "Require a property key to be present",
+                    "id": "has_property",
+                    "long": "has-property",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "HAS_PROPERTY"
+                    ]
+                  },
+                  {
+                    "help": "Override result ordering",
+                    "id": "sort",
+                    "long": "sort",
+                    "possible_values": [
+                      "relevance",
+                      "path-asc",
+                      "path-desc",
+                      "modified-newest",
+                      "modified-oldest",
+                      "created-newest",
+                      "created-oldest"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SORT"
+                    ]
+                  },
+                  {
+                    "help": "Require case-sensitive matching for unscoped terms",
+                    "id": "match_case",
+                    "long": "match-case",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "MATCH_CASE"
+                    ]
+                  },
+                  {
+                    "help": "Approximate snippet context size for each search hit",
+                    "id": "context_size",
+                    "long": "context-size",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CONTEXT_SIZE"
+                    ]
+                  },
+                  {
+                    "help": "Persist the query string as raw FTS5 syntax",
+                    "id": "raw_query",
+                    "long": "raw-query",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "RAW_QUERY"
+                    ]
+                  },
+                  {
+                    "help": "Enable typo-tolerant fallback when the saved search runs",
+                    "id": "fuzzy",
+                    "long": "fuzzy",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FUZZY"
+                    ]
+                  },
+                  {
+                    "help": "Optional saved report description",
+                    "id": "description",
+                    "long": "description",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DESCRIPTION"
+                    ]
+                  },
+                  {
+                    "help": "Write query rows to a CSV or JSONL file",
+                    "id": "export",
+                    "long": "export",
+                    "possible_values": [
+                      "csv",
+                      "jsonl"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT"
+                    ]
+                  },
+                  {
+                    "help": "Destination file for CSV or JSONL exports",
+                    "id": "export_path",
+                    "long": "export-path",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT_PATH"
+                    ]
+                  }
                 ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "MODE"
-                ]
+                "subcommands": []
               },
               {
-                "help": "Restrict matches to notes carrying the given tag",
-                "id": "tag",
-                "long": "tag",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "TAG"
-                ]
-              },
-              {
-                "help": "Restrict matches to paths under this prefix",
-                "id": "path_prefix",
-                "long": "path-prefix",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "PATH_PREFIX"
-                ]
-              },
-              {
-                "help": "Require a property key to be present",
-                "id": "has_property",
-                "long": "has-property",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "HAS_PROPERTY"
-                ]
-              },
-              {
-                "help": "Override result ordering",
-                "id": "sort",
-                "long": "sort",
-                "possible_values": [
-                  "relevance",
-                  "path-asc",
-                  "path-desc",
-                  "modified-newest",
-                  "modified-oldest",
-                  "created-newest",
-                  "created-oldest"
+                "about": "Persist a saved property query definition in .vulcan/reports",
+                "after_help": "Sort keys:\n  Any property key, or one of file.path, file.name, file.ext, file.mtime\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan notes --where 'status = done'\n  vulcan notes --where 'tags contains sprint'\n  vulcan notes --where 'file.path starts_with \"Projects/\"' --sort due\n\nSee also:\n  `vulcan note` — single-note CRUD (get, set, create, append, patch, delete, rename)\n  `vulcan query` — full DQL query language with FROM/WHERE/SELECT/ORDER BY\n  `vulcan help filters` — complete filter grammar reference",
+                "name": "notes",
+                "options": [
+                  {
+                    "help": "Saved report name",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Filter expression such as `status = done`; repeatable and combined with AND",
+                    "id": "filters",
+                    "long": "where",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FILTERS"
+                    ]
+                  },
+                  {
+                    "help": "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by",
+                    "id": "sort",
+                    "long": "sort",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SORT"
+                    ]
+                  },
+                  {
+                    "help": "Sort descending instead of ascending",
+                    "id": "desc",
+                    "long": "desc",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DESC"
+                    ]
+                  },
+                  {
+                    "help": "Optional saved report description",
+                    "id": "description",
+                    "long": "description",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DESCRIPTION"
+                    ]
+                  },
+                  {
+                    "help": "Write query rows to a CSV or JSONL file",
+                    "id": "export",
+                    "long": "export",
+                    "possible_values": [
+                      "csv",
+                      "jsonl"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT"
+                    ]
+                  },
+                  {
+                    "help": "Destination file for CSV or JSONL exports",
+                    "id": "export_path",
+                    "long": "export-path",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT_PATH"
+                    ]
+                  }
                 ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "SORT"
-                ]
+                "subcommands": []
               },
               {
-                "help": "Require case-sensitive matching for unscoped terms",
-                "id": "match_case",
-                "long": "match-case",
-                "possible_values": [
-                  "true",
-                  "false"
+                "about": "Persist a saved Bases evaluation definition in .vulcan/reports",
+                "name": "bases",
+                "options": [
+                  {
+                    "help": "Saved report name",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Vault-relative path to the .base file to evaluate",
+                    "id": "file",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "FILE"
+                    ]
+                  },
+                  {
+                    "help": "Optional saved report description",
+                    "id": "description",
+                    "long": "description",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DESCRIPTION"
+                    ]
+                  },
+                  {
+                    "help": "Write query rows to a CSV or JSONL file",
+                    "id": "export",
+                    "long": "export",
+                    "possible_values": [
+                      "csv",
+                      "jsonl"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT"
+                    ]
+                  },
+                  {
+                    "help": "Destination file for CSV or JSONL exports",
+                    "id": "export_path",
+                    "long": "export-path",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "EXPORT_PATH"
+                    ]
+                  }
                 ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "MATCH_CASE"
-                ]
-              },
-              {
-                "help": "Approximate snippet context size for each search hit",
-                "id": "context_size",
-                "long": "context-size",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "CONTEXT_SIZE"
-                ]
-              },
-              {
-                "help": "Persist the query string as raw FTS5 syntax",
-                "id": "raw_query",
-                "long": "raw-query",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "RAW_QUERY"
-                ]
-              },
-              {
-                "help": "Enable typo-tolerant fallback when the saved search runs",
-                "id": "fuzzy",
-                "long": "fuzzy",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "FUZZY"
-                ]
-              },
-              {
-                "help": "Optional saved report description",
-                "id": "description",
-                "long": "description",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "DESCRIPTION"
-                ]
-              },
-              {
-                "help": "Write query rows to a CSV or JSONL file",
-                "id": "export",
-                "long": "export",
-                "possible_values": [
-                  "csv",
-                  "jsonl"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT"
-                ]
-              },
-              {
-                "help": "Destination file for CSV or JSONL exports",
-                "id": "export_path",
-                "long": "export-path",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT_PATH"
-                ]
+                "subcommands": []
               }
-            ],
-            "subcommands": []
+            ]
           },
           {
-            "about": "Persist a saved property query definition in .vulcan/reports",
-            "after_help": "Sort keys:\n  Any property key, or one of file.path, file.name, file.ext, file.mtime\n\nFilter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n  There is no OR or parenthesized filter syntax in --where today.\n\nFields:\n  <property-key>\n  file.path | file.name | file.ext | file.mtime\n\nOperators:\n  = | > | >= | < | <=\n  starts_with   text fields only\n  contains      list properties only\n\nValues:\n  text: done, \"In Progress\", 'Rule Index'\n  booleans: true, false\n  null: null\n  numbers: 42, 3.5\n  dates: 2026-03-01 or 2026-03-01T09:30:00Z\n  file.mtime: integer milliseconds since the Unix epoch\n\nExamples:\n  vulcan notes --where 'status = done'\n  vulcan notes --where 'tags contains sprint'\n  vulcan notes --where 'file.path starts_with \"Projects/\"' --sort due\n\nSee also:\n  `vulcan note` — single-note CRUD (get, set, create, append, patch, delete, rename)\n  `vulcan query` — full DQL query language with FROM/WHERE/SELECT/ORDER BY\n  `vulcan help filters` — complete filter grammar reference",
-            "name": "notes",
+            "about": "Delete one saved report definition",
+            "name": "delete",
             "options": [
               {
                 "help": "Saved report name",
@@ -3267,143 +3360,6 @@
                 "short": null,
                 "value_names": [
                   "NAME"
-                ]
-              },
-              {
-                "help": "Filter expression such as `status = done`; repeatable and combined with AND",
-                "id": "filters",
-                "long": "where",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "FILTERS"
-                ]
-              },
-              {
-                "help": "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by",
-                "id": "sort",
-                "long": "sort",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "SORT"
-                ]
-              },
-              {
-                "help": "Sort descending instead of ascending",
-                "id": "desc",
-                "long": "desc",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "DESC"
-                ]
-              },
-              {
-                "help": "Optional saved report description",
-                "id": "description",
-                "long": "description",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "DESCRIPTION"
-                ]
-              },
-              {
-                "help": "Write query rows to a CSV or JSONL file",
-                "id": "export",
-                "long": "export",
-                "possible_values": [
-                  "csv",
-                  "jsonl"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT"
-                ]
-              },
-              {
-                "help": "Destination file for CSV or JSONL exports",
-                "id": "export_path",
-                "long": "export-path",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT_PATH"
-                ]
-              }
-            ],
-            "subcommands": []
-          },
-          {
-            "about": "Persist a saved Bases evaluation definition in .vulcan/reports",
-            "name": "bases",
-            "options": [
-              {
-                "help": "Saved report name",
-                "id": "name",
-                "long": null,
-                "possible_values": [],
-                "required": true,
-                "short": null,
-                "value_names": [
-                  "NAME"
-                ]
-              },
-              {
-                "help": "Vault-relative path to the .base file to evaluate",
-                "id": "file",
-                "long": null,
-                "possible_values": [],
-                "required": true,
-                "short": null,
-                "value_names": [
-                  "FILE"
-                ]
-              },
-              {
-                "help": "Optional saved report description",
-                "id": "description",
-                "long": "description",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "DESCRIPTION"
-                ]
-              },
-              {
-                "help": "Write query rows to a CSV or JSONL file",
-                "id": "export",
-                "long": "export",
-                "possible_values": [
-                  "csv",
-                  "jsonl"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT"
-                ]
-              },
-              {
-                "help": "Destination file for CSV or JSONL exports",
-                "id": "export_path",
-                "long": "export-path",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXPORT_PATH"
                 ]
               }
             ],
@@ -4673,102 +4629,8 @@
         "subcommands": []
       },
       {
-        "about": "Open or create the weekly note for a date",
-        "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `weekly [date]` and `monthly [date]` are shorthand for `periodic weekly|monthly`.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n\nExamples:\n  vulcan weekly\n  vulcan monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
-        "name": "weekly",
-        "options": [
-          {
-            "help": "Reference date for the period (defaults to today)",
-            "id": "date",
-            "long": null,
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DATE"
-            ]
-          },
-          {
-            "help": "Create the note without opening it in the editor",
-            "id": "no_edit",
-            "long": "no-edit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_EDIT"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Open or create the monthly note for a date",
-        "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `weekly [date]` and `monthly [date]` are shorthand for `periodic weekly|monthly`.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n\nExamples:\n  vulcan weekly\n  vulcan monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
-        "name": "monthly",
-        "options": [
-          {
-            "help": "Reference date for the period (defaults to today)",
-            "id": "date",
-            "long": null,
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DATE"
-            ]
-          },
-          {
-            "help": "Create the note without opening it in the editor",
-            "id": "no_edit",
-            "long": "no-edit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_EDIT"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
         "about": "Open, list, and inspect periodic notes",
-        "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `weekly [date]` and `monthly [date]` are shorthand for `periodic weekly|monthly`.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n\nExamples:\n  vulcan weekly\n  vulcan monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
+        "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `periodic weekly [date]` and `periodic monthly [date]` are the preferred open forms.\n  Top-level `weekly` and `monthly` remain as hidden compatibility aliases.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n  weekly      open or create the weekly note for a date\n  monthly     open or create the monthly note for a date\n\nExamples:\n  vulcan periodic weekly\n  vulcan periodic monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
         "name": "periodic",
         "options": [
           {
@@ -4976,6 +4838,98 @@
             "subcommands": []
           },
           {
+            "about": "Open or create the weekly note for a date",
+            "name": "weekly",
+            "options": [
+              {
+                "help": "Reference date for the period (defaults to today)",
+                "id": "date",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              },
+              {
+                "help": "Create the note without opening it in the editor",
+                "id": "no_edit",
+                "long": "no-edit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_EDIT"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Open or create the monthly note for a date",
+            "name": "monthly",
+            "options": [
+              {
+                "help": "Reference date for the period (defaults to today)",
+                "id": "date",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              },
+              {
+                "help": "Create the note without opening it in the editor",
+                "id": "no_edit",
+                "long": "no-edit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_EDIT"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Export events from periodic notes as an iCal feed",
             "name": "export-ics",
             "options": [
@@ -5078,36 +5032,6 @@
             "short": null,
             "value_names": [
               "EXPORT_PATH"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Show one note's changes since git HEAD, the last scan, or a checkpoint",
-        "after_help": "Comparison source:\n  --since <checkpoint> compares against a named checkpoint.\n  Otherwise, git-backed vaults compare the note against git HEAD.\n  Without git, Vulcan reports cache-level changes since the last scan.\n\nNotes:\n  Git-backed diffs include unified diff text in human and JSON output.\n  Cache-backed diffs report which note, link, property, or embedding records changed.\n\nExamples:\n  vulcan diff Projects/Alpha\n  vulcan diff --since weekly Projects/Alpha\n  vulcan diff",
-        "name": "diff",
-        "options": [
-          {
-            "help": "Note path, filename, or alias to inspect; omit in a TTY session to pick interactively",
-            "id": "note",
-            "long": null,
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NOTE"
-            ]
-          },
-          {
-            "help": "Named checkpoint to compare against instead of git HEAD",
-            "id": "since",
-            "long": "since",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "SINCE"
             ]
           }
         ],
@@ -5419,44 +5343,17 @@
         ]
       },
       {
-        "about": "Run multiple saved reports for automation and scheduled jobs",
-        "after_help": "Notes:\n  `batch` runs one or more saved reports sequentially without scan or doctor checks.\n  Use `--all` to run every report definition found in .vulcan/reports.\n  For CI workflows that also need scanning and health checks, prefer `automation run`.\n\nReport system overview:\n  saved reports live as YAML files in .vulcan/reports (created by `vulcan saved <type>`).\n  `vulcan batch` just executes them; it does not scan or repair the cache.\n  `vulcan automation run` adds `--scan`, `--doctor`, and `--fail-on-issues` for CI.\n  `vulcan saved run <name>` runs a single report with full export options.\n\nExamples:\n  vulcan batch weekly-review\n  vulcan batch weekly-review monthly-summary\n  vulcan batch --all\n  vulcan --output json batch weekly-review\n\nSee also:\n  `vulcan saved` — create, list, and manage report definitions\n  `vulcan automation run` — scan + reports + health checks in one step\n  `vulcan help reports` — conceptual overview of the report system",
-        "name": "batch",
-        "options": [
-          {
-            "help": "Saved report names to run",
-            "id": "names",
-            "long": null,
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NAMES"
-            ]
-          },
-          {
-            "help": "Run every saved report definition in .vulcan/reports",
-            "id": "all",
-            "long": "all",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "ALL"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
         "about": "Run checks, repairs, and saved reports for CI and scripts",
-        "after_help": "Subcommands:\n  run         execute saved reports plus optional checks and repairs\n\nNotes:\n  `automation run` is intended for CI, cron jobs, and other non-interactive workflows.\n  Pass saved report names positionally, or use --all-reports to run everything in .vulcan/reports.\n  `--fail-on-issues` returns exit code 2 when checks complete but still report problems.\n\nExamples:\n  vulcan automation run weekly --scan --doctor\n  vulcan automation run --all-reports --verify-cache --repair-fts --fail-on-issues\n\nSee also:\n  `vulcan saved` — create and manage report definitions\n  `vulcan batch` — run reports without scan or health checks\n  `vulcan help reports` — conceptual overview of the report system",
+        "after_help": "Subcommands:\n  list        list saved reports that automation can run\n  run         execute saved reports plus optional checks and repairs\n\nNotes:\n  `automation run` is intended for CI, cron jobs, and other non-interactive workflows.\n  Pass saved report names positionally, or use --all / --all-reports to run everything in .vulcan/reports.\n  `--fail-on-issues` returns exit code 2 when checks complete but still report problems.\n\nExamples:\n  vulcan automation list\n  vulcan automation run weekly --scan --doctor\n  vulcan automation run --all --verify-cache --repair-fts --fail-on-issues\n\nSee also:\n  `vulcan saved` — create and manage report definitions\n  `vulcan help reports` — conceptual overview of the report system",
         "name": "automation",
         "options": [],
         "subcommands": [
+          {
+            "about": "List saved reports that automation can run",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          },
           {
             "about": "Run saved reports, checks, and repairs for non-interactive workflows",
             "name": "run",
@@ -5574,108 +5471,6 @@
             "subcommands": []
           }
         ]
-      },
-      {
-        "about": "Cluster indexed vectors into topical groups",
-        "after_help": "Notes:\n  `cluster` groups indexed vector chunks by semantic similarity using k-means.\n  The vault must have a configured embedding provider and an up-to-date vector index.\n  `--dry-run` reports cluster assignments without writing them to the cache.\n  Cluster labels are heuristic topic summaries derived from the most common terms.\n\nExamples:\n  vulcan cluster\n  vulcan cluster --clusters 12\n  vulcan cluster --dry-run\n  vulcan --output json cluster",
-        "name": "cluster",
-        "options": [
-          {
-            "help": "Requested cluster count",
-            "id": "clusters",
-            "long": "clusters",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "CLUSTERS"
-            ]
-          },
-          {
-            "help": "Report cluster assignments without persisting them",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Write query rows to a CSV or JSONL file",
-            "id": "export",
-            "long": "export",
-            "possible_values": [
-              "csv",
-              "jsonl"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT"
-            ]
-          },
-          {
-            "help": "Destination file for CSV or JSONL exports",
-            "id": "export_path",
-            "long": "export-path",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT_PATH"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Recommend semantically related notes for one note",
-        "after_help": "Notes:\n  `related` uses the vector index to find the most semantically similar notes.\n  The vault must have a configured embedding provider and an up-to-date vector index.\n  In an interactive terminal, omit the note argument to pick interactively.\n  `vectors related` is the subcommand form; `related` is a top-level shorthand.\n\nExamples:\n  vulcan related Projects/Alpha\n  vulcan related\n  vulcan --output json related Projects/Alpha --limit 10",
-        "name": "related",
-        "options": [
-          {
-            "help": "Note path, filename, or alias to use as the seed note; omit in a TTY session to pick interactively",
-            "id": "note",
-            "long": null,
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NOTE"
-            ]
-          },
-          {
-            "help": "Write query rows to a CSV or JSONL file",
-            "id": "export",
-            "long": "export",
-            "possible_values": [
-              "csv",
-              "jsonl"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT"
-            ]
-          },
-          {
-            "help": "Destination file for CSV or JSONL exports",
-            "id": "export_path",
-            "long": "export-path",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "EXPORT_PATH"
-            ]
-          }
-        ],
-        "subcommands": []
       },
       {
         "about": "Open a persistent note browser TUI",
@@ -6598,6 +6393,7 @@
           },
           {
             "about": "Show one note's changes since git HEAD, the last scan, or a checkpoint",
+            "after_help": "Comparison source:\n  --since <checkpoint> compares against a named checkpoint.\n  Otherwise, git-backed vaults compare the note against git HEAD.\n  Without git, Vulcan reports cache-level changes since the last scan.\n\nNotes:\n  Git-backed diffs include unified diff text in human and JSON output.\n  Cache-backed diffs report which note, link, property, or embedding records changed.\n\nExamples:\n  vulcan diff Projects/Alpha\n  vulcan diff --since weekly Projects/Alpha\n  vulcan diff",
             "name": "diff",
             "options": [
               {
@@ -6695,7 +6491,7 @@
       },
       {
         "about": "Run vector indexing and similarity commands",
-        "after_help": "Subcommands:\n  index       Embed pending chunks and update the vector index\n  repair      Repair stale or mismatched vector rows\n  rebuild     Rebuild the vector index from scratch\n  neighbors   Find nearest indexed chunks for text or a note\n  related     Recommend semantically related notes\n  duplicates  Report highly similar chunk pairs\n  models      List stored embedding models\n  drop-model  Drop a model and its vectors\n  queue       Inspect or run the explicit indexing queue\n\nNotes:\n  Vectors require an embedding provider configured under [vectors] in .vulcan/config.toml.\n  `index` embeds only chunks added or changed since the last run (incremental).\n  `rebuild` re-embeds everything from scratch; use when switching models.\n  Use `--provider` to override the configured embedding provider for one invocation.\n\nExamples:\n  vulcan vectors index\n  vulcan vectors index --dry-run\n  vulcan vectors neighbors \"project planning\"\n  vulcan vectors neighbors --note Projects/Alpha\n  vulcan vectors related Projects/Alpha\n  vulcan vectors duplicates --threshold 0.98\n  vulcan vectors models\n  vulcan --output json vectors neighbors \"planning\"",
+        "after_help": "Subcommands:\n  index       Embed pending chunks and update the vector index\n  repair      Repair stale or mismatched vector rows\n  rebuild     Rebuild the vector index from scratch\n  cluster     Group indexed chunks into semantic clusters\n  neighbors   Find nearest indexed chunks for text or a note\n  related     Recommend semantically related notes\n  duplicates  Report highly similar chunk pairs\n  models      List stored embedding models\n  drop-model  Drop a model and its vectors\n  queue       Inspect or run the explicit indexing queue\n\nNotes:\n  Vectors require an embedding provider configured under [vectors] in .vulcan/config.toml.\n  `index` embeds only chunks added or changed since the last run (incremental).\n  `rebuild` re-embeds everything from scratch; use when switching models.\n  Use `--provider` to override the configured embedding provider for one invocation.\n\nExamples:\n  vulcan vectors index\n  vulcan vectors index --dry-run\n  vulcan vectors cluster --clusters 12\n  vulcan vectors neighbors \"project planning\"\n  vulcan vectors neighbors --note Projects/Alpha\n  vulcan vectors related Projects/Alpha\n  vulcan vectors duplicates --threshold 0.98\n  vulcan vectors models\n  vulcan --output json vectors neighbors \"planning\"",
         "name": "vectors",
         "options": [],
         "subcommands": [
@@ -6820,6 +6616,63 @@
                 "short": null,
                 "value_names": [
                   "NOTE"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Cluster indexed vectors into topical groups",
+            "name": "cluster",
+            "options": [
+              {
+                "help": "Requested cluster count",
+                "id": "clusters",
+                "long": "clusters",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLUSTERS"
+                ]
+              },
+              {
+                "help": "Report cluster assignments without persisting them",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
                 ]
               },
               {
@@ -7050,161 +6903,6 @@
         "subcommands": []
       },
       {
-        "about": "Set a frontmatter property on notes selected by query filters",
-        "after_help": "Filter syntax:\n  Repeat --where to combine filters with AND.\n  Form: <field> <operator> <value>\n\nExamples:\n  vulcan update --where 'status = draft' --key status --value done --dry-run\n  vulcan ls --tag project | vulcan update --stdin --key status --value done\n  vulcan update --where 'tags contains wip' --key reviewed --value true\n  vulcan update --where 'file.path starts_with \"Archive/\"' --key archived --value true",
-        "name": "update",
-        "options": [
-          {
-            "help": "Filter expression such as `status = draft`; repeatable and combined with AND",
-            "id": "filters",
-            "long": "where",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "FILTERS"
-            ]
-          },
-          {
-            "help": "Read note paths from stdin (one per line) instead of using --where filters",
-            "id": "stdin",
-            "long": "stdin",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "STDIN"
-            ]
-          },
-          {
-            "help": "Frontmatter property key to set",
-            "id": "key",
-            "long": "key",
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "KEY"
-            ]
-          },
-          {
-            "help": "New value for the property (YAML scalar or quoted string)",
-            "id": "value",
-            "long": "value",
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "VALUE"
-            ]
-          },
-          {
-            "help": "Report planned changes without modifying files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
-        "about": "Remove a frontmatter property from notes selected by query filters",
-        "after_help": "Filter syntax:\n  Repeat --where to combine filters with AND.\n\nExamples:\n  vulcan unset --where 'status = draft' --key draft_notes --dry-run\n  vulcan ls --tag project | vulcan unset --stdin --key due\n  vulcan unset --where 'file.path starts_with \"Archive/\"' --key due",
-        "name": "unset",
-        "options": [
-          {
-            "help": "Filter expression such as `status = draft`; repeatable and combined with AND",
-            "id": "filters",
-            "long": "where",
-            "possible_values": [],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "FILTERS"
-            ]
-          },
-          {
-            "help": "Read note paths from stdin (one per line) instead of using --where filters",
-            "id": "stdin",
-            "long": "stdin",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "STDIN"
-            ]
-          },
-          {
-            "help": "Frontmatter property key to remove",
-            "id": "key",
-            "long": "key",
-            "possible_values": [],
-            "required": true,
-            "short": null,
-            "value_names": [
-              "KEY"
-            ]
-          },
-          {
-            "help": "Report planned removals without modifying files",
-            "id": "dry_run",
-            "long": "dry-run",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "DRY_RUN"
-            ]
-          },
-          {
-            "help": "Suppress auto-commit for this invocation",
-            "id": "no_commit",
-            "long": "no-commit",
-            "possible_values": [
-              "true",
-              "false"
-            ],
-            "required": false,
-            "short": null,
-            "value_names": [
-              "NO_COMMIT"
-            ]
-          }
-        ],
-        "subcommands": []
-      },
-      {
         "about": "Inspect and maintain the SQLite cache",
         "after_help": "Subcommands:\n  inspect  Show cache sizes and row counts\n  verify   Check cache invariants against derived indexes\n  vacuum   Run SQLite VACUUM to reclaim space\n\nNotes:\n  `verify` exits with code 2 when cache checks fail if `--fail-on-errors` is set.\n  `vacuum` should be run periodically on large vaults to reclaim SQLite free-list space.\n\nExamples:\n  vulcan cache inspect\n  vulcan cache verify\n  vulcan cache verify --fail-on-errors\n  vulcan cache vacuum\n  vulcan cache vacuum --dry-run\n  vulcan --output json cache inspect",
         "name": "cache",
@@ -7262,11 +6960,11 @@
       },
       {
         "about": "Run a query using the human DSL or a JSON payload",
-        "after_help": "Query DSL syntax:\n  from notes\n    [where <field> <op> <value> [and <field> <op> <value>...]]\n    [select <field>[,<field>...]]\n    [order by <field> [desc|asc]]\n    [limit <n>]\n    [offset <n>]\n\nOperators:\n  = | > | >= | < | <= | starts_with | contains | matches | matches_i\n\nFormats:\n  table   structured note rows (default)\n  paths   one path per line\n  detail  path, metadata summary, and content preview\n  count   matched row count only\n\nExamples:\n  vulcan query --list-fields\n  vulcan query --format paths 'from notes where status = done'\n  vulcan query --glob 'Projects/**' 'from notes'\n  vulcan query 'from notes where file.name matches \"^2026-\"'\n  vulcan query 'from notes where owner matches_i \"alice\"'",
+        "after_help": "Query DSL syntax:\n  from notes\n    [where <field> <op> <value> [and <field> <op> <value>...]]\n    [select <field>[,<field>...]]\n    [order by <field> [desc|asc]]\n    [limit <n>]\n    [offset <n>]\n\nOperators:\n  = | > | >= | < | <= | starts_with | contains | matches | matches_i\n\nFormats:\n  table   structured note rows (default)\n  paths   one path per line\n  detail  path, metadata summary, and content preview\n  count   matched row count only\n\nShortcuts:\n  Bare `query` defaults to `from notes`.\n  `query --where ... --sort ...` builds a `from notes` query without writing DSL.\n  `--language auto` detects Dataview DQL when the query starts with TABLE/LIST/TASK/CALENDAR.\n\nExamples:\n  vulcan query --list-fields\n  vulcan query\n  vulcan query --where 'status = done' --sort due\n  vulcan query --format paths 'from notes where status = done'\n  vulcan query --language dql 'TABLE status FROM #project'\n  vulcan query --glob 'Projects/**' 'from notes'\n  vulcan query 'from notes where file.name matches \"^2026-\"'\n  vulcan query 'from notes where owner matches_i \"alice\"'",
         "name": "query",
         "options": [
           {
-            "help": "Query string (DSL or DQL depending on --engine); omit with --list-fields",
+            "help": "Query string (Vulcan or DQL depending on --language); omit with --list-fields",
             "id": "dsl",
             "long": null,
             "possible_values": [],
@@ -7288,6 +6986,42 @@
             ]
           },
           {
+            "help": "Shortcut note filter such as `status = done`; repeatable and combined with AND when no DSL/JSON query is supplied",
+            "id": "filters",
+            "long": "where",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "FILTERS"
+            ]
+          },
+          {
+            "help": "Shortcut note sort key when no DSL/JSON query is supplied",
+            "id": "sort",
+            "long": "sort",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SORT"
+            ]
+          },
+          {
+            "help": "Shortcut descending sort flag when no DSL/JSON query is supplied",
+            "id": "desc",
+            "long": "desc",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DESC"
+            ]
+          },
+          {
             "help": "List available property keys and file.* fields for filters, sorts, and --fields",
             "id": "list_fields",
             "long": "list-fields",
@@ -7302,12 +7036,12 @@
             ]
           },
           {
-            "help": "Query engine: auto-detect (default), native dsl, or dql (Dataview)",
+            "help": "Query language: auto-detect (default), vulcan, or dql (Dataview)",
             "id": "engine",
-            "long": "engine",
+            "long": "language",
             "possible_values": [
               "auto",
-              "dsl",
+              "vulcan",
               "dql"
             ],
             "required": false,

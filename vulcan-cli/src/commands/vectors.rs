@@ -211,6 +211,20 @@ pub(crate) fn handle_vectors_command(
             )?;
             Ok(())
         }
+        VectorsCommand::Cluster {
+            clusters,
+            dry_run,
+            export,
+        } => handle_cluster_command(
+            cli,
+            paths,
+            *clusters,
+            *dry_run,
+            export,
+            list_controls,
+            stdout_is_tty,
+            use_stdout_color,
+        ),
         VectorsCommand::Related { note, export } => handle_related_command(
             cli,
             paths,

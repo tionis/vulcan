@@ -21,10 +21,10 @@ pub use cli::{
     IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode,
     OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PropertySortArg, QueryEngineArg,
     QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand,
-    SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg,
+    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -74,8 +74,8 @@ use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, add_kanban_card, all_importers, annotate_import_conflicts,
-    archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint, doctor_fix, doctor_vault,
-    ensure_vulcan_dir, evaluate_base_file, evaluate_dataview_js_query,
+    archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint, delete_saved_report,
+    doctor_fix, doctor_vault, ensure_vulcan_dir, evaluate_base_file, evaluate_dataview_js_query,
     evaluate_dataview_js_with_options, evaluate_dql, evaluate_note_inline_expressions,
     evaluate_tasks_query, execute_query_report, expected_periodic_note_path,
     export_daily_events_to_ics, export_static_search_index, extract_tasknote, git_blame, git_diff,
@@ -1695,6 +1695,13 @@ enum SavedExecution {
     Bases(BasesEvalReport),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct SavedReportDeleteReport {
+    name: String,
+    path: PathBuf,
+    deleted: bool,
+}
+
 impl SavedExecution {
     fn kind(&self) -> SavedReportKind {
         match self {
@@ -1716,6 +1723,81 @@ fn stored_export_from_args(export: &ExportArgs) -> Result<Option<SavedExport>, C
             "export flags require both --export and --export-path",
         )),
     }
+}
+
+fn saved_report_definition_from_create(
+    cli: &Cli,
+    command: &SavedCreateCommand,
+) -> Result<SavedReportDefinition, CliError> {
+    Ok(match command {
+        SavedCreateCommand::Search {
+            name,
+            query,
+            filters,
+            mode,
+            tag,
+            path_prefix,
+            has_property,
+            sort,
+            match_case,
+            context_size,
+            raw_query,
+            fuzzy,
+            description,
+            export,
+        } => SavedReportDefinition {
+            name: name.clone(),
+            description: description.clone(),
+            fields: cli.fields.clone(),
+            limit: cli.limit,
+            export: stored_export_from_args(export)?,
+            query: SavedReportQuery::Search {
+                query: query.clone(),
+                mode: cli_search_mode(*mode),
+                tag: tag.clone(),
+                path_prefix: path_prefix.clone(),
+                has_property: has_property.clone(),
+                filters: filters.clone(),
+                context_size: *context_size,
+                sort: sort.map(cli_search_sort),
+                match_case: match_case.then_some(true),
+                raw_query: *raw_query,
+                fuzzy: *fuzzy,
+            },
+        },
+        SavedCreateCommand::Notes {
+            name,
+            filters,
+            sort,
+            desc,
+            description,
+            export,
+        } => SavedReportDefinition {
+            name: name.clone(),
+            description: description.clone(),
+            fields: cli.fields.clone(),
+            limit: cli.limit,
+            export: stored_export_from_args(export)?,
+            query: SavedReportQuery::Notes {
+                filters: filters.clone(),
+                sort_by: sort.clone(),
+                sort_descending: *desc,
+            },
+        },
+        SavedCreateCommand::Bases {
+            name,
+            file,
+            description,
+            export,
+        } => SavedReportDefinition {
+            name: name.clone(),
+            description: description.clone(),
+            fields: cli.fields.clone(),
+            limit: cli.limit,
+            export: stored_export_from_args(export)?,
+            query: SavedReportQuery::Bases { file: file.clone() },
+        },
+    })
 }
 
 fn resolve_cli_export(export: &ExportArgs) -> Result<Option<ResolvedExport>, CliError> {
@@ -1852,7 +1934,8 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         Command::Saved { command } => matches!(command, SavedCommand::Run { .. }),
         Command::Vectors { command } => matches!(
             command,
-            VectorsCommand::Related { .. }
+            VectorsCommand::Cluster { .. }
+                | VectorsCommand::Related { .. }
                 | VectorsCommand::Neighbors { .. }
                 | VectorsCommand::Duplicates { .. }
         ),
@@ -12283,7 +12366,12 @@ fn execute_automation_run(
         verify_cache: verify_cache_requested,
         repair_fts: repair_fts_requested,
         fail_on_issues: _,
-    } = command;
+    } = command
+    else {
+        return Err(CliError::operation(
+            "automation list does not execute scans or report runs",
+        ));
+    };
 
     if !*scan
         && !*doctor
@@ -12382,19 +12470,20 @@ pub fn run() -> Result<(), CliError> {
     run_from(std::env::args_os())
 }
 
+const NOTE_SUBCOMMAND_HINTS: &[&str] = &[
+    "get", "set", "create", "append", "update", "unset", "patch", "delete", "rename", "info",
+    "history",
+];
+
 /// Return a human-readable hint when the user has likely mixed up `note` and `notes`.
 fn detect_command_confusion(args: &[OsString]) -> Option<String> {
-    const NOTE_SUBCOMMANDS: &[&str] = &[
-        "get", "set", "create", "append", "update", "unset", "patch", "delete", "rename", "info",
-        "history",
-    ];
     let strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
     // Skip the binary name at index 0; look at index 1 for the subcommand.
     let subcommand = strs.get(1).copied().unwrap_or("");
     let rest = strs.get(2..).unwrap_or(&[]);
     if subcommand == "notes" {
         if let Some(&sub) = rest.first() {
-            if NOTE_SUBCOMMANDS.contains(&sub) {
+            if NOTE_SUBCOMMAND_HINTS.contains(&sub) {
                 return Some(format!(
                     "`vulcan notes {sub}` is not valid — did you mean `vulcan note {sub}`?\n\
                      `vulcan notes` queries notes by property; `vulcan note` operates on a single note."
@@ -12415,13 +12504,161 @@ fn detect_command_confusion(args: &[OsString]) -> Option<String> {
     None
 }
 
+fn command_index_for_alias_expansion(args: &[OsString]) -> Option<usize> {
+    let mut index = 1;
+    while index < args.len() {
+        let rendered = args[index].to_string_lossy();
+        let takes_value = matches!(
+            rendered.as_ref(),
+            "--vault"
+                | "--output"
+                | "--refresh"
+                | "--fields"
+                | "--provider"
+                | "--limit"
+                | "--offset"
+                | "--color"
+        );
+        let is_global_flag = takes_value
+            || matches!(
+                rendered.as_ref(),
+                "--verbose" | "--quiet" | "-q" | "--no-header"
+            );
+
+        if takes_value {
+            index += 2;
+            continue;
+        }
+        if rendered.starts_with("--vault=")
+            || rendered.starts_with("--output=")
+            || rendered.starts_with("--refresh=")
+            || rendered.starts_with("--fields=")
+            || rendered.starts_with("--provider=")
+            || rendered.starts_with("--limit=")
+            || rendered.starts_with("--offset=")
+            || rendered.starts_with("--color=")
+        {
+            index += 1;
+            continue;
+        }
+        if is_global_flag {
+            index += 1;
+            continue;
+        }
+        return Some(index);
+    }
+    None
+}
+
+fn extract_vault_root_from_args(args: &[OsString]) -> PathBuf {
+    let mut index = 1;
+    while index < args.len() {
+        let rendered = args[index].to_string_lossy();
+        if rendered == "--vault" {
+            if let Some(path) = args.get(index + 1) {
+                return PathBuf::from(path);
+            }
+            break;
+        }
+        if let Some(path) = rendered.strip_prefix("--vault=") {
+            return PathBuf::from(path);
+        }
+        index += 1;
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn split_alias_words(source: &str) -> Option<Vec<OsString>> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut chars = source.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '\\' if !in_single => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            _ if ch.is_whitespace() && !in_single && !in_double => {
+                if !current.is_empty() {
+                    words.push(OsString::from(current.clone()));
+                    current.clear();
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if in_single || in_double {
+        return None;
+    }
+    if !current.is_empty() {
+        words.push(OsString::from(current));
+    }
+    Some(words)
+}
+
+fn should_skip_alias_expansion(args: &[OsString], command_index: usize) -> bool {
+    args.get(command_index)
+        .and_then(|value| value.to_str())
+        .is_some_and(|command| {
+            command == "notes"
+                && args
+                    .get(command_index + 1)
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|next| NOTE_SUBCOMMAND_HINTS.contains(&next))
+        })
+}
+
+fn expand_cli_aliases(args: &[OsString]) -> Vec<OsString> {
+    let aliases = load_vault_config(&VaultPaths::new(extract_vault_root_from_args(args)))
+        .config
+        .aliases;
+    if aliases.is_empty() {
+        return args.to_vec();
+    }
+
+    let mut expanded = args.to_vec();
+    for _ in 0..8 {
+        let Some(command_index) = command_index_for_alias_expansion(&expanded) else {
+            break;
+        };
+        if should_skip_alias_expansion(&expanded, command_index) {
+            break;
+        }
+        let Some(command_name) = expanded[command_index].to_str() else {
+            break;
+        };
+        let Some(alias) = aliases.get(command_name) else {
+            break;
+        };
+        let Some(replacement) = split_alias_words(alias) else {
+            break;
+        };
+        if replacement.is_empty() {
+            break;
+        }
+        let mut rewritten = expanded[..command_index].to_vec();
+        rewritten.extend(replacement);
+        rewritten.extend_from_slice(&expanded[command_index + 1..]);
+        expanded = rewritten;
+    }
+    expanded
+}
+
 pub fn run_from<I, T>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<OsString>>();
-    let cli = match Cli::try_parse_from(&args) {
+    let expanded_args = expand_cli_aliases(&args);
+    let cli = match Cli::try_parse_from(&expanded_args) {
         Ok(cli) => cli,
         Err(error) => match error.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
@@ -12886,6 +13123,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Query {
             ref dsl,
             ref json,
+            ref filters,
+            ref sort,
+            desc,
             list_fields,
             engine,
             format,
@@ -12898,6 +13138,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             &paths,
             dsl.as_deref(),
             json.as_deref(),
+            filters,
+            sort.as_ref(),
+            desc,
             list_fields,
             engine,
             format,
@@ -13075,6 +13318,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 let definition = load_saved_report(&paths, name).map_err(CliError::operation)?;
                 print_saved_report_definition(cli.output, &definition)
             }
+            SavedCommand::Create { command } => {
+                let definition = saved_report_definition_from_create(cli, command)?;
+                save_saved_report(&paths, &definition).map_err(CliError::operation)?;
+                print_saved_report_definition(cli.output, &definition)
+            }
+            SavedCommand::Delete { name } => {
+                let path = delete_saved_report(&paths, name).map_err(CliError::operation)?;
+                let report = SavedReportDeleteReport {
+                    name: name.clone(),
+                    path,
+                    deleted: true,
+                };
+                print_saved_report_delete_report(cli.output, &report)
+            }
             SavedCommand::Search {
                 name,
                 query,
@@ -13091,26 +13348,25 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 description,
                 export,
             } => {
-                let definition = SavedReportDefinition {
-                    name: name.clone(),
-                    description: description.clone(),
-                    fields: cli.fields.clone(),
-                    limit: cli.limit,
-                    export: stored_export_from_args(export)?,
-                    query: SavedReportQuery::Search {
+                let definition = saved_report_definition_from_create(
+                    cli,
+                    &SavedCreateCommand::Search {
+                        name: name.clone(),
                         query: query.clone(),
-                        mode: cli_search_mode(*mode),
+                        filters: filters.clone(),
+                        mode: *mode,
                         tag: tag.clone(),
                         path_prefix: path_prefix.clone(),
                         has_property: has_property.clone(),
-                        filters: filters.clone(),
+                        sort: *sort,
+                        match_case: *match_case,
                         context_size: *context_size,
-                        sort: sort.map(cli_search_sort),
-                        match_case: match_case.then_some(true),
                         raw_query: *raw_query,
                         fuzzy: *fuzzy,
+                        description: description.clone(),
+                        export: export.clone(),
                     },
-                };
+                )?;
                 save_saved_report(&paths, &definition).map_err(CliError::operation)?;
                 print_saved_report_definition(cli.output, &definition)
             }
@@ -13122,18 +13378,17 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 description,
                 export,
             } => {
-                let definition = SavedReportDefinition {
-                    name: name.clone(),
-                    description: description.clone(),
-                    fields: cli.fields.clone(),
-                    limit: cli.limit,
-                    export: stored_export_from_args(export)?,
-                    query: SavedReportQuery::Notes {
+                let definition = saved_report_definition_from_create(
+                    cli,
+                    &SavedCreateCommand::Notes {
+                        name: name.clone(),
                         filters: filters.clone(),
-                        sort_by: sort.clone(),
-                        sort_descending: *desc,
+                        sort: sort.clone(),
+                        desc: *desc,
+                        description: description.clone(),
+                        export: export.clone(),
                     },
-                };
+                )?;
                 save_saved_report(&paths, &definition).map_err(CliError::operation)?;
                 print_saved_report_definition(cli.output, &definition)
             }
@@ -13143,14 +13398,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 description,
                 export,
             } => {
-                let definition = SavedReportDefinition {
-                    name: name.clone(),
-                    description: description.clone(),
-                    fields: cli.fields.clone(),
-                    limit: cli.limit,
-                    export: stored_export_from_args(export)?,
-                    query: SavedReportQuery::Bases { file: file.clone() },
-                };
+                let definition = saved_report_definition_from_create(
+                    cli,
+                    &SavedCreateCommand::Bases {
+                        name: name.clone(),
+                        file: file.clone(),
+                        description: description.clone(),
+                        export: export.clone(),
+                    },
+                )?;
                 save_saved_report(&paths, &definition).map_err(CliError::operation)?;
                 print_saved_report_definition(cli.output, &definition)
             }
@@ -13645,33 +13901,42 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 Ok(())
             }
         }
-        Command::Automation { ref command } => {
-            let report = execute_automation_run(
-                &paths,
-                cli.provider.as_ref(),
-                cli.output,
-                use_stderr_color,
-                &list_controls,
-                command,
-            )?;
-            let fail_on_issues = match command {
-                AutomationCommand::Run { fail_on_issues, .. } => *fail_on_issues,
-            };
-            let report_failures = report
-                .reports
-                .as_ref()
-                .is_some_and(|batch| batch.failed > 0);
-            print_automation_run_report(cli.output, &report)?;
-            if report_failures {
-                Err(CliError::operation(
-                    "one or more automation report actions failed",
-                ))
-            } else if fail_on_issues && report.issues_detected {
-                Err(CliError::issues("automation detected issues"))
-            } else {
-                Ok(())
+        Command::Automation { ref command } => match command {
+            AutomationCommand::List => {
+                let reports = list_saved_reports(&paths).map_err(CliError::operation)?;
+                print_saved_report_list(
+                    cli.output,
+                    &reports,
+                    &list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                )
             }
-        }
+            AutomationCommand::Run { fail_on_issues, .. } => {
+                let report = execute_automation_run(
+                    &paths,
+                    cli.provider.as_ref(),
+                    cli.output,
+                    use_stderr_color,
+                    &list_controls,
+                    command,
+                )?;
+                let report_failures = report
+                    .reports
+                    .as_ref()
+                    .is_some_and(|batch| batch.failed > 0);
+                print_automation_run_report(cli.output, &report)?;
+                if report_failures {
+                    Err(CliError::operation(
+                        "one or more automation report actions failed",
+                    ))
+                } else if *fail_on_issues && report.issues_detected {
+                    Err(CliError::issues("automation detected issues"))
+                } else {
+                    Ok(())
+                }
+            }
+        },
         Command::Vectors { ref command } => commands::vectors::handle_vectors_command(
             cli,
             &paths,
@@ -14130,6 +14395,23 @@ fn print_saved_report_definition(
             Ok(())
         }
         OutputFormat::Json => print_json(definition),
+    }
+}
+
+fn print_saved_report_delete_report(
+    output: OutputFormat,
+    report: &SavedReportDeleteReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "Deleted saved report {} ({})",
+                report.name,
+                report.path.display()
+            );
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
     }
 }
 
@@ -20537,6 +20819,10 @@ fn help_overview() -> HelpTopicReport {
                     "Show a note's changes since git HEAD or a checkpoint",
                 ),
                 ("inbox", "Append a quick capture entry to the inbox note"),
+                (
+                    "template",
+                    "Create notes from templates or insert templates into existing notes",
+                ),
             ],
         ),
         (
@@ -20556,12 +20842,20 @@ fn help_overview() -> HelpTopicReport {
                     "properties",
                     "List indexed property keys with usage counts and observed types",
                 ),
-                ("notes", "List notes filtered by typed property expressions"),
                 ("backlinks", "List notes that link to the given note"),
                 ("links", "List outgoing links from the given note"),
+            ],
+        ),
+        (
+            "History & Git",
+            &[
                 (
                     "changes",
                     "Report note/link/property changes since a baseline",
+                ),
+                (
+                    "git",
+                    "Git status, log, diff, blame, and commit within the vault",
                 ),
             ],
         ),
@@ -20587,7 +20881,7 @@ fn help_overview() -> HelpTopicReport {
             ],
         ),
         (
-            "Daily Notes & Periodic",
+            "Periodic Notes",
             &[
                 (
                     "daily",
@@ -20596,10 +20890,6 @@ fn help_overview() -> HelpTopicReport {
                 (
                     "periodic",
                     "List, gap-check, and open periodic notes of any cadence",
-                ),
-                (
-                    "template",
-                    "Render and insert Templater-compatible templates",
                 ),
             ],
         ),
@@ -20621,8 +20911,6 @@ fn help_overview() -> HelpTopicReport {
                     "suggest",
                     "Surface plain-text mentions that could become links",
                 ),
-                ("cluster", "Cluster indexed vectors into topical groups"),
-                ("related", "Recommend semantically related notes"),
                 ("doctor", "Inspect the vault for broken or suspicious state"),
             ],
         ),
@@ -20630,13 +20918,27 @@ fn help_overview() -> HelpTopicReport {
             "Index Maintenance",
             &[
                 ("index", "Scan, rebuild, repair, watch, and serve the cache"),
-                ("vectors", "Embed, query, and maintain the vector index"),
+                (
+                    "vectors",
+                    "Embed, cluster, query, and maintain the vector index",
+                ),
                 ("cache", "Inspect and maintain the SQLite cache"),
                 ("repair", "Repair derived indexes and cache structures"),
             ],
         ),
         (
-            "JavaScript & Web",
+            "Interactive",
+            &[
+                ("browse", "Open the note browser TUI with live previews"),
+                (
+                    "edit",
+                    "Open a note in $EDITOR and refresh the cache afterwards",
+                ),
+                ("open", "Open a note in the Obsidian desktop app"),
+            ],
+        ),
+        (
+            "Scripting & Tools",
             &[
                 (
                     "run",
@@ -20653,13 +20955,6 @@ fn help_overview() -> HelpTopicReport {
             ],
         ),
         (
-            "Git",
-            &[(
-                "git",
-                "Git status, log, diff, blame, and commit within the vault",
-            )],
-        ),
-        (
             "Automation & Export",
             &[
                 (
@@ -20670,7 +20965,6 @@ fn help_overview() -> HelpTopicReport {
                     "automation",
                     "Run saved reports, checks, and repairs for CI workflows",
                 ),
-                ("batch", "Run multiple saved reports sequentially"),
                 ("export", "Write static export artifacts from the cache"),
                 (
                     "checkpoint",
@@ -20847,28 +21141,29 @@ can be re-run by name without repeating the flags.
 
 ## Creating reports
 
-  vulcan saved search <name> --where <filter>  # full-text search report
-  vulcan saved notes  <name> --where <filter>  # property query report
-  vulcan saved bases  <name> <file>            # Bases view report
+  vulcan saved create search <name> --where <filter>  # full-text search report
+  vulcan saved create notes  <name> --where <filter>  # property query report
+  vulcan saved create bases  <name> <file>            # Bases view report
 
 ## Running reports
 
   vulcan saved run <name>              # run one report with full export options
-  vulcan batch <name> [<name>...]      # run one or more reports sequentially (no scan)
-  vulcan batch --all                   # run every report in .vulcan/reports
+  vulcan automation run <name>         # run one or more reports sequentially
+  vulcan automation run --all          # run every report in .vulcan/reports
   vulcan automation run <name> --scan  # run reports + scan + health checks (CI)
+  vulcan automation list               # list the saved reports automation can run
 
 ## Command roles
 
 | Command            | Scan | Doctor | Exit codes | Best for        |
 |--------------------|------|--------|------------|-----------------|
 | `saved run`        | no   | no     | 0/1        | one-off runs    |
-| `batch`            | no   | no     | 0/1        | scheduled batch |
-| `automation run`   | opt  | opt    | 0/1/2      | CI pipelines    |
+| `automation run`   | opt  | opt    | 0/1/2      | batches + CI    |
+| `automation list`  | no   | no     | 0          | discoverability |
 
 ## Report file format
 
-Reports are YAML files in `.vulcan/reports/<name>.yaml`:
+Reports are TOML files in `.vulcan/reports/<name>.toml`:
 
   kind: search
   filters: [\"status = done\"]
@@ -20878,7 +21173,7 @@ Reports are YAML files in `.vulcan/reports/<name>.yaml`:
 
 Use `--fail-on-issues` with `automation run` to get exit code 2 when checks
 complete but still report problems — useful for CI gates.",
-            &["saved", "batch", "automation", "query"],
+            &["saved", "automation", "query"],
         ),
     ]
 }
@@ -24950,20 +25245,66 @@ mod tests {
 
     #[test]
     fn parses_weekly_command() {
-        let cli =
-            Cli::try_parse_from(["vulcan", "weekly", "2026-04-03", "--no-edit", "--no-commit"])
-                .expect("cli should parse");
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "periodic",
+            "weekly",
+            "2026-04-03",
+            "--no-edit",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
 
         assert_eq!(
             cli.command,
-            Command::Weekly {
-                args: PeriodicOpenArgs {
-                    date: Some("2026-04-03".to_string()),
-                    no_edit: true,
-                    no_commit: true,
-                },
+            Command::Periodic {
+                command: Some(PeriodicSubcommand::Weekly {
+                    args: PeriodicOpenArgs {
+                        date: Some("2026-04-03".to_string()),
+                        no_edit: true,
+                        no_commit: true,
+                    },
+                }),
+                period_type: None,
+                date: None,
+                no_edit: false,
+                no_commit: false,
             }
         );
+    }
+
+    #[test]
+    fn parses_hidden_legacy_alias_commands() {
+        assert!(matches!(
+            Cli::try_parse_from(["vulcan", "weekly"])
+                .expect("weekly alias should parse")
+                .command,
+            Command::Weekly { .. }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["vulcan", "monthly"])
+                .expect("monthly alias should parse")
+                .command,
+            Command::Monthly { .. }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["vulcan", "cluster"])
+                .expect("cluster alias should parse")
+                .command,
+            Command::Cluster { .. }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["vulcan", "related"])
+                .expect("related alias should parse")
+                .command,
+            Command::Related { .. }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["vulcan", "batch"])
+                .expect("batch alias should parse")
+                .command,
+            Command::Batch { .. }
+        ));
     }
 
     #[test]
@@ -26215,7 +26556,8 @@ mod tests {
         let links_picker = Cli::try_parse_from(["vulcan", "links"]).expect("cli should parse");
         let backlinks = Cli::try_parse_from(["vulcan", "backlinks", "Projects/Alpha"])
             .expect("cli should parse");
-        let related_picker = Cli::try_parse_from(["vulcan", "related"]).expect("cli should parse");
+        let related_picker =
+            Cli::try_parse_from(["vulcan", "vectors", "related"]).expect("cli should parse");
         let search = Cli::try_parse_from([
             "vulcan",
             "search",
@@ -26236,7 +26578,7 @@ mod tests {
         .expect("cli should parse");
         let notes = Cli::try_parse_from([
             "vulcan",
-            "notes",
+            "query",
             "--where",
             "status = done",
             "--where",
@@ -26264,7 +26606,8 @@ mod tests {
             .expect("cli should parse");
         let suggest_duplicates =
             Cli::try_parse_from(["vulcan", "suggest", "duplicates"]).expect("cli should parse");
-        let diff = Cli::try_parse_from(["vulcan", "diff", "Home"]).expect("cli should parse");
+        let diff =
+            Cli::try_parse_from(["vulcan", "note", "diff", "Home"]).expect("cli should parse");
         let inbox = Cli::try_parse_from(["vulcan", "inbox", "idea"]).expect("cli should parse");
         let template = Cli::try_parse_from(["vulcan", "template", "daily", "--path", "Notes/Day"])
             .expect("cli should parse");
@@ -26298,9 +26641,17 @@ mod tests {
             .expect("cli should parse");
         let duplicates =
             Cli::try_parse_from(["vulcan", "vectors", "duplicates"]).expect("cli should parse");
-        let cluster = Cli::try_parse_from(["vulcan", "cluster", "--clusters", "3", "--dry-run"])
+        let cluster = Cli::try_parse_from([
+            "vulcan",
+            "vectors",
+            "cluster",
+            "--clusters",
+            "3",
+            "--dry-run",
+        ])
+        .expect("cli should parse");
+        let related = Cli::try_parse_from(["vulcan", "vectors", "related", "Home"])
             .expect("cli should parse");
-        let related = Cli::try_parse_from(["vulcan", "related", "Home"]).expect("cli should parse");
         let browse = Cli::try_parse_from(["vulcan", "browse"]).expect("cli should parse");
         let refreshed_browse = Cli::try_parse_from(["vulcan", "--refresh", "background", "browse"])
             .expect("cli should parse");
@@ -26324,6 +26675,7 @@ mod tests {
             "--limit",
             "5",
             "saved",
+            "create",
             "search",
             "weekly",
             "dashboard",
@@ -26358,7 +26710,8 @@ mod tests {
             .expect("cli should parse");
         let today =
             Cli::try_parse_from(["vulcan", "today", "--no-edit"]).expect("cli should parse");
-        let batch = Cli::try_parse_from(["vulcan", "batch", "--all"]).expect("cli should parse");
+        let automation_list =
+            Cli::try_parse_from(["vulcan", "automation", "list"]).expect("cli should parse");
         let automation = Cli::try_parse_from([
             "vulcan",
             "automation",
@@ -26519,10 +26872,18 @@ mod tests {
         );
         assert_eq!(
             notes.command,
-            Command::Notes {
+            Command::Query {
+                dsl: None,
+                json: None,
                 filters: vec!["status = done".to_string(), "estimate > 2".to_string()],
                 sort: Some("due".to_string()),
                 desc: true,
+                list_fields: false,
+                engine: QueryEngineArg::Auto,
+                format: QueryFormatArg::Table,
+                glob: None,
+                explain: false,
+                exit_code: false,
                 export: ExportArgs::default(),
             }
         );
@@ -26573,9 +26934,11 @@ mod tests {
         );
         assert_eq!(
             diff.command,
-            Command::Diff {
-                note: Some("Home".to_string()),
-                since: None,
+            Command::Note {
+                command: NoteCommand::Diff {
+                    note: "Home".to_string(),
+                    since: None,
+                },
             }
         );
         assert_eq!(
@@ -26696,17 +27059,21 @@ mod tests {
         );
         assert_eq!(
             cluster.command,
-            Command::Cluster {
-                clusters: 3,
-                dry_run: true,
-                export: ExportArgs::default(),
+            Command::Vectors {
+                command: VectorsCommand::Cluster {
+                    clusters: 3,
+                    dry_run: true,
+                    export: ExportArgs::default(),
+                },
             }
         );
         assert_eq!(
             related.command,
-            Command::Related {
-                note: Some("Home".to_string()),
-                export: ExportArgs::default(),
+            Command::Vectors {
+                command: VectorsCommand::Related {
+                    note: Some("Home".to_string()),
+                    export: ExportArgs::default(),
+                },
             }
         );
         assert_eq!(browse.command, Command::Browse { no_commit: false });
@@ -26718,9 +27085,11 @@ mod tests {
         );
         assert_eq!(
             related_picker.command,
-            Command::Related {
-                note: None,
-                export: ExportArgs::default(),
+            Command::Vectors {
+                command: VectorsCommand::Related {
+                    note: None,
+                    export: ExportArgs::default(),
+                },
             }
         );
         assert_eq!(
@@ -26836,23 +27205,25 @@ mod tests {
         assert_eq!(
             saved_search.command,
             Command::Saved {
-                command: SavedCommand::Search {
-                    name: "weekly".to_string(),
-                    query: "dashboard".to_string(),
-                    filters: vec!["reviewed = true".to_string()],
-                    mode: SearchMode::Keyword,
-                    tag: None,
-                    path_prefix: None,
-                    has_property: None,
-                    sort: None,
-                    match_case: false,
-                    context_size: 18,
-                    raw_query: true,
-                    fuzzy: true,
-                    description: Some("weekly dashboard".to_string()),
-                    export: ExportArgs {
-                        export: Some(ExportFormat::Csv),
-                        export_path: Some(PathBuf::from("exports/weekly.csv")),
+                command: SavedCommand::Create {
+                    command: SavedCreateCommand::Search {
+                        name: "weekly".to_string(),
+                        query: "dashboard".to_string(),
+                        filters: vec!["reviewed = true".to_string()],
+                        mode: SearchMode::Keyword,
+                        tag: None,
+                        path_prefix: None,
+                        has_property: None,
+                        sort: None,
+                        match_case: false,
+                        context_size: 18,
+                        raw_query: true,
+                        fuzzy: true,
+                        description: Some("weekly dashboard".to_string()),
+                        export: ExportArgs {
+                            export: Some(ExportFormat::Csv),
+                            export_path: Some(PathBuf::from("exports/weekly.csv")),
+                        },
                     },
                 },
             }
@@ -26900,10 +27271,9 @@ mod tests {
             }
         );
         assert_eq!(
-            batch.command,
-            Command::Batch {
-                names: Vec::new(),
-                all: true,
+            automation_list.command,
+            Command::Automation {
+                command: AutomationCommand::List,
             }
         );
         assert_eq!(
@@ -26979,6 +27349,9 @@ mod tests {
             Command::Query {
                 dsl: Some("from notes where file.name matches \"^2026-\"".to_string()),
                 json: None,
+                filters: Vec::new(),
+                sort: None,
+                desc: false,
                 list_fields: false,
                 engine: QueryEngineArg::Auto,
                 format: QueryFormatArg::Paths,
@@ -27198,11 +27571,23 @@ mod tests {
         assert!(report
             .commands
             .iter()
-            .any(|command| command.name == "batch"));
+            .all(|command| command.name != "batch"));
         assert!(report
             .commands
             .iter()
-            .any(|command| command.name == "related"));
+            .all(|command| command.name != "related"));
+        assert!(report
+            .commands
+            .iter()
+            .all(|command| command.name != "cluster"));
+        assert!(report
+            .commands
+            .iter()
+            .all(|command| command.name != "weekly"));
+        assert!(report
+            .commands
+            .iter()
+            .all(|command| command.name != "monthly"));
     }
 
     #[test]

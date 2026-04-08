@@ -2079,6 +2079,8 @@ pub struct VaultConfig {
     pub quickadd: QuickAddConfig,
     pub web: WebConfig,
     pub periodic: PeriodicConfig,
+    #[serde(default)]
+    pub aliases: BTreeMap<String, String>,
 }
 
 impl Default for VaultConfig {
@@ -2104,8 +2106,17 @@ impl Default for VaultConfig {
             quickadd: QuickAddConfig::default(),
             web: WebConfig::default(),
             periodic: PeriodicConfig::default(),
+            aliases: builtin_command_aliases(),
         }
     }
+}
+
+fn builtin_command_aliases() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("q".to_string(), "query".to_string()),
+        ("t".to_string(), "tasks list".to_string()),
+        ("today".to_string(), "daily today".to_string()),
+    ])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2318,6 +2329,7 @@ struct PartialVulcanConfig {
     web: Option<PartialWebConfig>,
     periodic: Option<PartialPeriodicConfig>,
     permissions: Option<PartialPermissionsConfig>,
+    aliases: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -7280,6 +7292,10 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             }
         }
     }
+
+    if let Some(aliases) = overrides.aliases {
+        config.aliases.extend(aliases);
+    }
 }
 
 fn apply_permission_profile_overrides(
@@ -8720,6 +8736,42 @@ intellisense_render = 2
 
         assert_eq!(loaded.config, VaultConfig::default());
         assert!(loaded.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn builtin_defaults_include_command_aliases() {
+        let defaults = VaultConfig::default();
+
+        assert_eq!(defaults.aliases.get("q"), Some(&"query".to_string()));
+        assert_eq!(defaults.aliases.get("t"), Some(&"tasks list".to_string()));
+        assert_eq!(
+            defaults.aliases.get("today"),
+            Some(&"daily today".to_string())
+        );
+    }
+
+    #[test]
+    fn vulcan_config_aliases_override_builtin_defaults() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[aliases]\ntoday = \"daily show\"\nship = \"query --where 'status = shipped'\"\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert_eq!(
+            loaded.config.aliases.get("today"),
+            Some(&"daily show".to_string())
+        );
+        assert_eq!(
+            loaded.config.aliases.get("ship"),
+            Some(&"query --where 'status = shipped'".to_string())
+        );
+        assert_eq!(loaded.config.aliases.get("q"), Some(&"query".to_string()));
     }
 
     #[test]
