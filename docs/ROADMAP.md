@@ -3316,6 +3316,7 @@ The export surface now covers documents, datasets, archives, and static search i
 - [x] `vulcan export zip <query> -o vault.zip` — export matched notes with content, metadata, and attachments as a structured ZIP archive (preserves directory layout)
 - [x] `vulcan export sqlite <query> -o vault.db` — export to a self-contained SQLite database with tables for notes (path, content, frontmatter JSON), links, tags, and tasks
 - [x] `vulcan export epub <query> -o book.epub` — render matched notes to an EPUB document optionally enriched with backlinks, with table of contents derived from note structure, tags and link ordering
+- [x] EPUB export bundles referenced local assets into the book archive and rewrites chapter links/embed sources to packaged media paths
 
 **`vulcan tasks` source selection**
 

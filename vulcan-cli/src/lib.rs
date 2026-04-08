@@ -63,7 +63,7 @@ use std::fmt::{Display, Formatter, Write as FmtWrite};
 use std::fs;
 use std::io;
 use std::io::{IsTerminal, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
@@ -20789,6 +20789,30 @@ struct EpubChapter {
 }
 
 #[derive(Debug, Clone)]
+struct EpubAsset {
+    source_path: String,
+    manifest_id: String,
+    package_href: String,
+    media_type: String,
+}
+
+#[derive(Debug, Clone)]
+struct EpubRenderContext<'a> {
+    config: &'a vulcan_core::config::VaultConfig,
+    note_index: &'a HashMap<String, NoteRecord>,
+    note_targets: &'a HashMap<String, String>,
+    tag_targets: &'a HashMap<String, String>,
+    asset_targets: &'a HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct EpubBookMetadata<'a> {
+    title: &'a str,
+    author: Option<&'a str>,
+    identifier: &'a str,
+}
+
+#[derive(Debug, Clone)]
 struct EpubTagPage {
     title: String,
     nav_path: String,
@@ -21052,6 +21076,70 @@ fn collect_export_attachment_paths(links: &[ExportLinkRecord]) -> Vec<String> {
         .collect::<BTreeSet<_>>();
     attachments.retain(|path| !path.trim().is_empty());
     attachments.into_iter().collect()
+}
+
+fn extension_suffix(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
+        .unwrap_or_default()
+}
+
+fn epub_media_type(path: &str) -> &'static str {
+    match Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        Some("tif" | "tiff") => "image/tiff",
+        Some("pdf") => "application/pdf",
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("ogg") => "audio/ogg",
+        Some("mp4") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        Some("webm") => "video/webm",
+        Some("avi") => "video/x-msvideo",
+        _ => "application/octet-stream",
+    }
+}
+
+fn build_epub_assets(links: &[ExportLinkRecord]) -> Vec<EpubAsset> {
+    collect_export_attachment_paths(links)
+        .into_iter()
+        .enumerate()
+        .map(|(index, source_path)| {
+            let suffix = extension_suffix(&source_path);
+            let file_name = format!("asset-{:03}{suffix}", index + 1);
+            EpubAsset {
+                source_path: source_path.clone(),
+                manifest_id: format!("asset-{}", index + 1),
+                package_href: format!("media/{file_name}"),
+                media_type: epub_media_type(&source_path).to_string(),
+            }
+        })
+        .collect()
+}
+
+fn build_epub_asset_targets(assets: &[EpubAsset]) -> HashMap<String, String> {
+    assets
+        .iter()
+        .map(|asset| {
+            (
+                asset.source_path.clone(),
+                format!("../{}", asset.package_href),
+            )
+        })
+        .collect()
 }
 
 fn write_text_export(
@@ -21710,6 +21798,99 @@ fn build_epub_tag_targets(notes: &[ExportedNoteDocument]) -> HashMap<String, Str
     targets
 }
 
+fn normalize_epub_target_path(path: &str) -> String {
+    let mut normalized = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized.to_string_lossy().replace('\\', "/")
+}
+
+fn resolve_epub_lookup_keys(source_document_path: &str, path_part: &str) -> Vec<String> {
+    let trimmed = path_part.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut keys = Vec::new();
+    let mut push_key = |candidate: String| {
+        if !candidate.is_empty() && !keys.contains(&candidate) {
+            keys.push(candidate);
+        }
+    };
+
+    let direct = trimmed.trim_start_matches("./").to_string();
+    push_key(direct.clone());
+
+    let normalized_direct = normalize_epub_target_path(&direct);
+    push_key(normalized_direct.clone());
+
+    if trimmed.starts_with('.') || trimmed.contains('/') {
+        if let Some(source_dir) = Path::new(source_document_path).parent() {
+            let joined = normalize_epub_target_path(&source_dir.join(trimmed).to_string_lossy());
+            push_key(joined);
+        }
+    }
+
+    keys
+}
+
+fn resolve_epub_note_href(
+    source_document_path: &str,
+    path_part: &str,
+    fragment: Option<&str>,
+    targets: &HashMap<String, String>,
+) -> Option<String> {
+    for key in resolve_epub_lookup_keys(source_document_path, path_part) {
+        let Some(target) = targets
+            .get(&key)
+            .or_else(|| key.strip_suffix(".md").and_then(|stem| targets.get(stem)))
+        else {
+            continue;
+        };
+
+        let mut rewritten = target.clone();
+        if let Some(fragment) = fragment
+            .map(slugify_epub_fragment)
+            .filter(|value| !value.is_empty())
+        {
+            rewritten.push('#');
+            rewritten.push_str(&fragment);
+        }
+        return Some(rewritten);
+    }
+
+    None
+}
+
+fn resolve_epub_asset_href(
+    source_document_path: &str,
+    path_part: &str,
+    fragment: Option<&str>,
+    targets: &HashMap<String, String>,
+) -> Option<String> {
+    for key in resolve_epub_lookup_keys(source_document_path, path_part) {
+        let Some(target) = targets.get(&key) else {
+            continue;
+        };
+
+        let mut rewritten = target.clone();
+        if let Some(fragment) = fragment.filter(|value| !value.is_empty()) {
+            rewritten.push('#');
+            rewritten.push_str(fragment);
+        }
+        return Some(rewritten);
+    }
+
+    None
+}
+
 fn render_epub_tag_text(tag: &str) -> String {
     if tag.starts_with('#') {
         tag.to_string()
@@ -21736,8 +21917,18 @@ fn strip_epub_paragraph_wrapper(html: &str) -> String {
         .to_string()
 }
 
-fn render_epub_inline_fragment_html(source: &str, targets: &HashMap<String, String>) -> String {
-    strip_epub_paragraph_wrapper(&render_epub_markdown_html(source, targets))
+fn render_epub_inline_fragment_html(
+    source: &str,
+    source_document_path: &str,
+    note_targets: &HashMap<String, String>,
+    asset_targets: &HashMap<String, String>,
+) -> String {
+    strip_epub_paragraph_wrapper(&render_epub_markdown_html(
+        source,
+        source_document_path,
+        note_targets,
+        asset_targets,
+    ))
 }
 
 fn render_epub_message_html(title: &str, message: &str) -> String {
@@ -21751,9 +21942,16 @@ fn render_epub_message_html(title: &str, message: &str) -> String {
 fn render_epub_inline_field_html(
     key: &str,
     value_text: &str,
-    link_targets: &HashMap<String, String>,
+    source_document_path: &str,
+    note_targets: &HashMap<String, String>,
+    asset_targets: &HashMap<String, String>,
 ) -> String {
-    let value_html = render_epub_inline_fragment_html(value_text, link_targets);
+    let value_html = render_epub_inline_fragment_html(
+        value_text,
+        source_document_path,
+        note_targets,
+        asset_targets,
+    );
     format!(
         "<span class=\"dataview-inline-field\"><span class=\"dataview-inline-field-key\">{}</span><span class=\"dataview-inline-field-separator\">:</span> <span class=\"dataview-inline-field-value\">{}</span></span>",
         escape_xml_text(key),
@@ -21849,23 +22047,77 @@ fn render_epub_base_embed_markdown(
     }
 }
 
+fn render_epub_asset_label(link: &ExportLinkRecord) -> String {
+    link.display_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            link.resolved_target_path.as_deref().and_then(|path| {
+                Path::new(path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(ToOwned::to_owned)
+            })
+        })
+        .unwrap_or_else(|| "Attachment".to_string())
+}
+
+fn render_epub_asset_embed_html(link: &ExportLinkRecord, href: &str) -> String {
+    let label = render_epub_asset_label(link);
+    let extension = link
+        .resolved_target_extension
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "tif" | "tiff" => format!(
+            "<figure class=\"asset-embed asset-embed-image\"><img src=\"{}\" alt=\"{}\" /></figure>",
+            escape_xml_text(href),
+            escape_xml_text(&label)
+        ),
+        "mp3" | "wav" | "ogg" => format!(
+            "<audio class=\"asset-embed asset-embed-audio\" controls=\"controls\" src=\"{}\">{}</audio>",
+            escape_xml_text(href),
+            escape_xml_text(&label)
+        ),
+        "mp4" | "mov" | "webm" | "avi" => format!(
+            "<video class=\"asset-embed asset-embed-video\" controls=\"controls\" src=\"{}\">{}</video>",
+            escape_xml_text(href),
+            escape_xml_text(&label)
+        ),
+        _ => format!(
+            "<p class=\"asset-embed asset-embed-link\"><a href=\"{}\">{}</a></p>",
+            escape_xml_text(href),
+            escape_xml_text(&label)
+        ),
+    }
+}
+
 fn render_epub_note_markdown(
     paths: &VaultPaths,
     note: &ExportedNoteDocument,
     body: &str,
-    config: &vulcan_core::config::VaultConfig,
-    note_index: &HashMap<String, NoteRecord>,
-    link_targets: &HashMap<String, String>,
-    tag_targets: &HashMap<String, String>,
+    body_offset: usize,
+    render_context: &EpubRenderContext<'_>,
+    export_links: &HashMap<i64, &ExportLinkRecord>,
 ) -> String {
-    let parsed = parse_document(body, config);
-    let inline_results = evaluate_note_inline_expressions(&note.note, note_index);
+    let parsed = parse_document(body, render_context.config);
+    let inline_results = evaluate_note_inline_expressions(&note.note, render_context.note_index);
     let mut replacements = Vec::new();
 
     for field in &parsed.inline_fields {
         replacements.push(EpubMarkdownReplacement {
             range: field.byte_range.clone(),
-            replacement: render_epub_inline_field_html(&field.key, &field.value_text, link_targets),
+            replacement: render_epub_inline_field_html(
+                &field.key,
+                &field.value_text,
+                &note.note.document_path,
+                render_context.note_targets,
+                render_context.asset_targets,
+            ),
         });
     }
 
@@ -21906,6 +22158,23 @@ fn render_epub_note_markdown(
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("base"))
         }) else {
+            let Some(export_byte_offset) = i64::try_from(link.byte_offset + body_offset).ok()
+            else {
+                continue;
+            };
+            let Some(export_link) = export_links.get(&export_byte_offset) else {
+                continue;
+            };
+            let Some(resolved_target_path) = export_link.resolved_target_path.as_deref() else {
+                continue;
+            };
+            let Some(asset_href) = render_context.asset_targets.get(resolved_target_path) else {
+                continue;
+            };
+            replacements.push(EpubMarkdownReplacement {
+                range: link.byte_offset..link.byte_offset + link.raw_text.len(),
+                replacement: render_epub_asset_embed_html(export_link, asset_href),
+            });
             continue;
         };
         replacements.push(EpubMarkdownReplacement {
@@ -21919,7 +22188,7 @@ fn render_epub_note_markdown(
     }
 
     for tag in &parsed.tags {
-        let Some(file_href) = tag_targets.get(&tag.tag_text) else {
+        let Some(file_href) = render_context.tag_targets.get(&tag.tag_text) else {
             continue;
         };
         replacements.push(EpubMarkdownReplacement {
@@ -21963,8 +22232,10 @@ fn slugify_epub_fragment(text: &str) -> String {
 }
 
 fn rewrite_epub_link_destination(
+    source_document_path: &str,
     destination: &str,
-    targets: &HashMap<String, String>,
+    note_targets: &HashMap<String, String>,
+    asset_targets: &HashMap<String, String>,
 ) -> Option<String> {
     if destination.is_empty() || is_external_epub_href(destination) {
         return None;
@@ -21975,25 +22246,34 @@ fn rewrite_epub_link_destination(
         .map_or((destination, None), |(path, fragment)| {
             (path, Some(fragment))
         });
-    let normalized = path_part.trim().trim_start_matches("./");
-    let target = targets.get(normalized).or_else(|| {
-        normalized
-            .strip_suffix(".md")
-            .and_then(|stem| targets.get(stem))
-    })?;
-
-    let mut rewritten = target.clone();
-    if let Some(fragment) = fragment
-        .map(slugify_epub_fragment)
-        .filter(|value| !value.is_empty())
-    {
-        rewritten.push('#');
-        rewritten.push_str(&fragment);
-    }
-    Some(rewritten)
+    resolve_epub_note_href(source_document_path, path_part, fragment, note_targets).or_else(|| {
+        resolve_epub_asset_href(source_document_path, path_part, fragment, asset_targets)
+    })
 }
 
-fn render_epub_markdown_html(source: &str, targets: &HashMap<String, String>) -> String {
+fn rewrite_epub_image_destination(
+    source_document_path: &str,
+    destination: &str,
+    asset_targets: &HashMap<String, String>,
+) -> Option<String> {
+    if destination.is_empty() || is_external_epub_href(destination) {
+        return None;
+    }
+
+    let (path_part, fragment) = destination
+        .split_once('#')
+        .map_or((destination, None), |(path, fragment)| {
+            (path, Some(fragment))
+        });
+    resolve_epub_asset_href(source_document_path, path_part, fragment, asset_targets)
+}
+
+fn render_epub_markdown_html(
+    source: &str,
+    source_document_path: &str,
+    note_targets: &HashMap<String, String>,
+    asset_targets: &HashMap<String, String>,
+) -> String {
     let parser = MarkdownParser::new_ext(source, MarkdownOptions::all()).map(|event| match event {
         MarkdownEvent::Start(MarkdownTag::Link {
             link_type,
@@ -22002,9 +22282,31 @@ fn render_epub_markdown_html(source: &str, targets: &HashMap<String, String>) ->
             id,
         }) => MarkdownEvent::Start(MarkdownTag::Link {
             link_type,
-            dest_url: rewrite_epub_link_destination(&dest_url, targets)
-                .map(CowStr::from)
-                .unwrap_or(dest_url),
+            dest_url: rewrite_epub_link_destination(
+                source_document_path,
+                &dest_url,
+                note_targets,
+                asset_targets,
+            )
+            .map(CowStr::from)
+            .unwrap_or(dest_url),
+            title,
+            id,
+        }),
+        MarkdownEvent::Start(MarkdownTag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => MarkdownEvent::Start(MarkdownTag::Image {
+            link_type,
+            dest_url: rewrite_epub_image_destination(
+                source_document_path,
+                &dest_url,
+                asset_targets,
+            )
+            .map(CowStr::from)
+            .unwrap_or(dest_url),
             title,
             id,
         }),
@@ -22264,73 +22566,128 @@ fn render_epub_tag_page_document(
     rendered
 }
 
+fn body_offset_for_epub_document(source: &str) -> usize {
+    find_frontmatter_block(source).map_or(0, |(_, _, body_start)| body_start)
+}
+
+fn build_epub_export_links_by_source(
+    links: &[ExportLinkRecord],
+) -> HashMap<String, HashMap<i64, &ExportLinkRecord>> {
+    let mut export_links = HashMap::<String, HashMap<i64, &ExportLinkRecord>>::new();
+    for link in links {
+        export_links
+            .entry(link.source_document_path.clone())
+            .or_default()
+            .insert(link.byte_offset, link);
+    }
+    export_links
+}
+
+fn build_epub_chapter(
+    paths: &VaultPaths,
+    note: &ExportedNoteDocument,
+    chapter_index: usize,
+    backlinks: bool,
+    include_frontmatter: bool,
+    render_context: &EpubRenderContext<'_>,
+    export_links: &HashMap<i64, &ExportLinkRecord>,
+) -> Result<EpubChapter, CliError> {
+    let body_offset = body_offset_for_epub_document(&note.content);
+    let (frontmatter, body) =
+        parse_frontmatter_document(&note.content, false).map_err(CliError::operation)?;
+    let rendered_markdown = render_epub_note_markdown(
+        paths,
+        note,
+        &body,
+        body_offset,
+        render_context,
+        export_links,
+    );
+    let headings = collect_epub_headings(&rendered_markdown, render_context.config);
+    let chapter_title = headings
+        .first()
+        .filter(|heading| heading.level == 1)
+        .map_or_else(
+            || note.note.file_name.clone(),
+            |heading| heading.text.clone(),
+        );
+    let body_html = inject_epub_heading_ids(
+        &render_epub_markdown_html(
+            &rendered_markdown,
+            &note.note.document_path,
+            render_context.note_targets,
+            render_context.asset_targets,
+        ),
+        &headings,
+    );
+    let backlinks_html = backlinks
+        .then(|| render_epub_backlinks(&note.note.inlinks, render_context.note_targets))
+        .flatten();
+    let tags_html = render_epub_chapter_tags_html(&note.note.tags, render_context.tag_targets);
+    let frontmatter_html = if include_frontmatter {
+        frontmatter
+            .as_ref()
+            .map(render_epub_frontmatter_html)
+            .transpose()?
+    } else {
+        None
+    };
+    let file_href = format!("chapter-{:03}.xhtml", chapter_index + 1);
+    Ok(EpubChapter {
+        document_path: note.note.document_path.clone(),
+        title: chapter_title.clone(),
+        nav_path: format!("text/{file_href}"),
+        file_href,
+        headings,
+        content: render_epub_chapter_document(
+            &chapter_title,
+            Some(&note.note.document_path),
+            tags_html.as_deref(),
+            frontmatter_html.as_deref(),
+            &body_html,
+            backlinks_html.as_deref(),
+            "../styles.css",
+        ),
+    })
+}
+
 fn build_epub_chapters(
     paths: &VaultPaths,
     notes: &[ExportedNoteDocument],
+    links: &[ExportLinkRecord],
+    asset_targets: &HashMap<String, String>,
     backlinks: bool,
     include_frontmatter: bool,
     tag_targets: &HashMap<String, String>,
 ) -> Result<Vec<EpubChapter>, CliError> {
     let config = load_vault_config(paths).config;
     let note_index = load_note_index(paths).map_err(CliError::operation)?;
-    let link_targets = build_epub_link_targets(notes);
+    let note_targets = build_epub_link_targets(notes);
+    let render_context = EpubRenderContext {
+        config: &config,
+        note_index: &note_index,
+        note_targets: &note_targets,
+        tag_targets,
+        asset_targets,
+    };
+    let export_links = build_epub_export_links_by_source(links);
+    let empty_links = HashMap::new();
 
     let mut chapters = notes
         .iter()
         .enumerate()
         .map(|(index, note)| {
-            let (frontmatter, body) =
-                parse_frontmatter_document(&note.content, false).map_err(CliError::operation)?;
-            let rendered_markdown = render_epub_note_markdown(
+            build_epub_chapter(
                 paths,
                 note,
-                &body,
-                &config,
-                &note_index,
-                &link_targets,
-                tag_targets,
-            );
-            let headings = collect_epub_headings(&rendered_markdown, &config);
-            let chapter_title = headings
-                .first()
-                .filter(|heading| heading.level == 1)
-                .map_or_else(
-                    || note.note.file_name.clone(),
-                    |heading| heading.text.clone(),
-                );
-            let body_html = inject_epub_heading_ids(
-                &render_epub_markdown_html(&rendered_markdown, &link_targets),
-                &headings,
-            );
-            let backlinks_html = backlinks
-                .then(|| render_epub_backlinks(&note.note.inlinks, &link_targets))
-                .flatten();
-            let tags_html = render_epub_chapter_tags_html(&note.note.tags, tag_targets);
-            let frontmatter_html = if include_frontmatter {
-                frontmatter
-                    .as_ref()
-                    .map(render_epub_frontmatter_html)
-                    .transpose()?
-            } else {
-                None
-            };
-            let file_href = format!("chapter-{:03}.xhtml", index + 1);
-            Ok(EpubChapter {
-                document_path: note.note.document_path.clone(),
-                title: chapter_title.clone(),
-                nav_path: format!("text/{file_href}"),
-                file_href,
-                headings,
-                content: render_epub_chapter_document(
-                    &chapter_title,
-                    Some(&note.note.document_path),
-                    tags_html.as_deref(),
-                    frontmatter_html.as_deref(),
-                    &body_html,
-                    backlinks_html.as_deref(),
-                    "../styles.css",
-                ),
-            })
+                index,
+                backlinks,
+                include_frontmatter,
+                &render_context,
+                export_links
+                    .get(&note.note.document_path)
+                    .unwrap_or(&empty_links),
+            )
         })
         .collect::<Result<Vec<_>, CliError>>()?;
 
@@ -22695,6 +23052,7 @@ fn render_epub_package(
     book_title: &str,
     author: Option<&str>,
     chapters: &[EpubChapter],
+    assets: &[EpubAsset],
     tag_pages: &[EpubTagPage],
     identifier: &str,
 ) -> String {
@@ -22736,6 +23094,16 @@ fn render_epub_package(
         )
         .expect("writing to string cannot fail");
     }
+    for asset in assets {
+        writeln!(
+            rendered,
+            "<item id=\"{}\" href=\"{}\" media-type=\"{}\" />",
+            escape_xml_text(&asset.manifest_id),
+            escape_xml_text(&asset.package_href),
+            escape_xml_text(&asset.media_type)
+        )
+        .expect("writing to string cannot fail");
+    }
     for (index, page) in tag_pages.iter().enumerate() {
         writeln!(
             rendered,
@@ -22763,6 +23131,10 @@ fn epub_stylesheet() -> &'static str {
      .chapter-header { border-bottom: 1px solid #d0d0d0; margin-bottom: 1.5rem; padding-bottom: 0.75rem; }\n\
      .chapter-title { margin-bottom: 0.25rem; }\n\
      .note-path, .note-tags { color: #555; font-size: 0.95em; margin: 0.15rem 0; }\n\
+     .asset-embed { margin: 1rem 0; }\n\
+     .asset-embed-image img, .asset-embed-video { display: block; max-width: 100%; }\n\
+     .asset-embed-audio, .asset-embed-video { width: 100%; }\n\
+     .asset-embed-link a { font-weight: 600; }\n\
      .frontmatter-box { background: #f6f4ef; border: 1px solid #d7d2c7; border-radius: 0.45rem; margin: 0 0 1.25rem; padding: 0.75rem 0.9rem; }\n\
      .frontmatter-box summary { cursor: pointer; font-weight: 600; }\n\
      .frontmatter-box pre { background: #fffdf8; border: 1px solid #e3ddd2; margin: 0.75rem 0 0; overflow-x: auto; padding: 0.75rem; white-space: pre-wrap; }\n\
@@ -22777,32 +23149,14 @@ fn epub_stylesheet() -> &'static str {
      code, pre { font-family: monospace; }\n"
 }
 
-fn write_epub_export(
-    paths: &VaultPaths,
-    output_path: &Path,
-    notes: &[ExportedNoteDocument],
-    options: EpubExportOptions<'_>,
-) -> Result<EpubExportSummary, CliError> {
-    prepare_export_output_path(output_path)?;
-    let tag_targets = build_epub_tag_targets(notes);
-    let chapters = build_epub_chapters(
-        paths,
-        notes,
-        options.backlinks,
-        options.frontmatter,
-        &tag_targets,
-    )?;
-    let tag_pages = build_epub_tag_pages(&chapters, notes, &tag_targets);
-    let nav_nodes = build_epub_nav_nodes(&chapters, &tag_pages, options.toc_style);
-    let book_title = options
-        .title
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| default_epub_title(paths), ToOwned::to_owned);
-    let identifier = format!("urn:vulcan:{}", current_utc_timestamp_string());
-
-    let file = fs::File::create(output_path).map_err(CliError::operation)?;
-    let mut writer = zip::ZipWriter::new(file);
+fn write_epub_scaffold(
+    writer: &mut zip::ZipWriter<fs::File>,
+    metadata: &EpubBookMetadata<'_>,
+    chapters: &[EpubChapter],
+    assets: &[EpubAsset],
+    tag_pages: &[EpubTagPage],
+    nav_nodes: &[EpubNavNode],
+) -> Result<(), CliError> {
     let stored = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
     let deflated = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
@@ -22834,11 +23188,12 @@ fn write_epub_export(
     writer
         .write_all(
             render_epub_package(
-                &book_title,
-                options.author,
-                &chapters,
-                &tag_pages,
-                &identifier,
+                metadata.title,
+                metadata.author,
+                chapters,
+                assets,
+                tag_pages,
+                metadata.identifier,
             )
             .as_bytes(),
         )
@@ -22848,14 +23203,14 @@ fn write_epub_export(
         .start_file("OEBPS/nav.xhtml", deflated)
         .map_err(CliError::operation)?;
     writer
-        .write_all(render_epub_nav_document(&book_title, &nav_nodes).as_bytes())
+        .write_all(render_epub_nav_document(metadata.title, nav_nodes).as_bytes())
         .map_err(CliError::operation)?;
 
     writer
         .start_file("OEBPS/toc.ncx", deflated)
         .map_err(CliError::operation)?;
     writer
-        .write_all(render_epub_ncx(&book_title, &nav_nodes, &identifier).as_bytes())
+        .write_all(render_epub_ncx(metadata.title, nav_nodes, metadata.identifier).as_bytes())
         .map_err(CliError::operation)?;
 
     writer
@@ -22865,7 +23220,34 @@ fn write_epub_export(
         .write_all(epub_stylesheet().as_bytes())
         .map_err(CliError::operation)?;
 
-    for chapter in &chapters {
+    Ok(())
+}
+
+fn write_epub_assets(
+    writer: &mut zip::ZipWriter<fs::File>,
+    paths: &VaultPaths,
+    assets: &[EpubAsset],
+) -> Result<(), CliError> {
+    let deflated = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for asset in assets {
+        writer
+            .start_file(format!("OEBPS/{}", asset.package_href), deflated)
+            .map_err(CliError::operation)?;
+        let bytes =
+            fs::read(paths.vault_root().join(&asset.source_path)).map_err(CliError::operation)?;
+        writer.write_all(&bytes).map_err(CliError::operation)?;
+    }
+
+    Ok(())
+}
+
+fn write_epub_documents(
+    writer: &mut zip::ZipWriter<fs::File>,
+    chapters: &[EpubChapter],
+    tag_pages: &[EpubTagPage],
+) -> Result<(), CliError> {
+    let deflated = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for chapter in chapters {
         writer
             .start_file(format!("OEBPS/text/{}", chapter.file_href), deflated)
             .map_err(CliError::operation)?;
@@ -22874,7 +23256,7 @@ fn write_epub_export(
             .map_err(CliError::operation)?;
     }
 
-    for page in &tag_pages {
+    for page in tag_pages {
         writer
             .start_file(format!("OEBPS/tags/{}", page.file_href), deflated)
             .map_err(CliError::operation)?;
@@ -22882,6 +23264,56 @@ fn write_epub_export(
             .write_all(page.content.as_bytes())
             .map_err(CliError::operation)?;
     }
+
+    Ok(())
+}
+
+fn write_epub_export(
+    paths: &VaultPaths,
+    output_path: &Path,
+    notes: &[ExportedNoteDocument],
+    options: EpubExportOptions<'_>,
+) -> Result<EpubExportSummary, CliError> {
+    prepare_export_output_path(output_path)?;
+    let links = load_export_links(paths, notes)?;
+    let assets = build_epub_assets(&links);
+    let asset_targets = build_epub_asset_targets(&assets);
+    let tag_targets = build_epub_tag_targets(notes);
+    let chapters = build_epub_chapters(
+        paths,
+        notes,
+        &links,
+        &asset_targets,
+        options.backlinks,
+        options.frontmatter,
+        &tag_targets,
+    )?;
+    let tag_pages = build_epub_tag_pages(&chapters, notes, &tag_targets);
+    let nav_nodes = build_epub_nav_nodes(&chapters, &tag_pages, options.toc_style);
+    let book_title = options
+        .title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| default_epub_title(paths), ToOwned::to_owned);
+    let identifier = format!("urn:vulcan:{}", current_utc_timestamp_string());
+    let metadata = EpubBookMetadata {
+        title: &book_title,
+        author: options.author,
+        identifier: &identifier,
+    };
+
+    let file = fs::File::create(output_path).map_err(CliError::operation)?;
+    let mut writer = zip::ZipWriter::new(file);
+    write_epub_scaffold(
+        &mut writer,
+        &metadata,
+        &chapters,
+        &assets,
+        &tag_pages,
+        &nav_nodes,
+    )?;
+    write_epub_assets(&mut writer, paths, &assets)?;
+    write_epub_documents(&mut writer, &chapters, &tag_pages)?;
 
     writer.finish().map_err(CliError::operation)?;
 
@@ -29272,7 +29704,7 @@ mod tests {
 
     #[test]
     fn rewrite_epub_link_destination_maps_selected_notes_and_fragments() {
-        let targets = HashMap::from([
+        let note_targets = HashMap::from([
             (
                 "Projects/Alpha".to_string(),
                 "chapter-001.xhtml".to_string(),
@@ -29283,17 +29715,40 @@ mod tests {
             ),
             ("Home".to_string(), "chapter-002.xhtml".to_string()),
         ]);
+        let asset_targets = HashMap::from([(
+            "assets/logo.png".to_string(),
+            "../media/asset-001.png".to_string(),
+        )]);
 
         assert_eq!(
-            rewrite_epub_link_destination("Projects/Alpha#Status", &targets),
+            rewrite_epub_link_destination(
+                "People/Bob.md",
+                "Projects/Alpha#Status",
+                &note_targets,
+                &asset_targets,
+            ),
             Some("chapter-001.xhtml#status".to_string())
         );
         assert_eq!(
-            rewrite_epub_link_destination("Home", &targets),
+            rewrite_epub_link_destination("People/Bob.md", "Home", &note_targets, &asset_targets,),
             Some("chapter-002.xhtml".to_string())
         );
         assert_eq!(
-            rewrite_epub_link_destination("https://example.com", &targets),
+            rewrite_epub_link_destination(
+                "Notes/Guide.md",
+                "../assets/logo.png",
+                &note_targets,
+                &asset_targets,
+            ),
+            Some("../media/asset-001.png".to_string())
+        );
+        assert_eq!(
+            rewrite_epub_link_destination(
+                "Home.md",
+                "https://example.com",
+                &note_targets,
+                &asset_targets,
+            ),
             None
         );
     }

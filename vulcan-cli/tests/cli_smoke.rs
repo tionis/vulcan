@@ -10103,6 +10103,113 @@ fn export_epub_writes_book_archive_with_nav_and_backlinks() {
 }
 
 #[test]
+fn export_epub_bundles_and_rewrites_referenced_assets() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("attachments", &vault_root);
+
+    let guide_path = vault_root.join("Notes/Guide.md");
+    let mut guide = fs::read_to_string(&guide_path).expect("guide note should be readable");
+    guide.push_str("\n[Manual](../assets/guide.pdf)\n");
+    fs::write(&guide_path, guide).expect("guide note should be updated");
+
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("attachments.epub");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "epub",
+            "from notes",
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("epub export should exist");
+    let mut archive = ZipArchive::new(file).expect("epub export should open");
+
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        names.push(
+            archive
+                .by_index(index)
+                .expect("archive entry should be readable")
+                .name()
+                .to_string(),
+        );
+    }
+
+    let media_entries = names
+        .iter()
+        .filter(|name| name.starts_with("OEBPS/media/asset-"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(media_entries.len(), 3);
+    assert!(media_entries.iter().any(|name| name.ends_with(".png")));
+    assert!(media_entries.iter().any(|name| name.ends_with(".pdf")));
+    assert!(media_entries.iter().any(|name| name.ends_with(".mp3")));
+
+    let mut content_opf = String::new();
+    archive
+        .by_name("OEBPS/content.opf")
+        .expect("package should exist")
+        .read_to_string(&mut content_opf)
+        .expect("package should be readable");
+    assert!(content_opf.contains("media-type=\"image/png\""));
+    assert!(content_opf.contains("media-type=\"application/pdf\""));
+    assert!(content_opf.contains("media-type=\"audio/mpeg\""));
+
+    let mut chapter_by_note = std::collections::HashMap::new();
+    for name in names
+        .iter()
+        .filter(|name| name.starts_with("OEBPS/text/chapter-"))
+    {
+        let mut chapter = String::new();
+        archive
+            .by_name(name)
+            .expect("chapter should exist")
+            .read_to_string(&mut chapter)
+            .expect("chapter should be readable");
+        if chapter.contains("Home.md") {
+            chapter_by_note.insert("Home.md", chapter);
+        } else if chapter.contains("Notes/Guide.md") {
+            chapter_by_note.insert("Notes/Guide.md", chapter);
+        }
+    }
+
+    let home_chapter = chapter_by_note
+        .get("Home.md")
+        .expect("home chapter should be captured");
+    let guide_chapter = chapter_by_note
+        .get("Notes/Guide.md")
+        .expect("guide chapter should be captured");
+
+    assert!(home_chapter.contains("class=\"asset-embed asset-embed-image\""));
+    assert!(home_chapter.contains("src=\"../media/asset-"));
+    assert!(home_chapter.contains(".png\""));
+    assert!(home_chapter.contains("class=\"asset-embed asset-embed-link\""));
+    assert!(home_chapter.contains(".pdf\""));
+    assert!(home_chapter.contains("class=\"asset-embed asset-embed-audio\""));
+    assert!(home_chapter.contains(".mp3\""));
+
+    assert!(guide_chapter.contains("class=\"asset-embed asset-embed-image\""));
+    assert!(guide_chapter.contains("src=\"../media/asset-"));
+    assert!(guide_chapter.contains(".png\""));
+    assert!(guide_chapter.contains(">Manual</a>"));
+    assert!(guide_chapter.contains("href=\"../media/asset-"));
+    assert!(guide_chapter.contains(".pdf\""));
+}
+
+#[test]
 fn export_epub_frontmatter_flag_renders_collapsible_yaml_panel() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
