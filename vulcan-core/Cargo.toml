@@ -32,6 +32,7 @@ ulid.workspace = true
 vulcan-embed = { path = "../vulcan-embed" }
 
 [dev-dependencies]
+proptest.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -1,0 +1,72 @@
+name: Hardening
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  integration-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run hardening CLI flow
+        run: cargo test -p vulcan-cli --test cli_smoke hardening_vault_cli_flow_covers_scan_query_mutate_refactor_export_and_rerun -- --nocapture
+
+      - name: Run sandbox permission integration flow
+        run: cargo test -p vulcan-cli --test cli_smoke sandboxed_cli_profile_rejects_refactor_git_network_config_execute_and_index_commands -- --nocapture
+
+      - name: Run serve permission integration flow
+        run: cargo test -p vulcan-cli serve::tests::serve_applies_permission_filters_and_denies_js_execution -- --nocapture
+
+      - name: Run synthetic large-vault regression harness
+        run: cargo test -p vulcan-core vector_duplicates_benchmark_large_synthetic_scan -- --ignored --nocapture
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Fuzz parser
+        run: cargo fuzz run parser -- -max_total_time=20
+
+      - name: Fuzz frontmatter
+        run: cargo fuzz run frontmatter -- -max_total_time=20
+
+      - name: Fuzz links
+        run: cargo fuzz run links -- -max_total_time=20
+
+      - name: Fuzz chunker
+        run: cargo fuzz run chunker -- -max_total_time=20
+
+      - name: Fuzz DQL
+        run: cargo fuzz run dql -- -max_total_time=20
+
+      - name: Fuzz expression parser
+        run: cargo fuzz run expression -- -max_total_time=20
+
+      - name: Fuzz Tasks parser
+        run: cargo fuzz run tasks -- -max_total_time=20
+
+      - name: Fuzz config ingestion
+        run: cargo fuzz run config -- -max_total_time=20

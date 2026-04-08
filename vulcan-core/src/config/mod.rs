@@ -8128,6 +8128,7 @@ fn normalize_obsidian_task_recurrence_mode(config: &ObsidianTasksConfig) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::fs;
     use tempfile::TempDir;
 
@@ -8559,6 +8560,151 @@ intellisense_render = 2
             fs::create_dir_all(parent).expect("parent dir should be created");
         }
         fs::write(path, contents).expect("test file should be written");
+    }
+
+    fn path_segment_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z0-9_-]{1,8}")
+            .expect("path segment regex should be valid")
+    }
+
+    fn path_permission_config_strategy() -> impl Strategy<Value = PathPermissionConfig> {
+        prop_oneof![
+            Just(PathPermissionConfig::Keyword(PathPermissionKeyword::All)),
+            Just(PathPermissionConfig::Keyword(PathPermissionKeyword::None)),
+            path_segment_strategy().prop_map(|folder| {
+                PathPermissionConfig::Rules(PathPermissionRules {
+                    allow: vec![format!("folder:{folder}/**")],
+                    deny: vec![format!("note:{folder}/Secret.md")],
+                })
+            }),
+        ]
+    }
+
+    fn permission_mode_strategy() -> impl Strategy<Value = PermissionMode> {
+        prop_oneof![Just(PermissionMode::Allow), Just(PermissionMode::Deny)]
+    }
+
+    fn config_permission_mode_strategy() -> impl Strategy<Value = ConfigPermissionMode> {
+        prop_oneof![
+            Just(ConfigPermissionMode::Read),
+            Just(ConfigPermissionMode::Write),
+            Just(ConfigPermissionMode::None),
+        ]
+    }
+
+    fn network_permission_config_strategy() -> impl Strategy<Value = NetworkPermissionConfig> {
+        prop_oneof![
+            permission_mode_strategy().prop_map(NetworkPermissionConfig::Mode),
+            path_segment_strategy().prop_map(|domain| {
+                NetworkPermissionConfig::Details(NetworkPermissionDetails {
+                    allow: true,
+                    domains: vec![format!("{domain}.example.com")],
+                })
+            }),
+        ]
+    }
+
+    fn permission_limit_strategy() -> impl Strategy<Value = PermissionLimit> {
+        prop_oneof![
+            Just(PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited)),
+            (1_usize..10_000).prop_map(PermissionLimit::Value),
+        ]
+    }
+
+    fn permission_profile_strategy() -> impl Strategy<Value = PermissionProfile> {
+        (
+            (
+                path_permission_config_strategy(),
+                path_permission_config_strategy(),
+                path_permission_config_strategy(),
+            ),
+            (
+                permission_mode_strategy(),
+                network_permission_config_strategy(),
+                permission_mode_strategy(),
+                config_permission_mode_strategy(),
+                permission_mode_strategy(),
+                permission_mode_strategy(),
+            ),
+            (
+                permission_limit_strategy(),
+                permission_limit_strategy(),
+                permission_limit_strategy(),
+                prop::option::of(
+                    path_segment_strategy()
+                        .prop_map(|name| PathBuf::from(format!("hooks/{name}.sh"))),
+                ),
+            ),
+        )
+            .prop_map(
+                |(
+                    (read, write, refactor),
+                    (git, network, index, config, execute, shell),
+                    (cpu_limit_ms, memory_limit_mb, stack_limit_kb, policy_hook),
+                )| PermissionProfile {
+                    read,
+                    write,
+                    refactor,
+                    git,
+                    network,
+                    index,
+                    config,
+                    execute,
+                    shell,
+                    cpu_limit_ms,
+                    memory_limit_mb,
+                    stack_limit_kb,
+                    policy_hook,
+                },
+            )
+    }
+
+    fn partial_permission_profile_strategy() -> impl Strategy<Value = PartialPermissionProfile> {
+        (
+            (
+                prop::option::of(path_permission_config_strategy()),
+                prop::option::of(path_permission_config_strategy()),
+                prop::option::of(path_permission_config_strategy()),
+            ),
+            (
+                prop::option::of(permission_mode_strategy()),
+                prop::option::of(network_permission_config_strategy()),
+                prop::option::of(permission_mode_strategy()),
+                prop::option::of(config_permission_mode_strategy()),
+                prop::option::of(permission_mode_strategy()),
+                prop::option::of(permission_mode_strategy()),
+            ),
+            (
+                prop::option::of(permission_limit_strategy()),
+                prop::option::of(permission_limit_strategy()),
+                prop::option::of(permission_limit_strategy()),
+                prop::option::of(
+                    path_segment_strategy()
+                        .prop_map(|name| PathBuf::from(format!("policy/{name}.sh"))),
+                ),
+            ),
+        )
+            .prop_map(
+                |(
+                    (read, write, refactor),
+                    (git, network, index, config, execute, shell),
+                    (cpu_limit_ms, memory_limit_mb, stack_limit_kb, policy_hook),
+                )| PartialPermissionProfile {
+                    read,
+                    write,
+                    refactor,
+                    git,
+                    network,
+                    index,
+                    config,
+                    execute,
+                    shell,
+                    cpu_limit_ms,
+                    memory_limit_mb,
+                    stack_limit_kb,
+                    policy_hook,
+                },
+            )
     }
 
     fn setup_obsidian_seed_vault(vault_root: &Path) {
@@ -9331,6 +9477,80 @@ cpu_limit_ms = 5000
             })
         );
         assert_eq!(agent.cpu_limit_ms, PermissionLimit::Value(5000));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 32,
+            max_shrink_iters: 0,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn partial_permission_profile_overrides_replace_only_selected_fields(
+            base in permission_profile_strategy(),
+            overrides in partial_permission_profile_strategy(),
+        ) {
+            let mut profile = base.clone();
+            let expected_policy_hook = overrides
+                .policy_hook
+                .clone()
+                .map(|path| normalize_filesystem_pathbuf(&path).unwrap_or(path))
+                .or_else(|| base.policy_hook.clone());
+
+            let expected_read = overrides.read.clone().unwrap_or_else(|| base.read.clone());
+            let expected_write = overrides.write.clone().unwrap_or_else(|| base.write.clone());
+            let expected_refactor = overrides
+                .refactor
+                .clone()
+                .unwrap_or_else(|| base.refactor.clone());
+            let expected_git = overrides.git.clone().unwrap_or_else(|| base.git.clone());
+            let expected_network = overrides
+                .network
+                .clone()
+                .unwrap_or_else(|| base.network.clone());
+            let expected_index = overrides.index.clone().unwrap_or_else(|| base.index.clone());
+            let expected_config = overrides
+                .config
+                .clone()
+                .unwrap_or_else(|| base.config.clone());
+            let expected_execute = overrides
+                .execute
+                .clone()
+                .unwrap_or_else(|| base.execute.clone());
+            let expected_shell = overrides
+                .shell
+                .clone()
+                .unwrap_or_else(|| base.shell.clone());
+            let expected_cpu_limit_ms = overrides
+                .cpu_limit_ms
+                .clone()
+                .unwrap_or_else(|| base.cpu_limit_ms.clone());
+            let expected_memory_limit_mb = overrides
+                .memory_limit_mb
+                .clone()
+                .unwrap_or_else(|| base.memory_limit_mb.clone());
+            let expected_stack_limit_kb = overrides
+                .stack_limit_kb
+                .clone()
+                .unwrap_or_else(|| base.stack_limit_kb.clone());
+
+            apply_partial_permission_profile(&mut profile, overrides);
+
+            prop_assert_eq!(profile.read, expected_read);
+            prop_assert_eq!(profile.write, expected_write);
+            prop_assert_eq!(profile.refactor, expected_refactor);
+            prop_assert_eq!(profile.git, expected_git);
+            prop_assert_eq!(profile.network, expected_network);
+            prop_assert_eq!(profile.index, expected_index);
+            prop_assert_eq!(profile.config, expected_config);
+            prop_assert_eq!(profile.execute, expected_execute);
+            prop_assert_eq!(profile.shell, expected_shell);
+            prop_assert_eq!(profile.cpu_limit_ms, expected_cpu_limit_ms);
+            prop_assert_eq!(profile.memory_limit_mb, expected_memory_limit_mb);
+            prop_assert_eq!(profile.stack_limit_kb, expected_stack_limit_kb);
+            prop_assert_eq!(profile.policy_hook, expected_policy_hook);
+        }
     }
 
     #[test]

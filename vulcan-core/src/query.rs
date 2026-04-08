@@ -160,7 +160,7 @@ pub struct QuerySort {
 
 /// Field projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", content = "fields", rename_all = "snake_case")]
 pub enum QueryProjection {
     #[default]
     All,
@@ -602,6 +602,64 @@ pub fn execute_query_report_with_filter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn field_strategy() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("status".to_string()),
+            Just("priority".to_string()),
+            Just("file.path".to_string()),
+            Just("file.name".to_string()),
+            proptest::string::string_regex("[A-Za-z][A-Za-z0-9_.]{0,10}")
+                .expect("field regex should be valid"),
+        ]
+    }
+
+    fn query_value_strategy() -> impl Strategy<Value = QueryValue> {
+        prop_oneof![
+            Just(QueryValue::Null),
+            any::<bool>().prop_map(QueryValue::Bool),
+            (-1_000_i32..1_000_i32).prop_map(|value| QueryValue::Number(f64::from(value))),
+            proptest::string::string_regex("[A-Za-z0-9 _/.-]{0,12}")
+                .expect("text value regex should be valid")
+                .prop_map(QueryValue::Text),
+        ]
+    }
+
+    fn predicate_strategy() -> impl Strategy<Value = QueryPredicate> {
+        (
+            field_strategy(),
+            prop_oneof![
+                Just(QueryOperator::Eq),
+                Just(QueryOperator::Gt),
+                Just(QueryOperator::Gte),
+                Just(QueryOperator::Lt),
+                Just(QueryOperator::Lte),
+                Just(QueryOperator::StartsWith),
+                Just(QueryOperator::Contains),
+                Just(QueryOperator::Matches),
+                Just(QueryOperator::MatchesI),
+            ],
+            query_value_strategy(),
+        )
+            .prop_map(|(field, operator, value)| QueryPredicate {
+                field,
+                operator,
+                value,
+            })
+    }
+
+    fn sort_strategy() -> impl Strategy<Value = QuerySort> {
+        (field_strategy(), any::<bool>())
+            .prop_map(|(field, descending)| QuerySort { field, descending })
+    }
+
+    fn projection_strategy() -> impl Strategy<Value = QueryProjection> {
+        prop_oneof![
+            Just(QueryProjection::All),
+            prop::collection::vec(field_strategy(), 1..4).prop_map(QueryProjection::Fields),
+        ]
+    }
 
     // ── DSL parsing tests ──────────────────────────────────────────────────────
 
@@ -791,6 +849,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn json_round_trip_projection_fields() {
+        let ast = QueryAst {
+            source: QuerySource::Notes,
+            predicates: Vec::new(),
+            sort: None,
+            projection: QueryProjection::Fields(vec![
+                "file.path".to_string(),
+                "status".to_string(),
+            ]),
+            limit: None,
+            offset: 0,
+        };
+
+        let json = serde_json::to_string(&ast).expect("projection should serialize");
+        let roundtripped = QueryAst::from_json(&json).expect("projection should deserialize");
+        assert_eq!(roundtripped, ast);
+    }
+
     // ── NoteQuery conversion tests ─────────────────────────────────────────────
 
     #[test]
@@ -830,6 +907,53 @@ mod tests {
             let pred2 = parse_predicate_from_filter_string(&rendered)
                 .unwrap_or_else(|_| panic!("should re-parse: {rendered}"));
             assert_eq!(pred, pred2, "round-trip failed for: {case}");
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn query_ast_json_roundtrips_for_generated_inputs(
+            predicates in prop::collection::vec(predicate_strategy(), 0..5),
+            sort in prop::option::of(sort_strategy()),
+            projection in projection_strategy(),
+            limit in prop::option::of(0_usize..32),
+            offset in 0_usize..32,
+        ) {
+            let ast = QueryAst {
+                source: QuerySource::Notes,
+                predicates,
+                sort,
+                projection,
+                limit,
+                offset,
+            };
+
+            let json = serde_json::to_string(&ast).expect("generated query AST should serialize");
+            prop_assert_eq!(
+                QueryAst::from_json(&json).expect("serialized query AST should deserialize"),
+                ast
+            );
+        }
+
+        #[test]
+        fn note_query_conversion_roundtrips_generated_predicates_and_sorts(
+            predicates in prop::collection::vec(predicate_strategy(), 0..5),
+            sort in prop::option::of(sort_strategy()),
+        ) {
+            let ast = QueryAst {
+                source: QuerySource::Notes,
+                predicates,
+                sort,
+                projection: QueryProjection::All,
+                limit: None,
+                offset: 0,
+            };
+
+            let reparsed = QueryAst::from_note_query(&ast.to_note_query())
+                .expect("rendered note query should parse back into the canonical AST");
+
+            prop_assert_eq!(reparsed.predicates, ast.predicates);
+            prop_assert_eq!(reparsed.sort, ast.sort);
         }
     }
 }

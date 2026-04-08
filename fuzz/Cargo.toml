@@ -38,3 +38,31 @@ path = "fuzz_targets/chunker.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dql"
+path = "fuzz_targets/dql.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "expression"
+path = "fuzz_targets/expression.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tasks"
+path = "fuzz_targets/tasks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
