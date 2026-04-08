@@ -1490,7 +1490,7 @@ LIMIT 1"#,
         });
         let result = evaluate_dql_with_filter(
             &paths,
-            r#"LIST file.name SORT file.name ASC"#,
+            r"LIST file.name SORT file.name ASC",
             None,
             Some(&filter),
         )
