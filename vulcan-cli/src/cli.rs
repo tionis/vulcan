@@ -810,13 +810,15 @@ Subcommands:
   json          Export matched notes with metadata and raw content as JSON
   csv           Export note query results as CSV
   graph         Export the resolved link graph for external tools
+  epub          Render matched notes as an EPUB book
   zip           Export matched notes and linked attachments as a ZIP archive
   sqlite        Export matched notes into a standalone SQLite database
   search-index  Write the cached search corpus as a static JSON index
 
 Notes:
-  `markdown`, `json`, `csv`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
+  `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
+  `epub --backlinks` appends indexed inlinks after each exported note chapter.
   Archive exports require `-o/--path` because they produce binary or database files.
   The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).
   Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.
@@ -826,6 +828,7 @@ Examples:
   vulcan export json 'from notes where status = done' --pretty -o exports/done.json
   vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv
   vulcan export graph --format dot -o exports/graph.dot
+  vulcan export epub 'from notes where file.path matches \"^(Projects|People)/\"' -o exports/team.epub --title 'Team Notes' --backlinks
   vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip
   vulcan export sqlite 'from notes where status = done' -o exports/done.db
   vulcan export search-index --path public/search-index.json
@@ -1625,6 +1628,27 @@ pub enum ExportCommand {
             help = "Destination export file; omit to print the graph to stdout"
         )]
         path: Option<PathBuf>,
+    },
+    #[command(about = "Render matched notes as an EPUB book")]
+    Epub {
+        #[command(flatten)]
+        query: ExportQueryArgs,
+        #[arg(
+            short = 'o',
+            long = "path",
+            required = true,
+            help = "Destination EPUB file"
+        )]
+        path: PathBuf,
+        #[arg(long, help = "Optional book title; defaults to the vault folder name")]
+        title: Option<String>,
+        #[arg(long, help = "Optional EPUB author/creator metadata")]
+        author: Option<String>,
+        #[arg(
+            long,
+            help = "Append indexed backlinks after each exported note chapter"
+        )]
+        backlinks: bool,
     },
     #[command(about = "Export matched notes and linked attachments as a ZIP archive")]
     Zip {

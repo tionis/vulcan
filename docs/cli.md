@@ -131,6 +131,7 @@ Note resolution rules:
 - `vulcan cache vacuum [--dry-run]`: run SQLite `VACUUM` on the cache.
 - `vulcan checkpoint create <name>`: capture the current cache state under a checkpoint name.
 - `vulcan checkpoint list`: list saved scan and manual checkpoints.
+- `vulcan export markdown|json|csv|epub|zip|sqlite <query> ...`: materialize matched notes as combined documents, datasets, books, or archives.
 - `vulcan export search-index [--path <FILE>] [--pretty]`: write the cached search corpus as a static JSON index.
 - `vulcan changes [--checkpoint <name>]`: report note, link, property, and embedding changes since the last scan or a named checkpoint.
 - `vulcan diff [note] [--since <checkpoint>]`: show one note's changes since git `HEAD`, the last scan, or a named checkpoint.
@@ -740,6 +741,7 @@ Examples:
 vulcan saved search release-dashboard 'dashboard "release notes"' --description "Release dashboard hits"
 vulcan saved notes due-soon --where 'due <= 2026-04-01' --sort due
 vulcan saved run release-dashboard --output json
+vulcan export epub 'from notes where file.path matches "^(People|Projects)/"' -o exports/team.epub --title "Team Notes" --backlinks
 vulcan batch release-dashboard due-soon
 vulcan automation run --scan --doctor --verify-cache --fail-on-issues
 ```

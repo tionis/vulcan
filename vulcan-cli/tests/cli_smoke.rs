@@ -9486,6 +9486,109 @@ fn export_zip_includes_notes_attachments_and_manifest() {
 }
 
 #[test]
+fn export_epub_writes_book_archive_with_nav_and_backlinks() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("team.epub");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "epub",
+            "from notes",
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+            "--title",
+            "Team Notes",
+            "--author",
+            "Vulcan",
+            "--backlinks",
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("epub export should exist");
+    let mut archive = ZipArchive::new(file).expect("epub export should open");
+
+    let mut mimetype = String::new();
+    archive
+        .by_name("mimetype")
+        .expect("mimetype should exist")
+        .read_to_string(&mut mimetype)
+        .expect("mimetype should be readable");
+    assert_eq!(mimetype, "application/epub+zip");
+
+    let mut nav = String::new();
+    archive
+        .by_name("OEBPS/nav.xhtml")
+        .expect("nav should exist")
+        .read_to_string(&mut nav)
+        .expect("nav should be readable");
+    assert!(nav.contains("Team Notes"));
+    assert!(nav.contains("Contents"));
+    assert!(nav.contains("Status"));
+
+    let mut chapter_paths = Vec::new();
+    for index in 0..archive.len() {
+        let name = archive
+            .by_index(index)
+            .expect("archive entry should be readable")
+            .name()
+            .to_string();
+        if name.starts_with("OEBPS/text/chapter-") {
+            chapter_paths.push(name);
+        }
+    }
+    assert_eq!(chapter_paths.len(), 3);
+
+    let mut chapter_by_note = std::collections::HashMap::new();
+    for path in &chapter_paths {
+        let mut chapter = String::new();
+        archive
+            .by_name(path)
+            .expect("chapter should exist")
+            .read_to_string(&mut chapter)
+            .expect("chapter should be readable");
+        if chapter.contains("Home.md") {
+            chapter_by_note.insert("Home.md", (path.clone(), chapter));
+        } else if chapter.contains("People/Bob.md") {
+            chapter_by_note.insert("People/Bob.md", (path.clone(), chapter));
+        } else if chapter.contains("Projects/Alpha.md") {
+            chapter_by_note.insert("Projects/Alpha.md", (path.clone(), chapter));
+        }
+    }
+
+    let alpha_file = chapter_by_note
+        .get("Projects/Alpha.md")
+        .expect("alpha chapter should be captured")
+        .0
+        .trim_start_matches("OEBPS/text/")
+        .to_string();
+    let bob_chapter = &chapter_by_note
+        .get("People/Bob.md")
+        .expect("bob chapter should be captured")
+        .1;
+    let alpha_chapter = &chapter_by_note
+        .get("Projects/Alpha.md")
+        .expect("alpha chapter should be captured")
+        .1;
+
+    assert!(bob_chapter.contains(&format!("href=\"{alpha_file}#status\"")));
+    assert!(alpha_chapter.contains("<section class=\"backlinks\">"));
+    assert!(alpha_chapter.contains(">Home</a>"));
+    assert!(alpha_chapter.contains(">People/Bob</a>"));
+}
+
+#[test]
 fn export_sqlite_writes_notes_links_tags_and_tasks_tables() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

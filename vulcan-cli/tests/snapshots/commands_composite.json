@@ -3514,7 +3514,7 @@
       },
       {
         "about": "Write static export artifacts derived from the cache",
-        "after_help": "Subcommands:\n  markdown      Export matched notes as one combined Markdown document\n  json          Export matched notes with metadata and raw content as JSON\n  csv           Export note query results as CSV\n  graph         Export the resolved link graph for external tools\n  zip           Export matched notes and linked attachments as a ZIP archive\n  sqlite        Export matched notes into a standalone SQLite database\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  `markdown`, `json`, `csv`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.\n  Text exports print to stdout by default; pass `-o/--path` to write a file instead.\n  Archive exports require `-o/--path` because they produce binary or database files.\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'\n  vulcan export json 'from notes where status = done' --pretty -o exports/done.json\n  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv\n  vulcan export graph --format dot -o exports/graph.dot\n  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip\n  vulcan export sqlite 'from notes where status = done' -o exports/done.db\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
+        "after_help": "Subcommands:\n  markdown      Export matched notes as one combined Markdown document\n  json          Export matched notes with metadata and raw content as JSON\n  csv           Export note query results as CSV\n  graph         Export the resolved link graph for external tools\n  epub          Render matched notes as an EPUB book\n  zip           Export matched notes and linked attachments as a ZIP archive\n  sqlite        Export matched notes into a standalone SQLite database\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.\n  Text exports print to stdout by default; pass `-o/--path` to write a file instead.\n  `epub --backlinks` appends indexed inlinks after each exported note chapter.\n  Archive exports require `-o/--path` because they produce binary or database files.\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'\n  vulcan export json 'from notes where status = done' --pretty -o exports/done.json\n  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv\n  vulcan export graph --format dot -o exports/graph.dot\n  vulcan export epub 'from notes where file.path matches \"^(Projects|People)/\"' -o exports/team.epub --title 'Team Notes' --backlinks\n  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip\n  vulcan export sqlite 'from notes where status = done' -o exports/done.db\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
         "name": "export",
         "options": [],
         "subcommands": [
@@ -3691,6 +3691,82 @@
                 "short": "o",
                 "value_names": [
                   "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Render matched notes as an EPUB book",
+            "name": "epub",
+            "options": [
+              {
+                "help": "Native note query DSL string; omit with --query-json",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "JSON note query payload; mutually exclusive with the positional query",
+                "id": "query_json",
+                "long": "query-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Destination EPUB file",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": true,
+                "short": "o",
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Optional book title; defaults to the vault folder name",
+                "id": "title",
+                "long": "title",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TITLE"
+                ]
+              },
+              {
+                "help": "Optional EPUB author/creator metadata",
+                "id": "author",
+                "long": "author",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "AUTHOR"
+                ]
+              },
+              {
+                "help": "Append indexed backlinks after each exported note chapter",
+                "id": "backlinks",
+                "long": "backlinks",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BACKLINKS"
                 ]
               }
             ],
