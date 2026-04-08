@@ -175,6 +175,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # cpu_limit_ms = 5000
 # memory_limit_mb = 64
 # stack_limit_kb = 256
+# policy_hook = ".vulcan/plugins/agent-policy.js"
 
 # [permissions.profiles.readonly]
 # read = "all"
@@ -2089,6 +2090,8 @@ pub struct PermissionProfile {
     pub memory_limit_mb: PermissionLimit,
     #[serde(default)]
     pub stack_limit_kb: PermissionLimit,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_hook: Option<PathBuf>,
 }
 
 impl Default for PermissionProfile {
@@ -2106,6 +2109,7 @@ impl Default for PermissionProfile {
             cpu_limit_ms: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
             memory_limit_mb: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
             stack_limit_kb: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
+            policy_hook: None,
         }
     }
 }
@@ -2126,6 +2130,7 @@ impl PermissionProfile {
             cpu_limit_ms: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
             memory_limit_mb: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
             stack_limit_kb: PermissionLimit::Keyword(PermissionLimitKeyword::Unlimited),
+            policy_hook: None,
         }
     }
 
@@ -2520,6 +2525,7 @@ struct PartialPermissionProfile {
     cpu_limit_ms: Option<PermissionLimit>,
     memory_limit_mb: Option<PermissionLimit>,
     stack_limit_kb: Option<PermissionLimit>,
+    policy_hook: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -7473,6 +7479,9 @@ fn apply_partial_permission_profile(
     if let Some(stack_limit_kb) = overrides.stack_limit_kb {
         profile.stack_limit_kb = stack_limit_kb;
     }
+    if let Some(policy_hook) = overrides.policy_hook {
+        profile.policy_hook = normalize_filesystem_pathbuf(&policy_hook).or(Some(policy_hook));
+    }
 }
 
 fn apply_partial_plugin_registration(
@@ -10090,6 +10099,7 @@ default_mode = "off"
         assert!(template.contains("[permissions.profiles.readonly]"));
         assert!(template.contains("write = { allow = [\"folder:Projects/**\""));
         assert!(template.contains("network = { allow = true, domains = ["));
+        assert!(template.contains("policy_hook = \".vulcan/plugins/agent-policy.js\""));
     }
 
     #[test]

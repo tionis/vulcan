@@ -1,11 +1,15 @@
 use crate::config::{
-    load_permission_profiles, ConfigPermissionMode, PathPermissionConfig, PathPermissionKeyword,
-    PathPermissionRules, PermissionLimit, PermissionLimitKeyword, PermissionMode,
-    PermissionProfile,
+    load_permission_profiles, ConfigPermissionMode, JsRuntimeSandbox, PathPermissionConfig,
+    PathPermissionKeyword, PathPermissionRules, PermissionLimit, PermissionLimitKeyword,
+    PermissionMode, PermissionProfile,
 };
+use crate::dataview_js::{evaluate_dataview_js_with_options, DataviewJsEvalOptions};
 use crate::paths::VaultPaths;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,6 +84,12 @@ pub enum PermissionError {
         target: String,
         domains: Vec<String>,
     },
+    PolicyHookDenied {
+        profile: String,
+        action: &'static str,
+        resource: Option<String>,
+        reason: String,
+    },
 }
 
 impl Display for PermissionError {
@@ -137,6 +147,24 @@ impl Display for PermissionError {
                     )
                 }
             }
+            Self::PolicyHookDenied {
+                profile,
+                action,
+                resource,
+                reason,
+            } => {
+                if let Some(resource) = resource {
+                    write!(
+                        formatter,
+                        "permission denied: profile `{profile}` policy hook rejected {action} `{resource}`: {reason}"
+                    )
+                } else {
+                    write!(
+                        formatter,
+                        "permission denied: profile `{profile}` policy hook rejected {action}: {reason}"
+                    )
+                }
+            }
         }
     }
 }
@@ -159,9 +187,21 @@ pub trait PermissionGuard {
     fn profile_name(&self) -> &str;
     fn grant(&self) -> &PermissionGrant;
 
+    fn has_policy_hook(&self) -> bool {
+        false
+    }
+
+    fn check_policy_decision(
+        &self,
+        _action: &'static str,
+        _resource: Option<&str>,
+    ) -> Result<(), PermissionError> {
+        Ok(())
+    }
+
     fn check_read_path(&self, path: &str) -> Result<(), PermissionError> {
         if self.read_filter().is_allowed(path) {
-            Ok(())
+            self.check_policy_decision("read", Some(path))
         } else {
             Err(PermissionError::PathDenied {
                 profile: self.profile_name().to_string(),
@@ -173,7 +213,7 @@ pub trait PermissionGuard {
 
     fn check_write_path(&self, path: &str) -> Result<(), PermissionError> {
         if self.write_filter().is_allowed(path) {
-            Ok(())
+            self.check_policy_decision("write", Some(path))
         } else {
             Err(PermissionError::PathDenied {
                 profile: self.profile_name().to_string(),
@@ -185,7 +225,7 @@ pub trait PermissionGuard {
 
     fn check_refactor_path(&self, path: &str) -> Result<(), PermissionError> {
         if self.refactor_filter().is_allowed(path) {
-            Ok(())
+            self.check_policy_decision("refactor", Some(path))
         } else {
             Err(PermissionError::PathDenied {
                 profile: self.profile_name().to_string(),
@@ -210,7 +250,7 @@ pub trait PermissionGuard {
                 .iter()
                 .any(|domain| network_target_matches(domain, target))
         {
-            Ok(())
+            self.check_policy_decision("network", Some(target))
         } else {
             Err(PermissionError::NetworkDenied {
                 profile: self.profile_name().to_string(),
@@ -222,7 +262,7 @@ pub trait PermissionGuard {
 
     fn check_git(&self) -> Result<(), PermissionError> {
         if self.grant().git {
-            Ok(())
+            self.check_policy_decision("git", None)
         } else {
             Err(PermissionError::CapabilityDenied {
                 profile: self.profile_name().to_string(),
@@ -233,7 +273,7 @@ pub trait PermissionGuard {
 
     fn check_shell(&self) -> Result<(), PermissionError> {
         if self.grant().shell {
-            Ok(())
+            self.check_policy_decision("shell", None)
         } else {
             Err(PermissionError::CapabilityDenied {
                 profile: self.profile_name().to_string(),
@@ -244,7 +284,7 @@ pub trait PermissionGuard {
 
     fn check_index(&self) -> Result<(), PermissionError> {
         if self.grant().index {
-            Ok(())
+            self.check_policy_decision("index", None)
         } else {
             Err(PermissionError::CapabilityDenied {
                 profile: self.profile_name().to_string(),
@@ -255,7 +295,7 @@ pub trait PermissionGuard {
 
     fn check_execute(&self) -> Result<(), PermissionError> {
         if self.grant().execute {
-            Ok(())
+            self.check_policy_decision("execute", None)
         } else {
             Err(PermissionError::CapabilityDenied {
                 profile: self.profile_name().to_string(),
@@ -266,7 +306,7 @@ pub trait PermissionGuard {
 
     fn check_config_read(&self) -> Result<(), PermissionError> {
         if self.grant().config_read {
-            Ok(())
+            self.check_policy_decision("config_read", None)
         } else {
             Err(PermissionError::CapabilityDenied {
                 profile: self.profile_name().to_string(),
@@ -277,7 +317,7 @@ pub trait PermissionGuard {
 
     fn check_config_write(&self) -> Result<(), PermissionError> {
         if self.grant().config_write {
-            Ok(())
+            self.check_policy_decision("config_write", None)
         } else {
             Err(PermissionError::CapabilityDenied {
                 profile: self.profile_name().to_string(),
@@ -305,18 +345,112 @@ pub trait PermissionGuard {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfilePermissionGuard {
+    paths: VaultPaths,
     selection: ResolvedPermissionProfile,
+    enable_policy_hooks: bool,
 }
 
 impl ProfilePermissionGuard {
     #[must_use]
-    pub fn new(selection: ResolvedPermissionProfile) -> Self {
-        Self { selection }
+    pub fn new(paths: &VaultPaths, selection: ResolvedPermissionProfile) -> Self {
+        Self {
+            paths: paths.clone(),
+            selection,
+            enable_policy_hooks: true,
+        }
+    }
+
+    #[must_use]
+    pub fn without_policy_hooks(paths: &VaultPaths, selection: ResolvedPermissionProfile) -> Self {
+        Self {
+            paths: paths.clone(),
+            selection,
+            enable_policy_hooks: false,
+        }
     }
 
     #[must_use]
     pub fn selection(&self) -> &ResolvedPermissionProfile {
         &self.selection
+    }
+
+    fn apply_policy_hook(
+        &self,
+        action: &'static str,
+        resource: Option<&str>,
+    ) -> Result<(), PermissionError> {
+        if !self.enable_policy_hooks {
+            return Ok(());
+        }
+
+        let Some(policy_hook) = self.selection.profile.policy_hook.as_ref() else {
+            return Ok(());
+        };
+        if !is_trusted_vault(self.paths.vault_root()) {
+            return Err(PermissionError::PolicyHookDenied {
+                profile: self.profile_name().to_string(),
+                action,
+                resource: resource.map(normalize_permission_path),
+                reason: "policy hooks require a trusted vault".to_string(),
+            });
+        }
+
+        let hook_path = resolve_policy_hook_path(self.paths.vault_root(), policy_hook);
+        let hook_source =
+            fs::read_to_string(&hook_path).map_err(|error| PermissionError::PolicyHookDenied {
+                profile: self.profile_name().to_string(),
+                action,
+                resource: resource.map(normalize_permission_path),
+                reason: format!(
+                    "failed to read policy hook {}: {error}",
+                    hook_path.display()
+                ),
+            })?;
+
+        let input = serde_json::json!({
+            "principal": null,
+            "action": action,
+            "resource": resource.map(normalize_permission_path),
+            "profile_decision": "allow",
+            "profile": self.profile_name(),
+        });
+        let source = format!(
+            "const __vulcanPolicyInput = {};\n\
+{}\n\
+const __vulcanPolicyHandler = globalThis.policy_hook ?? globalThis.main;\n\
+if (typeof __vulcanPolicyHandler !== 'function') {{\n\
+  throw new Error('policy hook must export `policy_hook(input)` or `main(input)`');\n\
+}}\n\
+__vulcanPolicyHandler(__vulcanPolicyInput);\n",
+            input,
+            strip_shebang_line(&hook_source)
+        );
+
+        let profile = policy_hook_profile();
+        let result = evaluate_dataview_js_with_options(
+            &self.paths,
+            &source,
+            None,
+            DataviewJsEvalOptions {
+                timeout: Some(Duration::from_millis(100)),
+                sandbox: Some(JsRuntimeSandbox::Strict),
+                permission_profile: None,
+                resolved_permissions: Some(ResolvedPermissionProfile {
+                    name: format!("{}:policy_hook", self.profile_name()),
+                    grant: PermissionGrant::from_profile(&profile),
+                    profile,
+                }),
+                disable_policy_hooks: true,
+            },
+        )
+        .map_err(|error| PermissionError::PolicyHookDenied {
+            profile: self.profile_name().to_string(),
+            action,
+            resource: resource.map(normalize_permission_path),
+            reason: error.to_string(),
+        })?;
+
+        interpret_policy_hook_result(self.profile_name(), action, resource, result.value)
     }
 }
 
@@ -327,6 +461,18 @@ impl PermissionGuard for ProfilePermissionGuard {
 
     fn grant(&self) -> &PermissionGrant {
         &self.selection.grant
+    }
+
+    fn check_policy_decision(
+        &self,
+        action: &'static str,
+        resource: Option<&str>,
+    ) -> Result<(), PermissionError> {
+        self.apply_policy_hook(action, resource)
+    }
+
+    fn has_policy_hook(&self) -> bool {
+        self.enable_policy_hooks && self.selection.profile.policy_hook.is_some()
     }
 }
 
@@ -351,6 +497,28 @@ impl PermissionGrant {
                 stack_limit_kb: permission_limit_value(&profile.stack_limit_kb),
             },
         }
+    }
+
+    #[must_use]
+    pub fn is_subset_of(&self, active: &Self) -> bool {
+        self.read.is_subset_of(&active.read)
+            && self.write.is_subset_of(&active.write)
+            && self.refactor.is_subset_of(&active.refactor)
+            && capability_is_subset(self.git, active.git)
+            && network_is_subset(
+                self.network,
+                &self.network_domains,
+                active.network,
+                &active.network_domains,
+            )
+            && capability_is_subset(self.index, active.index)
+            && capability_is_subset(self.config_read, active.config_read)
+            && capability_is_subset(self.config_write, active.config_write)
+            && capability_is_subset(self.execute, active.execute)
+            && capability_is_subset(self.shell, active.shell)
+            && limit_is_subset(self.limits.cpu_limit_ms, active.limits.cpu_limit_ms)
+            && limit_is_subset(self.limits.memory_limit_mb, active.limits.memory_limit_mb)
+            && limit_is_subset(self.limits.stack_limit_kb, active.limits.stack_limit_kb)
     }
 }
 
@@ -401,6 +569,40 @@ impl PathPermission {
                 .deny
                 .iter()
                 .any(|specifier| specifier_matches_path(specifier, &normalized, tags))
+    }
+
+    #[must_use]
+    pub fn is_subset_of(&self, active: &Self) -> bool {
+        if self.allow.is_empty() {
+            return true;
+        }
+        if active.is_unrestricted() {
+            return true;
+        }
+        if self.is_unrestricted() {
+            return false;
+        }
+
+        self.allow.iter().all(|requested| {
+            let covered = active
+                .allow
+                .iter()
+                .any(|allowed| resource_specifier_covers(allowed, requested));
+            if !covered {
+                return false;
+            }
+
+            let active_overlap = active
+                .deny
+                .iter()
+                .filter(|deny| resource_specifiers_overlap(requested, deny))
+                .collect::<Vec<_>>();
+            active_overlap.into_iter().all(|active_deny| {
+                self.deny
+                    .iter()
+                    .any(|requested_deny| resource_specifier_covers(requested_deny, active_deny))
+            })
+        })
     }
 }
 
@@ -535,6 +737,43 @@ fn permission_limit_value(limit: &PermissionLimit) -> Option<usize> {
     }
 }
 
+fn capability_is_subset(requested: bool, active: bool) -> bool {
+    !requested || active
+}
+
+fn limit_is_subset(requested: Option<usize>, active: Option<usize>) -> bool {
+    match (requested, active) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(requested), Some(active)) => requested <= active,
+    }
+}
+
+fn network_is_subset(
+    requested_allow: bool,
+    requested_domains: &[String],
+    active_allow: bool,
+    active_domains: &[String],
+) -> bool {
+    if !requested_allow {
+        return true;
+    }
+    if !active_allow {
+        return false;
+    }
+    if active_domains.is_empty() {
+        return true;
+    }
+    if requested_domains.is_empty() {
+        return false;
+    }
+    requested_domains.iter().all(|requested| {
+        active_domains
+            .iter()
+            .any(|active| network_target_matches(active, requested))
+    })
+}
+
 fn specifier_matches_path(specifier: &ResourceSpecifier, path: &str, tags: &[String]) -> bool {
     match specifier {
         ResourceSpecifier::All => true,
@@ -542,6 +781,40 @@ fn specifier_matches_path(specifier: &ResourceSpecifier, path: &str, tags: &[Str
         ResourceSpecifier::Tag(tag) => tags.iter().any(|candidate| tag_matches(tag, candidate)),
         ResourceSpecifier::Note(note) => normalize_permission_path(note) == path,
     }
+}
+
+fn resource_specifier_covers(active: &ResourceSpecifier, requested: &ResourceSpecifier) -> bool {
+    match (active, requested) {
+        (ResourceSpecifier::All, _) => true,
+        (ResourceSpecifier::Tag(active), ResourceSpecifier::Tag(requested)) => {
+            tag_matches(active, requested)
+        }
+        (ResourceSpecifier::Note(active), ResourceSpecifier::Note(requested)) => {
+            normalize_permission_path(active) == normalize_permission_path(requested)
+        }
+        (ResourceSpecifier::Folder(active), ResourceSpecifier::Note(requested)) => {
+            glob_matches(active, requested)
+        }
+        (ResourceSpecifier::Folder(active), ResourceSpecifier::Folder(requested)) => {
+            active == requested || glob_pattern_covers_pattern(active, requested)
+        }
+        _ => false,
+    }
+}
+
+fn resource_specifiers_overlap(left: &ResourceSpecifier, right: &ResourceSpecifier) -> bool {
+    resource_specifier_covers(left, right)
+        || resource_specifier_covers(right, left)
+        || match (left, right) {
+            (ResourceSpecifier::Folder(left), ResourceSpecifier::Note(right))
+            | (ResourceSpecifier::Note(right), ResourceSpecifier::Folder(left)) => {
+                glob_matches(left, right)
+            }
+            (ResourceSpecifier::Tag(left), ResourceSpecifier::Tag(right)) => {
+                tag_matches(left, right) || tag_matches(right, left)
+            }
+            _ => false,
+        }
 }
 
 fn specifier_group_sql(
@@ -595,6 +868,21 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     glob_matches_bytes(pattern.as_bytes(), path.as_bytes())
 }
 
+fn glob_pattern_covers_pattern(active: &str, requested: &str) -> bool {
+    if active == requested {
+        return true;
+    }
+    if matches!(active, "*" | "**") {
+        return true;
+    }
+
+    let active_prefix = glob_static_prefix(active);
+    let requested_prefix = glob_static_prefix(requested);
+    !active_prefix.is_empty()
+        && requested_prefix.starts_with(&active_prefix)
+        && active.ends_with('*')
+}
+
 fn glob_matches_bytes(pattern: &[u8], path: &[u8]) -> bool {
     if pattern.is_empty() {
         return path.is_empty();
@@ -617,10 +905,142 @@ fn glob_matches_bytes(pattern: &[u8], path: &[u8]) -> bool {
     }
 }
 
+fn glob_static_prefix(pattern: &str) -> String {
+    pattern
+        .split(['*', '?'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn tag_matches(expected: &str, candidate: &str) -> bool {
     let expected = expected.trim_start_matches('#');
     let candidate = candidate.trim_start_matches('#');
     candidate == expected || candidate.starts_with(&format!("{expected}/"))
+}
+
+fn resolve_policy_hook_path(vault_root: &Path, hook_path: &Path) -> PathBuf {
+    if hook_path.is_absolute() {
+        hook_path.to_path_buf()
+    } else {
+        vault_root.join(hook_path)
+    }
+}
+
+fn strip_shebang_line(source: &str) -> &str {
+    if let Some(stripped) = source.strip_prefix("#!") {
+        stripped
+            .split_once('\n')
+            .map_or("", |(_, remainder)| remainder)
+    } else {
+        source
+    }
+}
+
+fn policy_hook_profile() -> PermissionProfile {
+    PermissionProfile {
+        read: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
+        write: PathPermissionConfig::Keyword(PathPermissionKeyword::None),
+        refactor: PathPermissionConfig::Keyword(PathPermissionKeyword::None),
+        git: PermissionMode::Deny,
+        network: crate::config::NetworkPermissionConfig::Mode(PermissionMode::Deny),
+        index: PermissionMode::Deny,
+        config: ConfigPermissionMode::None,
+        execute: PermissionMode::Allow,
+        shell: PermissionMode::Deny,
+        cpu_limit_ms: PermissionLimit::Value(100),
+        memory_limit_mb: PermissionLimit::Value(32),
+        stack_limit_kb: PermissionLimit::Value(128),
+        policy_hook: None,
+    }
+}
+
+fn interpret_policy_hook_result(
+    profile: &str,
+    action: &'static str,
+    resource: Option<&str>,
+    value: Option<serde_json::Value>,
+) -> Result<(), PermissionError> {
+    let resource = resource.map(normalize_permission_path);
+    match value {
+        Some(serde_json::Value::String(decision)) if decision == "pass" => Ok(()),
+        Some(serde_json::Value::String(decision)) if decision == "deny" => {
+            Err(PermissionError::PolicyHookDenied {
+                profile: profile.to_string(),
+                action,
+                resource,
+                reason: "denied by policy hook".to_string(),
+            })
+        }
+        Some(serde_json::Value::Object(object)) => {
+            let decision = object
+                .get("decision")
+                .or_else(|| object.get("status"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let reason = object
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("denied by policy hook")
+                .to_string();
+            match decision {
+                "pass" => Ok(()),
+                "deny" => Err(PermissionError::PolicyHookDenied {
+                    profile: profile.to_string(),
+                    action,
+                    resource,
+                    reason,
+                }),
+                _ => Err(PermissionError::PolicyHookDenied {
+                    profile: profile.to_string(),
+                    action,
+                    resource,
+                    reason: "policy hook must return `pass` or `deny`".to_string(),
+                }),
+            }
+        }
+        _ => Err(PermissionError::PolicyHookDenied {
+            profile: profile.to_string(),
+            action,
+            resource,
+            reason: "policy hook must return `pass` or `deny`".to_string(),
+        }),
+    }
+}
+
+fn trusted_vaults_file() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map(|path| path.join("vulcan").join("trusted_vaults.json"))
+}
+
+fn is_trusted_vault(vault_root: &Path) -> bool {
+    let Some(path) = trusted_vaults_file() else {
+        return false;
+    };
+    let Ok(canonical_root) = vault_root.canonicalize() else {
+        return false;
+    };
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    value
+        .get("vaults")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|vaults| {
+            vaults
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|entry| {
+                    PathBuf::from(entry)
+                        .canonicalize()
+                        .is_ok_and(|candidate| candidate == canonical_root)
+                })
+        })
 }
 
 fn network_target_matches(domain: &str, target: &str) -> bool {
@@ -726,6 +1146,7 @@ mod tests {
             cpu_limit_ms: PermissionLimit::Value(2500),
             memory_limit_mb: PermissionLimit::Value(64),
             stack_limit_kb: PermissionLimit::Value(512),
+            policy_hook: None,
         };
 
         let grant = PermissionGrant::from_profile(&profile);
@@ -792,5 +1213,94 @@ mod tests {
         ));
         assert!(network_target_matches("example.com", "api.example.com"));
         assert!(!network_target_matches("example.com", "example.org"));
+    }
+
+    #[test]
+    fn path_permissions_accept_narrower_note_scopes() {
+        let active =
+            PathPermission::from_config(&PathPermissionConfig::Rules(PathPermissionRules {
+                allow: vec!["Projects/**".to_string()],
+                deny: vec!["Projects/Secret.md".to_string()],
+            }));
+        let requested =
+            PathPermission::from_config(&PathPermissionConfig::Rules(PathPermissionRules {
+                allow: vec!["note:Projects/Alpha.md".to_string()],
+                deny: vec![],
+            }));
+
+        assert!(requested.is_subset_of(&active));
+    }
+
+    #[test]
+    fn path_permissions_reject_requested_scopes_that_reenable_denied_paths() {
+        let active =
+            PathPermission::from_config(&PathPermissionConfig::Rules(PathPermissionRules {
+                allow: vec!["Projects/**".to_string()],
+                deny: vec!["Projects/Secret.md".to_string()],
+            }));
+        let requested =
+            PathPermission::from_config(&PathPermissionConfig::Rules(PathPermissionRules {
+                allow: vec!["Projects/**".to_string()],
+                deny: vec![],
+            }));
+
+        assert!(!requested.is_subset_of(&active));
+    }
+
+    #[test]
+    fn permission_grants_compare_capabilities_domains_and_limits() {
+        let active = PermissionGrant {
+            read: PathPermission::from_config(&PathPermissionConfig::Keyword(
+                crate::PathPermissionKeyword::All,
+            )),
+            write: PathPermission::from_config(&PathPermissionConfig::Rules(PathPermissionRules {
+                allow: vec!["Projects/**".to_string()],
+                deny: vec![],
+            })),
+            refactor: PathPermission::default(),
+            git: true,
+            network: true,
+            network_domains: vec!["example.com".to_string()],
+            index: false,
+            config_read: true,
+            config_write: false,
+            execute: true,
+            shell: false,
+            limits: ResourceLimits {
+                cpu_limit_ms: Some(5_000),
+                memory_limit_mb: Some(64),
+                stack_limit_kb: Some(256),
+            },
+        };
+        let requested = PermissionGrant {
+            read: PathPermission::from_config(&PathPermissionConfig::Rules(PathPermissionRules {
+                allow: vec!["note:Projects/Alpha.md".to_string()],
+                deny: vec![],
+            })),
+            write: PathPermission::default(),
+            refactor: PathPermission::default(),
+            git: false,
+            network: false,
+            network_domains: vec![],
+            index: false,
+            config_read: false,
+            config_write: false,
+            execute: true,
+            shell: false,
+            limits: ResourceLimits {
+                cpu_limit_ms: Some(100),
+                memory_limit_mb: Some(32),
+                stack_limit_kb: Some(128),
+            },
+        };
+
+        assert!(requested.is_subset_of(&active));
+
+        let broader_network = PermissionGrant {
+            network: true,
+            network_domains: vec![],
+            ..requested.clone()
+        };
+        assert!(!broader_network.is_subset_of(&active));
     }
 }

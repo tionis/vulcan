@@ -19,7 +19,7 @@ use vulcan_core::{
 
 fn check_read_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
     let guard = selected_permission_guard(cli, paths)?;
-    if guard.read_filter().path_permission().is_unrestricted() {
+    if guard.read_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
         return Ok(());
     }
     let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
@@ -30,7 +30,7 @@ fn check_read_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(
 
 fn check_write_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
     let guard = selected_permission_guard(cli, paths)?;
-    if guard.write_filter().path_permission().is_unrestricted() {
+    if guard.write_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
         return Ok(());
     }
     let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
@@ -41,7 +41,7 @@ fn check_write_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<
 
 fn check_write_path_access(cli: &Cli, paths: &VaultPaths, path: &str) -> Result<(), CliError> {
     let guard = selected_permission_guard(cli, paths)?;
-    if guard.write_filter().path_permission().is_unrestricted() {
+    if guard.write_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
         return Ok(());
     }
     guard.check_write_path(path).map_err(CliError::operation)
@@ -49,7 +49,7 @@ fn check_write_path_access(cli: &Cli, paths: &VaultPaths, path: &str) -> Result<
 
 fn check_refactor_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
     let guard = selected_permission_guard(cli, paths)?;
-    if guard.refactor_filter().path_permission().is_unrestricted() {
+    if guard.refactor_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
         return Ok(());
     }
     let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
@@ -348,7 +348,7 @@ pub(crate) fn handle_note_command(
         }
         NoteCommand::History { note, limit } => {
             let guard = selected_permission_guard(cli, paths)?;
-            if !guard.read_filter().path_permission().is_unrestricted() {
+            if guard.has_policy_hook() || !guard.read_filter().path_permission().is_unrestricted() {
                 let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
                 guard
                     .check_read_path(&resolved.path)
@@ -399,7 +399,7 @@ pub(crate) fn handle_note_command(
         }
         NoteCommand::Diff { note, since } => {
             let guard = selected_permission_guard(cli, paths)?;
-            if !guard.read_filter().path_permission().is_unrestricted() {
+            if guard.has_policy_hook() || !guard.read_filter().path_permission().is_unrestricted() {
                 let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
                 guard
                     .check_read_path(&resolved.path)

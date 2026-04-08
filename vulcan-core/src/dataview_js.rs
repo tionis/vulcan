@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::config::JsRuntimeSandbox;
 use crate::dql::DqlQueryResult;
+use crate::ResolvedPermissionProfile;
 #[cfg(not(feature = "js_runtime"))]
 use crate::VaultPaths;
 
@@ -38,6 +39,8 @@ pub struct DataviewJsEvalOptions {
     pub timeout: Option<Duration>,
     pub sandbox: Option<JsRuntimeSandbox>,
     pub permission_profile: Option<String>,
+    pub resolved_permissions: Option<ResolvedPermissionProfile>,
+    pub disable_policy_hooks: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2641,13 +2644,24 @@ globalThis.Function = undefined;
                 return Err(DataviewJsError::Disabled);
             }
 
-            let permissions = options
-                .permission_profile
-                .as_deref()
-                .map(|profile| resolve_permission_profile(paths, Some(profile)))
-                .transpose()
-                .map_err(|error| DataviewJsError::Message(error.to_string()))?
-                .map(ProfilePermissionGuard::new);
+            let permission_selection = if let Some(selection) = options.resolved_permissions.clone()
+            {
+                Some(selection)
+            } else {
+                options
+                    .permission_profile
+                    .as_deref()
+                    .map(|profile| resolve_permission_profile(paths, Some(profile)))
+                    .transpose()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?
+            };
+            let permissions = permission_selection.map(|selection| {
+                if options.disable_policy_hooks {
+                    ProfilePermissionGuard::without_policy_hooks(paths, selection)
+                } else {
+                    ProfilePermissionGuard::new(paths, selection)
+                }
+            });
             if let Some(permissions) = permissions.as_ref() {
                 permissions
                     .check_execute()
@@ -5633,6 +5647,7 @@ cpu_limit_ms = 25
                     timeout: None,
                     sandbox: Some(JsRuntimeSandbox::Strict),
                     permission_profile: Some("fast".to_string()),
+                    ..DataviewJsEvalOptions::default()
                 },
             )
             .expect_err("permission profile should cap JS runtime");
@@ -5774,6 +5789,7 @@ cpu_limit_ms = 25
                     timeout: None,
                     sandbox: Some(JsRuntimeSandbox::Strict),
                     permission_profile: None,
+                    ..DataviewJsEvalOptions::default()
                 },
             )
             .expect_err("strict sandbox should reject writes");
@@ -5790,6 +5806,7 @@ cpu_limit_ms = 25
                     timeout: None,
                     sandbox: Some(JsRuntimeSandbox::Fs),
                     permission_profile: None,
+                    ..DataviewJsEvalOptions::default()
                 },
             )
             .expect("fs sandbox session should initialize");
@@ -5901,6 +5918,7 @@ cpu_limit_ms = 25
                     timeout: None,
                     sandbox: Some(JsRuntimeSandbox::Strict),
                     permission_profile: None,
+                    ..DataviewJsEvalOptions::default()
                 },
             )
             .expect_err("strict sandbox should reject network");
@@ -5924,6 +5942,7 @@ cpu_limit_ms = 25
                     timeout: None,
                     sandbox: Some(JsRuntimeSandbox::Net),
                     permission_profile: None,
+                    ..DataviewJsEvalOptions::default()
                 },
             )
             .expect("net sandbox should allow web helpers");

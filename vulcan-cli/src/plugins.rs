@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::{
-    evaluate_dataview_js_with_options, load_vault_config, DataviewJsEvalOptions, DataviewJsResult,
-    JsRuntimeSandbox, PluginEvent, PluginRegistration, VaultPaths,
+    evaluate_dataview_js_with_options, load_vault_config, resolve_permission_profile,
+    DataviewJsEvalOptions, DataviewJsResult, JsRuntimeSandbox, PluginEvent, PluginRegistration,
+    VaultPaths,
 };
 
 const PLUGINS_DIR: &str = ".vulcan/plugins";
@@ -171,7 +172,7 @@ fn invoke_plugin(
 ) -> Result<DataviewJsResult, CliError> {
     let source = fs::read_to_string(&plugin.absolute_path).map_err(CliError::operation)?;
     let effective_permission_profile =
-        effective_plugin_permission_profile(active_permission_profile, &plugin.descriptor)?;
+        effective_plugin_permission_profile(paths, active_permission_profile, &plugin.descriptor)?;
     let source = build_plugin_invocation_source(
         strip_shebang_line(&source),
         handler_name,
@@ -186,6 +187,7 @@ fn invoke_plugin(
             timeout: None,
             sandbox: plugin.descriptor.sandbox,
             permission_profile: effective_permission_profile,
+            ..DataviewJsEvalOptions::default()
         },
     )
     .map_err(CliError::operation)
@@ -227,17 +229,34 @@ __vulcanPluginHandler(__vulcanPluginEvent, __vulcanPluginContext);\n"
 }
 
 fn effective_plugin_permission_profile(
+    paths: &VaultPaths,
     active_permission_profile: Option<&str>,
     descriptor: &PluginDescriptor,
 ) -> Result<Option<String>, CliError> {
-    match (active_permission_profile, descriptor.permission_profile.as_deref()) {
-        (None, requested) => Ok(requested.map(ToOwned::to_owned)),
+    match (
+        active_permission_profile,
+        descriptor.permission_profile.as_deref(),
+    ) {
+        (None, None) => Ok(None),
+        (None, Some(requested)) => {
+            resolve_permission_profile(paths, Some(requested)).map_err(CliError::operation)?;
+            Ok(Some(requested.to_string()))
+        }
         (Some(active), None) => Ok(Some(active.to_string())),
-        (Some(active), Some(requested)) if active == requested => Ok(Some(active.to_string())),
-        (Some(active), Some(requested)) => Err(CliError::operation(format!(
-            "plugin `{}` requires permission profile `{requested}`, but this invocation uses `{active}`",
-            descriptor.name
-        ))),
+        (Some(active), Some(requested)) => {
+            let active_profile =
+                resolve_permission_profile(paths, Some(active)).map_err(CliError::operation)?;
+            let requested_profile =
+                resolve_permission_profile(paths, Some(requested)).map_err(CliError::operation)?;
+            if requested_profile.grant.is_subset_of(&active_profile.grant) {
+                Ok(Some(requested.to_string()))
+            } else {
+                Err(CliError::operation(format!(
+                    "plugin `{}` requires permission profile `{requested}`, which is broader than active profile `{active}`",
+                    descriptor.name
+                )))
+            }
+        }
     }
 }
 
@@ -353,7 +372,38 @@ mod tests {
     }
 
     #[test]
-    fn restricted_invocations_reject_different_plugin_permission_profiles() {
+    fn restricted_invocations_reject_broader_plugin_permission_profiles() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"
+[permissions.profiles.agent]
+read = "all"
+write = { allow = ["folder:Projects/**"] }
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+
+[permissions.profiles.readonly]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+"#,
+        )
+        .expect("config should write");
+        let paths = VaultPaths::new(vault_root);
         let descriptor = PluginDescriptor {
             name: "lint".to_string(),
             path: plugin_default_config_path("lint"),
@@ -362,17 +412,71 @@ mod tests {
             enabled: true,
             events: vec![PluginEvent::OnNoteWrite],
             sandbox: Some(JsRuntimeSandbox::Strict),
-            permission_profile: Some("readonly".to_string()),
+            permission_profile: Some("agent".to_string()),
             description: None,
         };
 
-        let error = effective_plugin_permission_profile(Some("agent"), &descriptor)
-            .expect_err("mismatched profiles should fail");
+        let error = effective_plugin_permission_profile(&paths, Some("readonly"), &descriptor)
+            .expect_err("broader profile should fail");
         assert!(
             error
                 .to_string()
-                .contains("plugin `lint` requires permission profile `readonly`"),
+                .contains("plugin `lint` requires permission profile `agent`"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn restricted_invocations_allow_subset_plugin_permission_profiles() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"
+[permissions.profiles.agent]
+read = "all"
+write = { allow = ["folder:Projects/**"], deny = ["folder:Projects/Secret/**"] }
+refactor = "none"
+git = "deny"
+network = { allow = true, domains = ["example.com"] }
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+cpu_limit_ms = 5000
+memory_limit_mb = 64
+
+[permissions.profiles.plugin]
+read = { allow = ["note:Projects/Alpha.md"] }
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "none"
+execute = "allow"
+shell = "deny"
+cpu_limit_ms = 100
+memory_limit_mb = 32
+"#,
+        )
+        .expect("config should write");
+        let paths = VaultPaths::new(vault_root);
+        let descriptor = PluginDescriptor {
+            name: "lint".to_string(),
+            path: plugin_default_config_path("lint"),
+            exists: true,
+            registered: true,
+            enabled: true,
+            events: vec![PluginEvent::OnNoteWrite],
+            sandbox: Some(JsRuntimeSandbox::Strict),
+            permission_profile: Some("plugin".to_string()),
+            description: None,
+        };
+
+        let effective = effective_plugin_permission_profile(&paths, Some("agent"), &descriptor)
+            .expect("subset profile should be accepted");
+        assert_eq!(effective.as_deref(), Some("plugin"));
     }
 }

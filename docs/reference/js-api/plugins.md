@@ -75,7 +75,7 @@ Current payload shapes:
 - `sandbox` uses the same `strict|fs|net|none` levels as `vulcan run`
 - `permission_profile` reuses `[permissions.profiles.*]`
 - If the CLI is already running under `--permissions <profile>`, plugins inherit that profile
-  unless they request the exact same one
+  unless they request a narrower profile; broader plugin profiles are rejected
 
 ## Example
 

@@ -384,7 +384,7 @@ fn serve_permission_guard(
 ) -> Result<ProfilePermissionGuard, String> {
     let selection = resolve_permission_profile(paths, options.permissions.as_deref())
         .map_err(|error| error.to_string())?;
-    Ok(ProfilePermissionGuard::new(selection))
+    Ok(ProfilePermissionGuard::new(paths, selection))
 }
 
 fn parse_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr, CliError> {
