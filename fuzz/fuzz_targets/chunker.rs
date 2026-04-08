@@ -4,7 +4,7 @@ use libfuzzer_sys::fuzz_target;
 use vulcan_core::{parse_document, ChunkingStrategy, VaultConfig};
 
 fuzz_target!(|data: &[u8]| {
-    let source = std::str::from_utf8(data).unwrap_or("");
+    let source = String::from_utf8_lossy(data);
     for strategy in [
         ChunkingStrategy::Heading,
         ChunkingStrategy::Fixed,
@@ -14,6 +14,6 @@ fuzz_target!(|data: &[u8]| {
         config.chunking.strategy = strategy;
         config.chunking.target_size = 64;
         config.chunking.overlap = 8;
-        let _ = parse_document(source, &config);
+        let _ = parse_document(source.as_ref(), &config);
     }
 });

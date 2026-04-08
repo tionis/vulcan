@@ -187,7 +187,13 @@ pub fn normalize_relative_input_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use tempfile::TempDir;
+
+    fn path_segment_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z0-9_-]{1,8}")
+            .expect("path segment regex should be valid")
+    }
 
     #[test]
     fn derives_standard_vulcan_paths() {
@@ -306,5 +312,45 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn normalize_relative_input_path_is_idempotent_for_valid_markdown_paths(
+            mut segments in prop::collection::vec(path_segment_strategy(), 1..4),
+            include_current_dir in any::<bool>(),
+            include_extension in any::<bool>(),
+        ) {
+            let last = segments
+                .last_mut()
+                .expect("segment list should always include at least one segment");
+            if include_extension {
+                last.push_str(".md");
+            }
+
+            let raw = if include_current_dir {
+                format!("./{}", segments.join("/"))
+            } else {
+                segments.join("/")
+            };
+            let options = RelativePathOptions {
+                expected_extension: Some("md"),
+                append_extension_if_missing: true,
+            };
+
+            let normalized = normalize_relative_input_path(&raw, options)
+                .expect("generated markdown path should normalize");
+
+            prop_assert!(Path::new(&normalized)
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md")));
+            prop_assert!(!normalized.contains("/./"));
+            prop_assert_eq!(
+                normalize_relative_input_path(&normalized, options)
+                    .expect("normalized path should remain valid"),
+                normalized
+            );
+        }
     }
 }

@@ -1082,6 +1082,12 @@ mod tests {
         PathPermissionConfig, PathPermissionRules, PermissionLimit, PermissionMode,
         PermissionProfile,
     };
+    use proptest::prelude::*;
+
+    fn path_segment_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z0-9_-]{1,8}")
+            .expect("path segment regex should be valid")
+    }
 
     #[test]
     fn path_permission_deny_rules_override_allow_rules() {
@@ -1302,5 +1308,43 @@ mod tests {
             ..requested.clone()
         };
         assert!(!broader_network.is_subset_of(&active));
+    }
+
+    proptest! {
+        #[test]
+        fn generated_allow_rules_still_respect_explicit_denies(
+            folder in path_segment_strategy(),
+            allowed_name in path_segment_strategy(),
+            denied_name in path_segment_strategy(),
+        ) {
+            prop_assume!(allowed_name != denied_name);
+
+            let allowed_path = format!("{folder}/{allowed_name}.md");
+            let denied_path = format!("{folder}/{denied_name}.md");
+            let outside_path = format!("Outside/{allowed_name}.md");
+            let permission =
+                PathPermission::from_config(&PathPermissionConfig::Rules(PathPermissionRules {
+                    allow: vec![format!("folder:{folder}/**")],
+                    deny: vec![format!("note:{denied_path}")],
+                }));
+
+            prop_assert!(permission.is_allowed(&allowed_path));
+            prop_assert!(!permission.is_allowed(&denied_path));
+            prop_assert!(!permission.is_allowed(&outside_path));
+
+            let allowed_scope =
+                PathPermission::from_config(&PathPermissionConfig::Rules(PathPermissionRules {
+                    allow: vec![format!("note:{allowed_path}")],
+                    deny: vec![],
+                }));
+            prop_assert!(allowed_scope.is_subset_of(&permission));
+
+            let denied_scope =
+                PathPermission::from_config(&PathPermissionConfig::Rules(PathPermissionRules {
+                    allow: vec![format!("note:{denied_path}")],
+                    deny: vec![],
+                }));
+            prop_assert!(!denied_scope.is_subset_of(&permission));
+        }
     }
 }

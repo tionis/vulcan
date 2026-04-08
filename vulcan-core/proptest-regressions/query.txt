@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 37027f3bf2c9b5479af46f0787e2a7a3f1165291bffd238016ab8b2b5f21203f # shrinks to predicates = [], sort = None, projection = Fields(["status"]), limit = None, offset = 0
