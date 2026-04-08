@@ -3459,6 +3459,8 @@ mod tests {
         let vars = HashMap::from([
             ("title".to_string(), "Release Planning".to_string()),
             ("due".to_string(), "tomorrow".to_string()),
+            // Keep the test non-interactive even when cargo test inherits a TTY.
+            ("owner".to_string(), String::new()),
         ]);
         let request = TemplateRenderRequest {
             paths: &paths,
