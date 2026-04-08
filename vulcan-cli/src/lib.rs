@@ -67,7 +67,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
-use vulcan_core::config::{QuickAddImporter, TasksDefaultSource};
+use vulcan_core::config::{
+    ExportEpubTocStyleConfig, ExportGraphFormatConfig, ExportProfileConfig, ExportProfileFormat,
+    QuickAddImporter, TasksDefaultSource,
+};
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
 use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
@@ -14117,6 +14120,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Export { ref command } => {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
             match command {
+                ExportCommand::Profiles => {
+                    let profiles = list_export_profiles(&paths);
+                    print_export_profile_list(cli.output, &profiles)
+                }
+                ExportCommand::Profile { name } => {
+                    run_export_profile(cli, &paths, name, read_filter.as_ref())
+                }
                 ExportCommand::Markdown { query, path, title } => {
                     let report = execute_export_query(
                         &paths,
@@ -20177,6 +20187,26 @@ struct EpubExportSummary {
     result_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ExportProfileListEntry {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExportProfileRunSummary {
+    name: String,
+    format: String,
+    summary: Value,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct EpubExportOptions<'a> {
     title: Option<&'a str>,
@@ -20534,6 +20564,446 @@ fn write_text_export(
         }
         Ok(())
     }
+}
+
+fn write_text_file(path: &Path, payload: &str) -> Result<(), CliError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    fs::write(path, payload).map_err(CliError::operation)
+}
+
+fn export_profile_format_label(format: ExportProfileFormat) -> &'static str {
+    match format {
+        ExportProfileFormat::Markdown => "markdown",
+        ExportProfileFormat::Json => "json",
+        ExportProfileFormat::Csv => "csv",
+        ExportProfileFormat::Graph => "graph",
+        ExportProfileFormat::Epub => "epub",
+        ExportProfileFormat::Zip => "zip",
+        ExportProfileFormat::Sqlite => "sqlite",
+        ExportProfileFormat::SearchIndex => "search-index",
+    }
+}
+
+fn graph_export_format_from_config(format: Option<ExportGraphFormatConfig>) -> GraphExportFormat {
+    match format.unwrap_or(ExportGraphFormatConfig::Json) {
+        ExportGraphFormatConfig::Json => GraphExportFormat::Json,
+        ExportGraphFormatConfig::Dot => GraphExportFormat::Dot,
+        ExportGraphFormatConfig::Graphml => GraphExportFormat::Graphml,
+    }
+}
+
+fn epub_toc_style_from_config(style: Option<ExportEpubTocStyleConfig>) -> EpubTocStyle {
+    match style.unwrap_or(ExportEpubTocStyleConfig::Tree) {
+        ExportEpubTocStyleConfig::Tree => EpubTocStyle::Tree,
+        ExportEpubTocStyleConfig::Flat => EpubTocStyle::Flat,
+    }
+}
+
+fn resolve_export_profile_output_path(paths: &VaultPaths, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        paths.vault_root().join(path)
+    }
+}
+
+fn list_export_profiles(paths: &VaultPaths) -> Vec<ExportProfileListEntry> {
+    load_vault_config(paths)
+        .config
+        .export
+        .profiles
+        .into_iter()
+        .map(|(name, profile)| ExportProfileListEntry {
+            resolved_path: profile.path.as_deref().map(|path| {
+                resolve_export_profile_output_path(paths, path)
+                    .display()
+                    .to_string()
+            }),
+            path: profile.path.map(|path| path.display().to_string()),
+            format: profile
+                .format
+                .map(export_profile_format_label)
+                .map(ToOwned::to_owned),
+            query: profile.query,
+            name,
+        })
+        .collect()
+}
+
+fn print_export_profile_list(
+    output: OutputFormat,
+    entries: &[ExportProfileListEntry],
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(&entries.to_vec()),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if entries.is_empty() {
+                println!("No export profiles configured");
+                return Ok(());
+            }
+            for entry in entries {
+                let format = entry.format.as_deref().unwrap_or("?");
+                let path = entry.path.as_deref().unwrap_or("<missing path>");
+                println!("{}  {}  {}", entry.name, format, path);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn require_export_profile_config(
+    paths: &VaultPaths,
+    name: &str,
+) -> Result<ExportProfileConfig, CliError> {
+    load_vault_config(paths)
+        .config
+        .export
+        .profiles
+        .get(name)
+        .cloned()
+        .ok_or_else(|| CliError::operation(format!("unknown export profile `{name}`")))
+}
+
+fn require_export_profile_format(
+    name: &str,
+    profile: &ExportProfileConfig,
+) -> Result<ExportProfileFormat, CliError> {
+    profile
+        .format
+        .ok_or_else(|| CliError::operation(format!("export profile `{name}` is missing `format`")))
+}
+
+fn require_export_profile_path(
+    paths: &VaultPaths,
+    name: &str,
+    profile: &ExportProfileConfig,
+) -> Result<PathBuf, CliError> {
+    profile.path.as_deref().map_or_else(
+        || {
+            Err(CliError::operation(format!(
+                "export profile `{name}` is missing `path`"
+            )))
+        },
+        |path| Ok(resolve_export_profile_output_path(paths, path)),
+    )
+}
+
+fn export_profile_query_args<'a>(
+    name: &str,
+    format: ExportProfileFormat,
+    profile: &'a ExportProfileConfig,
+) -> Result<(Option<&'a str>, Option<&'a str>), CliError> {
+    let query = profile.query.as_deref();
+    let query_json = profile.query_json.as_deref();
+    let has_query = query.is_some() || query_json.is_some();
+    let needs_query = matches!(
+        format,
+        ExportProfileFormat::Markdown
+            | ExportProfileFormat::Json
+            | ExportProfileFormat::Csv
+            | ExportProfileFormat::Epub
+            | ExportProfileFormat::Zip
+            | ExportProfileFormat::Sqlite
+    );
+
+    if needs_query && !has_query {
+        return Err(CliError::operation(format!(
+            "export profile `{name}` requires `query` or `query_json` for {} exports",
+            export_profile_format_label(format)
+        )));
+    }
+    if !needs_query && has_query {
+        return Err(CliError::operation(format!(
+            "export profile `{name}` does not use `query` or `query_json` for {} exports",
+            export_profile_format_label(format)
+        )));
+    }
+
+    Ok((query, query_json))
+}
+
+fn finish_export_profile_text<T: Serialize>(
+    output: OutputFormat,
+    output_path: &Path,
+    payload: &str,
+    summary: &T,
+) -> Result<Value, CliError> {
+    write_text_file(output_path, payload)?;
+    if output != OutputFormat::Json {
+        println!("{}", output_path.display());
+    }
+    serde_json::to_value(summary).map_err(CliError::operation)
+}
+
+fn finish_export_profile_binary<T: Serialize>(
+    output: OutputFormat,
+    path: &str,
+    summary: &T,
+) -> Result<Value, CliError> {
+    if output != OutputFormat::Json {
+        println!("{path}");
+    }
+    serde_json::to_value(summary).map_err(CliError::operation)
+}
+
+fn run_markdown_export_profile(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    output_path: &Path,
+    query: Option<&str>,
+    query_json: Option<&str>,
+    read_filter: Option<&PermissionFilter>,
+    title: Option<&str>,
+) -> Result<Value, CliError> {
+    let report = execute_export_query(paths, query, query_json, read_filter)?;
+    let notes = load_exported_notes(paths, &report)?;
+    let payload = render_markdown_export_payload(&report, &notes, title);
+    let summary = MarkdownExportSummary {
+        path: output_path.display().to_string(),
+        result_count: notes.len(),
+    };
+    finish_export_profile_text(output, output_path, &payload, &summary)
+}
+
+fn run_json_export_profile(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    output_path: &Path,
+    query: Option<&str>,
+    query_json: Option<&str>,
+    read_filter: Option<&PermissionFilter>,
+    pretty: bool,
+) -> Result<Value, CliError> {
+    let report = execute_export_query(paths, query, query_json, read_filter)?;
+    let notes = load_exported_notes(paths, &report)?;
+    let payload = render_json_export_payload(&report, &notes, pretty)?;
+    let summary = JsonExportSummary {
+        path: output_path.display().to_string(),
+        result_count: notes.len(),
+    };
+    finish_export_profile_text(output, output_path, &payload, &summary)
+}
+
+fn run_csv_export_profile(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    output_path: &Path,
+    query: Option<&str>,
+    query_json: Option<&str>,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<Value, CliError> {
+    let report = execute_export_query(paths, query, query_json, read_filter)?;
+    let rows = query_export_rows(&report);
+    let fields = query_export_fields();
+    let payload = render_csv_export_payload(&rows, &fields)?;
+    let summary = CsvExportSummary {
+        path: output_path.display().to_string(),
+        result_count: report.notes.len(),
+    };
+    finish_export_profile_text(output, output_path, &payload, &summary)
+}
+
+fn run_graph_export_profile(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    output_path: &Path,
+    read_filter: Option<&PermissionFilter>,
+    graph_format: Option<ExportGraphFormatConfig>,
+) -> Result<Value, CliError> {
+    let report =
+        vulcan_core::export_graph_with_filter(paths, read_filter).map_err(CliError::operation)?;
+    let graph_format = graph_export_format_from_config(graph_format);
+    let payload = render_graph_export_payload(&report, graph_format)?;
+    let summary = GraphExportSummary {
+        path: output_path.display().to_string(),
+        format: match graph_format {
+            GraphExportFormat::Json => "json",
+            GraphExportFormat::Dot => "dot",
+            GraphExportFormat::Graphml => "graphml",
+        }
+        .to_string(),
+        nodes: report.nodes.len(),
+        edges: report.edges.len(),
+    };
+    finish_export_profile_text(output, output_path, &payload, &summary)
+}
+
+fn run_epub_export_profile(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    output_path: &Path,
+    query: Option<&str>,
+    query_json: Option<&str>,
+    read_filter: Option<&PermissionFilter>,
+    profile: &ExportProfileConfig,
+) -> Result<Value, CliError> {
+    let report = execute_export_query(paths, query, query_json, read_filter)?;
+    let notes = load_exported_notes(paths, &report)?;
+    let summary = write_epub_export(
+        paths,
+        output_path,
+        &notes,
+        EpubExportOptions {
+            title: profile.title.as_deref(),
+            author: profile.author.as_deref(),
+            backlinks: profile.backlinks.unwrap_or(false),
+            frontmatter: profile.frontmatter.unwrap_or(false),
+            toc_style: epub_toc_style_from_config(profile.toc),
+        },
+    )?;
+    finish_export_profile_binary(output, &summary.path, &summary)
+}
+
+fn run_zip_export_profile(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    output_path: &Path,
+    query: Option<&str>,
+    query_json: Option<&str>,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<Value, CliError> {
+    let report = execute_export_query(paths, query, query_json, read_filter)?;
+    let notes = load_exported_notes(paths, &report)?;
+    let links = load_export_links(paths, &notes)?;
+    let summary = write_zip_export(paths, output_path, &report, &notes, &links)?;
+    finish_export_profile_binary(output, &summary.path, &summary)
+}
+
+fn run_sqlite_export_profile(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    output_path: &Path,
+    query: Option<&str>,
+    query_json: Option<&str>,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<Value, CliError> {
+    let report = execute_export_query(paths, query, query_json, read_filter)?;
+    let notes = load_exported_notes(paths, &report)?;
+    let links = load_export_links(paths, &notes)?;
+    let summary = write_sqlite_export(output_path, &report, &notes, &links)?;
+    finish_export_profile_binary(output, &summary.path, &summary)
+}
+
+fn run_search_index_export_profile(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    output_path: &Path,
+    pretty: bool,
+) -> Result<Value, CliError> {
+    let report = export_static_search_index(paths).map_err(CliError::operation)?;
+    let rendered = if pretty {
+        serde_json::to_string_pretty(&report).map_err(CliError::operation)?
+    } else {
+        serde_json::to_string(&report).map_err(CliError::operation)?
+    };
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    fs::write(output_path, format!("{rendered}\n")).map_err(CliError::operation)?;
+    if output != OutputFormat::Json {
+        println!(
+            "Exported static search index: {} documents, {} chunks -> {}",
+            report.documents,
+            report.chunks,
+            output_path.display()
+        );
+    }
+    Ok(serde_json::json!({
+        "path": output_path.display().to_string(),
+        "documents": report.documents,
+        "chunks": report.chunks,
+    }))
+}
+
+fn run_export_profile(
+    cli: &Cli,
+    paths: &VaultPaths,
+    name: &str,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<(), CliError> {
+    let profile = require_export_profile_config(paths, name)?;
+    let format = require_export_profile_format(name, &profile)?;
+    let output_path = require_export_profile_path(paths, name, &profile)?;
+    let (query, query_json) = export_profile_query_args(name, format, &profile)?;
+
+    let summary = match format {
+        ExportProfileFormat::Markdown => run_markdown_export_profile(
+            cli.output,
+            paths,
+            &output_path,
+            query,
+            query_json,
+            read_filter,
+            profile.title.as_deref(),
+        )?,
+        ExportProfileFormat::Json => run_json_export_profile(
+            cli.output,
+            paths,
+            &output_path,
+            query,
+            query_json,
+            read_filter,
+            profile.pretty.unwrap_or(false),
+        )?,
+        ExportProfileFormat::Csv => run_csv_export_profile(
+            cli.output,
+            paths,
+            &output_path,
+            query,
+            query_json,
+            read_filter,
+        )?,
+        ExportProfileFormat::Graph => run_graph_export_profile(
+            cli.output,
+            paths,
+            &output_path,
+            read_filter,
+            profile.graph_format,
+        )?,
+        ExportProfileFormat::Epub => run_epub_export_profile(
+            cli.output,
+            paths,
+            &output_path,
+            query,
+            query_json,
+            read_filter,
+            &profile,
+        )?,
+        ExportProfileFormat::Zip => run_zip_export_profile(
+            cli.output,
+            paths,
+            &output_path,
+            query,
+            query_json,
+            read_filter,
+        )?,
+        ExportProfileFormat::Sqlite => run_sqlite_export_profile(
+            cli.output,
+            paths,
+            &output_path,
+            query,
+            query_json,
+            read_filter,
+        )?,
+        ExportProfileFormat::SearchIndex => run_search_index_export_profile(
+            cli.output,
+            paths,
+            &output_path,
+            profile.pretty.unwrap_or(false),
+        )?,
+    };
+
+    if cli.output == OutputFormat::Json {
+        print_json(&ExportProfileRunSummary {
+            name: name.to_string(),
+            format: export_profile_format_label(format).to_string(),
+            summary,
+        })?;
+    }
+
+    Ok(())
 }
 
 fn default_epub_title(paths: &VaultPaths) -> String {
@@ -28344,6 +28814,10 @@ mod tests {
         let export_search_index =
             Cli::try_parse_from(["vulcan", "export", "search-index", "--pretty"])
                 .expect("cli should parse");
+        let export_profiles =
+            Cli::try_parse_from(["vulcan", "export", "profiles"]).expect("cli should parse");
+        let export_profile = Cli::try_parse_from(["vulcan", "export", "profile", "team-book"])
+            .expect("cli should parse");
         let export_epub = Cli::try_parse_from([
             "vulcan",
             "export",
@@ -28616,6 +29090,20 @@ mod tests {
                 command: ExportCommand::SearchIndex {
                     path: None,
                     pretty: true,
+                },
+            }
+        );
+        assert_eq!(
+            export_profiles.command,
+            Command::Export {
+                command: ExportCommand::Profiles,
+            }
+        );
+        assert_eq!(
+            export_profile.command,
+            Command::Export {
+                command: ExportCommand::Profile {
+                    name: "team-book".to_string(),
                 },
             }
         );

@@ -846,6 +846,8 @@ Examples:
 
 const EXPORT_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  profiles      List configured export profiles
+  profile       Run a named export profile from config
   markdown      Export matched notes as one combined Markdown document
   json          Export matched notes with metadata and raw content as JSON
   csv           Export note query results as CSV
@@ -856,6 +858,8 @@ Subcommands:
   search-index  Write the cached search corpus as a static JSON index
 
 Notes:
+  Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.
+  `export profile <name>` resolves relative profile paths from the vault root.
   `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
   `epub --backlinks` appends indexed inlinks after each exported note chapter.
@@ -864,6 +868,8 @@ Notes:
   Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.
 
 Examples:
+  vulcan export profiles
+  vulcan export profile team-book
   vulcan export markdown 'from notes where file.path matches \"^Projects/\"'
   vulcan export json 'from notes where status = done' --pretty -o exports/done.json
   vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv
@@ -1651,6 +1657,13 @@ pub enum CheckpointCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ExportCommand {
+    #[command(about = "List configured export profiles")]
+    Profiles,
+    #[command(about = "Run a named export profile from config")]
+    Profile {
+        #[arg(help = "Export profile name from [export.profiles.<name>]")]
+        name: String,
+    },
     #[command(about = "Export matched notes as one combined Markdown document")]
     Markdown {
         #[command(flatten)]

@@ -227,6 +227,18 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # template_path = "Templates/Project Template.md"
 # file_name_format = "{{VALUE:title|case:slug}}"
 
+# [export.profiles.team-book]
+# format = "epub"  # markdown | json | csv | graph | epub | zip | sqlite | search-index
+# query = 'from notes where file.path matches "^(People|Projects)/"'
+# path = "exports/team-book.epub"  # relative paths resolve from the vault root
+# title = "Team Book"              # markdown heading or EPUB title, depending on format
+# author = "Vulcan"                # EPUB only
+# toc = "tree"                     # EPUB only: tree | flat
+# backlinks = true                 # EPUB only
+# frontmatter = true               # EPUB only
+# pretty = false                   # JSON and search-index only
+# graph_format = "json"            # graph only: json | dot | graphml
+
 # [web]
 # user_agent = "Vulcan/0.1 (+https://github.com/tionis/vulcan)"
 #
@@ -2155,6 +2167,55 @@ pub struct PermissionsConfig {
     pub profiles: BTreeMap<String, PermissionProfile>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExportProfileFormat {
+    Markdown,
+    Json,
+    Csv,
+    Graph,
+    Epub,
+    Zip,
+    Sqlite,
+    SearchIndex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportGraphFormatConfig {
+    Json,
+    Dot,
+    Graphml,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportEpubTocStyleConfig {
+    Tree,
+    Flat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ExportConfig {
+    #[serde(default)]
+    pub profiles: BTreeMap<String, ExportProfileConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ExportProfileConfig {
+    pub format: Option<ExportProfileFormat>,
+    pub query: Option<String>,
+    pub query_json: Option<String>,
+    pub path: Option<PathBuf>,
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub toc: Option<ExportEpubTocStyleConfig>,
+    pub backlinks: Option<bool>,
+    pub frontmatter: Option<bool>,
+    pub pretty: Option<bool>,
+    pub graph_format: Option<ExportGraphFormatConfig>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultConfig {
     pub scan: ScanConfig,
@@ -2177,6 +2238,7 @@ pub struct VaultConfig {
     pub quickadd: QuickAddConfig,
     pub web: WebConfig,
     pub periodic: PeriodicConfig,
+    pub export: ExportConfig,
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginRegistration>,
     #[serde(default)]
@@ -2206,6 +2268,7 @@ impl Default for VaultConfig {
             quickadd: QuickAddConfig::default(),
             web: WebConfig::default(),
             periodic: PeriodicConfig::default(),
+            export: ExportConfig::default(),
             plugins: BTreeMap::new(),
             aliases: builtin_command_aliases(),
         }
@@ -2433,6 +2496,7 @@ struct PartialVulcanConfig {
     quickadd: Option<PartialQuickAddConfig>,
     web: Option<PartialWebConfig>,
     periodic: Option<PartialPeriodicConfig>,
+    export: Option<PartialExportConfig>,
     permissions: Option<PartialPermissionsConfig>,
     plugins: Option<BTreeMap<String, PartialPluginRegistration>>,
     aliases: Option<BTreeMap<String, String>>,
@@ -2456,6 +2520,11 @@ struct PartialLinksConfig {
     resolution: Option<LinkResolutionMode>,
     style: Option<LinkStylePreference>,
     attachment_folder: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialExportConfig {
+    profiles: Option<BTreeMap<String, ExportProfileConfig>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -6853,6 +6922,42 @@ fn apply_obsidian_kanban_defaults(config: &mut VaultConfig, obsidian: ObsidianKa
     }
 }
 
+fn merge_export_profile_config(target: &mut ExportProfileConfig, profile: ExportProfileConfig) {
+    if let Some(format) = profile.format {
+        target.format = Some(format);
+    }
+    if let Some(query) = profile.query {
+        target.query = Some(query);
+    }
+    if let Some(query_json) = profile.query_json {
+        target.query_json = Some(query_json);
+    }
+    if let Some(path) = profile.path {
+        target.path = Some(path);
+    }
+    if let Some(title) = profile.title {
+        target.title = Some(title);
+    }
+    if let Some(author) = profile.author {
+        target.author = Some(author);
+    }
+    if let Some(toc) = profile.toc {
+        target.toc = Some(toc);
+    }
+    if let Some(backlinks) = profile.backlinks {
+        target.backlinks = Some(backlinks);
+    }
+    if let Some(frontmatter) = profile.frontmatter {
+        target.frontmatter = Some(frontmatter);
+    }
+    if let Some(pretty) = profile.pretty {
+        target.pretty = Some(pretty);
+    }
+    if let Some(graph_format) = profile.graph_format {
+        target.graph_format = Some(graph_format);
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConfig) {
     if let Some(scan) = overrides.scan {
@@ -7412,6 +7517,15 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             }
             if let Some(schedule_heading) = overrides.schedule_heading {
                 note.schedule_heading = normalize_optional_text(Some(schedule_heading));
+            }
+        }
+    }
+
+    if let Some(export) = overrides.export {
+        if let Some(profiles) = export.profiles {
+            for (name, profile) in profiles {
+                let target = config.export.profiles.entry(name).or_default();
+                merge_export_profile_config(target, profile);
             }
         }
     }
@@ -9007,6 +9121,121 @@ path = ".vulcan/plugins/custom-lint.js"
             plugin.path.as_ref(),
             Some(&PathBuf::from(".vulcan/plugins/custom-lint.js"))
         );
+    }
+
+    #[test]
+    fn vulcan_config_loads_export_profiles() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"
+[export.profiles.team_book]
+format = "epub"
+query = 'from notes where file.path starts_with "Guides/"'
+path = "exports/team-book.epub"
+title = "Team Book"
+author = "Vulcan"
+toc = "flat"
+backlinks = true
+frontmatter = true
+"#,
+        )
+        .expect("config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+        let profile = loaded
+            .config
+            .export
+            .profiles
+            .get("team_book")
+            .expect("export profile should be loaded");
+
+        assert_eq!(profile.format, Some(ExportProfileFormat::Epub));
+        assert_eq!(
+            profile.query.as_deref(),
+            Some(r#"from notes where file.path starts_with "Guides/""#)
+        );
+        assert_eq!(
+            profile.path.as_ref(),
+            Some(&PathBuf::from("exports/team-book.epub"))
+        );
+        assert_eq!(profile.title.as_deref(), Some("Team Book"));
+        assert_eq!(profile.author.as_deref(), Some("Vulcan"));
+        assert_eq!(profile.toc, Some(ExportEpubTocStyleConfig::Flat));
+        assert_eq!(profile.backlinks, Some(true));
+        assert_eq!(profile.frontmatter, Some(true));
+    }
+
+    #[test]
+    fn local_config_can_override_export_profile_fields() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"
+[export.profiles.team_book]
+format = "epub"
+query = 'from notes where file.path starts_with "Guides/"'
+path = "exports/team-book.epub"
+title = "Team Book"
+toc = "tree"
+backlinks = true
+"#,
+        )
+        .expect("shared config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.local.toml"),
+            r#"
+[export.profiles.team_book]
+path = "local/team-book.epub"
+frontmatter = true
+toc = "flat"
+
+[export.profiles.graph_dump]
+format = "graph"
+path = "exports/graph.dot"
+graph_format = "dot"
+"#,
+        )
+        .expect("local config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+        let team_book = loaded
+            .config
+            .export
+            .profiles
+            .get("team_book")
+            .expect("merged export profile should be loaded");
+        let graph_dump = loaded
+            .config
+            .export
+            .profiles
+            .get("graph_dump")
+            .expect("local export profile should be loaded");
+
+        assert_eq!(team_book.format, Some(ExportProfileFormat::Epub));
+        assert_eq!(
+            team_book.query.as_deref(),
+            Some(r#"from notes where file.path starts_with "Guides/""#)
+        );
+        assert_eq!(
+            team_book.path.as_ref(),
+            Some(&PathBuf::from("local/team-book.epub"))
+        );
+        assert_eq!(team_book.title.as_deref(), Some("Team Book"));
+        assert_eq!(team_book.toc, Some(ExportEpubTocStyleConfig::Flat));
+        assert_eq!(team_book.backlinks, Some(true));
+        assert_eq!(team_book.frontmatter, Some(true));
+
+        assert_eq!(graph_dump.format, Some(ExportProfileFormat::Graph));
+        assert_eq!(
+            graph_dump.path.as_ref(),
+            Some(&PathBuf::from("exports/graph.dot"))
+        );
+        assert_eq!(graph_dump.graph_format, Some(ExportGraphFormatConfig::Dot));
     }
 
     #[test]
