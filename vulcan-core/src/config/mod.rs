@@ -2258,6 +2258,10 @@ pub struct ConfigImportReport {
     pub updated: bool,
     #[serde(skip)]
     pub config_updated: bool,
+    #[serde(skip)]
+    pub previous_contents: Option<String>,
+    #[serde(skip)]
+    pub rendered_contents: Option<String>,
     pub dry_run: bool,
     pub mappings: Vec<ConfigImportMapping>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3685,7 +3689,7 @@ fn apply_import_settings(
     let rendered = toml::to_string_pretty(&config_value)?;
     let updated = existing_contents.as_deref() != Some(rendered.as_str());
     if updated && !dry_run {
-        fs::write(&target_file, rendered)?;
+        fs::write(&target_file, &rendered)?;
     }
 
     Ok(ConfigImportReport {
@@ -3697,6 +3701,8 @@ fn apply_import_settings(
         created_config,
         updated,
         config_updated: updated,
+        previous_contents: existing_contents,
+        rendered_contents: Some(rendered),
         dry_run,
         mappings: import_settings_to_mappings(settings),
         migrated_files: Vec::new(),
@@ -5386,7 +5392,7 @@ fn tasknotes_command_file_mappings(raw: &Value) -> Vec<(String, String)> {
 
 fn normalize_tasknotes_import_path(path: &str) -> Result<String, ConfigImportError> {
     normalize_relative_input_path(
-        path,
+        path.trim(),
         RelativePathOptions {
             expected_extension: Some("base"),
             append_extension_if_missing: true,
@@ -11037,6 +11043,35 @@ default_mode = "off"
     }
 
     #[test]
+    fn tasknotes_view_migration_trims_command_paths_before_normalizing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join("Views Source"))
+            .expect("view source dir should be created");
+        fs::write(
+            vault_root.join("Views Source/tasks-custom.base"),
+            "views:\n  - type: tasknotesTaskList\n    name: Tasks\n",
+        )
+        .expect("source base should be written");
+
+        let raw = serde_json::json!({
+            "commandFileMapping": {
+                "open-tasks-view": "  ./Views Source/tasks-custom  "
+            }
+        });
+
+        let result = tasknotes_migrate_view_files(&VaultPaths::new(vault_root), &raw, true)
+            .expect("view migration should succeed");
+
+        assert!(result.skipped.is_empty());
+        assert_eq!(result.migrated_files.len(), 1);
+        assert_eq!(
+            result.migrated_files[0].source,
+            vault_root.join("Views Source/tasks-custom.base")
+        );
+    }
+
+    #[test]
     fn importer_registry_dispatches_existing_importers_in_priority_order() {
         let importer_names = all_importers()
             .into_iter()
@@ -11099,6 +11134,8 @@ default_mode = "off"
                 created_config: false,
                 updated: true,
                 config_updated: true,
+                previous_contents: None,
+                rendered_contents: None,
                 dry_run: false,
                 mappings: vec![ConfigImportMapping {
                     source: "app.json.useMarkdownLinks".to_string(),
@@ -11120,6 +11157,8 @@ default_mode = "off"
                 created_config: false,
                 updated: true,
                 config_updated: true,
+                previous_contents: None,
+                rendered_contents: None,
                 dry_run: false,
                 mappings: vec![ConfigImportMapping {
                     source: "templates_folder".to_string(),

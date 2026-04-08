@@ -602,6 +602,7 @@ const CONFIG_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   show [section] print effective Vulcan config as TOML or JSON
   get <key>      read a single effective config value
+  edit           open the interactive settings editor for .vulcan/config.toml
   set <key> <value> write one shared config value with type validation
   import core    import Obsidian core settings into Vulcan config
   import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml
@@ -614,9 +615,10 @@ Subcommands:
 
 Notes:
   `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.
+  `config edit` requires an interactive terminal and writes `.vulcan/config.toml` on save.
   `config set` writes `.vulcan/config.toml`; quote strings when the shell would otherwise strip them.
   Import commands preserve unrelated config sections and overwrite the mapped target keys.
-  Import flags: --dry-run, --target <shared|local>, --no-commit
+  Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit
   Use `config import --all` to apply every detected importer in registry order.
   Use `config import --list` to inspect detectable sources without writing.
   When git auto-commit is enabled for mutations, `config set` and config imports participate like other mutating commands.
@@ -625,17 +627,19 @@ Examples:
   vulcan config show
   vulcan config show periodic.daily
   vulcan config get periodic.daily.template
+  vulcan config edit
   vulcan config set periodic.daily.template \"Templates/Daily\"
   vulcan config set web.search.backend brave --dry-run
-  vulcan config import core
+  vulcan config import core --preview
+  vulcan config import core --apply
   vulcan config import dataview
   vulcan config import kanban
-  vulcan config import --all --dry-run
+  vulcan config import --all --preview
   vulcan config import --list
   vulcan config import periodic-notes
   vulcan config import quickadd
-  vulcan config import tasknotes --dry-run
-  vulcan config import tasks --dry-run
+  vulcan config import tasknotes --preview
+  vulcan config import tasks --preview
   vulcan config import templater --target local
   vulcan --output json config get web.search.backend
   vulcan --output json config show web.search
@@ -1791,11 +1795,19 @@ pub enum ConfigImportTargetArg {
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct ConfigImportArgs {
     #[arg(
-        long,
+        long = "preview",
+        visible_alias = "dry-run",
         global = true,
         help = "Preview config changes without writing files"
     )]
     pub dry_run: bool,
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "dry_run",
+        help = "Apply import changes explicitly"
+    )]
+    pub apply: bool,
     #[arg(
         long,
         global = true,
@@ -1839,6 +1851,11 @@ pub enum ConfigCommand {
     Get {
         #[arg(help = "Dot-notation config key such as `periodic.daily.template`")]
         key: String,
+    },
+    #[command(about = "Open the interactive settings editor for .vulcan/config.toml")]
+    Edit {
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Write a single shared config value")]
     Set {

@@ -167,19 +167,22 @@ Behavior:
 
 - `vulcan config show [section]`: show the effective merged config or one section such as `periodic` or `aliases`.
 - `vulcan config get <key>`: read one config value.
+- `vulcan config edit [--no-commit]`: open the interactive `ratatui` settings editor for `.vulcan/config.toml`.
 - `vulcan config set <key> <value> [--dry-run] [--no-commit]`: validate and write one config value.
-- `vulcan config import core [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian core settings from `.obsidian/app.json`, `.obsidian/templates.json`, and `.obsidian/types.json`.
-- `vulcan config import dataview [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Dataview plugin settings.
-- `vulcan config import kanban [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Kanban plugin settings.
-- `vulcan config import periodic-notes [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Daily Notes core plugin settings plus the community Periodic Notes plugin settings.
-- `vulcan config import tasks [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Tasks plugin settings.
-- `vulcan config import templater [--dry-run] [--target <shared|local>] [--no-commit]`: import Obsidian Templater plugin settings.
-- `vulcan config import --all [--dry-run] [--target <shared|local>] [--no-commit]`: run every detected importer in registry order and aggregate the results.
+- `vulcan config import core [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian core settings from `.obsidian/app.json`, `.obsidian/templates.json`, and `.obsidian/types.json`.
+- `vulcan config import dataview [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Dataview plugin settings.
+- `vulcan config import kanban [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Kanban plugin settings.
+- `vulcan config import periodic-notes [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Daily Notes core plugin settings plus the community Periodic Notes plugin settings.
+- `vulcan config import tasks [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Tasks plugin settings.
+- `vulcan config import templater [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Templater plugin settings.
+- `vulcan config import --all [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: run every detected importer in registry order and aggregate the results.
 - `vulcan config import --list`: show every registered importer together with detection status and source paths.
 
 Shared behavior:
 
-- `--dry-run` prints the mapping and target file without writing either `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+- `config edit` groups settings by category, shows the effective value alongside shared/local overrides, validates each edit, and only writes the shared config file when you save.
+- `--preview` and `--dry-run` are equivalent: they print the mapping plus a diff of the target config file without writing either `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+- `--apply` is the explicit write path; omitting both `--preview` and `--apply` still applies the import for backwards compatibility.
 - `--target local` writes to `.vulcan/config.local.toml`; the default target is the shared `.vulcan/config.toml`.
 - `--output json` returns the full import report, including target file, whether the run was a dry run, the mappings applied, and any detected conflicts.
 - When vault auto-commit is enabled for mutations, config imports participate unless `--no-commit` is passed.

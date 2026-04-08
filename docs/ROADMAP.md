@@ -2922,7 +2922,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 10. [x] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
 11. [x] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
 12. [x] **9.19.12** (plugins) — after permissions design is clear
-13. [ ] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
+13. [x] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
 14. [ ] **9.19.14** (binary size) — informational, anytime
 15. [ ] **9.19.15** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
 
@@ -3353,12 +3353,12 @@ Make the search backend an explicit enum (`SearchBackend`) and add support for a
 
 **Goal:** A terminal UI for viewing and editing `.vulcan/config.toml` with import-from-Obsidian support.
 
-- [ ] `vulcan config edit` — open a TUI (using `ratatui`) for browsing and editing settings
-- [ ] Organize settings by category with descriptions for each option
-- [ ] `vulcan config import --preview` — show a diff of what would change before applying imported settings
-- [ ] `vulcan config import --apply` — apply the diff
-- [ ] Validate settings on save (reject invalid values with inline error messages)
-- [ ] TaskNotes settings import may need fixes — verify and fix edge cases
+- [x] `vulcan config edit` — open a TUI (using `ratatui`) for browsing and editing settings
+- [x] Organize settings by category with descriptions for each option
+- [x] `vulcan config import --preview` — show a diff of what would change before applying imported settings
+- [x] `vulcan config import --apply` — apply the diff
+- [x] Validate settings on save (reject invalid values with inline error messages)
+- [x] TaskNotes settings import may need fixes — verify and fix edge cases
 
 #### 9.19.12 Event-driven plugin system (research + design)
 
