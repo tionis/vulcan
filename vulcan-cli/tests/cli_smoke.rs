@@ -7179,7 +7179,19 @@ fn render_human_output_formats_markdown_files() {
     let markdown_path = temp_dir.path().join("sample.md");
     fs::write(
         &markdown_path,
-        "# Title\n\n| Name | Hours |\n| --- | ---: |\n| Alpha | 2 |\n",
+        concat!(
+            "---\n",
+            "title: Sample\n",
+            "tags:\n",
+            "  - demo\n",
+            "---\n",
+            "\n",
+            "# Title\n",
+            "\n",
+            "| Name | Hours |\n",
+            "| --- | ---: |\n",
+            "| Alpha | 2 |\n",
+        ),
     )
     .expect("markdown file should be written");
 
@@ -7194,7 +7206,8 @@ fn render_human_output_formats_markdown_files() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("Title")
+            predicate::str::contains("---\ntitle: Sample\ntags:\n  - demo\n---")
+                .and(predicate::str::contains("Title"))
                 .and(predicate::str::contains("| Name  | Hours |"))
                 .and(predicate::str::contains("| ----- | ----: |"))
                 .and(predicate::str::contains("# Title").not()),

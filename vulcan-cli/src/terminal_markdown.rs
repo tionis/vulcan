@@ -14,15 +14,18 @@ pub(crate) fn render_terminal_markdown_lines(markdown: &str, use_color: bool) ->
     renderer.finish()
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct Renderer {
     lines: Vec<String>,
     current: String,
     code_block: String,
+    metadata_block: String,
     use_color: bool,
     list_stack: Vec<ListState>,
     active_heading: Option<u8>,
     in_item: bool,
     in_code_block: bool,
+    in_metadata_block: bool,
     blockquote_depth: usize,
     table: Option<TableState>,
 }
@@ -47,11 +50,13 @@ impl Renderer {
             lines: Vec::new(),
             current: String::new(),
             code_block: String::new(),
+            metadata_block: String::new(),
             use_color,
             list_stack: Vec::new(),
             active_heading: None,
             in_item: false,
             in_code_block: false,
+            in_metadata_block: false,
             blockquote_depth: 0,
             table: None,
         }
@@ -76,6 +81,23 @@ impl Renderer {
                 }
                 self.current.clear();
                 self.active_heading = None;
+            }
+            Event::Start(Tag::MetadataBlock(_)) => {
+                self.flush_current();
+                self.in_metadata_block = true;
+            }
+            Event::End(TagEnd::MetadataBlock(_)) => {
+                let body = self.metadata_block.trim_end().to_string();
+                if !body.is_empty() {
+                    self.push_line(style_metadata_line("---", self.use_color));
+                    for line in body.lines() {
+                        self.push_line(style_metadata_line(line, self.use_color));
+                    }
+                    self.push_line(style_metadata_line("---", self.use_color));
+                    self.push_blank_line();
+                }
+                self.metadata_block.clear();
+                self.in_metadata_block = false;
             }
             Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => self.flush_current(),
             Event::Start(Tag::List(start)) => {
@@ -183,17 +205,25 @@ impl Renderer {
                     .push_str(&style_inline_code(&code, self.use_color));
             }
             Event::Text(text) | Event::InlineHtml(text) | Event::Html(text) => {
-                if self.in_code_block {
+                if self.in_metadata_block {
+                    self.metadata_block.push_str(&text);
+                } else if self.in_code_block {
                     self.code_block.push_str(&text);
                 } else {
                     self.current.push_str(&text);
                 }
             }
             Event::InlineMath(text) | Event::DisplayMath(text) => {
-                self.current.push_str(&text);
+                if self.in_metadata_block {
+                    self.metadata_block.push_str(&text);
+                } else {
+                    self.current.push_str(&text);
+                }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if self.in_code_block {
+                if self.in_metadata_block {
+                    self.metadata_block.push('\n');
+                } else if self.in_code_block {
                     self.code_block.push('\n');
                 } else if self.table.is_some() || self.in_item {
                     self.current.push_str("  ");
@@ -424,6 +454,14 @@ fn style_code_block(text: &str, use_color: bool) -> String {
     }
 }
 
+fn style_metadata_line(text: &str, use_color: bool) -> String {
+    if use_color {
+        format!("\u{1b}[2m{text}\u{1b}[0m")
+    } else {
+        text.to_string()
+    }
+}
+
 fn style_rule(use_color: bool) -> String {
     if use_color {
         "\u{1b}[2m----------------------------------------\u{1b}[0m".to_string()
@@ -469,5 +507,16 @@ mod tests {
         let lines = render_terminal_markdown_lines("> quoted\n\n1. first\n2. second", false);
 
         assert_eq!(lines, vec!["> quoted", "", "1. first", "2. second"]);
+    }
+
+    #[test]
+    fn renders_yaml_frontmatter_before_body_content() {
+        let rendered = render_terminal_markdown(
+            "---\ntitle: Alpha\ntags:\n  - project\n---\n\n# Heading\n\nBody\n",
+            false,
+        );
+
+        assert!(rendered.starts_with("---\ntitle: Alpha\ntags:\n  - project\n---\n\nHeading"));
+        assert!(rendered.contains("Body"));
     }
 }
