@@ -2919,7 +2919,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 9. [x] **9.19.10** (web search backends) — explicit `SearchBackend` enum, Exa/Tavily/Brave
 10. [x] **9.19.7** (reorg) — after everything above is built, reorganize in one pass
 11. [x] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
-12. [ ] **9.19.12** (plugins) — after permissions design is clear
+12. [x] **9.19.12** (plugins) — after permissions design is clear
 13. [ ] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
 14. [ ] **9.19.14** (binary size) — informational, anytime
 15. [ ] **9.19.15** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
@@ -3377,14 +3377,14 @@ Make the search backend an explicit enum (`SearchBackend`) and add support for a
 
 **Tasks:**
 
-- [ ] Design the event lifecycle and hook points — enumerate all mutation paths in vulcan-core that should emit events
-- [ ] Design the plugin manifest format (event subscriptions, permissions, metadata)
-- [ ] Design blocking vs non-blocking hook semantics (pre-hooks can abort, post-hooks cannot)
-- [ ] Prototype: single `on_note_write` hook running a JS linter function in rquickjs
-- [ ] Implement plugin discovery and registration from `.vulcan/plugins/`
-- [ ] Implement event dispatch at each hook point in vulcan-core
-- [ ] Implement `vulcan plugin` CLI commands
-- [ ] Document the plugin API in `help js.plugins`
+- [x] Design the event lifecycle and hook points — enumerate all mutation paths in vulcan-core that should emit events
+- [x] Design the plugin manifest format (event subscriptions, permissions, metadata)
+- [x] Design blocking vs non-blocking hook semantics (pre-hooks can abort, post-hooks cannot)
+- [x] Prototype: single `on_note_write` hook running a JS linter function in rquickjs
+- [x] Implement plugin discovery and registration from `.vulcan/plugins/`
+- [x] Implement event dispatch at each hook point in vulcan-core
+- [x] Implement `vulcan plugin` CLI commands
+- [x] Document the plugin API in `help js.plugins`
 
 #### 9.19.13 Permission layer
 

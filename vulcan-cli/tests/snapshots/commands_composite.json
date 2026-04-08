@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render\n  Git:         git, changes\n  Automation:  saved, automation, export, checkpoint\n  Setup:       init, config, trust\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render\n  Git:         git, changes\n  Automation:  saved, automation, export, checkpoint\n  Setup:       init, config, trust, plugin\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -7785,6 +7785,74 @@
           }
         ],
         "subcommands": []
+      },
+      {
+        "about": "Discover, register, and run JS lifecycle plugins",
+        "after_help": "Subcommands:\n  list            list discovered and registered JS plugins\n  enable <name>   enable one plugin in .vulcan/config.toml\n  disable <name>  disable one plugin in .vulcan/config.toml\n  run <name>      execute one plugin's `main(event, ctx)` entrypoint\n\nNotes:\n  Plugin files live under `.vulcan/plugins/` by default and are registered under `[plugins.<name>]`.\n  Event handlers are named after their subscription keys: `on_note_write`, `on_pre_commit`, etc.\n  `on_note_write` and `on_pre_commit` are blocking hooks; throw an error to abort the operation.\n  Other hooks are post-hooks: Vulcan logs failures as warnings but does not roll back the action.\n  Trusted vaults are required for plugin execution.\n\nExamples:\n  vulcan plugin list\n  vulcan plugin enable lint\n  vulcan plugin disable lint\n  vulcan plugin run lint\n  vulcan --output json plugin list",
+        "name": "plugin",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "List discovered and registered JS plugins",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Enable one plugin in .vulcan/config.toml",
+            "name": "enable",
+            "options": [
+              {
+                "help": "Plugin name (defaults to .vulcan/plugins/<name>.js)",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Disable one plugin in .vulcan/config.toml",
+            "name": "disable",
+            "options": [
+              {
+                "help": "Plugin name (defaults to .vulcan/plugins/<name>.js)",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Execute one plugin's main(event, ctx) entrypoint",
+            "name": "run",
+            "options": [
+              {
+                "help": "Plugin name to execute",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
       },
       {
         "about": "Manage vault trust for startup scripts and plugin execution",

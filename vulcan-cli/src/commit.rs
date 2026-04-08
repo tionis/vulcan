@@ -1,6 +1,7 @@
+use serde_json::json;
 use vulcan_core::{
     auto_commit, git_status, is_git_repo, load_vault_config, AutoCommitReport, GitConfig,
-    GitTrigger, VaultPaths,
+    GitTrigger, PluginEvent, VaultPaths,
 };
 
 #[derive(Debug, Clone)]
@@ -50,6 +51,8 @@ impl AutoCommitPolicy {
         paths: &VaultPaths,
         action: &str,
         changed_files: &[String],
+        permission_profile: Option<&str>,
+        quiet: bool,
     ) -> Result<Option<AutoCommitReport>, String> {
         let Self::Enabled(config) = self else {
             return Ok(None);
@@ -66,9 +69,35 @@ impl AutoCommitPolicy {
             return Ok(None);
         }
 
+        crate::plugins::dispatch_plugin_event(
+            paths,
+            permission_profile,
+            PluginEvent::OnPreCommit,
+            &json!({
+                "kind": PluginEvent::OnPreCommit,
+                "action": action,
+                "files": candidate_files,
+            }),
+            quiet,
+        )
+        .map_err(|error| error.to_string())?;
+
         let report = auto_commit(paths.vault_root(), config, action, &candidate_files)
             .map_err(|error| error.to_string())?;
         if report.committed {
+            let _ = crate::plugins::dispatch_plugin_event(
+                paths,
+                permission_profile,
+                PluginEvent::OnPostCommit,
+                &json!({
+                    "kind": PluginEvent::OnPostCommit,
+                    "action": action,
+                    "files": report.files,
+                    "sha": report.sha,
+                    "message": report.message,
+                }),
+                quiet,
+            );
             Ok(Some(report))
         } else {
             Ok(None)

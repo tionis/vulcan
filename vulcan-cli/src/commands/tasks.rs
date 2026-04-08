@@ -64,7 +64,13 @@ pub(crate) fn handle_tasks_command(
             )?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "tasks add", &report.changed_paths)
+                    .commit(
+                        paths,
+                        "tasks add",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_task_add_report(cli.output, &report)
@@ -84,7 +90,13 @@ pub(crate) fn handle_tasks_command(
                 cli.quiet,
             )?;
             auto_commit
-                .commit(paths, "tasks edit", std::slice::from_ref(&report.path))
+                .commit(
+                    paths,
+                    "tasks edit",
+                    std::slice::from_ref(&report.path),
+                    cli.permissions.as_deref(),
+                    cli.quiet,
+                )
                 .map_err(CliError::operation)?;
             crate::print_edit_report(cli.output, &report);
             Ok(())
@@ -110,7 +122,13 @@ pub(crate) fn handle_tasks_command(
             )?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "tasks set", &report.changed_paths)
+                    .commit(
+                        paths,
+                        "tasks set",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_task_mutation_report(cli.output, &report)
@@ -134,7 +152,13 @@ pub(crate) fn handle_tasks_command(
             )?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "tasks complete", &report.changed_paths)
+                    .commit(
+                        paths,
+                        "tasks complete",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_task_mutation_report(cli.output, &report)
@@ -156,7 +180,13 @@ pub(crate) fn handle_tasks_command(
             )?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "tasks archive", &report.changed_paths)
+                    .commit(
+                        paths,
+                        "tasks archive",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_task_mutation_report(cli.output, &report)
@@ -180,7 +210,13 @@ pub(crate) fn handle_tasks_command(
             )?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "tasks convert", &report.changed_paths)
+                    .commit(
+                        paths,
+                        "tasks convert",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_task_convert_report(cli.output, &report)
@@ -210,7 +246,13 @@ pub(crate) fn handle_tasks_command(
             )?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "tasks create", &report.changed_paths)
+                    .commit(
+                        paths,
+                        "tasks create",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_task_create_report(cli.output, &report)
@@ -234,7 +276,13 @@ pub(crate) fn handle_tasks_command(
             )?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "tasks reschedule", &report.changed_paths)
+                    .commit(
+                        paths,
+                        "tasks reschedule",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_task_mutation_report(cli.output, &report)
@@ -310,7 +358,13 @@ pub(crate) fn handle_tasks_command(
                 )?;
                 if !*dry_run {
                     auto_commit
-                        .commit(paths, "tasks track start", &report.changed_paths)
+                        .commit(
+                            paths,
+                            "tasks track start",
+                            &report.changed_paths,
+                            cli.permissions.as_deref(),
+                            cli.quiet,
+                        )
                         .map_err(CliError::operation)?;
                 }
                 crate::print_task_track_report(cli.output, &report)
@@ -332,7 +386,13 @@ pub(crate) fn handle_tasks_command(
                 )?;
                 if !*dry_run {
                     auto_commit
-                        .commit(paths, "tasks track stop", &report.changed_paths)
+                        .commit(
+                            paths,
+                            "tasks track stop",
+                            &report.changed_paths,
+                            cli.permissions.as_deref(),
+                            cli.quiet,
+                        )
                         .map_err(CliError::operation)?;
                 }
                 crate::print_task_track_report(cli.output, &report)
@@ -368,7 +428,13 @@ pub(crate) fn handle_tasks_command(
                 )?;
                 if !*dry_run {
                     auto_commit
-                        .commit(paths, "tasks pomodoro start", &report.changed_paths)
+                        .commit(
+                            paths,
+                            "tasks pomodoro start",
+                            &report.changed_paths,
+                            cli.permissions.as_deref(),
+                            cli.quiet,
+                        )
                         .map_err(CliError::operation)?;
                 }
                 crate::print_task_pomodoro_report(cli.output, &report)
@@ -390,7 +456,13 @@ pub(crate) fn handle_tasks_command(
                 )?;
                 if !*dry_run {
                     auto_commit
-                        .commit(paths, "tasks pomodoro stop", &report.changed_paths)
+                        .commit(
+                            paths,
+                            "tasks pomodoro stop",
+                            &report.changed_paths,
+                            cli.permissions.as_deref(),
+                            cli.quiet,
+                        )
                         .map_err(CliError::operation)?;
                 }
                 crate::print_task_pomodoro_report(cli.output, &report)

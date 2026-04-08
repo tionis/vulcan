@@ -10,8 +10,27 @@ use crate::{
 use vulcan_core::{
     bulk_replace_on_paths, link_mentions, merge_tags, move_note, query_notes_with_filter,
     rename_alias, rename_block_ref, rename_heading, rename_property, suggest_duplicates,
-    suggest_mentions, NoteQuery, PermissionGuard, VaultPaths,
+    suggest_mentions, NoteQuery, PermissionGuard, PluginEvent, VaultPaths,
 };
+
+fn dispatch_refactor_plugin_hooks(
+    cli: &Cli,
+    paths: &VaultPaths,
+    action: &str,
+    changed_paths: &[String],
+) {
+    let _ = crate::plugins::dispatch_plugin_event(
+        paths,
+        cli.permissions.as_deref(),
+        PluginEvent::OnRefactor,
+        &serde_json::json!({
+            "kind": PluginEvent::OnRefactor,
+            "action": action,
+            "paths": changed_paths,
+        }),
+        cli.quiet,
+    );
+}
 
 pub(crate) fn handle_refactor_command(
     cli: &Cli,
@@ -37,13 +56,17 @@ pub(crate) fn handle_refactor_command(
             let report =
                 rename_alias(paths, note, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = crate::refactor_changed_files(&report);
                 auto_commit
                     .commit(
                         paths,
                         "rename-alias",
-                        &crate::refactor_changed_files(&report),
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
                     )
                     .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "rename-alias", &changed_paths);
             }
             crate::print_refactor_report(cli.output, &report)
         }
@@ -62,13 +85,17 @@ pub(crate) fn handle_refactor_command(
             let report =
                 rename_heading(paths, note, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = crate::refactor_changed_files(&report);
                 auto_commit
                     .commit(
                         paths,
                         "rename-heading",
-                        &crate::refactor_changed_files(&report),
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
                     )
                     .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "rename-heading", &changed_paths);
             }
             crate::print_refactor_report(cli.output, &report)
         }
@@ -87,13 +114,17 @@ pub(crate) fn handle_refactor_command(
             let report =
                 rename_block_ref(paths, note, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = crate::refactor_changed_files(&report);
                 auto_commit
                     .commit(
                         paths,
                         "rename-block-ref",
-                        &crate::refactor_changed_files(&report),
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
                     )
                     .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "rename-block-ref", &changed_paths);
             }
             crate::print_refactor_report(cli.output, &report)
         }
@@ -113,13 +144,17 @@ pub(crate) fn handle_refactor_command(
             }
             let report = rename_property(paths, old, new, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = crate::refactor_changed_files(&report);
                 auto_commit
                     .commit(
                         paths,
                         "rename-property",
-                        &crate::refactor_changed_files(&report),
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
                     )
                     .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "rename-property", &changed_paths);
             }
             crate::print_refactor_report(cli.output, &report)
         }
@@ -139,9 +174,17 @@ pub(crate) fn handle_refactor_command(
             }
             let report = merge_tags(paths, source, dest, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = crate::refactor_changed_files(&report);
                 auto_commit
-                    .commit(paths, "merge-tags", &crate::refactor_changed_files(&report))
+                    .commit(
+                        paths,
+                        "merge-tags",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "merge-tags", &changed_paths);
             }
             crate::print_refactor_report(cli.output, &report)
         }
@@ -182,9 +225,17 @@ pub(crate) fn handle_refactor_command(
             let report = bulk_replace_on_paths(paths, &note_paths, find, replace, *dry_run)
                 .map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = crate::refactor_changed_files(&report);
                 auto_commit
-                    .commit(paths, "rewrite", &crate::refactor_changed_files(&report))
+                    .commit(
+                        paths,
+                        "rewrite",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "rewrite", &changed_paths);
             }
             crate::print_refactor_report(cli.output, &report)
         }
@@ -205,9 +256,17 @@ pub(crate) fn handle_refactor_command(
                 .map_err(CliError::operation)?;
             let summary = move_note(paths, source, dest, *dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = crate::move_changed_files(&summary);
                 auto_commit
-                    .commit(paths, "move", &crate::move_changed_files(&summary))
+                    .commit(
+                        paths,
+                        "move",
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "move", &changed_paths);
             }
             crate::print_move_summary(cli.output, &summary)
         }
@@ -227,13 +286,17 @@ pub(crate) fn handle_refactor_command(
             let report =
                 link_mentions(paths, note.as_deref(), *dry_run).map_err(CliError::operation)?;
             if !dry_run {
+                let changed_paths = crate::refactor_changed_files(&report);
                 auto_commit
                     .commit(
                         paths,
                         "link-mentions",
-                        &crate::refactor_changed_files(&report),
+                        &changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
                     )
                     .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "link-mentions", &changed_paths);
             }
             crate::print_refactor_report(cli.output, &report)
         }

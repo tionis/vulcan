@@ -116,6 +116,8 @@ fn run_event_loop(
                                 &state.paths,
                                 "browse",
                                 std::slice::from_ref(&path),
+                                None,
+                                false,
                             ) {
                                 state.set_status(format!(
                                     "Updated {path}, but auto-commit failed: {error}"
@@ -189,6 +191,8 @@ fn run_event_loop(
                                 &state.paths,
                                 "browse",
                                 std::slice::from_ref(&relative_path),
+                                None,
+                                false,
                             ) {
                                 state.set_status(format!(
                                     "Created {relative_path}, but auto-commit failed: {error}"
@@ -217,6 +221,8 @@ fn run_event_loop(
                                 .collect::<BTreeSet<_>>()
                                 .into_iter()
                                 .collect::<Vec<_>>(),
+                            None,
+                            false,
                         ) {
                             state.set_status(format!(
                                 "Moved {} -> {}, but auto-commit failed: {error}",

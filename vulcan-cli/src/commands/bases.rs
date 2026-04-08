@@ -46,7 +46,13 @@ pub(crate) fn handle_bases_command(
             if !*dry_run {
                 crate::run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
                 auto_commit
-                    .commit(paths, "bases-create", std::slice::from_ref(&report.path))
+                    .commit(
+                        paths,
+                        "bases-create",
+                        std::slice::from_ref(&report.path),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_bases_create_report(cli.output, &report)
@@ -96,7 +102,13 @@ pub(crate) fn handle_bases_command(
                 bases_view_add(paths, file, spec, *dry_run).map_err(CliError::operation)?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "bases-view-add", std::slice::from_ref(file))
+                    .commit(
+                        paths,
+                        "bases-view-add",
+                        std::slice::from_ref(file),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_bases_view_edit_report(cli.output, &report)
@@ -113,7 +125,13 @@ pub(crate) fn handle_bases_command(
                 bases_view_delete(paths, file, name, *dry_run).map_err(CliError::operation)?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "bases-view-delete", std::slice::from_ref(file))
+                    .commit(
+                        paths,
+                        "bases-view-delete",
+                        std::slice::from_ref(file),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_bases_view_edit_report(cli.output, &report)
@@ -131,7 +149,13 @@ pub(crate) fn handle_bases_command(
                 .map_err(CliError::operation)?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "bases-view-rename", std::slice::from_ref(file))
+                    .commit(
+                        paths,
+                        "bases-view-rename",
+                        std::slice::from_ref(file),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_bases_view_edit_report(cli.output, &report)
@@ -187,7 +211,13 @@ pub(crate) fn handle_bases_command(
                 bases_view_edit(paths, file, name, patch, *dry_run).map_err(CliError::operation)?;
             if !*dry_run {
                 auto_commit
-                    .commit(paths, "bases-view-edit", std::slice::from_ref(file))
+                    .commit(
+                        paths,
+                        "bases-view-edit",
+                        std::slice::from_ref(file),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
                     .map_err(CliError::operation)?;
             }
             crate::print_bases_view_edit_report(cli.output, &report)

@@ -67,6 +67,8 @@ pub(crate) fn handle_kanban_command(
                         paths,
                         "kanban-archive",
                         &crate::kanban_archive_changed_files(&report),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
                     )
                     .map_err(CliError::operation)?;
             }
@@ -89,6 +91,8 @@ pub(crate) fn handle_kanban_command(
                         paths,
                         "kanban-move",
                         &crate::kanban_move_changed_files(&report),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
                     )
                     .map_err(CliError::operation)?;
             }
@@ -110,6 +114,8 @@ pub(crate) fn handle_kanban_command(
                         paths,
                         "kanban-add",
                         &crate::kanban_add_changed_files(&report),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
                     )
                     .map_err(CliError::operation)?;
             }
