@@ -2887,7 +2887,7 @@ fn web_search_auto_prefers_api_key_backends_over_duckduckgo() {
 }
 
 #[test]
-fn web_fetch_markdown_json_output_extracts_article_content() {
+fn web_fetch_markdown_json_output_auto_extracts_readerable_article_content() {
     let server = MockWebServer::spawn();
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -2906,7 +2906,6 @@ fn web_fetch_markdown_json_output_extracts_article_content() {
             &server.url("/article"),
             "--mode",
             "markdown",
-            "--extract-article",
         ])
         .assert()
         .success();
@@ -2916,11 +2915,49 @@ fn web_fetch_markdown_json_output_extracts_article_content() {
     assert_eq!(json["status"], 200);
     assert_eq!(json["content_type"], "text/html");
     assert_eq!(json["mode"], "markdown");
+    assert_eq!(json["extraction_mode"], "auto");
     assert!(json["content"]
         .as_str()
         .is_some_and(|content| content.contains("Release Summary")
             && content.contains("Shipped & stable.")
             && !content.contains("skip me")));
+}
+
+#[test]
+fn web_fetch_markdown_json_output_generic_mode_keeps_page_chrome() {
+    let server = MockWebServer::spawn();
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "web",
+            "fetch",
+            &server.url("/generic-page"),
+            "--mode",
+            "markdown",
+            "--extraction-mode",
+            "generic",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    server.shutdown();
+
+    assert_eq!(json["status"], 200);
+    assert_eq!(json["extraction_mode"], "generic");
+    assert!(json["content"]
+        .as_str()
+        .is_some_and(|content| content.contains("Site Nav")
+            && content.contains("Docs")
+            && content.contains("Short")));
 }
 
 #[test]
@@ -12301,7 +12338,7 @@ fn run_json_output_net_sandbox_exposes_web_helpers() {
         format!(
             r#"
             const search = web.search("Alpha", {{ limit: 1 }});
-            const fetched = web.fetch("{base_url}/article", {{ mode: "markdown", extractArticle: true }});
+            const fetched = web.fetch("{base_url}/article", {{ mode: "markdown", extractionMode: "article" }});
             ({{
               title: search.results[0].title,
               status: fetched.status,
@@ -14676,7 +14713,14 @@ impl MockWebServer {
                             &mut stream,
                             "HTTP/1.1 200 OK",
                             "text/html",
-                            br"<!doctype html><html><body><nav>skip me</nav><article><h1>Release Summary</h1><p>Shipped &amp; stable.</p></article></body></html>",
+                            br"<!doctype html><html><body><nav>skip me</nav><article><h1>Release Summary</h1><p>Shipped &amp; stable. This release paragraph is intentionally long enough for automatic readerability detection to prefer the article extraction path over the generic page conversion.</p></article></body></html>",
+                        );
+                    } else if request.path == "/generic-page" {
+                        write_http_response(
+                            &mut stream,
+                            "HTTP/1.1 200 OK",
+                            "text/html",
+                            br"<!doctype html><html><body><nav>Site Nav</nav><main><h1>Docs</h1><p>Short</p></main></body></html>",
                         );
                     } else if request.path == "/raw" {
                         write_http_response(

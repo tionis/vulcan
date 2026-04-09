@@ -32,6 +32,7 @@ pub mod tasknotes;
 pub mod tasks;
 pub mod vector;
 pub mod watch;
+pub mod web;
 pub mod write_lock;
 
 pub use bases::{
@@ -210,6 +211,7 @@ pub use vector::{
     VectorRepairQuery, VectorRepairReport,
 };
 pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchReport};
+pub use web::{html_to_markdown as convert_web_html_to_markdown, WebFetchExtractionMode};
 
 const FIXED_NOW_ENV: &str = "VULCAN_FIXED_NOW";
 

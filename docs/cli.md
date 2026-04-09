@@ -285,7 +285,7 @@ Behavior:
 ### Web commands
 
 - `vulcan web search <query> [--backend <name>] [--limit <n>]`: query the configured web search backend and return title/url/snippet results.
-- `vulcan web fetch <url> [--mode markdown|html|raw] [--extract-article] [--save <path>]`: fetch one URL and render or save the response body.
+- `vulcan web fetch <url> [--mode markdown|html|raw] [--extraction-mode auto|article|generic] [--save <path>]`: fetch one URL and render or save the response body.
 - `vulcan help [<topic>] [--search <keyword>]`: browse integrated command and concept docs, with `--output json` for structured help consumers.
 - Built-in help topics include `getting-started`, `examples`, `filters`, `query-dsl`, `scripting`, `sandbox`, `js`, `js.vault`, `js.vault.graph`, and `js.vault.note`.
 - `vulcan describe [--format json-schema|openai-tools|mcp]`: export the CLI surface for humans or tool integrations.
@@ -294,7 +294,8 @@ Behavior:
 
 - `web search` reads `[web.search]` from `.vulcan/config.toml`. The default backend is `duckduckgo` (no API key required). Setting `backend = "auto"` auto-selects the first available keyed backend (Kagi → Exa → Tavily → Brave) and falls back to DuckDuckGo. Supported backends: `duckduckgo`, `kagi` (`KAGI_API_KEY`), `exa` (`EXA_API_KEY`), `tavily` (`TAVILY_API_KEY`), `brave` (`BRAVE_API_KEY`).
 - `web fetch` uses the configured Vulcan user-agent and performs a best-effort `robots.txt` check before requesting the target URL.
-- `web fetch --mode markdown` converts HTML into readable markdown-like text; `--extract-article` prefers `<article>` or `<main>` content when present.
+- `web fetch --mode markdown` converts HTML with `readabilityrs` article extraction for readerable pages and `html-to-markdown-rs` generic conversion otherwise.
+- `web fetch --extraction-mode article` forces article extraction; `generic` skips it; `auto` is the default.
 - `web fetch --save` writes the fetched output to disk and still reports metadata in JSON mode.
 
 ### Bases commands

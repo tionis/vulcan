@@ -160,15 +160,15 @@ pub(crate) fn handle_web_command(
         WebCommand::Fetch {
             url,
             mode,
+            extraction_mode,
             save,
-            extract_article,
         } => {
             let report = crate::run_web_fetch_command(
                 paths,
                 url,
                 *mode,
+                *extraction_mode,
                 save.as_ref(),
-                *extract_article,
                 Some(&guard),
             )?;
             crate::print_web_fetch_report(cli.output, &report, stdout_is_tty, use_stdout_color)

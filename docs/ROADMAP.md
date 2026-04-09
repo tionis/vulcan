@@ -2613,7 +2613,7 @@ vault.transaction(tx => {
 
 ```js
 web.search(query, opts)   // web search via configured backend
-web.fetch(url, opts)      // fetch URL, opts.mode: "markdown"|"html"|"raw"
+web.fetch(url, opts)      // fetch URL, opts.mode: "markdown"|"html"|"raw", opts.extractionMode?: "auto"|"article"|"generic"
 ```
 
 **Tier 4 — Unrestricted (`none` sandbox):**
@@ -2672,11 +2672,11 @@ scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
 **`web fetch`**
 
 - [x] `vulcan web fetch <url>` — fetch a URL and output content
-- [x] `--mode markdown` — convert HTML to markdown (readability-style article extraction, default)
+- [x] `--mode markdown` — convert HTML to markdown with auto article extraction for readerable pages
 - [x] `--mode html` — raw HTML
 - [x] `--mode raw` — raw response body
 - [x] `--save <path>` — save output to file (for images, PDFs, binary content)
-- [x] `--extract-article` — use readability algorithm to extract article content (strip nav, ads, etc.)
+- [x] `--extraction-mode auto|article|generic` — auto-detect article pages, force article extraction, or force generic conversion
 - [x] `--output json` returns `{ url, status, content_type, content }`
 - [x] Respect `robots.txt` (best effort)
 - [x] User-Agent header identifying Vulcan
