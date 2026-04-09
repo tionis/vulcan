@@ -15474,10 +15474,15 @@ struct QueryReportRenderOptions<'a> {
     format: QueryFormatArg,
     glob: Option<&'a str>,
     explain: bool,
+    verbose: bool,
     stdout_is_tty: bool,
     use_color: bool,
     no_header: bool,
     export: Option<&'a ResolvedExport>,
+}
+
+fn should_render_query_ast(output: OutputFormat, explain: bool, verbose: bool) -> bool {
+    explain || (verbose && matches!(output, OutputFormat::Human | OutputFormat::Markdown))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -15529,9 +15534,7 @@ fn print_query_report(
 
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
-            if options.explain
-                || (options.stdout_is_tty && matches!(options.format, QueryFormatArg::Table))
-            {
+            if should_render_query_ast(output, options.explain, options.verbose) {
                 let ast_json = serde_json::to_string_pretty(&report.query)
                     .unwrap_or_else(|_| "{}".to_string());
                 println!("{}", palette.cyan("Query AST:"));
@@ -15609,7 +15612,7 @@ fn print_query_report(
                     unreachable!("tsv/csv handled above")
                 }
             };
-            if options.explain {
+            if should_render_query_ast(output, options.explain, options.verbose) {
                 let payload = serde_json::json!({
                     "query": report.query,
                     "notes": rows,
@@ -27671,6 +27674,26 @@ mod tests {
         assert_eq!(format_eta(5, 10.0), "<1s");
         assert_eq!(format_eta(120, 10.0), "12.0s");
         assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
+    }
+
+    #[test]
+    fn query_ast_rendering_is_hidden_by_default() {
+        assert!(!should_render_query_ast(OutputFormat::Human, false, false));
+        assert!(!should_render_query_ast(
+            OutputFormat::Markdown,
+            false,
+            false
+        ));
+        assert!(!should_render_query_ast(OutputFormat::Json, false, false));
+    }
+
+    #[test]
+    fn query_ast_rendering_requires_explicit_diagnostics() {
+        assert!(should_render_query_ast(OutputFormat::Human, true, false));
+        assert!(should_render_query_ast(OutputFormat::Json, true, false));
+        assert!(should_render_query_ast(OutputFormat::Human, false, true));
+        assert!(should_render_query_ast(OutputFormat::Markdown, false, true));
+        assert!(!should_render_query_ast(OutputFormat::Json, false, true));
     }
 
     #[test]
