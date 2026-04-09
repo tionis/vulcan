@@ -230,6 +230,7 @@ mod runtime {
     };
     use crate::resolve_note_reference;
     use crate::search::{search_vault_with_filter, SearchQuery};
+    use crate::web::{html_to_markdown as convert_web_html_to_markdown, WebFetchExtractionMode};
     use crate::VaultPaths;
     use crate::{
         move_note, parse_document, query_backlinks_with_filter, query_links_with_filter,
@@ -285,6 +286,7 @@ mod runtime {
         status: u16,
         content_type: String,
         mode: String,
+        extraction_mode: String,
         content: String,
     }
 
@@ -2164,11 +2166,15 @@ const web = {
     );
   },
   fetch(url, opts = {}) {
+    const extractionMode =
+      typeof opts?.extractionMode === "string"
+        ? opts.extractionMode
+        : (opts?.extractArticle ? "article" : "auto");
     return JSON.parse(
       __vulcan_web_fetch_json(
         String(url),
         opts?.mode ?? "markdown",
-        !!opts?.extractArticle
+        extractionMode
       )
     );
   },
@@ -2448,16 +2454,16 @@ See also: web.fetch(), vault.search()`
 );
 __vulcanRegisterHelp(
   web.fetch,
-  `web.fetch(url: string, opts?: { mode?: "markdown" | "html" | "raw", extractArticle?: boolean }): WebFetchReport
+  `web.fetch(url: string, opts?: { mode?: "markdown" | "html" | "raw", extractionMode?: "auto" | "article" | "generic" }): WebFetchReport
 
 Fetch one URL through Vulcan's web client. Requires --sandbox net or higher.
 
 Parameters:
   url  - Absolute URL to fetch.
-  opts - Optional fetch mode and article-extraction behavior.
+  opts - Optional fetch mode and HTML extraction behavior.
 
 Example:
-  web.fetch("https://example.com", { mode: "markdown", extractArticle: true })
+  web.fetch("https://example.com", { mode: "markdown", extractionMode: "article" })
 
 See also: web.search(), vault.transaction()`
 );
@@ -3341,10 +3347,10 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_web_fetch_json",
                 Func::from(
-                    move |ctx: Ctx<'_>, url: String, mode: String, extract_article: bool| {
+                    move |ctx: Ctx<'_>, url: String, mode: String, extraction_mode: String| {
                         to_json_string(
                             &ctx,
-                            run_js_web_fetch(&web_fetch_state, &url, &mode, extract_article)
+                            run_js_web_fetch(&web_fetch_state, &url, &mode, &extraction_mode)
                                 .map_err(|error| {
                                     Exception::throw_message(&ctx, &error.to_string())
                                 })?,
@@ -4531,7 +4537,7 @@ globalThis.Function = undefined;
         state: &JsEvalState,
         url: &str,
         mode: &str,
-        extract_article: bool,
+        extraction_mode: &str,
     ) -> Result<WebFetchReport, DataviewJsError> {
         ensure_network_access(state, "web.fetch()")?;
         if let Some(permissions) = state.permissions.as_ref() {
@@ -4559,12 +4565,15 @@ globalThis.Function = undefined;
         let bytes = response
             .bytes()
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let extraction_mode =
+            parse_web_fetch_extraction_mode(extraction_mode).map_err(DataviewJsError::Message)?;
         Ok(WebFetchReport {
             url: url.to_string(),
             status,
             content_type: content_type.clone(),
             mode: mode.to_string(),
-            content: render_fetched_content(&bytes, &content_type, mode, extract_article),
+            extraction_mode: extraction_mode.as_str().to_string(),
+            content: render_fetched_content(&bytes, &content_type, url, mode, extraction_mode),
         })
     }
 
@@ -4669,15 +4678,16 @@ globalThis.Function = undefined;
     fn render_fetched_content(
         bytes: &[u8],
         content_type: &str,
+        url: &str,
         mode: &str,
-        extract_article: bool,
+        extraction_mode: WebFetchExtractionMode,
     ) -> String {
         let rendered = String::from_utf8_lossy(bytes).to_string();
         match mode {
             "raw" | "html" => rendered,
             _ => {
                 if content_type.contains("html") {
-                    html_to_markdown(&rendered, extract_article)
+                    convert_web_html_to_markdown(&rendered, Some(url), extraction_mode)
                 } else {
                     rendered
                 }
@@ -4685,59 +4695,17 @@ globalThis.Function = undefined;
         }
     }
 
-    fn html_to_markdown(html: &str, extract_article: bool) -> String {
-        let relevant = if extract_article {
-            extract_article_html(html).unwrap_or(html)
-        } else {
-            html
-        };
-        let mut rendered = Regex::new(r"(?is)<script[^>]*>.*?</script>")
-            .expect("regex should compile")
-            .replace_all(relevant, "")
-            .into_owned();
-        rendered = Regex::new(r"(?is)<style[^>]*>.*?</style>")
-            .expect("regex should compile")
-            .replace_all(&rendered, "")
-            .into_owned();
-        for (pattern, replacement) in [
-            (r"(?i)<br\s*/?>", "\n"),
-            (
-                r"(?i)</(p|div|section|article|main|body|h1|h2|h3|h4|h5|h6|tr)>",
-                "\n",
-            ),
-            (r"(?i)<li[^>]*>", "- "),
-            (r"(?i)</li>", "\n"),
-        ] {
-            rendered = Regex::new(pattern)
-                .expect("regex should compile")
-                .replace_all(&rendered, replacement)
-                .into_owned();
+    fn parse_web_fetch_extraction_mode(
+        extraction_mode: &str,
+    ) -> Result<WebFetchExtractionMode, String> {
+        match extraction_mode {
+            "auto" => Ok(WebFetchExtractionMode::Auto),
+            "article" => Ok(WebFetchExtractionMode::Article),
+            "generic" => Ok(WebFetchExtractionMode::Generic),
+            other => Err(format!(
+                "invalid extraction mode `{other}`; expected auto, article, or generic"
+            )),
         }
-        rendered = Regex::new(r"(?is)<[^>]+>")
-            .expect("regex should compile")
-            .replace_all(&rendered, "")
-            .into_owned();
-        rendered = decode_html_entities(&rendered);
-        Regex::new(r"\n{3,}")
-            .expect("regex should compile")
-            .replace_all(rendered.trim(), "\n\n")
-            .into_owned()
-    }
-
-    fn extract_article_html(html: &str) -> Option<&str> {
-        for pattern in [
-            r"(?is)<article[^>]*>(.*?)</article>",
-            r"(?is)<main[^>]*>(.*?)</main>",
-            r"(?is)<body[^>]*>(.*?)</body>",
-        ] {
-            let regex = Regex::new(pattern).expect("regex should compile");
-            if let Some(captures) = regex.captures(html) {
-                if let Some(content) = captures.get(1) {
-                    return Some(content.as_str());
-                }
-            }
-        }
-        None
     }
 
     fn decode_html_entities(input: &str) -> String {
@@ -5934,7 +5902,7 @@ cpu_limit_ms = 25
                 &format!(
                     r#"
                     const search = web.search("Alpha", {{ limit: 1 }});
-                    const fetched = web.fetch("{base_url}/article", {{ mode: "markdown", extractArticle: true }});
+                    const fetched = web.fetch("{base_url}/article", {{ mode: "markdown", extractionMode: "article" }});
                     dv.table(["title", "status", "content"], [[search.results[0].title, fetched.status, fetched.content.includes("Alpha page")]]);
                     "#
                 ),

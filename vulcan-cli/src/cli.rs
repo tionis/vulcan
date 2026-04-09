@@ -390,7 +390,8 @@ Notes:
   `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.
   `duckduckgo` is the default backend and works without an API key.
   `auto` prefers Kagi, Exa, Tavily, then Brave when their API key env vars are set, and falls back to DuckDuckGo.
-  `web fetch --extract-article` prefers `<article>`/`<main>` content when present.
+  `web fetch --extraction-mode auto` uses Readability article extraction when the page looks readerable.
+  `web fetch --extraction-mode article` forces article extraction; `generic` skips it.
   `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.
 
 Examples:
@@ -2159,10 +2160,15 @@ pub enum WebCommand {
         url: String,
         #[arg(long, value_enum, default_value_t = WebFetchMode::Markdown)]
         mode: WebFetchMode,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = WebFetchExtractionMode::Auto,
+            help = "Choose HTML extraction behavior for markdown mode"
+        )]
+        extraction_mode: WebFetchExtractionMode,
         #[arg(long, help = "Write fetched output to this path")]
         save: Option<PathBuf>,
-        #[arg(long, help = "Prefer article-like content when converting HTML")]
-        extract_article: bool,
     },
 }
 
@@ -2171,6 +2177,13 @@ pub enum WebFetchMode {
     Markdown,
     Html,
     Raw,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WebFetchExtractionMode {
+    Auto,
+    Article,
+    Generic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]

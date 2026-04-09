@@ -27,7 +27,7 @@ pub use cli::{
     SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
     TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
     TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchExtractionMode, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -80,14 +80,14 @@ use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, add_kanban_card, all_importers, annotate_import_conflicts,
-    archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint, delete_saved_report,
-    doctor_fix, doctor_vault, ensure_vulcan_dir, evaluate_base_file,
-    evaluate_dataview_js_with_options, evaluate_dql_with_filter, evaluate_note_inline_expressions,
-    evaluate_tasks_query, execute_query_report_with_filter, expected_periodic_note_path,
-    export_daily_events_to_ics, export_static_search_index, extract_tasknote, git_blame, git_diff,
-    git_log, git_recent_log, git_status, initialize_vault, inspect_base_file, inspect_cache,
-    link_mentions, list_checkpoints, list_daily_note_events, list_saved_reports,
-    load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
+    archive_kanban_card, bulk_replace, cache_vacuum, convert_web_html_to_markdown,
+    create_checkpoint, delete_saved_report, doctor_fix, doctor_vault, ensure_vulcan_dir,
+    evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter,
+    evaluate_note_inline_expressions, evaluate_tasks_query, execute_query_report_with_filter,
+    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index,
+    extract_tasknote, git_blame, git_diff, git_log, git_recent_log, git_status, initialize_vault,
+    inspect_base_file, inspect_cache, link_mentions, list_checkpoints, list_daily_note_events,
+    list_saved_reports, load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
     load_permission_profiles, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
     move_kanban_card, move_note, parse_document, parse_dql_with_diagnostics,
     parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
@@ -125,6 +125,7 @@ use vulcan_core::{
     TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
     VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
     VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    WebFetchExtractionMode as CoreWebFetchExtractionMode,
 };
 use zip::write::FileOptions;
 
@@ -779,6 +780,7 @@ struct WebFetchReport {
     status: u16,
     content_type: String,
     mode: String,
+    extraction_mode: String,
     content: String,
     saved: Option<String>,
 }
@@ -2774,8 +2776,8 @@ fn run_web_fetch_command(
     paths: &VaultPaths,
     url: &str,
     mode: WebFetchMode,
+    extraction_mode: WebFetchExtractionMode,
     save: Option<&PathBuf>,
-    extract_article: bool,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<WebFetchReport, CliError> {
     if let Some(permissions) = permissions {
@@ -2800,7 +2802,7 @@ fn run_web_fetch_command(
         .unwrap_or("application/octet-stream")
         .to_string();
     let bytes = response.bytes().map_err(CliError::operation)?;
-    let content = render_fetched_content(&bytes, &content_type, mode, extract_article);
+    let content = render_fetched_content(&bytes, &content_type, url, mode, extraction_mode);
     let saved = save.map(|path| path.to_string_lossy().to_string());
 
     if let Some(path) = save {
@@ -2820,6 +2822,7 @@ fn run_web_fetch_command(
         status,
         content_type,
         mode: format!("{mode:?}").to_ascii_lowercase(),
+        extraction_mode: format!("{extraction_mode:?}").to_ascii_lowercase(),
         content,
         saved,
     })
@@ -2869,19 +2872,32 @@ fn parse_search_results(payload: &Value) -> Option<Vec<WebSearchResult>> {
 fn render_fetched_content(
     bytes: &[u8],
     content_type: &str,
+    url: &str,
     mode: WebFetchMode,
-    extract_article: bool,
+    extraction_mode: WebFetchExtractionMode,
 ) -> String {
     let rendered = String::from_utf8_lossy(bytes).to_string();
     match mode {
         WebFetchMode::Raw | WebFetchMode::Html => rendered,
         WebFetchMode::Markdown => {
             if content_type.contains("html") {
-                html_to_markdown(&rendered, extract_article)
+                convert_web_html_to_markdown(
+                    &rendered,
+                    Some(url),
+                    extraction_mode_to_core(extraction_mode),
+                )
             } else {
                 rendered
             }
         }
+    }
+}
+
+fn extraction_mode_to_core(mode: WebFetchExtractionMode) -> CoreWebFetchExtractionMode {
+    match mode {
+        WebFetchExtractionMode::Auto => CoreWebFetchExtractionMode::Auto,
+        WebFetchExtractionMode::Article => CoreWebFetchExtractionMode::Article,
+        WebFetchExtractionMode::Generic => CoreWebFetchExtractionMode::Generic,
     }
 }
 
@@ -2933,61 +2949,6 @@ fn robots_allows_path(robots: &str, path: &str, user_agent: &str) -> bool {
     }
 
     true
-}
-
-fn html_to_markdown(html: &str, extract_article: bool) -> String {
-    let relevant = if extract_article {
-        extract_article_html(html).unwrap_or(html)
-    } else {
-        html
-    };
-    let mut rendered = Regex::new(r"(?is)<script[^>]*>.*?</script>")
-        .expect("regex should compile")
-        .replace_all(relevant, "")
-        .into_owned();
-    rendered = Regex::new(r"(?is)<style[^>]*>.*?</style>")
-        .expect("regex should compile")
-        .replace_all(&rendered, "")
-        .into_owned();
-    for (pattern, replacement) in [
-        (r"(?i)<br\s*/?>", "\n"),
-        (
-            r"(?i)</(p|div|section|article|main|body|h1|h2|h3|h4|h5|h6|tr)>",
-            "\n",
-        ),
-        (r"(?i)<li[^>]*>", "- "),
-        (r"(?i)</li>", "\n"),
-    ] {
-        rendered = Regex::new(pattern)
-            .expect("regex should compile")
-            .replace_all(&rendered, replacement)
-            .into_owned();
-    }
-    rendered = Regex::new(r"(?is)<[^>]+>")
-        .expect("regex should compile")
-        .replace_all(&rendered, "")
-        .into_owned();
-    rendered = decode_html_entities(&rendered);
-    Regex::new(r"\n{3,}")
-        .expect("regex should compile")
-        .replace_all(rendered.trim(), "\n\n")
-        .into_owned()
-}
-
-fn extract_article_html(html: &str) -> Option<&str> {
-    for pattern in [
-        r"(?is)<article[^>]*>(.*?)</article>",
-        r"(?is)<main[^>]*>(.*?)</main>",
-        r"(?is)<body[^>]*>(.*?)</body>",
-    ] {
-        let regex = Regex::new(pattern).expect("regex should compile");
-        if let Some(captures) = regex.captures(html) {
-            if let Some(content) = captures.get(1) {
-                return Some(content.as_str());
-            }
-        }
-    }
-    None
 }
 
 fn decode_html_entities(input: &str) -> String {
@@ -28824,9 +28785,10 @@ mod tests {
             "https://example.com",
             "--mode",
             "raw",
+            "--extraction-mode",
+            "generic",
             "--save",
             "page.bin",
-            "--extract-article",
         ])
         .expect("cli should parse");
 
@@ -28836,8 +28798,8 @@ mod tests {
                 command: WebCommand::Fetch {
                     url: "https://example.com".to_string(),
                     mode: WebFetchMode::Raw,
+                    extraction_mode: WebFetchExtractionMode::Generic,
                     save: Some(PathBuf::from("page.bin")),
-                    extract_article: true,
                 },
             }
         );

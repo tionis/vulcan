@@ -1111,7 +1111,7 @@ The JS API binds directly to vulcan-core structs (not CLI wrappers). The `vault`
 
 ## 17d. Web tools and external data
 
-Web search and fetch capabilities serve AI integrations and the JS runtime. Search uses a pluggable `SearchBackend` trait (Kagi first). Fetch supports multiple output modes (markdown, HTML, raw) with readability-style article extraction.
+Web search and fetch capabilities serve AI integrations and the JS runtime. Search uses a pluggable `SearchBackend` trait (Kagi first). Fetch supports multiple output modes (markdown, HTML, raw) with Readability-based article extraction in `auto`/`article` modes and generic HTML-to-Markdown fallback for non-article pages.
 
 ## 17e. Deferred native chat integrations
 
