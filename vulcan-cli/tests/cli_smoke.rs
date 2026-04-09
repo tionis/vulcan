@@ -15879,6 +15879,41 @@ fn complete_unknown_context_returns_empty() {
         .stdout(predicate::str::is_empty());
 }
 
+fn fish_is_available() -> bool {
+    ProcessCommand::new("fish")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE")?;
+            let path = std::env::var_os("HOMEPATH")?;
+            let mut home = PathBuf::from(drive);
+            home.push(path);
+            Some(home)
+        })
+}
+
+fn write_fish_completion_script(temp_dir: &TempDir) -> PathBuf {
+    let completions = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["completions", "fish"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let script_path = temp_dir.path().join("vulcan.fish");
+    fs::write(&script_path, completions).expect("completion script should write");
+    script_path
+}
+
 #[test]
 fn fish_completions_include_dynamic_hook() {
     let output = Command::cargo_bin("vulcan")
@@ -15891,7 +15926,7 @@ fn fish_completions_include_dynamic_hook() {
         .clone();
     let text = String::from_utf8_lossy(&output);
     assert!(
-        text.contains("__fish_vulcan_dynamic_complete bases-file"),
+        text.contains("__fish_vulcan_dynamic_complete_bases_file"),
         "fish completions should hook bases-file for bases subcommands"
     );
     assert!(
@@ -15901,5 +15936,295 @@ fn fish_completions_include_dynamic_hook() {
     assert!(
         text.contains("function __fish_vulcan_completion_prefix_args"),
         "fish completions should include the helper that replays leading global args"
+    );
+    assert!(
+        text.contains("complete -c vulcan -e"),
+        "fish completions should clear stale vulcan completion definitions before re-registering them"
+    );
+    assert!(
+        text.contains("__fish_vulcan_complete_vault_path_arg"),
+        "fish completions should include the dedicated vault-relative path helper"
+    );
+}
+
+#[test]
+fn fish_resourcing_completions_replaces_stale_definitions() {
+    if !fish_is_available() {
+        return;
+    }
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let fish_home = temp_dir.path().join("fish-home");
+    let config_home = fish_home.join(".config");
+    let data_home = fish_home.join(".local/share");
+    fs::create_dir_all(config_home.join("fish")).expect("fish config dir should exist");
+    fs::create_dir_all(data_home.join("fish/generated_completions"))
+        .expect("fish data dir should exist");
+
+    let script_path = write_fish_completion_script(&temp_dir);
+    let output = ProcessCommand::new("fish")
+        .env("HOME", &fish_home)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .arg("-c")
+        .arg(format!(
+            "complete -c vulcan -n '__fish_seen_subcommand_from note; and __fish_seen_subcommand_from info' -f -a 'BROKEN'; source '{}'; complete -C 'vulcan --vault {} note info '",
+            script_path.display(),
+            vault_root.display()
+        ))
+        .output()
+        .expect("fish should launch");
+    assert!(
+        output.status.success(),
+        "fish completion helper should succeed after re-sourcing: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines().any(|line| line.starts_with("Home\t")),
+        "re-sourced fish completions should still return dynamic note candidates, got: {text}"
+    );
+    assert!(
+        !text.contains("BROKEN"),
+        "re-sourcing fish completions should replace stale definitions, got: {text}"
+    );
+}
+
+#[test]
+fn fish_vault_path_completion_uses_selected_vault_outside_cwd() {
+    if !fish_is_available() {
+        return;
+    }
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let outside_dir = temp_dir.path().join("outside");
+    fs::create_dir_all(&outside_dir).expect("outside dir should exist");
+    fs::write(outside_dir.join("Hazard.md"), "# hazard\n").expect("outside file should write");
+
+    let script_path = write_fish_completion_script(&temp_dir);
+
+    let output = ProcessCommand::new("fish")
+        .arg("-c")
+        .arg(format!(
+            "cd '{}'; source '{}'; complete -C 'vulcan --vault {} note create H'",
+            outside_dir.display(),
+            script_path.display(),
+            vault_root.display()
+        ))
+        .output()
+        .expect("fish should launch");
+    assert!(
+        output.status.success(),
+        "fish completion helper should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines().any(|line| line.starts_with("Home.md\t")),
+        "note create should complete paths from the selected vault, got: {text}"
+    );
+    assert!(
+        !text.contains("Hazard.md"),
+        "note create should not complete files from the current working directory, got: {text}"
+    );
+}
+
+#[test]
+fn fish_note_completion_uses_selected_vault_outside_cwd() {
+    if !fish_is_available() {
+        return;
+    }
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let outside_dir = temp_dir.path().join("outside");
+    fs::create_dir_all(&outside_dir).expect("outside dir should exist");
+    let script_path = write_fish_completion_script(&temp_dir);
+
+    let output = ProcessCommand::new("fish")
+        .arg("-c")
+        .arg(format!(
+            "cd '{}'; source '{}'; complete -C 'vulcan --vault {} note info H'; complete -C 'vulcan --vault {} backlinks H'",
+            outside_dir.display(),
+            script_path.display(),
+            vault_root.display(),
+            vault_root.display()
+        ))
+        .output()
+        .expect("fish should launch");
+    assert!(
+        output.status.success(),
+        "fish completion helper should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("Home\t") || line.starts_with("Home.md\t")),
+        "note-style completions should come from the selected vault, got: {text}"
+    );
+}
+
+#[test]
+fn fish_completion_expands_tilde_prefixed_vault_argument() {
+    if !fish_is_available() {
+        return;
+    }
+    let Some(home_dir) = user_home_dir() else {
+        return;
+    };
+
+    let temp_dir = TempDir::new_in(&home_dir).expect("temp dir under home should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::write(vault_root.join("Dashboards.base"), "views: []\n").expect("base file should write");
+    run_scan(&vault_root);
+
+    let relative_vault = vault_root
+        .strip_prefix(&home_dir)
+        .expect("vault should be inside the home directory");
+    let tilde_vault = format!("~/{}", relative_vault.display());
+    let script_path = write_fish_completion_script(&temp_dir);
+
+    let note_output = ProcessCommand::new("fish")
+        .arg("-c")
+        .arg(format!(
+            "source '{}'; complete -C 'vulcan --vault {} note info '",
+            script_path.display(),
+            tilde_vault
+        ))
+        .output()
+        .expect("fish should launch");
+    assert!(
+        note_output.status.success(),
+        "fish note completion should succeed: {}",
+        String::from_utf8_lossy(&note_output.stderr)
+    );
+    let note_text = String::from_utf8_lossy(&note_output.stdout);
+    assert!(
+        note_text.lines().any(|line| line.starts_with("Home\t")),
+        "note info should complete notes for tilde-prefixed vaults, got: {note_text}"
+    );
+
+    let backlinks_output = ProcessCommand::new("fish")
+        .arg("-c")
+        .arg(format!(
+            "source '{}'; complete -C 'vulcan --vault {} backlinks '",
+            script_path.display(),
+            tilde_vault
+        ))
+        .output()
+        .expect("fish should launch");
+    assert!(
+        backlinks_output.status.success(),
+        "fish backlinks completion should succeed: {}",
+        String::from_utf8_lossy(&backlinks_output.stderr)
+    );
+    let backlinks_text = String::from_utf8_lossy(&backlinks_output.stdout);
+    assert!(
+        backlinks_text
+            .lines()
+            .any(|line| line.starts_with("Home\t")),
+        "backlinks should complete notes for tilde-prefixed vaults, got: {backlinks_text}"
+    );
+
+    let bases_output = ProcessCommand::new("fish")
+        .arg("-c")
+        .arg(format!(
+            "source '{}'; complete -C 'vulcan --vault {} bases eval '",
+            script_path.display(),
+            tilde_vault
+        ))
+        .output()
+        .expect("fish should launch");
+    assert!(
+        bases_output.status.success(),
+        "fish bases completion should succeed: {}",
+        String::from_utf8_lossy(&bases_output.stderr)
+    );
+    let bases_text = String::from_utf8_lossy(&bases_output.stdout);
+    assert!(
+        bases_text
+            .lines()
+            .any(|line| line.starts_with("Dashboards.base\t")),
+        "bases eval should complete .base files for tilde-prefixed vaults, got: {bases_text}"
+    );
+
+    let create_output = ProcessCommand::new("fish")
+        .arg("-c")
+        .arg(format!(
+            "source '{}'; complete -C 'vulcan --vault {} note create '",
+            script_path.display(),
+            tilde_vault
+        ))
+        .output()
+        .expect("fish should launch");
+    assert!(
+        create_output.status.success(),
+        "fish note create completion should succeed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+    let create_text = String::from_utf8_lossy(&create_output.stdout);
+    assert!(
+        create_text.lines().any(|line| line.starts_with("Home.md\t")),
+        "note create should complete vault-relative paths for tilde-prefixed vaults, got: {create_text}"
+    );
+}
+
+#[test]
+fn fish_bases_eval_completion_uses_selected_vault_outside_cwd() {
+    if !fish_is_available() {
+        return;
+    }
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join("Dashboards")).expect("dashboards dir should exist");
+    fs::write(vault_root.join("Dashboards/People.base"), "views: []\n")
+        .expect("base file should write");
+    run_scan(&vault_root);
+
+    let outside_dir = temp_dir.path().join("outside");
+    fs::create_dir_all(&outside_dir).expect("outside dir should exist");
+    fs::write(outside_dir.join("Dashboards.base"), "views: []\n")
+        .expect("outside base file should write");
+
+    let script_path = write_fish_completion_script(&temp_dir);
+    let output = ProcessCommand::new("fish")
+        .arg("-c")
+        .arg(format!(
+            "cd '{}'; source '{}'; complete -C 'vulcan --vault {} bases eval D'",
+            outside_dir.display(),
+            script_path.display(),
+            vault_root.display()
+        ))
+        .output()
+        .expect("fish should launch");
+    assert!(
+        output.status.success(),
+        "fish completion helper should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("Dashboards/People.base\t")),
+        "bases eval should complete .base files from the selected vault, got: {text}"
+    );
+    assert!(
+        !text.contains("Dashboards.base"),
+        "bases eval should not complete files from the current working directory, got: {text}"
     );
 }

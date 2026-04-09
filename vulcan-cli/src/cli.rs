@@ -4170,11 +4170,13 @@ Examples:
     },
     /// Return dynamic completion candidates for a given context (newline-separated).
     ///
-    /// Contexts: note, kanban-board, bases-view, daily-date, script, task-view
+    /// Contexts: note, kanban-board, bases-view, daily-date, script, task-view, vault-path
     #[command(hide = true)]
     Complete {
         #[arg(help = "Completion context")]
         context: String,
+        #[arg(help = "Optional current token prefix")]
+        prefix: Option<String>,
     },
     #[command(
         about = "Discover, register, and run JS lifecycle plugins",
