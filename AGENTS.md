@@ -130,7 +130,7 @@ Commit each discrete feature, fix, or roadmap item as its own commit once it pas
 
 ```sh
 cargo fmt --all                  # format all crates
-cargo clippy --workspace -- -D warnings   # lint — treat warnings as errors
+cargo clippy --workspace --all-targets -- -D warnings   # lint all targets — treat warnings as errors
 cargo test --workspace           # run all tests
 ```
 

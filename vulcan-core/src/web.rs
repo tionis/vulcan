@@ -144,13 +144,13 @@ mod tests {
 
     #[test]
     fn auto_mode_prefers_article_extraction_for_readerable_pages() {
-        let html = r#"<!doctype html><html><body>
+        let html = r"<!doctype html><html><body>
 <nav>skip me</nav>
 <article>
   <h1>Release Summary</h1>
   <p>This is a substantial article paragraph with enough detail to cross the readerability threshold and keep the extraction path focused on the main content instead of the surrounding chrome.</p>
 </article>
-</body></html>"#;
+</body></html>";
 
         let markdown = html_to_markdown(
             html,
@@ -164,10 +164,10 @@ mod tests {
 
     #[test]
     fn generic_mode_keeps_non_article_page_chrome() {
-        let html = r#"<!doctype html><html><body>
+        let html = r"<!doctype html><html><body>
 <nav>Site Nav</nav>
 <main><h1>Docs</h1><p>Short</p></main>
-</body></html>"#;
+</body></html>";
 
         let markdown = html_to_markdown(
             html,
@@ -181,10 +181,10 @@ mod tests {
 
     #[test]
     fn auto_mode_falls_back_to_generic_for_non_readerable_pages() {
-        let html = r#"<!doctype html><html><body>
+        let html = r"<!doctype html><html><body>
 <nav>Site Nav</nav>
 <main><h1>Docs</h1><p>Short</p></main>
-</body></html>"#;
+</body></html>";
 
         let auto = html_to_markdown(
             html,
