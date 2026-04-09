@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -198,7 +198,7 @@ impl WatchBatch {
 }
 
 fn normalize_watch_path(paths: &VaultPaths, path: &Path) -> Option<String> {
-    let relative = paths.relative_to_vault(path)?;
+    let relative = relative_watch_path(paths, path)?;
     let normalized = relative
         .components()
         .filter_map(|component| match component {
@@ -211,6 +211,30 @@ fn normalize_watch_path(paths: &VaultPaths, path: &Path) -> Option<String> {
     }
 
     Some(normalized.join("/"))
+}
+
+fn relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {
+    paths
+        .relative_to_vault(path)
+        .or_else(|| windows_relative_watch_path(paths, path))
+}
+
+#[cfg(windows)]
+fn windows_relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {
+    strip_windows_verbatim_prefix(path).and_then(|normalized| paths.relative_to_vault(&normalized))
+}
+
+#[cfg(not(windows))]
+fn windows_relative_watch_path(_: &VaultPaths, _: &Path) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix(path: &Path) -> Option<PathBuf> {
+    path.as_os_str()
+        .to_string_lossy()
+        .strip_prefix(r"\\?\")
+        .map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -287,6 +311,18 @@ mod tests {
         assert_eq!(
             normalize_watch_path(&paths, Path::new("/tmp/outside.md")),
             None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalize_watch_path_handles_windows_verbatim_prefix() {
+        let paths = VaultPaths::new(PathBuf::from(r"C:\vault"));
+        let path = PathBuf::from(r"\\?\C:\vault\Notes\Alpha.md");
+
+        assert_eq!(
+            normalize_watch_path(&paths, &path),
+            Some("Notes/Alpha.md".to_string())
         );
     }
 

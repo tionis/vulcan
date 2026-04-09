@@ -13154,18 +13154,22 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     // daily-date) must work when invoked from outside a vault by shell completion
     // hooks.  Vault-dependent contexts silently return empty output rather than
     // erroring so the shell gets a clean exit.
-    if let Command::Complete { ref context } = cli.command {
+    if let Command::Complete {
+        ref context,
+        ref prefix,
+    } = cli.command
+    {
         if context == "daily-date" {
             // Emit vault-free candidates (keywords + last 14 days) first, then
             // supplement with existing note dates from the vault if available.
             let mut seen = std::collections::HashSet::new();
-            for candidate in collect_complete_candidates_no_vault(context) {
+            for candidate in collect_complete_candidates_no_vault(context, prefix.as_deref()) {
                 if seen.insert(candidate.clone()) {
                     println!("{candidate}");
                 }
             }
             if let Ok(paths) = resolve_vault_root(&cli.vault).map(VaultPaths::new) {
-                for candidate in collect_complete_candidates(&paths, context) {
+                for candidate in collect_complete_candidates(&paths, context, prefix.as_deref()) {
                     if seen.insert(candidate.clone()) {
                         println!("{candidate}");
                     }
@@ -13177,7 +13181,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         let Ok(paths) = resolve_vault_root(&cli.vault).map(VaultPaths::new) else {
             return Ok(());
         };
-        run_complete_command(&paths, context);
+        run_complete_command(&paths, context, prefix.as_deref());
         return Ok(());
     }
 
@@ -13287,14 +13291,22 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             } else {
                 static_script
             };
+            if matches!(shell, clap_complete::Shell::Fish) {
+                // Fish accumulates `complete -c vulcan ...` definitions when a refreshed
+                // script is sourced into an existing shell session, so clear them first.
+                println!("complete -c vulcan -e");
+            }
             print!("{patched}");
             if !dynamic.is_empty() {
                 println!("{dynamic}");
             }
             Ok(())
         }
-        Command::Complete { ref context } => {
-            run_complete_command(&paths, context);
+        Command::Complete {
+            ref context,
+            ref prefix,
+        } => {
+            run_complete_command(&paths, context, prefix.as_deref());
             Ok(())
         }
         Command::Plugin { ref command } => {
@@ -23813,14 +23825,44 @@ fn print_cache_vacuum_report(
     }
 }
 
-fn resolve_vault_root(vault: &PathBuf) -> Result<PathBuf, CliError> {
-    if vault.is_absolute() {
-        return Ok(vault.clone());
+fn resolve_vault_root(vault: &Path) -> Result<PathBuf, CliError> {
+    let expanded = expand_home_path(vault).unwrap_or_else(|| vault.to_path_buf());
+
+    if expanded.is_absolute() {
+        return Ok(expanded);
     }
 
     Ok(std::env::current_dir()
         .map_err(|error| CliError::io(&error))?
-        .join(vault))
+        .join(expanded))
+}
+
+fn expand_home_path(path: &Path) -> Option<PathBuf> {
+    let path_str = path.to_str()?;
+    if path_str == "~" {
+        return current_home_dir();
+    }
+    if let Some(rest) = path_str.strip_prefix("~/") {
+        return current_home_dir().map(|home| home.join(rest));
+    }
+    #[cfg(windows)]
+    if let Some(rest) = path_str.strip_prefix("~\\") {
+        return current_home_dir().map(|home| home.join(rest));
+    }
+    None
+}
+
+fn current_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE")?;
+            let path = std::env::var_os("HOMEPATH")?;
+            let mut home = PathBuf::from(drive);
+            home.push(path);
+            Some(home)
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26888,16 +26930,16 @@ fn mcp_value_to_string(val: &Value) -> String {
     }
 }
 
-fn run_complete_command(paths: &VaultPaths, context: &str) {
-    let candidates = collect_complete_candidates(paths, context);
+fn run_complete_command(paths: &VaultPaths, context: &str, prefix: Option<&str>) {
+    let candidates = collect_complete_candidates(paths, context, prefix);
     for candidate in &candidates {
         println!("{candidate}");
     }
 }
 
 /// Candidates for contexts that require no vault (safe to call before path resolution).
-fn collect_complete_candidates_no_vault(context: &str) -> Vec<String> {
-    match context {
+fn collect_complete_candidates_no_vault(context: &str, prefix: Option<&str>) -> Vec<String> {
+    let candidates = match context {
         "daily-date" => {
             let mut dates = vec![
                 "today".to_string(),
@@ -26917,20 +26959,89 @@ fn collect_complete_candidates_no_vault(context: &str) -> Vec<String> {
             dates
         }
         _ => Vec::new(),
+    };
+    filter_completion_candidates(candidates, prefix)
+}
+
+fn filter_completion_candidates(mut candidates: Vec<String>, prefix: Option<&str>) -> Vec<String> {
+    let Some(prefix) = prefix.filter(|value| !value.is_empty()) else {
+        return candidates;
+    };
+    candidates.retain(|candidate| candidate.starts_with(prefix));
+    candidates
+}
+
+fn collect_vault_path_candidates(paths: &VaultPaths, prefix: Option<&str>) -> Vec<String> {
+    let prefix = prefix.unwrap_or_default().replace('\\', "/");
+    let trimmed = prefix.trim_start_matches("./");
+    let (dir_prefix, partial_name) = match trimmed.rsplit_once('/') {
+        Some((directory, partial)) => (directory.trim_end_matches('/'), partial),
+        None => ("", trimmed),
+    };
+
+    if Path::new(dir_prefix).components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Vec::new();
     }
+
+    let directory = if dir_prefix.is_empty() {
+        paths.vault_root().to_path_buf()
+    } else {
+        paths.vault_root().join(dir_prefix)
+    };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+
+    let mut candidates = BTreeSet::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.is_empty() {
+            continue;
+        }
+        if dir_prefix.is_empty() && matches!(name.as_str(), ".git" | ".vulcan") {
+            continue;
+        }
+        if !name.starts_with(partial_name) {
+            continue;
+        }
+
+        let mut candidate = if dir_prefix.is_empty() {
+            name
+        } else {
+            format!("{dir_prefix}/{name}")
+        };
+        if entry
+            .file_type()
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or(false)
+        {
+            candidate.push('/');
+        }
+        candidates.insert(candidate.replace('\\', "/"));
+    }
+    candidates.into_iter().collect()
 }
 
 #[allow(clippy::too_many_lines)]
-fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String> {
+fn collect_complete_candidates(
+    paths: &VaultPaths,
+    context: &str,
+    prefix: Option<&str>,
+) -> Vec<String> {
     // vault-free contexts that also have a vault-dependent branch are handled in
     // dispatch() using a HashSet merge; skip them here to avoid masking the DB branch.
     if context != "daily-date" {
-        let vault_free = collect_complete_candidates_no_vault(context);
+        let vault_free = collect_complete_candidates_no_vault(context, prefix);
         if !vault_free.is_empty() {
             return vault_free;
         }
     }
-    match context {
+    let candidates = match context {
         "note" => {
             // Note names and vault-relative paths from the cache.
             use vulcan_core::CacheDatabase;
@@ -26963,6 +27074,7 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
                 Err(_) => Vec::new(),
             }
         }
+        "vault-path" => collect_vault_path_candidates(paths, prefix),
         "daily-date" => {
             // Vault-dependent supplement: dates of existing daily notes.
             use vulcan_core::CacheDatabase;
@@ -27056,6 +27168,11 @@ fn collect_complete_candidates(paths: &VaultPaths, context: &str) -> Vec<String>
             out
         }
         _ => Vec::new(),
+    };
+    if context == "vault-path" {
+        candidates
+    } else {
+        filter_completion_candidates(candidates, prefix)
     }
 }
 
@@ -27133,9 +27250,48 @@ fn generate_dynamic_completions(shell: clap_complete::Shell) -> String {
     }
 }
 
+fn shell_double_quote_literal(value: &str) -> String {
+    let mut rendered = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => rendered.push_str("\\\\"),
+            '"' => rendered.push_str("\\\""),
+            '$' => rendered.push_str("\\$"),
+            '`' => rendered.push_str("\\`"),
+            _ => rendered.push(ch),
+        }
+    }
+    rendered
+}
+
+fn completion_command_path_literal() -> String {
+    std::env::current_exe().ok().map_or_else(
+        || "vulcan".to_string(),
+        |path| shell_double_quote_literal(&path.to_string_lossy()),
+    )
+}
+
 fn generate_fish_dynamic_completions() -> String {
+    let command = completion_command_path_literal();
     r#"
 # Dynamic completions — generated by vulcan completions fish
+function __fish_vulcan_expand_leading_tilde
+    set -l value $argv[1]
+    if test "$value" = "~"
+        if set -q HOME
+            printf '%s\n' "$HOME"
+            return
+        end
+    end
+    if string match -q -- '~/*' "$value"
+        if set -q HOME
+            printf '%s/%s\n' "$HOME" (string sub -s 3 -- "$value")
+            return
+        end
+    end
+    printf '%s\n' "$value"
+end
+
 function __fish_vulcan_completion_prefix_args
     set -l words (commandline -opc)
     set -l args
@@ -27147,11 +27303,20 @@ function __fish_vulcan_completion_prefix_args
                 set args $args $word
                 set -l next (math $i + 1)
                 if test $next -le (count $words)
-                    set args $args $words[$next]
+                    if test "$word" = "--vault"
+                        set args $args (__fish_vulcan_expand_leading_tilde $words[$next])
+                    else
+                        set args $args $words[$next]
+                    end
                 end
                 set i (math $i + 2)
             case '--vault=*' '--output=*' '--refresh=*' '--fields=*' '--provider=*' '--permissions=*' '--limit=*' '--offset=*' '--color=*'
-                set args $args $word
+                if string match -q -- '--vault=*' "$word"
+                    set -l value (string replace -r '^--vault=' '' -- "$word")
+                    set args $args --vault=(__fish_vulcan_expand_leading_tilde $value)
+                else
+                    set args $args $word
+                end
                 set i (math $i + 1)
             case '--verbose' '--quiet' '-q' '--no-header'
                 set args $args $word
@@ -27169,38 +27334,99 @@ function __fish_vulcan_completion_prefix_args
     end
 end
 
-function __fish_vulcan_dynamic_complete
-    set -l context $argv[1]
+function __fish_vulcan_seen_flag
+    set -l target $argv[1]
+    contains -- $target (commandline -opc)
+end
+
+function __fish_vulcan_dynamic_complete_note
     set -l args (__fish_vulcan_completion_prefix_args)
-    vulcan $args complete $context 2>/dev/null
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete note "$prefix" 2>/dev/null
+end
+
+function __fish_vulcan_dynamic_complete_kanban_board
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete kanban-board "$prefix" 2>/dev/null
+end
+
+function __fish_vulcan_dynamic_complete_bases_file
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete bases-file "$prefix" 2>/dev/null
+end
+
+function __fish_vulcan_dynamic_complete_daily_date
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete daily-date "$prefix" 2>/dev/null
+end
+
+function __fish_vulcan_dynamic_complete_script
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete script "$prefix" 2>/dev/null
+end
+
+function __fish_vulcan_dynamic_complete_task_view
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete task-view "$prefix" 2>/dev/null
+end
+
+function __fish_vulcan_complete_vault_path_arg
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete vault-path "$prefix" 2>/dev/null
 end
 
 # Note names for note subcommands
-complete -c vulcan -n "__fish_vulcan_using_subcommand note; and __fish_seen_subcommand_from get set append update unset patch delete rename info history links backlinks diff" -f -a "(__fish_vulcan_dynamic_complete note)" -d "Note"
-complete -c vulcan -n "__fish_vulcan_using_subcommand links" -f -a "(__fish_vulcan_dynamic_complete note)" -d "Note"
-complete -c vulcan -n "__fish_vulcan_using_subcommand backlinks" -f -a "(__fish_vulcan_dynamic_complete note)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand note; and __fish_seen_subcommand_from get set append update unset patch delete rename info history links backlinks diff doctor" -f -a "(__fish_vulcan_dynamic_complete_note)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand links" -f -a "(__fish_vulcan_dynamic_complete_note)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand backlinks" -f -a "(__fish_vulcan_dynamic_complete_note)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand open" -f -a "(__fish_vulcan_dynamic_complete_note)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand edit; and not __fish_vulcan_seen_flag --new" -f -a "(__fish_vulcan_dynamic_complete_note)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand link-mentions" -f -a "(__fish_vulcan_dynamic_complete_note)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand suggest; and __fish_seen_subcommand_from mentions" -f -a "(__fish_vulcan_dynamic_complete_note)" -d "Note"
+complete -c vulcan -n "__fish_vulcan_using_subcommand dataview; and __fish_seen_subcommand_from inline eval" -f -a "(__fish_vulcan_dynamic_complete_note)" -d "Note"
 
 # Kanban board names
-complete -c vulcan -n "__fish_vulcan_using_subcommand kanban; and __fish_seen_subcommand_from show add move archive" -f -a "(__fish_vulcan_dynamic_complete kanban-board)" -d "Board"
+complete -c vulcan -n "__fish_vulcan_using_subcommand kanban; and __fish_seen_subcommand_from show add move archive" -f -a "(__fish_vulcan_dynamic_complete_kanban_board)" -d "Board"
 
 # Bases .base file paths
-complete -c vulcan -n "__fish_vulcan_using_subcommand bases; and __fish_seen_subcommand_from eval tui create view-add view-delete view-rename" -f -a "(__fish_vulcan_dynamic_complete bases-file)" -d "Bases file"
+complete -c vulcan -n "__fish_vulcan_using_subcommand bases; and __fish_seen_subcommand_from eval tui create view-add view-delete view-rename" -f -a "(__fish_vulcan_dynamic_complete_bases_file)" -d "Bases file"
 
 # Daily date patterns
-complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_subcommand_from show" -f -a "(__fish_vulcan_dynamic_complete daily-date)" -d "Date"
+complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_subcommand_from show" -f -a "(__fish_vulcan_dynamic_complete_daily_date)" -d "Date"
 
 # Script names for vulcan run
-complete -c vulcan -n "__fish_vulcan_using_subcommand run" -f -a "(__fish_vulcan_dynamic_complete script)" -d "Script"
+complete -c vulcan -n "__fish_vulcan_using_subcommand run" -f -a "(__fish_vulcan_dynamic_complete_script)" -d "Script"
+
+# Vault-relative path arguments
+complete -c vulcan -n "__fish_vulcan_using_subcommand note; and __fish_seen_subcommand_from create" -f -a "(__fish_vulcan_complete_vault_path_arg)" -d "Path"
+complete -c vulcan -n "__fish_vulcan_using_subcommand edit; and __fish_vulcan_seen_flag --new" -f -a "(__fish_vulcan_complete_vault_path_arg)" -d "Path"
+complete -c vulcan -n "__fish_vulcan_using_subcommand move" -f -a "(__fish_vulcan_complete_vault_path_arg)" -d "Path"
+complete -c vulcan -n "__fish_vulcan_using_subcommand git; and __fish_seen_subcommand_from diff blame" -f -a "(__fish_vulcan_complete_vault_path_arg)" -d "Path"
 
 # Task view names for tasks view show <name>
 # Condition: view has been seen AND show has been seen (nested sub-subcommand context).
-complete -c vulcan -n "__fish_vulcan_using_subcommand tasks; and __fish_seen_subcommand_from view; and __fish_seen_subcommand_from show" -f -a "(__fish_vulcan_dynamic_complete task-view)" -d "View"
+complete -c vulcan -n "__fish_vulcan_using_subcommand tasks; and __fish_seen_subcommand_from view; and __fish_seen_subcommand_from show" -f -a "(__fish_vulcan_dynamic_complete_task_view)" -d "View"
 "#
     .trim()
     .to_string()
+    .replace("__VULCAN_CMD__", &command)
 }
 
 fn generate_bash_dynamic_completions() -> String {
+    let command = completion_command_path_literal();
     r#"
 # Dynamic completions patch — generated by vulcan completions bash
 __vulcan_completion_prefix_args() {
@@ -27235,17 +27461,22 @@ __vulcan_completion_prefix_args() {
                 ;;
         esac
     done
-    printf '%s\0' "${args[@]}"
+    printf '%s\n' "${args[@]}"
 }
 
 __vulcan_dynamic_complete() {
     local context="$1"
-    local -a candidates args
-    if mapfile -d '' -t args < <(__vulcan_completion_prefix_args); then
-        :
-    fi
-    mapfile -t candidates < <(vulcan "${args[@]}" complete "$context" 2>/dev/null)
-    COMPREPLY=($(compgen -W "${candidates[*]}" -- "${COMP_WORDS[COMP_CWORD]}"))
+    local cmd="__VULCAN_CMD__"
+    local arg candidate
+    local -a args=()
+    COMPREPLY=()
+    while IFS= read -r arg; do
+        args+=("$arg")
+    done < <(__vulcan_completion_prefix_args)
+    while IFS= read -r candidate; do
+        COMPREPLY+=("$candidate")
+    done < <("$cmd" "${args[@]}" complete "$context" "${COMP_WORDS[COMP_CWORD]}" 2>/dev/null)
+    return 0
 }
 
 # Override completion for specific subcommand contexts
@@ -27269,9 +27500,11 @@ _vulcan_complete_bases_arg() {
 "#
     .trim()
     .to_string()
+    .replace("__VULCAN_CMD__", &command)
 }
 
 fn generate_zsh_dynamic_completions() -> String {
+    let command = completion_command_path_literal();
     r#"
 # Dynamic completions patch — generated by vulcan completions zsh
 _vulcan_completion_prefix_args() {
@@ -27311,55 +27544,62 @@ _vulcan_completion_prefix_args() {
 }
 
 _vulcan_complete_note() {
+    local cmd="__VULCAN_CMD__"
     local -a args notes
     _vulcan_completion_prefix_args
     args=("${reply[@]}")
-    notes=(${(f)"$(vulcan "${args[@]}" complete note 2>/dev/null)"})
+    notes=(${(f)"$("$cmd" "${args[@]}" complete note "${words[CURRENT]}" 2>/dev/null)"})
     _describe 'note' notes
 }
 
 _vulcan_complete_kanban_board() {
+    local cmd="__VULCAN_CMD__"
     local -a args boards
     _vulcan_completion_prefix_args
     args=("${reply[@]}")
-    boards=(${(f)"$(vulcan "${args[@]}" complete kanban-board 2>/dev/null)"})
+    boards=(${(f)"$("$cmd" "${args[@]}" complete kanban-board "${words[CURRENT]}" 2>/dev/null)"})
     _describe 'board' boards
 }
 
 _vulcan_complete_bases_file() {
+    local cmd="__VULCAN_CMD__"
     local -a args files
     _vulcan_completion_prefix_args
     args=("${reply[@]}")
-    files=(${(f)"$(vulcan "${args[@]}" complete bases-file 2>/dev/null)"})
+    files=(${(f)"$("$cmd" "${args[@]}" complete bases-file "${words[CURRENT]}" 2>/dev/null)"})
     _describe 'bases file' files
 }
 
 _vulcan_complete_daily_date() {
+    local cmd="__VULCAN_CMD__"
     local -a args dates
     _vulcan_completion_prefix_args
     args=("${reply[@]}")
-    dates=(${(f)"$(vulcan "${args[@]}" complete daily-date 2>/dev/null)"})
+    dates=(${(f)"$("$cmd" "${args[@]}" complete daily-date "${words[CURRENT]}" 2>/dev/null)"})
     _describe 'date' dates
 }
 
 _vulcan_complete_script() {
+    local cmd="__VULCAN_CMD__"
     local -a args scripts
     _vulcan_completion_prefix_args
     args=("${reply[@]}")
-    scripts=(${(f)"$(vulcan "${args[@]}" complete script 2>/dev/null)"})
+    scripts=(${(f)"$("$cmd" "${args[@]}" complete script "${words[CURRENT]}" 2>/dev/null)"})
     _describe 'script' scripts
 }
 
 _vulcan_complete_task_view() {
+    local cmd="__VULCAN_CMD__"
     local -a args views
     _vulcan_completion_prefix_args
     args=("${reply[@]}")
-    views=(${(f)"$(vulcan "${args[@]}" complete task-view 2>/dev/null)"})
+    views=(${(f)"$("$cmd" "${args[@]}" complete task-view "${words[CURRENT]}" 2>/dev/null)"})
     _describe 'view' views
 }
 "#
     .trim()
     .to_string()
+    .replace("__VULCAN_CMD__", &command)
 }
 
 #[cfg(test)]
@@ -31085,46 +31325,118 @@ mod tests {
     }
 
     #[test]
+    fn resolves_tilde_prefixed_vault_path_against_home_directory() {
+        let Some(home_dir) = current_home_dir() else {
+            return;
+        };
+        let relative = PathBuf::from("vulcan/tests/fixtures/vaults/basic");
+        let resolved = resolve_vault_root(&PathBuf::from("~/vulcan/tests/fixtures/vaults/basic"))
+            .expect("path resolution should succeed");
+
+        assert_eq!(resolved, home_dir.join(relative));
+    }
+
+    #[cfg(windows)]
+    fn completion_test_bash_path() -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        for key in [
+            "ProgramW6432",
+            "PROGRAMFILES",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+        ] {
+            let Some(base) = std::env::var_os(key).map(PathBuf::from) else {
+                continue;
+            };
+            candidates.push(base.join("Git").join("bin").join("bash.exe"));
+            candidates.push(base.join("Git").join("usr").join("bin").join("bash.exe"));
+        }
+        if let Ok(output) = ProcessCommand::new("git").arg("--exec-path").output() {
+            if output.status.success() {
+                let exec_path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+                for ancestor in exec_path.ancestors().take(5) {
+                    candidates.push(ancestor.join("bin").join("bash.exe"));
+                    candidates.push(ancestor.join("usr").join("bin").join("bash.exe"));
+                }
+            }
+        }
+        candidates.into_iter().find(|candidate| candidate.is_file())
+    }
+
+    #[cfg(not(windows))]
+    fn completion_test_bash_path() -> PathBuf {
+        PathBuf::from("bash")
+    }
+
+    #[test]
     fn bash_dynamic_completions_forward_global_vault_flag() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let record_path = temp_dir.path().join("vulcan-args.txt");
-        let dynamic = generate_bash_dynamic_completions();
+        #[cfg(windows)]
+        let Some(bash_path) = completion_test_bash_path() else {
+            return;
+        };
+        #[cfg(not(windows))]
+        let bash_path = completion_test_bash_path();
+        let dynamic = generate_bash_dynamic_completions().replacen(
+            &format!("local cmd=\"{}\"", completion_command_path_literal()),
+            "local cmd=\"$tmpdir/vulcan\"",
+            1,
+        );
         let script = format!(
             r#"
-set -euo pipefail
-record_path='{}'
-vulcan() {{
-    printf '%s\n' "$@" > "$record_path"
-    printf 'Home.md\n'
-}}
-{}
+set -uo pipefail
+tmpdir="$(mktemp -d)"
+record_path="$tmpdir/args.txt"
+cat > "$tmpdir/vulcan" <<'EOF'
+#!/bin/sh
+set -eu
+: > "$RECORD_PATH"
+for arg in "$@"; do
+    printf '%s\n' "$arg" >> "$RECORD_PATH"
+done
+printf 'Home.md\n'
+EOF
+chmod +x "$tmpdir/vulcan"
+export RECORD_PATH="$record_path"
+{dynamic}
 COMP_WORDS=(vulcan --vault "/tmp/test vault" note get Ho)
 COMP_CWORD=5
+COMPREPLY=()
 __vulcan_dynamic_complete note
-printf '%s\n' "${{COMPREPLY[@]}}"
-"#,
-            record_path.display(),
-            dynamic
+for reply in "${{COMPREPLY[@]}}"; do
+    printf 'REPLY:%s\n' "$reply"
+done
+while IFS= read -r recorded_arg; do
+    printf 'ARG:%s\n' "$recorded_arg"
+done < "$record_path"
+"#
         );
 
-        let output = ProcessCommand::new("bash")
+        let output = ProcessCommand::new(&bash_path)
             .arg("-lc")
             .arg(script)
             .output()
             .expect("bash should run generated completion helper");
         assert!(
             output.status.success(),
-            "bash helper should succeed: {}",
+            "bash helper should succeed (shell: {:?}, status: {:?})\nstdout:\n{}\nstderr:\n{}",
+            bash_path,
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert_eq!(stdout.trim(), "Home.md");
-
-        let recorded = fs::read_to_string(&record_path).expect("recorded args should be readable");
-        let recorded_args: Vec<&str> = recorded.lines().collect();
+        let reply_lines: Vec<&str> = stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("REPLY:"))
+            .collect();
+        let recorded_args: Vec<&str> = stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("ARG:"))
+            .collect();
+        assert_eq!(reply_lines, vec!["Home.md"]);
         assert_eq!(
             recorded_args,
-            vec!["--vault", "/tmp/test vault", "complete", "note"]
+            vec!["--vault", "/tmp/test vault", "complete", "note", "Ho"]
         );
     }
 
@@ -31136,12 +31448,32 @@ printf '%s\n' "${{COMPREPLY[@]}}"
             "fish completions should define a helper that collects global args"
         );
         assert!(
-            fish.contains("vulcan $args complete $context"),
-            "fish completions should replay collected args into vulcan complete"
+            fish.contains("set -l prefix (commandline -ct)"),
+            "fish completions should capture the current token for prefix-aware completion"
         );
         assert!(
-            fish.contains("(__fish_vulcan_dynamic_complete note)"),
-            "fish note completion should use the forwarding helper"
+            fish.contains("set -l cmd \""),
+            "fish completions should pin the generating vulcan binary path"
+        );
+        assert!(
+            fish.contains("$cmd $args complete note \"$prefix\""),
+            "fish note completions should replay collected args and the current token into vulcan complete"
+        );
+        assert!(
+            fish.contains("function __fish_vulcan_dynamic_complete_note"),
+            "fish completions should define a dedicated note helper"
+        );
+        assert!(
+            fish.contains("(__fish_vulcan_dynamic_complete_note)"),
+            "fish note completion should use the dedicated note helper"
+        );
+        assert!(
+            fish.contains("function __fish_vulcan_complete_vault_path_arg"),
+            "fish completions should define a dedicated vault-path helper"
+        );
+        assert!(
+            fish.contains("(__fish_vulcan_complete_vault_path_arg)"),
+            "fish path completions should use the dedicated vault-path helper"
         );
 
         let bash = generate_bash_dynamic_completions();
@@ -31150,8 +31482,24 @@ printf '%s\n' "${{COMPREPLY[@]}}"
             "bash completions should define a helper that collects global args"
         );
         assert!(
-            bash.contains("vulcan \"${args[@]}\" complete \"$context\""),
-            "bash completions should replay collected args into vulcan complete"
+            bash.contains("local cmd=\""),
+            "bash completions should pin the generating vulcan binary path"
+        );
+        assert!(
+            bash.contains("\"$cmd\" \"${args[@]}\" complete \"$context\" \"${COMP_WORDS[COMP_CWORD]}\""),
+            "bash completions should replay collected args and the current token into vulcan complete"
+        );
+        assert!(
+            bash.contains("while IFS= read -r arg; do"),
+            "bash completions should collect forwarded args without relying on mapfile"
+        );
+        assert!(
+            bash.contains("COMPREPLY+=(\"$candidate\")"),
+            "bash completions should append exact completion candidates without compgen word-splitting"
+        );
+        assert!(
+            !bash.contains("mapfile"),
+            "bash completions should remain compatible with Bash 3.2 on macOS"
         );
         assert!(
             bash.contains("--vault=*"),
@@ -31164,12 +31512,41 @@ printf '%s\n' "${{COMPREPLY[@]}}"
             "zsh completions should define a helper that collects global args"
         );
         assert!(
-            zsh.contains("vulcan \"${args[@]}\" complete note"),
-            "zsh note completion should replay collected args into vulcan complete"
+            zsh.contains("local cmd=\""),
+            "zsh completions should pin the generating vulcan binary path"
+        );
+        assert!(
+            zsh.contains("\"$cmd\" \"${args[@]}\" complete note \"${words[CURRENT]}\""),
+            "zsh note completion should replay collected args and the current token into vulcan complete"
         );
         assert!(
             zsh.contains("--vault=*"),
             "zsh completions should preserve inline --vault assignments"
+        );
+    }
+
+    #[test]
+    fn vault_path_completion_lists_entries_relative_to_prefix() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        fs::create_dir_all(temp_dir.path().join("Projects")).expect("projects dir should exist");
+        fs::create_dir_all(temp_dir.path().join(".vulcan")).expect("internal dir should exist");
+        fs::write(temp_dir.path().join("Home.md"), "# Home\n").expect("note should write");
+        fs::write(temp_dir.path().join("Projects/Alpha.md"), "# Alpha\n")
+            .expect("nested note should write");
+        let paths = VaultPaths::new(temp_dir.path().to_path_buf());
+
+        assert_eq!(
+            collect_complete_candidates(&paths, "vault-path", Some("H")),
+            vec!["Home.md".to_string()]
+        );
+        assert_eq!(
+            collect_complete_candidates(&paths, "vault-path", Some("Projects/")),
+            vec!["Projects/Alpha.md".to_string()]
+        );
+        assert!(
+            !collect_complete_candidates(&paths, "vault-path", Some(""))
+                .contains(&".vulcan/".to_string()),
+            "internal state directories should be hidden from vault path completions"
         );
     }
 
