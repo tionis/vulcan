@@ -14151,6 +14151,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             pretty: *pretty,
                             graph_format: *graph_format,
                             exclude_callouts: &transforms.exclude_callouts,
+                            exclude_headings: &transforms.exclude_headings,
                         },
                         *replace,
                         ConfigMutationOptions {
@@ -14202,8 +14203,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let transform_rules =
-                        build_content_transform_rules(&transforms.exclude_callouts);
+                    let transform_rules = build_content_transform_rules(
+                        &transforms.exclude_callouts,
+                        &transforms.exclude_headings,
+                    );
                     let prepared = prepare_export_data(
                         &paths,
                         &report,
@@ -14232,8 +14235,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let transform_rules =
-                        build_content_transform_rules(&transforms.exclude_callouts);
+                    let transform_rules = build_content_transform_rules(
+                        &transforms.exclude_callouts,
+                        &transforms.exclude_headings,
+                    );
                     let prepared = prepare_export_data(
                         &paths,
                         &report,
@@ -14289,8 +14294,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let transform_rules =
-                        build_content_transform_rules(&transforms.exclude_callouts);
+                    let transform_rules = build_content_transform_rules(
+                        &transforms.exclude_callouts,
+                        &transforms.exclude_headings,
+                    );
                     let prepared = prepare_export_data(
                         &paths,
                         &report,
@@ -14329,8 +14336,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let transform_rules =
-                        build_content_transform_rules(&transforms.exclude_callouts);
+                    let transform_rules = build_content_transform_rules(
+                        &transforms.exclude_callouts,
+                        &transforms.exclude_headings,
+                    );
                     let prepared = prepare_export_data(
                         &paths,
                         &report,
@@ -17406,24 +17415,39 @@ fn export_epub_toc_style_config_from_cli(
     })
 }
 
-fn build_content_transform_rule(exclude_callouts: &[String]) -> Option<ContentTransformRuleConfig> {
+fn build_content_transform_rule(
+    exclude_callouts: &[String],
+    exclude_headings: &[String],
+) -> Option<ContentTransformRuleConfig> {
     let exclude_callouts = exclude_callouts
         .iter()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    (!exclude_callouts.is_empty()).then_some(ContentTransformRuleConfig {
-        query: None,
-        query_json: None,
-        transforms: ContentTransformConfig { exclude_callouts },
-    })
+    let exclude_headings = exclude_headings
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    (!(exclude_callouts.is_empty() && exclude_headings.is_empty())).then_some(
+        ContentTransformRuleConfig {
+            query: None,
+            query_json: None,
+            transforms: ContentTransformConfig {
+                exclude_callouts,
+                exclude_headings,
+            },
+        },
+    )
 }
 
 fn build_content_transform_rules(
     exclude_callouts: &[String],
+    exclude_headings: &[String],
 ) -> Option<Vec<ContentTransformRuleConfig>> {
-    build_content_transform_rule(exclude_callouts).map(|rule| vec![rule])
+    build_content_transform_rule(exclude_callouts, exclude_headings).map(|rule| vec![rule])
 }
 
 fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> ExportProfileConfig {
@@ -17439,7 +17463,10 @@ fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> Expor
         frontmatter: request.frontmatter.then_some(true),
         pretty: request.pretty.then_some(true),
         graph_format: export_graph_format_config_from_cli(request.graph_format),
-        content_transform_rules: build_content_transform_rules(request.exclude_callouts),
+        content_transform_rules: build_content_transform_rules(
+            request.exclude_callouts,
+            request.exclude_headings,
+        ),
     }
 }
 
@@ -20792,6 +20819,7 @@ struct ExportProfileCreateRequest<'a> {
     pretty: bool,
     graph_format: Option<GraphExportFormat>,
     exclude_callouts: &'a [String],
+    exclude_headings: &'a [String],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -31161,6 +31189,7 @@ mod tests {
                         graph_format: None,
                         transforms: ExportTransformArgs {
                             exclude_callouts: vec!["secret gm".to_string()],
+                            exclude_headings: vec![],
                         },
                         replace: false,
                         dry_run: false,
@@ -31197,6 +31226,7 @@ mod tests {
                     frontmatter: false,
                     transforms: ExportTransformArgs {
                         exclude_callouts: vec!["secret gm".to_string()],
+                        exclude_headings: vec![],
                     },
                 },
             }

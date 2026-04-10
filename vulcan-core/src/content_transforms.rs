@@ -1,20 +1,26 @@
+use crate::config::VaultConfig;
+use crate::parser::parse_document;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ContentTransformConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_callouts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_headings: Vec<String>,
 }
 
 impl ContentTransformConfig {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.exclude_callouts.is_empty()
+        self.exclude_callouts.is_empty() && self.exclude_headings.is_empty()
     }
 
     pub fn merge_in(&mut self, other: &Self) {
         merge_string_lists(&mut self.exclude_callouts, &other.exclude_callouts);
+        merge_string_lists(&mut self.exclude_headings, &other.exclude_headings);
     }
 }
 
@@ -37,15 +43,49 @@ impl ContentTransformRuleConfig {
 
 #[must_use]
 pub fn apply_content_transforms(source: &str, transforms: &ContentTransformConfig) -> String {
-    let excluded = transforms
+    let excluded_callouts = transforms
         .exclude_callouts
         .iter()
         .filter_map(|value| normalize_callout_name(value))
         .collect::<HashSet<_>>();
-    if excluded.is_empty() {
-        return source.to_string();
+    let excluded_headings = transforms
+        .exclude_headings
+        .iter()
+        .filter_map(|value| normalize_heading_name(value))
+        .collect::<HashSet<_>>();
+
+    let mut rendered = source.to_string();
+    if !excluded_headings.is_empty() {
+        rendered = strip_excluded_headings(&rendered, &excluded_headings);
     }
-    strip_excluded_callouts(source, &excluded)
+    if !excluded_callouts.is_empty() {
+        rendered = strip_excluded_callouts(&rendered, &excluded_callouts);
+    }
+    rendered
+}
+
+fn strip_excluded_headings(source: &str, excluded: &HashSet<String>) -> String {
+    let parsed = parse_document(source, &VaultConfig::default());
+    let mut ranges = Vec::<Range<usize>>::new();
+
+    for (index, heading) in parsed.headings.iter().enumerate() {
+        let Some(heading_name) = normalize_heading_name(&heading.text) else {
+            continue;
+        };
+        if !excluded.contains(&heading_name) {
+            continue;
+        }
+
+        let end = parsed
+            .headings
+            .iter()
+            .skip(index + 1)
+            .find(|candidate| candidate.level <= heading.level)
+            .map_or(source.len(), |candidate| candidate.byte_offset);
+        ranges.push(heading.byte_offset..end);
+    }
+
+    remove_byte_ranges(source, &ranges)
 }
 
 fn strip_excluded_callouts(source: &str, excluded: &HashSet<String>) -> String {
@@ -137,6 +177,15 @@ fn normalize_callout_name(value: &str) -> Option<String> {
     (!normalized.is_empty()).then_some(normalized)
 }
 
+fn normalize_heading_name(value: &str) -> Option<String> {
+    let normalized = value
+        .split_whitespace()
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!normalized.is_empty()).then_some(normalized)
+}
+
 fn merge_string_lists(target: &mut Vec<String>, values: &[String]) {
     for value in values {
         let trimmed = value.trim();
@@ -145,6 +194,38 @@ fn merge_string_lists(target: &mut Vec<String>, values: &[String]) {
         }
         target.push(trimmed.to_string());
     }
+}
+
+fn remove_byte_ranges(source: &str, ranges: &[Range<usize>]) -> String {
+    if ranges.is_empty() {
+        return source.to_string();
+    }
+
+    let mut sorted = ranges.to_vec();
+    sorted.sort_by_key(|range| (range.start, range.end));
+
+    let mut merged = Vec::<Range<usize>>::new();
+    for range in sorted {
+        match merged.last_mut() {
+            Some(previous) if range.start <= previous.end => {
+                previous.end = previous.end.max(range.end);
+            }
+            _ => merged.push(range),
+        }
+    }
+
+    let mut rendered = String::with_capacity(source.len());
+    let mut cursor = 0_usize;
+    for range in merged {
+        if cursor < range.start {
+            rendered.push_str(&source[cursor..range.start]);
+        }
+        cursor = cursor.max(range.end);
+    }
+    if cursor < source.len() {
+        rendered.push_str(&source[cursor..]);
+    }
+    rendered
 }
 
 #[cfg(test)]
@@ -166,6 +247,7 @@ mod tests {
             source,
             &ContentTransformConfig {
                 exclude_callouts: vec!["secret gm".to_string()],
+                exclude_headings: Vec::new(),
             },
         );
 
@@ -190,6 +272,7 @@ mod tests {
             source,
             &ContentTransformConfig {
                 exclude_callouts: vec!["SECRET   GM".to_string()],
+                exclude_headings: Vec::new(),
             },
         );
 
@@ -207,6 +290,7 @@ mod tests {
             source,
             &ContentTransformConfig {
                 exclude_callouts: vec!["secret".to_string()],
+                exclude_headings: Vec::new(),
             },
         );
 
@@ -224,6 +308,7 @@ mod tests {
     fn merge_in_unions_excluded_callouts_in_order() {
         let mut base = ContentTransformConfig {
             exclude_callouts: vec!["secret gm".to_string()],
+            exclude_headings: vec!["scratch".to_string()],
         };
         base.merge_in(&ContentTransformConfig {
             exclude_callouts: vec![
@@ -231,11 +316,16 @@ mod tests {
                 "secret gm".to_string(),
                 "  ".to_string(),
             ],
+            exclude_headings: vec!["private".to_string(), "scratch".to_string()],
         });
 
         assert_eq!(
             base.exclude_callouts,
             vec!["secret gm".to_string(), "internal".to_string()]
+        );
+        assert_eq!(
+            base.exclude_headings,
+            vec!["scratch".to_string(), "private".to_string()]
         );
     }
 
@@ -247,8 +337,69 @@ mod tests {
             query_json: None,
             transforms: ContentTransformConfig {
                 exclude_callouts: vec!["secret".to_string()],
+                exclude_headings: Vec::new(),
             },
         }
         .is_empty());
+    }
+
+    #[test]
+    fn excludes_matching_heading_sections_and_nested_subsections() {
+        let source = concat!(
+            "# Home\n\n",
+            "Visible paragraph.\n\n",
+            "## Scratch\n\n",
+            "Hidden [[People/Bob]].\n\n",
+            "### Scratch child\n\n",
+            "Still hidden.\n\n",
+            "## Public\n\n",
+            "Visible again.\n",
+        );
+
+        let rendered = apply_content_transforms(
+            source,
+            &ContentTransformConfig {
+                exclude_callouts: Vec::new(),
+                exclude_headings: vec!["scratch".to_string()],
+            },
+        );
+
+        assert!(rendered.contains("# Home"));
+        assert!(rendered.contains("Visible paragraph."));
+        assert!(rendered.contains("## Public"));
+        assert!(rendered.contains("Visible again."));
+        assert!(!rendered.contains("## Scratch"));
+        assert!(!rendered.contains("Scratch child"));
+        assert!(!rendered.contains("[[People/Bob]]"));
+    }
+
+    #[test]
+    fn excludes_setext_heading_sections() {
+        let source = concat!(
+            "Overview\n",
+            "========\n\n",
+            "Keep.\n\n",
+            "Scratch\n",
+            "-------\n\n",
+            "Hidden details.\n\n",
+            "Public\n",
+            "------\n\n",
+            "Visible.\n",
+        );
+
+        let rendered = apply_content_transforms(
+            source,
+            &ContentTransformConfig {
+                exclude_callouts: Vec::new(),
+                exclude_headings: vec!["scratch".to_string()],
+            },
+        );
+
+        assert!(rendered.contains("Overview"));
+        assert!(rendered.contains("Keep."));
+        assert!(rendered.contains("Public"));
+        assert!(rendered.contains("Visible."));
+        assert!(!rendered.contains("Scratch\n-------"));
+        assert!(!rendered.contains("Hidden details."));
     }
 }
