@@ -3320,6 +3320,7 @@ The export surface now covers documents, datasets, archives, and static search i
 - [x] `vulcan export epub <query> -o book.epub` — render matched notes to an EPUB document optionally enriched with backlinks, with table of contents derived from note structure, tags and link ordering
 - [x] EPUB export bundles referenced local assets into the book archive and rewrites chapter links/embed sources to packaged media paths
 - [x] Add reusable export `content_transforms` (initially `exclude_callouts`) so publication-oriented exports can strip callout blocks before packaging Markdown/JSON/EPUB/ZIP output
+- [x] Generalize profile `content_transforms` to ordered rule tables with optional rule queries; the export profile query still defines the exported note set, while each rule query only targets which exported notes receive that rule's transforms
 - [ ] Extend `content_transforms` with section filtering (`exclude_headings`) so publication exports can drop whole heading sections and their subsections
 - [ ] Extend `content_transforms` with metadata filtering (`exclude_frontmatter_keys`, `exclude_inline_fields`) so exported/public notes can remove sensitive structured data without hand-editing sources
 - [ ] Extend `content_transforms` with literal/regex replacement rules for publication redaction and normalization workflows
@@ -3710,6 +3711,7 @@ Publishing a subset of the vault is a first-class requirement. Profiles are the 
 - [ ] Support inclusion/exclusion by canonical query AST, folder glob, explicit note path, tag, and frontmatter predicates
 - [ ] Support multiple profiles per vault so one vault can publish a public garden, project docs, and private local preview separately
 - [ ] Reuse export/publication `content_transforms`, link policy, and asset policy in site profiles so export, static site, and future web wiki publication all share the same audience-filtering model
+- [ ] Use the same rule semantics in site profiles: profile selection defines the published note set, while per-rule queries only target which published notes get transformed
 - [ ] Add per-profile slug/frontmatter overrides: title, description, canonical URL, summary image, custom slug
 - [ ] Add link policy for references that point outside the published subset: `error`, `warn`, `drop-link`, or `render-plain-text`
 - [ ] Add attachment policy: copy only referenced assets, copy whole folders, or error on missing references

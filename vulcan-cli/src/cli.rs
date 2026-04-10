@@ -883,6 +883,7 @@ Notes:
   `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.
   `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
   `markdown`, `json`, `epub`, and `zip` support `--exclude-callout <type>` for publication-oriented content transforms.
+  Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; each rule query only narrows within the profile query result.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
   `epub --backlinks` appends indexed inlinks after each exported note chapter.
   Archive exports require `-o/--path` because they produce binary or database files.

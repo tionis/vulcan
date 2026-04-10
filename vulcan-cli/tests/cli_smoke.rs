@@ -10756,7 +10756,7 @@ fn export_profile_create_and_run_support_content_transforms() {
     let create_json = parse_stdout_json(&create_assert);
     assert_eq!(create_json["profile"]["format"], "json");
     assert_eq!(
-        create_json["profile"]["content_transforms"]["exclude_callouts"][0],
+        create_json["profile"]["content_transforms"][0]["exclude_callouts"][0],
         "secret gm"
     );
 
@@ -10781,6 +10781,10 @@ fn export_profile_create_and_run_support_content_transforms() {
         .expect("profile output should exist");
     assert!(!exported.contains("Hidden [[People/Bob]]."));
     assert!(!exported.contains("assets/secret.png"));
+
+    let config_contents =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
+    assert!(config_contents.contains("[[export.profiles.public_json.content_transforms]]"));
 }
 
 #[test]
@@ -10844,6 +10848,139 @@ fn export_profile_create_rejects_content_transforms_for_unsupported_formats() {
         .stderr(predicate::str::contains(
             "only supports `content_transforms` for markdown, json, epub, and zip exports",
         ));
+}
+
+fn build_export_transform_rule_vault() -> (TempDir, PathBuf) {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join("Home.md"),
+        concat!(
+            "# Home\n\n",
+            "Visible home text.\n\n",
+            "> [!secret gm]\n",
+            "> Hidden home details.\n",
+        ),
+    )
+    .expect("home note should write");
+    fs::write(
+        vault_root.join("Projects/Alpha.md"),
+        concat!(
+            "# Alpha\n\n",
+            "Visible alpha text.\n\n",
+            "> [!secret gm]\n",
+            "> Hidden alpha details.\n",
+        ),
+    )
+    .expect("alpha note should write");
+    fs::write(vault_root.join("People.md"), "# People\n").expect("people note should write");
+    run_scan(&vault_root);
+    (temp_dir, vault_root)
+}
+
+#[test]
+fn export_profile_content_transform_rule_query_only_applies_to_matching_exported_notes() {
+    let (_temp_dir, vault_root) = build_export_transform_rule_vault();
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[export.profiles.public_json]
+format = "json"
+query = 'from notes where file.path matches "^(Home|Projects/Alpha)\.md$"'
+path = "exports/public.json"
+
+[[export.profiles.public_json.content_transforms]]
+query = 'from notes where file.path = "Home.md"'
+exclude_callouts = ["secret gm"]
+"#,
+    )
+    .expect("config should be written");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "profile",
+            "run",
+            "public_json",
+        ])
+        .assert()
+        .success();
+
+    let exported = fs::read_to_string(vault_root.join("exports/public.json"))
+        .expect("profile export should exist");
+    let json: Value = serde_json::from_str(&exported).expect("export should be valid json");
+    let notes = json["notes"].as_array().expect("notes should be an array");
+    assert_eq!(notes.len(), 2);
+
+    let home = notes
+        .iter()
+        .find(|note| note["document_path"] == "Home.md")
+        .expect("home note should be exported");
+    let alpha = notes
+        .iter()
+        .find(|note| note["document_path"] == "Projects/Alpha.md")
+        .expect("alpha note should be exported");
+
+    assert!(!home["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Hidden home details."));
+    assert!(alpha["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Hidden alpha details."));
+}
+
+#[test]
+fn export_profile_content_transform_rule_query_does_not_expand_export_selection() {
+    let (_temp_dir, vault_root) = build_export_transform_vault();
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[export.profiles.public_json]
+format = "json"
+query = 'from notes where file.path = "Home.md"'
+path = "exports/public.json"
+
+[[export.profiles.public_json.content_transforms]]
+query = 'from notes where file.path = "People/Bob.md"'
+exclude_callouts = ["secret gm"]
+"#,
+    )
+    .expect("config should be written");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "profile",
+            "run",
+            "public_json",
+        ])
+        .assert()
+        .success();
+
+    let exported = fs::read_to_string(vault_root.join("exports/public.json"))
+        .expect("profile export should exist");
+    let json: Value = serde_json::from_str(&exported).expect("export should be valid json");
+    let notes = json["notes"].as_array().expect("notes should be an array");
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["document_path"], "Home.md");
+    assert!(notes[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Hidden [[People/Bob]]."));
 }
 
 #[test]
