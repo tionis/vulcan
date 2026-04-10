@@ -12,6 +12,27 @@ impl ContentTransformConfig {
     pub fn is_empty(&self) -> bool {
         self.exclude_callouts.is_empty()
     }
+
+    pub fn merge_in(&mut self, other: &Self) {
+        merge_string_lists(&mut self.exclude_callouts, &other.exclude_callouts);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContentTransformRuleConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_json: Option<String>,
+    #[serde(flatten)]
+    pub transforms: ContentTransformConfig,
+}
+
+impl ContentTransformRuleConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.transforms.is_empty()
+    }
 }
 
 #[must_use]
@@ -116,9 +137,19 @@ fn normalize_callout_name(value: &str) -> Option<String> {
     (!normalized.is_empty()).then_some(normalized)
 }
 
+fn merge_string_lists(target: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || target.iter().any(|existing| existing == trimmed) {
+            continue;
+        }
+        target.push(trimmed.to_string());
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{apply_content_transforms, ContentTransformConfig};
+    use super::{apply_content_transforms, ContentTransformConfig, ContentTransformRuleConfig};
 
     #[test]
     fn excludes_matching_callout_blocks() {
@@ -187,5 +218,37 @@ mod tests {
         let source = "> [!secret]\n> Hidden.\n";
         let rendered = apply_content_transforms(source, &ContentTransformConfig::default());
         assert_eq!(rendered, source);
+    }
+
+    #[test]
+    fn merge_in_unions_excluded_callouts_in_order() {
+        let mut base = ContentTransformConfig {
+            exclude_callouts: vec!["secret gm".to_string()],
+        };
+        base.merge_in(&ContentTransformConfig {
+            exclude_callouts: vec![
+                "internal".to_string(),
+                "secret gm".to_string(),
+                "  ".to_string(),
+            ],
+        });
+
+        assert_eq!(
+            base.exclude_callouts,
+            vec!["secret gm".to_string(), "internal".to_string()]
+        );
+    }
+
+    #[test]
+    fn rule_is_empty_only_when_it_has_no_effective_transforms() {
+        assert!(ContentTransformRuleConfig::default().is_empty());
+        assert!(!ContentTransformRuleConfig {
+            query: Some("from notes".to_string()),
+            query_json: None,
+            transforms: ContentTransformConfig {
+                exclude_callouts: vec!["secret".to_string()],
+            },
+        }
+        .is_empty());
     }
 }

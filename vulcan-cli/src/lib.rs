@@ -69,8 +69,9 @@ use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use vulcan_core::config::{
-    ContentTransformConfig, ExportEpubTocStyleConfig, ExportGraphFormatConfig, ExportProfileConfig,
-    ExportProfileFormat, QuickAddImporter, TasksDefaultSource,
+    ContentTransformConfig, ContentTransformRuleConfig, ExportEpubTocStyleConfig,
+    ExportGraphFormatConfig, ExportProfileConfig, ExportProfileFormat, QuickAddImporter,
+    TasksDefaultSource,
 };
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
 use vulcan_core::expression::functions::{
@@ -14201,9 +14202,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let transform_config =
-                        build_content_transform_config(&transforms.exclude_callouts);
-                    let prepared = prepare_export_data(&paths, &report, transform_config.as_ref())?;
+                    let transform_rules =
+                        build_content_transform_rules(&transforms.exclude_callouts);
+                    let prepared = prepare_export_data(
+                        &paths,
+                        &report,
+                        read_filter.as_ref(),
+                        transform_rules.as_deref(),
+                    )?;
                     let payload =
                         render_markdown_export_payload(&report, &prepared.notes, title.as_deref());
                     let summary = MarkdownExportSummary {
@@ -14226,9 +14232,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let transform_config =
-                        build_content_transform_config(&transforms.exclude_callouts);
-                    let prepared = prepare_export_data(&paths, &report, transform_config.as_ref())?;
+                    let transform_rules =
+                        build_content_transform_rules(&transforms.exclude_callouts);
+                    let prepared = prepare_export_data(
+                        &paths,
+                        &report,
+                        read_filter.as_ref(),
+                        transform_rules.as_deref(),
+                    )?;
                     let payload = render_json_export_payload(&report, &prepared.notes, *pretty)?;
                     let summary = JsonExportSummary {
                         path: path
@@ -14278,9 +14289,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let transform_config =
-                        build_content_transform_config(&transforms.exclude_callouts);
-                    let prepared = prepare_export_data(&paths, &report, transform_config.as_ref())?;
+                    let transform_rules =
+                        build_content_transform_rules(&transforms.exclude_callouts);
+                    let prepared = prepare_export_data(
+                        &paths,
+                        &report,
+                        read_filter.as_ref(),
+                        transform_rules.as_deref(),
+                    )?;
                     let summary = write_epub_export(
                         &paths,
                         path,
@@ -14313,9 +14329,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let transform_config =
-                        build_content_transform_config(&transforms.exclude_callouts);
-                    let prepared = prepare_export_data(&paths, &report, transform_config.as_ref())?;
+                    let transform_rules =
+                        build_content_transform_rules(&transforms.exclude_callouts);
+                    let prepared = prepare_export_data(
+                        &paths,
+                        &report,
+                        read_filter.as_ref(),
+                        transform_rules.as_deref(),
+                    )?;
                     let summary =
                         write_zip_export(&paths, path, &report, &prepared.notes, &prepared.links)?;
                     match cli.output {
@@ -17385,14 +17406,24 @@ fn export_epub_toc_style_config_from_cli(
     })
 }
 
-fn build_content_transform_config(exclude_callouts: &[String]) -> Option<ContentTransformConfig> {
+fn build_content_transform_rule(exclude_callouts: &[String]) -> Option<ContentTransformRuleConfig> {
     let exclude_callouts = exclude_callouts
         .iter()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    (!exclude_callouts.is_empty()).then_some(ContentTransformConfig { exclude_callouts })
+    (!exclude_callouts.is_empty()).then_some(ContentTransformRuleConfig {
+        query: None,
+        query_json: None,
+        transforms: ContentTransformConfig { exclude_callouts },
+    })
+}
+
+fn build_content_transform_rules(
+    exclude_callouts: &[String],
+) -> Option<Vec<ContentTransformRuleConfig>> {
+    build_content_transform_rule(exclude_callouts).map(|rule| vec![rule])
 }
 
 fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> ExportProfileConfig {
@@ -17408,7 +17439,7 @@ fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> Expor
         frontmatter: request.frontmatter.then_some(true),
         pretty: request.pretty.then_some(true),
         graph_format: export_graph_format_config_from_cli(request.graph_format),
-        content_transforms: build_content_transform_config(request.exclude_callouts),
+        content_transform_rules: build_content_transform_rules(request.exclude_callouts),
     }
 }
 
@@ -17432,6 +17463,10 @@ fn export_profile_supports_content_transforms(format: ExportProfileFormat) -> bo
             | ExportProfileFormat::Epub
             | ExportProfileFormat::Zip
     )
+}
+
+fn content_transform_rules_have_effective_transforms(rules: &[ContentTransformRuleConfig]) -> bool {
+    rules.iter().any(|rule| !rule.is_empty())
 }
 
 fn validate_export_profile_config(
@@ -17500,11 +17535,21 @@ fn validate_export_profile_config(
             "export profile `{name}` only supports `graph_format` for graph exports"
         )));
     }
+    if let Some(content_transform_rules) = profile.content_transform_rules.as_ref() {
+        for (index, rule) in content_transform_rules.iter().enumerate() {
+            if rule.query.is_some() && rule.query_json.is_some() {
+                return Err(CliError::operation(format!(
+                    "content_transforms rule {} in export profile `{name}` must set only one of `query` or `query_json`",
+                    index + 1
+                )));
+            }
+        }
+    }
     if !export_profile_supports_content_transforms(format)
         && profile
-            .content_transforms
+            .content_transform_rules
             .as_ref()
-            .is_some_and(|transforms| !transforms.is_empty())
+            .is_some_and(|rules| content_transform_rules_have_effective_transforms(rules))
     {
         return Err(CliError::operation(format!(
             "export profile `{name}` only supports `content_transforms` for markdown, json, epub, and zip exports"
@@ -20754,7 +20799,7 @@ struct ExportContentRequest<'a> {
     query: Option<&'a str>,
     query_json: Option<&'a str>,
     read_filter: Option<&'a PermissionFilter>,
-    transforms: Option<&'a ContentTransformConfig>,
+    transforms: Option<&'a [ContentTransformRuleConfig]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -21142,20 +21187,40 @@ fn transformed_note_links_by_source(links: &[ExportLinkRecord]) -> HashMap<Strin
 fn prepare_export_data(
     paths: &VaultPaths,
     report: &QueryReport,
-    transforms: Option<&ContentTransformConfig>,
+    read_filter: Option<&PermissionFilter>,
+    transform_rules: Option<&[ContentTransformRuleConfig]>,
 ) -> Result<PreparedExportData, CliError> {
     let notes = load_exported_notes(paths, report)?;
-    let Some(transforms) = transforms.filter(|transforms| !transforms.is_empty()) else {
+    let Some(transform_rules) =
+        transform_rules.filter(|rules| content_transform_rules_have_effective_transforms(rules))
+    else {
         let links = load_export_links(paths, &notes)?;
         return Ok(PreparedExportData { notes, links });
     };
+    let effective_transforms =
+        build_effective_content_transforms(paths, report, read_filter, transform_rules)?;
+    if effective_transforms.is_empty() {
+        let links = load_export_links(paths, &notes)?;
+        return Ok(PreparedExportData { notes, links });
+    }
 
+    prepare_transformed_export_data(paths, notes, &effective_transforms)
+}
+
+fn prepare_transformed_export_data(
+    paths: &VaultPaths,
+    notes: Vec<ExportedNoteDocument>,
+    effective_transforms: &HashMap<String, ContentTransformConfig>,
+) -> Result<PreparedExportData, CliError> {
     let original_links = load_export_links(paths, &notes)?;
     let config = load_vault_config(paths).config;
     let mut parsed_notes = notes
         .into_iter()
         .map(|entry| {
-            let content = apply_content_transforms(&entry.content, transforms);
+            let content = match effective_transforms.get(&entry.note.document_path) {
+                Some(transforms) => apply_content_transforms(&entry.content, transforms),
+                None => entry.content,
+            };
             let parsed = parse_document(&content, &config);
             ParsedExportedNoteDocument {
                 note: entry.note,
@@ -21249,6 +21314,47 @@ fn prepare_export_data(
         notes: exported_notes,
         links: transformed_links,
     })
+}
+
+fn build_effective_content_transforms(
+    paths: &VaultPaths,
+    report: &QueryReport,
+    read_filter: Option<&PermissionFilter>,
+    transform_rules: &[ContentTransformRuleConfig],
+) -> Result<HashMap<String, ContentTransformConfig>, CliError> {
+    let exported_paths = report
+        .notes
+        .iter()
+        .map(|note| note.document_path.clone())
+        .collect::<HashSet<_>>();
+    let mut effective = HashMap::<String, ContentTransformConfig>::new();
+
+    for rule in transform_rules.iter().filter(|rule| !rule.is_empty()) {
+        let matched_paths = if rule.query.is_none() && rule.query_json.is_none() {
+            exported_paths.iter().cloned().collect::<Vec<_>>()
+        } else {
+            execute_export_query(
+                paths,
+                rule.query.as_deref(),
+                rule.query_json.as_deref(),
+                read_filter,
+            )?
+            .notes
+            .into_iter()
+            .map(|note| note.document_path)
+            .filter(|path| exported_paths.contains(path))
+            .collect::<Vec<_>>()
+        };
+
+        for path in matched_paths {
+            effective
+                .entry(path)
+                .or_default()
+                .merge_in(&rule.transforms);
+        }
+    }
+
+    Ok(effective)
 }
 
 fn json_note_export_report(
@@ -21859,7 +21965,7 @@ fn run_markdown_export_profile(
         request.query_json,
         request.read_filter,
     )?;
-    let prepared = prepare_export_data(paths, &report, request.transforms)?;
+    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)?;
     let payload = render_markdown_export_payload(&report, &prepared.notes, title);
     let summary = MarkdownExportSummary {
         path: output_path.display().to_string(),
@@ -21881,7 +21987,7 @@ fn run_json_export_profile(
         request.query_json,
         request.read_filter,
     )?;
-    let prepared = prepare_export_data(paths, &report, request.transforms)?;
+    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)?;
     let payload = render_json_export_payload(&report, &prepared.notes, pretty)?;
     let summary = JsonExportSummary {
         path: output_path.display().to_string(),
@@ -21944,7 +22050,12 @@ fn run_epub_export_profile(
     profile: &ExportProfileConfig,
 ) -> Result<Value, CliError> {
     let report = execute_export_query(paths, query, query_json, read_filter)?;
-    let prepared = prepare_export_data(paths, &report, profile.content_transforms.as_ref())?;
+    let prepared = prepare_export_data(
+        paths,
+        &report,
+        read_filter,
+        profile.content_transform_rules.as_deref(),
+    )?;
     let summary = write_epub_export(
         paths,
         output_path,
@@ -21973,7 +22084,7 @@ fn run_zip_export_profile(
         request.query_json,
         request.read_filter,
     )?;
-    let prepared = prepare_export_data(paths, &report, request.transforms)?;
+    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)?;
     let summary = write_zip_export(
         paths,
         output_path,
@@ -22051,7 +22162,7 @@ fn run_export_profile(
                 query,
                 query_json,
                 read_filter,
-                transforms: profile.content_transforms.as_ref(),
+                transforms: profile.content_transform_rules.as_deref(),
             },
         )?,
         ExportProfileFormat::Json => run_json_export_profile(
@@ -22063,7 +22174,7 @@ fn run_export_profile(
                 query,
                 query_json,
                 read_filter,
-                transforms: profile.content_transforms.as_ref(),
+                transforms: profile.content_transform_rules.as_deref(),
             },
         )?,
         ExportProfileFormat::Csv => run_csv_export_profile(
@@ -22098,7 +22209,7 @@ fn run_export_profile(
                 query,
                 query_json,
                 read_filter,
-                transforms: profile.content_transforms.as_ref(),
+                transforms: profile.content_transform_rules.as_deref(),
             },
         )?,
         ExportProfileFormat::Sqlite => run_sqlite_export_profile(

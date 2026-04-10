@@ -1,5 +1,5 @@
 use crate::bases::inspect_base_file;
-pub use crate::content_transforms::ContentTransformConfig;
+pub use crate::content_transforms::{ContentTransformConfig, ContentTransformRuleConfig};
 use crate::paths::{
     ensure_vulcan_dir, normalize_relative_input_path, RelativePathOptions, VaultPaths,
 };
@@ -240,8 +240,11 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # pretty = false                   # JSON and search-index only
 # graph_format = "json"            # graph only: json | dot | graphml
 #
-# [export.profiles.team-book.content_transforms]
+# [[export.profiles.team-book.content_transforms]]
 # exclude_callouts = ["secret gm", "internal"]
+# [[export.profiles.team-book.content_transforms]]
+# query = 'from notes where file.path matches "^People/"'
+# exclude_callouts = ["internal"]
 
 # [web]
 # user_agent = "Vulcan/0.1 (+https://github.com/tionis/vulcan)"
@@ -2218,8 +2221,12 @@ pub struct ExportProfileConfig {
     pub frontmatter: Option<bool>,
     pub pretty: Option<bool>,
     pub graph_format: Option<ExportGraphFormatConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_transforms: Option<ContentTransformConfig>,
+    #[serde(
+        default,
+        rename = "content_transforms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_transform_rules: Option<Vec<ContentTransformRuleConfig>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -6962,19 +6969,9 @@ fn merge_export_profile_config(target: &mut ExportProfileConfig, profile: Export
     if let Some(graph_format) = profile.graph_format {
         target.graph_format = Some(graph_format);
     }
-    if let Some(content_transforms) = profile.content_transforms {
-        match target.content_transforms.as_mut() {
-            Some(existing) => merge_content_transform_config(existing, content_transforms),
-            None => target.content_transforms = Some(content_transforms),
-        }
+    if let Some(content_transform_rules) = profile.content_transform_rules {
+        target.content_transform_rules = Some(content_transform_rules);
     }
-}
-
-fn merge_content_transform_config(
-    target: &mut ContentTransformConfig,
-    transforms: ContentTransformConfig,
-) {
-    target.exclude_callouts = transforms.exclude_callouts;
 }
 
 #[allow(clippy::too_many_lines)]
@@ -9306,7 +9303,7 @@ toc = "flat"
 backlinks = true
 frontmatter = true
 
-[export.profiles.team_book.content_transforms]
+[[export.profiles.team_book.content_transforms]]
 exclude_callouts = ["secret gm", "internal"]
 "#,
         )
@@ -9335,11 +9332,16 @@ exclude_callouts = ["secret gm", "internal"]
         assert_eq!(profile.backlinks, Some(true));
         assert_eq!(profile.frontmatter, Some(true));
         assert_eq!(
-            profile
-                .content_transforms
-                .as_ref()
-                .map(|transforms| transforms.exclude_callouts.clone()),
-            Some(vec!["secret gm".to_string(), "internal".to_string()])
+            profile.content_transform_rules.as_ref().map(|rules| {
+                rules
+                    .iter()
+                    .map(|rule| (rule.query.clone(), rule.transforms.exclude_callouts.clone()))
+                    .collect::<Vec<_>>()
+            }),
+            Some(vec![(
+                None,
+                vec!["secret gm".to_string(), "internal".to_string()],
+            )])
         );
     }
 
@@ -9359,7 +9361,7 @@ title = "Team Book"
 toc = "tree"
 backlinks = true
 
-[export.profiles.team_book.content_transforms]
+[[export.profiles.team_book.content_transforms]]
 exclude_callouts = ["secret gm"]
 "#,
         )
@@ -9372,8 +9374,9 @@ path = "local/team-book.epub"
 frontmatter = true
 toc = "flat"
 
-[export.profiles.team_book.content_transforms]
-exclude_callouts = ["internal"]
+[[export.profiles.team_book.content_transforms]]
+query = 'from notes where file.path matches "^People/"'
+exclude_callouts = ["internal", "private"]
 
 [export.profiles.graph_dump]
 format = "graph"
@@ -9411,11 +9414,16 @@ graph_format = "dot"
         assert_eq!(team_book.backlinks, Some(true));
         assert_eq!(team_book.frontmatter, Some(true));
         assert_eq!(
-            team_book
-                .content_transforms
-                .as_ref()
-                .map(|transforms| transforms.exclude_callouts.clone()),
-            Some(vec!["internal".to_string()])
+            team_book.content_transform_rules.as_ref().map(|rules| {
+                rules
+                    .iter()
+                    .map(|rule| (rule.query.clone(), rule.transforms.exclude_callouts.clone()))
+                    .collect::<Vec<_>>()
+            }),
+            Some(vec![(
+                Some(r#"from notes where file.path matches "^People/""#.to_string()),
+                vec!["internal".to_string(), "private".to_string()],
+            )])
         );
 
         assert_eq!(graph_dump.format, Some(ExportProfileFormat::Graph));

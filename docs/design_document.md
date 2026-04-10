@@ -94,6 +94,16 @@ Recommended approach:
 - Long-running operations such as full reindex or batch embedding should use chunked transactions (e.g., commit every N documents) to avoid holding the write lock for minutes. This means partial progress is visible and a crash mid-reindex leaves the cache in a consistent but incomplete state, which reconciliation can repair.
 - Never assume two concurrent CLI invocations coordinate with each other. If a user runs `move` in one terminal while `scan` runs in another, both must serialize through the same write lock. Use SQLite's `busy_timeout` as a backstop, but prefer the application-level lock to give better error messages.
 
+### 4.1 Publication transform rules
+
+Export, static site generation, and the future web wiki should share one publication model that separates **selection** from **transformation**.
+
+- A publication/export profile query defines the complete document set included in the output.
+- Ordered content-transform rules may add their own `query` or `query_json`, but these queries only select **which already-selected documents** receive that rule's transforms. They must never add documents outside the profile query result.
+- If multiple rules match one document, Vulcan merges them deterministically before reparsing content. Additive exclusions should union together, replacement-style rules should preserve declaration order, and scalar policies should use last-wins semantics.
+- Link and asset policies should run after note-level transforms are resolved, so removed sections or metadata cannot leak through backlinks, embeds, or copied attachments.
+- The persisted configuration model should therefore stay rule-based even if the CLI offers simpler sugar for creating a single "apply to all selected notes" rule.
+
 ## 5. Data model overview
 
 The implementation should use stable internal identifiers rather than paths as primary keys. Paths move; identities should survive moves.
