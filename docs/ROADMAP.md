@@ -3788,6 +3788,384 @@ This phase is only worth doing early if later phases can build on it directly.
 
 ---
 
+## Phase 9.21: Embedded AI Assistant via pi RPC
+
+**Goal:** Embed pi as an in-process agent engine inside Vulcan, using pi's RPC mode (JSON-RPC over stdin/stdout) so that `vulcan assistant` provides a fully integrated coding and vault-management assistant without the user needing to install, configure, or manage pi separately. Vulcan owns the process lifecycle, UI, and tool surface; pi owns model inference, session management, context compaction, and tool orchestration.
+
+**Why this phase exists now:** Phase 9.12 defined the contract for external agent runtimes shelling out to Vulcan. Phase 9.21 goes in the opposite direction — Vulcan embeds pi as the agent engine — which is the integration model that delivers the best user experience. The two models are complementary: 9.12 for users who bring their own pi, 9.21 for users who want a zero-config assistant built into Vulcan.
+
+**Design principle — Vulcancentrism:** Vulcan is the host process. Pi is a managed subprocess. The user never interacts with pi directly; all interaction goes through the `vulcan assistant` command surface. Pi's built-in tools (read, bash, edit, write) are available but constrained by the active permission profile. Vault mutations are routed through Vulcan commands, not pi's raw file-edit tools, so the same safety checks, dry-run, and auto-commit guarantees apply.
+
+**Depends on:** Phase 9.12 (external agent contract and tool boundary already defined), Phase 9.18.2/9.18.7 (note CRUD and describe/help stability), Phase 9.3 (git auto-commit). Phase 9.6 (search) and Phase 7.12 (query model) are used for vault-aware tool execution.
+
+**Design refs:** `docs/assistant/pi_integration.md` (9.12 contract), pi RPC protocol documentation (`packages/coding-agent/docs/rpc.md` in the pi-mono repository), `docs/assistant/native_runtime_deferred.md` (preserved native-runtime design for revisit).
+
+### 9.21.1 Pi subprocess management
+
+Spawn and manage the pi process lifecycle. This is the foundation that everything else builds on.
+
+- [ ] New module `vulcan-cli/src/assistant/mod.rs` as the public entry point for assistant commands
+- [ ] New module `vulcan-cli/src/assistant/pi_process.rs`:
+  - Locate pi binary: check `$PI_BINARY`, then `PATH` for `pi`, then common install locations (`~/.npm-global/bin/pi`, `/usr/local/bin/pi`)
+  - `PiProcess::spawn(args, config)` — start `pi --mode rpc` with appropriate flags:
+    - `--cwd <vault_root>` for workspace awareness
+    - `--provider <provider>` and `--model <model>` from Vulcan config
+    - `--no-session` for ephemeral mode, or `--session-dir <vault_root>/.vulcan/assistant/sessions/` for persistent sessions
+    - `-e <extension_path>` to load the Vulcan tools extension (9.21.3)
+    - `--thinking <level>` from Vulcan config
+  - `PiProcess::ensure_running()` — health check; respawn if the process has died
+  - `PiProcess::shutdown()` — send `abort` command, wait for graceful exit, kill after timeout
+  - `PiProcess::is_healthy()` — check that stdin/stdout pipes are still open and the process hasn't exited
+  - Handle pi not found: emit actionable error with install instructions (`npm install -g @mariozechner/pi-coding-agent`)
+  - Handle pi version incompatibility: capture `--version` output and warn if below a minimum supported version
+  - On spawn failure or crash: classify the error (not found, old version, auth missing, port conflict) and emit a user-facing diagnostic
+- [ ] Add `[assistant]` section to `VaultConfig` in `vulcan-core/src/config/mod.rs`:
+  ```toml
+  [assistant]
+  runtime = "pi"            # "pi" (default) or "none" to disable
+  pi_binary = "pi"          # binary name or full path
+  provider = "anthropic"     # LLM provider
+  model = ""                 # model ID; empty = pi default
+  thinking_level = "medium"  # off, minimal, low, medium, high, xhigh
+  permissions = "edit"        # readonly, edit, refactor
+  sessions_dir = "AI/Sessions"  # relative to vault root; empty = ephemeral
+  ```
+- [ ] Add `[assistant]` section to `DEFAULT_CONFIG_TEMPLATE` (commented out, with defaults shown)
+- [ ] Add `--assistant-pi-binary`, `--assistant-provider`, `--assistant-model`, `--assistant-thinking`, `--assistant-permissions` CLI overrides
+- [ ] Integration test: spawn pi in RPC mode, verify `get_state` returns a response, then shut down cleanly
+
+### 9.21.2 Pi RPC client
+
+A typed Rust client for pi's JSON-RPC protocol. This module knows the protocol; the rest of the assistant code uses this client rather than dealing with raw JSON.
+
+- [ ] New module `vulcan-cli/src/assistant/rpc_client.rs`:
+  - `PiRpcClient` struct wrapping the pi subprocess's stdin/stdout handles
+  - JSONL framing: write `\n`-terminated JSON to stdin, read `\n`-delimited JSON from stdout
+  - Do NOT use BufReader with line-by-line reading that splits on `U+2028`/`U+2029` (pi docs explicitly warn about this — Node `readline` is non-compliant). Implement a custom LF-only line reader
+  - Correlation ID tracking: optional `id` field on commands, matched in `type: "response"` replies
+  - Pending-response map: `HashMap<String, oneshot::Sender<RpcResponse>>` for awaiting command responses
+  - Event dispatch: spawn a background task that reads stdout lines, parses them, and dispatches to:
+    - Response correlator (for command responses)
+    - Event subscriber channel (for streaming events)
+    - Extension UI handler (for `extension_ui_request`)
+  - `send_command(&mut self, command: RpcCommand) -> Result<RpcResponse>` — write command, await response if `id` was set
+  - `subscribe_events(&self) -> broadcast::Receiver<PiEvent>` — subscribe to the event stream
+  - `prompt(&mut self, message: &str)` — send prompt command, return immediately (events stream asynchronously)
+  - `steer(&mut self, message: &str)` — queue steering message during streaming
+  - `abort(&mut self)` — abort current agent operation
+  - `get_state(&mut self) -> Result<PiSessionState>` — query session state
+  - `set_model(&mut self, provider: &str, model_id: &str) -> Result<()>` — switch model
+  - `compact(&mut self) -> Result<CompactionResult>` — trigger compaction
+  - `new_session(&mut self) -> Result<bool>` — start fresh session (returns `true` if cancelled by extension)
+  - `shutdown()` — send graceful shutdown signal
+
+- [ ] New module `vulcan-cli/src/assistant/rpc_types.rs`:
+  - Typed structs for all RPC commands: `RpcCommand` enum with variants for `prompt`, `steer`, `follow_up`, `abort`, `get_state`, `set_model`, `cycle_model`, `get_available_models`, `set_thinking_level`, `cycle_thinking_level`, `compact`, `set_auto_compaction`, `new_session`, `get_session_stats`, `get_messages`, `get_commands`, `bash`
+  - Typed structs for all RPC responses: `RpcResponse` with `id`, `command`, `success`, `data`, `error`
+  - Typed structs for session state: `PiSessionState` with `model`, `thinking_level`, `is_streaming`, `is_compacting`, `session_id`, `session_name`, `message_count`, `pending_message_count`
+  - Typed structs for compaction result: `CompactionResult` with `summary`, `first_kept_entry_id`, `tokens_before`
+  - Typed structs for model info: `PiModel` with `id`, `name`, `provider`, `reasoning`, `context_window`, `max_tokens`
+
+- [ ] New module `vulcan-cli/src/assistant/rpc_events.rs`:
+  - `PiEvent` enum covering all events pi emits:
+    - `AgentStart`, `AgentEnd { messages }` — agent lifecycle
+    - `TurnStart`, `TurnEnd { message, tool_results }` — turn lifecycle
+    - `MessageStart`, `MessageUpdate { assistant_event }, MessageEnd` — message streaming
+    - `ToolExecutionStart`, `ToolExecutionUpdate`, `ToolExecutionEnd` — tool execution
+    - `QueueUpdate { steering, follow_up }` — pending messages
+    - `CompactionStart`, `CompactionEnd` — compaction
+    - `AutoRetryStart`, `AutoRetryEnd` — retry
+    - `ExtensionError` — extension errors
+    - `ExtensionUiRequest` — extension UI sub-protocol (confirm, select, input, notify, etc.)
+  - `PiAssistantEvent` enum for streaming delta types: `TextDelta`, `ThinkingDelta`, `ToolCallStart`, `ToolCallDelta`, `ToolCallEnd`, `Done`, `Error`
+  - All structs derive `Serialize`, `Deserialize` for parsing from pi's JSON output
+  - Unit tests for parsing representative JSON lines from pi's RPC protocol against the typed structs
+
+- [ ] Dependency: add `tokio` with `process` and `sync` features to `vulcan-cli/Cargo.toml` (tokio is already an indirect dependency through existing async code; make it direct for subprocess management)
+- [ ] Add `tokio-util` with `codec` feature for the JSONL codec if beneficial; otherwise implement the LF-only line reader manually
+
+### 9.21.3 Vulcan tools as a pi extension
+
+Register Vulcan's tool surface as pi custom tools so the LLM can call them naturally. This is implemented as a pi TypeScript extension that is loaded when pi starts.
+
+- [ ] New directory `vulcan-cli/src/assistant/extension/` containing the pi extension source:
+  - `vulcan-tools/index.ts` — extension entry point
+  - `vulcan-tools/package.json` — pi package manifest with `"pi": { "extensions": ["./index.ts"] }`
+- [ ] The extension is bundled into the Vulcan binary at compile time using `include_str!` and written to a temp directory at runtime, or embedded via `std::include_bytes!` and extracted to `.vulcan/assistant/extension/` on `vulcan init`
+- [ ] Extension behavior on `session_start`:
+  - Call `vulcan describe --format openai-tools` to get the full tool schema
+  - Register each tool via `pi.registerTool()`
+  - Each tool's `execute` function:
+    1. Shell out to `vulcan <command> --output json` with the provided arguments
+    2. Parse stdout as JSON or line-delimited JSON
+    3. Return the result as a `ToolResult`
+    4. Normalize non-zero exit codes into structured tool errors
+- [ ] Extension behavior for permission profiles:
+  - `readonly`: only register read-only tools (`note get`, `search`, `query`, `backlinks`, `links`, `graph`, `daily list`, etc.)
+  - `edit`: add note CRUD, property mutation, and inbox tools
+  - `refactor`: add `move`, `merge-tags`, `rename-*`, `rewrite`, and other high-impact commands
+  - The active profile is passed as a CLI flag to pi via the extension's initialization (e.g., as a custom flag or environment variable)
+- [ ] Extension registers a `tool_call` hook that:
+  - Blocks pi's built-in `bash` and `edit` tools when the permission profile is `readonly`
+  - In `edit` mode, allows `bash` but logs a warning for commands outside the vault directory
+  - In `refactor` mode, allows all tools
+- [ ] Extension registers a `before_agent_start` hook that:
+  - Appends vault `AGENTS.md` content to the system prompt if present
+  - Injects a compact tool summary and active permission profile description
+- [ ] Unit tests: verify the extension loads in pi by spawning `pi --mode print -e <extension_path> -p "test"` and checking for extension errors
+- [ ] Integration test: launch pi with the extension, call `vulcan note get` through the assistant, verify result
+
+### 9.21.4 Assistant context injection
+
+At session start, inject vault context into pi so the assistant knows about the vault structure, available tools, and relevant skills.
+
+- [ ] New module `vulcan-cli/src/assistant/context.rs`:
+  - `build_session_context(vault_root, config) -> SessionContext`:
+    - Read vault `AGENTS.md` if present
+    - Call `vulcan describe --format openai-tools` to produce the tool summary for the system prompt
+    - Enumerate default and user skills from `AI/Skills/` (just names and descriptions, not full content)
+    - Collect vault metadata: vault name, note count, tag summary, property catalog summary
+  - `format_system_prompt_append(context) -> String`:
+    - Format the context as a structured block for pi's system prompt
+    - Include: vault identity, tool surface summary, skill directory, permission profile, vault `AGENTS.md` content
+- [ ] The context is injected via pi's `--append-system-prompt` flag or the extension's `before_agent_start` hook
+- [ ] Skills are loaded on-demand: the extension exposes a `skill_get(name)` tool that reads and returns the skill file content when the LLM requests it (matching the existing 9.12.6 skill structure)
+- [ ] `AGENTS.md` content is injected once at session start, not on every turn (keep per-turn context small)
+- [ ] Context size budget: tool summaries and skill directory should fit within ~2k tokens; full schemas and skill bodies stay on-demand
+- [ ] Integration test: start an assistant session, verify the model can describe vault tools and skill names without prior prompting
+
+### 9.21.5 Streaming output rendering
+
+Render pi's streaming events into Vulcan's terminal output, both for one-shot prompts and interactive sessions.
+
+- [ ] New module `vulcan-cli/src/assistant/renderer.rs`:
+  - `AssistantRenderer` trait with methods for each event type:
+    - `on_text_delta(&mut self, delta: &str)` — stream text to output
+    - `on_thinking_delta(&mut self, delta: &str)` — render thinking/reasoning output (collapsible or dimmed)
+    - `on_tool_start(&mut self, name: &str, args: &Value)` — show tool execution indicator
+    - `on_tool_end(&mut self, name: &str, result: &Value, is_error: bool)` — show tool result summary
+    - `on_compaction(&mut self)` — show compaction indicator
+    - `on_agent_end(&mut self)` — final rendering, cost summary
+- [ ] `PrintRenderer` implementation — for `vulcan assistant <prompt>` one-shot mode:
+  - Stream text deltas directly to stdout
+  - Render thinking blocks as dimmed text with `[thinking]` prefix (controlled by `--show-thinking` flag)
+  - Show tool execution as indented summary lines: `  → bash: ls -la`
+  - Show tool results as truncated output with `[...N lines]` for long results
+  - Print session stats on completion: token usage, cost, turn count
+  - Respect `--output json` for machine-readable results (emit structured JSON instead of formatted text)
+- [ ] `InteractiveRenderer` implementation — for `vulcan assistant --chat` mode:
+  - Use `crossterm` for styled output (colored tool names, bold headings, dimmed thinking)
+  - Show a live tool execution indicator with spinner (reuse existing TUI patterns from `browse_tui.rs`)
+  - Render assistant text as it streams (no buffering)
+  - Render thinking as a collapsible block (toggle with keyboard shortcut)
+  - Show footer with: model name, thinking level, context usage, pending queue count
+- [ ] Streaming output must handle SIGINT / Ctrl+C gracefully:
+  - First Ctrl+C: send `abort` command to pi (interrupt current tool batch, deliver steering message)
+  - Second Ctrl+C: force-kill pi subprocess
+  - Always render any partial response already received
+- [ ] Unit tests for renderer output using a mock event stream
+
+### 9.21.6 Interactive chat mode
+
+A REPL-style interactive assistant session, driven by `readline` for input and `crossterm` for styled output.
+
+- [ ] New module `vulcan-cli/src/assistant/chat.rs`:
+  - `ChatSession` struct holding the `PiRpcClient` and `InteractiveRenderer`
+  - Main loop:
+    1. Read user input via `rustyline` (already a dependency) with history and tab completion
+    2. Send input as a `prompt` command to pi
+    3. Read events from the subscription channel and dispatch to the renderer
+    4. On `agent_end`, print the prompt again and loop
+  - Handle special input:
+    - Empty input (Enter): no-op
+    - `/model`: send `cycle_model` command to pi, display new model
+    - `/thinking`: send `cycle_thinking_level` command to pi, display new level
+    - `/compact`: send `compact` command to pi
+    - `/new`: send `new_session` command to pi
+    - `/stats`: send `get_session_stats` command to pi, display usage
+    - `/help`: display available slash commands
+    - `/quit` or Ctrl+D: send `abort` if streaming, then shut down pi and exit
+  - Handle extension UI requests from pi:
+    - `confirm`: render the confirmation prompt in the terminal, read y/n, send response back to pi
+    - `select`: render numbered options, read selection, send response back to pi
+    - `input`: render the prompt, read input via rustyline, send response back to pi
+    - `notify`: render the notification as a colored status line
+    - `editor`: open `$EDITOR` with prefill, read result, send back (reuse `open_in_editor` from `editor.rs`)
+  - Handle queuing:
+    - If user types while pi is streaming: send as `steer` message (interrupt after current tool)
+    - Alt+Enter: send as `follow_up` message (wait until pi finishes)
+    - Show queue state in the footer
+  - Session persistence:
+    - If `sessions_dir` is configured: pi writes session files there automatically
+    - Resume with `vulcan assistant --chat --resume` or `--continue` (find most recent session)
+- [ ] `vulcan assistant --chat` command wires to `ChatSession::run()`
+- [ ] `vulcan assistant <prompt>` (one-shot) creates a `ChatSession`, sends the prompt, renders the response, and exits
+- [ ] Integration test: start a chat session with a mock pi subprocess, verify prompt → event → render round-trip
+
+### 9.21.7 Assistant CLI surface
+
+Wire the assistant into Vulcan's CLI command structure.
+
+- [ ] Add `assistant` subcommand to `vulcan-cli/src/cli.rs`:
+  ```
+  vulcan assistant <prompt>              # one-shot prompt, stream response, exit
+  vulcan assistant --chat               # interactive chat session
+  vulcan assistant --chat --resume      # resume most recent session
+  vulcan assistant --chat --continue   # continue most recent session
+  vulcan assistant --list-sessions     # list persisted assistant sessions
+  vulcan assistant --doctor            # check assistant prerequisites (pi binary, auth, config)
+  ```
+- [ ] One-shot mode flags:
+  - `--provider <name>` — LLM provider override
+  - `--model <id>` — model override
+  - `--thinking <level>` — thinking level override
+  - `--show-thinking` — render thinking blocks in one-shot output
+  - `--permissions <profile>` — permission profile (`readonly`, `edit`, `refactor`; default from config)
+  - `--no-commit` — suppress auto-commit for this session
+  - `--output json` — machine-readable output for one-shot results
+  - `--no-tools` — start pi with `--no-tools` and only Vulcan tools from the extension
+- [ ] Chat mode flags:
+  - `--resume` / `--continue` — resume a previous session
+  - `--ephemeral` — don't persist session (default if `sessions_dir` is empty)
+- [ ] `vulcan assistant --doctor` checks:
+  - pi binary found and version sufficient
+  - API key configured (at least one provider has credentials)
+  - Vault cache is current (last scan timestamp)
+  - Extension loads without errors
+  - Config is valid (provider, model, permissions)
+- [ ] `vulcan assistant --list-sessions`:
+  - Enumerate session files in `.vulcan/assistant/sessions/`
+  - Show session ID, title, message count, last active timestamp
+- [ ] Tab completion in chat mode:
+  - Complete `vulcan` commands after `/vulcan ` prefix
+  - Complete file paths after `@` prefix
+  - Complete slash commands (`/model`, `/thinking`, `/compact`, etc.)
+- [ ] Non-interactive mode: if not a TTY, `vulcan assistant` reads prompt from stdin and writes response to stdout (like `pi -p`)
+- [ ] Update `vulcan init` to create the `AI/Sessions/` directory and write the assistant extension if `runtime = "pi"` is set in config
+- [ ] Integration tests for one-shot, chat, doctor, and list-sessions commands
+
+### 9.21.8 Permission profiles and safety
+
+Enforce Vulcan's permission model in the pi subprocess so that vault mutations always go through Vulcan's safety checks.
+
+- [ ] Permission profile definitions (extend the existing 9.12.2 model):
+  - `readonly`: read-only tools only (no bash, no note mutations). Pi's built-in bash and edit tools are blocked.
+  - `edit`: note CRUD, property mutations, inbox. Pi's bash tool is allowed but constrained to the vault directory.
+  - `refactor`: all tools including `move`, `merge-tags`, `rename-*`, `rewrite`. Pi's bash tool is fully available.
+- [ ] Enforcement mechanisms:
+  - The Vulcan tools extension (9.21.3) registers a `tool_call` hook that blocks pi built-in tools based on the active profile
+  - The extension's `execute` functions for Vulcan tools pass `--permissions <profile>` to `vulcan` CLI invocations so Vulcan's own enforcement is also active
+  - `bash` tool in `edit` mode: the extension's `tool_call` hook inspects the command and blocks operations outside the vault root
+- [ ] Config in `.vulcan/config.toml`:
+  ```toml
+  [assistant]
+  permissions = "edit"  # default profile for assistant sessions
+  ```
+- [ ] `--permissions` CLI override on `vulcan assistant` commands
+- [ ] All Vulcan tool wrappers in the extension honor `--dry-run` for high-impact operations (move, rewrite, merge-tags, rename-*) by default in `edit` mode; the extension can be configured to auto-apply or to prompt the user via extension UI
+- [ ] `vulcan assistant --permissions readonly` is the recommended mode for exploration and search-heavy workflows
+- [ ] Document the permission profile mapping from Vulcan profiles to pi tool constraints
+- [ ] Integration test: start assistant in `readonly` mode, verify that `vulcan note create` is not available
+
+### 9.21.9 Session and persistence boundary
+
+Define where assistant session state lives and how it relates to vault state.
+
+- [ ] **Default: pi owns session state.** Pi writes session files to `.vulcan/assistant/sessions/` (or `AI/Sessions/` depending on config). Vulcan does not parse or modify these files.
+- [ ] Session file naming: pi uses its own session ID scheme. On `vulcan assistant --list-sessions`, Vulcan reads the session directory and presents the files with metadata from pi's session headers.
+- [ ] Resume semantics:
+  - `--continue`: find the most recent session file and pass `--session <path>` to pi
+  - `--resume`: present a session picker (reuse `NotePickerState` pattern from `note_picker.rs`) showing session name and last-active timestamp
+- [ ] Durable artifacts: if the assistant produces output the user wants to keep, it should write a normal vault note through the `note_create` or `note_append` tool. This is consistent with the 9.12.4 session boundary.
+- [ ] Optional: `vulcan assistant --export-session [session-id]` — export the pi session as a vault note with the conversation rendered as markdown callouts (gemini-scribe style). This is for human archiving, not machine round-tripping.
+- [ ] Ephemeral mode: `--ephemeral` passes `--no-session` to pi so no session file is created
+- [ ] Auto-commit: when git auto-commit is enabled (9.3), assistant-initiated mutations are committed with messages like `assistant: {action} — {files}`
+- [ ] Document that session history is pi-managed, not vault-managed; revisit only if pi's session model proves insufficient
+
+### 9.21.10 Testing and hardening
+
+Comprehensive testing for the embedded assistant integration.
+
+- [ ] **Unit tests:**
+  - RPC protocol types: parse representative JSON lines from pi's RPC output against the typed structs
+  - RPC client: mock subprocess that produces scripted JSON lines; verify command → response correlation
+  - Context builder: verify AGENTS.md injection, skill enumeration, tool summary generation
+  - Renderer: verify formatted output for streaming events, tool calls, thinking blocks
+  - Permission enforcement: verify tool_call blocking for each profile
+- [ ] **Integration tests (require pi installed in CI):**
+  - Spawn pi in RPC mode, send `get_state`, verify response structure
+  - One-shot prompt: `vulcan assistant "list files in the current directory"` — verify non-empty text output
+  - Chat round-trip: send a prompt, receive streaming text, send a follow-up, receive response
+  - Tool execution: prompt the assistant to call a Vulcan tool, verify the result flows back
+  - Extension loading: verify the Vulcan tools extension loads without errors
+  - Permission profiles: verify `readonly` blocks note mutations, `edit` allows them
+  - Session persistence: start a session, exit, resume, verify conversation is intact
+  - Crash recovery: kill pi mid-stream, verify Vulcan detects the crash and reports a useful error
+- [ ] **Smoke tests (CI-marked optional if pi is not installed):**
+  - Daily-driver workflows: read note, patch note, search vault, run refactors
+  - Model switching: `/model` in chat mode
+  - Compaction: long session that triggers auto-compaction
+- [ ] **Error scenario tests:**
+  - Pi binary not found
+  - Pi binary too old
+  - No API key configured
+  - Pi crashes mid-stream
+  - Pi takes too long (timeout)
+  - Extension fails to load
+  - Misconfigured settings
+- [ ] Document how to run the assistant test suite locally and in CI, including which tests require pi to be installed
+
+### 9.21.11 Documentation and user guide
+
+Make the embedded assistant discoverable and usable without reading the source.
+
+- [ ] Update `docs/guide/getting-started.md` with an "Assistant" section covering installation, configuration, and first prompt
+- [ ] New page `docs/guide/assistant.md`:
+  - Prerequisites (pi installation, API key setup)
+  - Configuration options in `.vulcan/config.toml`
+  - One-shot usage: `vulcan assistant <prompt>`
+  - Interactive usage: `vulcan assistant --chat`
+  - Slash commands in chat mode (`/model`, `/thinking`, `/compact`, `/new`, `/stats`, `/quit`)
+  - Permission profiles explained
+  - Session management (resume, continue, ephemeral)
+  - Troubleshooting (`--doctor`, common errors)
+  - How it relates to Phase 9.12 (bring-your-own-pi vs embedded)
+- [ ] Update `docs/ROADMAP.md` cross-references:
+  - Phase 9.12: add a note that 9.21 provides the alternative "Vulcan embeds pi" model
+  - Phase 10 (daemon): add a forward-reference note that the daemon can manage pi processes for multi-vault scenarios
+  - Phase 13 (WebUI): note that the RPC client and event types from 9.21.2 are reused for WebSocket streaming to the browser
+  - Deferred native chat (9.12.8): add a revisit trigger — "if pi RPC latency or process management becomes a bottleneck in the daemon/WebUI context, reassess a native Rust agent loop"
+- [ ] Update `docs/assistant/pi_integration.md` to cover both integration models:
+  - Model A (9.12): pi is the host, Vulcan is the tool provider
+  - Model B (9.21): Vulcan is the host, pi is the agent engine via RPC
+  - When to use which
+- [ ] Update `vulcan help assistant` output with a concise usage summary
+
+### Implementation order
+
+1. **9.21.2 (RPC client)** — the protocol layer that everything depends on
+2. **9.21.1 (subprocess management)** — depends on the RPC client for communication
+3. **9.21.5 (streaming renderer)** — can be developed in parallel with 9.21.1 using a mock event stream
+4. **9.21.3 (Vulcan tools extension)** — depends on pi being spawnable (9.21.1)
+5. **9.21.4 (context injection)** — depends on the extension (9.21.3) for prompt hooks
+6. **9.21.7 (CLI surface)** — wires it all together for user access
+7. **9.21.6 (interactive chat)** — the richest surface, builds on all prior pieces
+8. **9.21.8 (permissions)** — hardens the integration, can be refined iteratively
+9. **9.21.9 (sessions)** — persistence layer, can be added once the core loop works
+10. **9.21.10 (testing)** — ongoing from step 1, but the comprehensive suite lands last
+11. **9.21.11 (documentation)** — written alongside implementation, finalized last
+
+### Migration path to daemon (Phase 10)
+
+The RPC client (9.21.2) is the key investment. When the daemon exists:
+
+- **Transport swap only:** Change `PiRpcClient`'s I/O from stdin/stdout pipes to TCP/unix socket. The protocol (commands, events, extension UI) stays identical.
+- **Process management:** The daemon takes over pi process lifecycle management instead of the CLI process. `PiProcess::spawn()` becomes a request to the daemon.
+- **Multi-vault:** The daemon can manage one pi process per registered vault instead of one per CLI invocation.
+- **No wasted work:** The typed command/event structs, the event dispatcher, and the extension UI handler are all transport-agnostic and carry forward directly.
+
+---
+
 ## Deferred enhancements (post-Phase 9)
 
 Features removed from Phase 9 sub-phases that need deeper research, depend on later phases (WebUI, daemon, chat platforms), or will be implemented differently than their Obsidian plugin counterparts. These are not abandoned — they are intentionally deferred until their prerequisites and design constraints are better understood.
