@@ -14152,6 +14152,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             graph_format: *graph_format,
                             exclude_callouts: &transforms.exclude_callouts,
                             exclude_headings: &transforms.exclude_headings,
+                            exclude_frontmatter_keys: &transforms.exclude_frontmatter_keys,
+                            exclude_inline_fields: &transforms.exclude_inline_fields,
                         },
                         *replace,
                         ConfigMutationOptions {
@@ -14206,6 +14208,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
+                        &transforms.exclude_frontmatter_keys,
+                        &transforms.exclude_inline_fields,
                     );
                     let prepared = prepare_export_data(
                         &paths,
@@ -14238,6 +14242,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
+                        &transforms.exclude_frontmatter_keys,
+                        &transforms.exclude_inline_fields,
                     );
                     let prepared = prepare_export_data(
                         &paths,
@@ -14297,6 +14303,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
+                        &transforms.exclude_frontmatter_keys,
+                        &transforms.exclude_inline_fields,
                     );
                     let prepared = prepare_export_data(
                         &paths,
@@ -14339,6 +14347,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
+                        &transforms.exclude_frontmatter_keys,
+                        &transforms.exclude_inline_fields,
                     );
                     let prepared = prepare_export_data(
                         &paths,
@@ -17418,6 +17428,8 @@ fn export_epub_toc_style_config_from_cli(
 fn build_content_transform_rule(
     exclude_callouts: &[String],
     exclude_headings: &[String],
+    exclude_frontmatter_keys: &[String],
+    exclude_inline_fields: &[String],
 ) -> Option<ContentTransformRuleConfig> {
     let exclude_callouts = exclude_callouts
         .iter()
@@ -17431,23 +17443,47 @@ fn build_content_transform_rule(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    (!(exclude_callouts.is_empty() && exclude_headings.is_empty())).then_some(
-        ContentTransformRuleConfig {
-            query: None,
-            query_json: None,
-            transforms: ContentTransformConfig {
-                exclude_callouts,
-                exclude_headings,
-            },
+    let exclude_frontmatter_keys = exclude_frontmatter_keys
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let exclude_inline_fields = exclude_inline_fields
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    (!(exclude_callouts.is_empty()
+        && exclude_headings.is_empty()
+        && exclude_frontmatter_keys.is_empty()
+        && exclude_inline_fields.is_empty()))
+    .then_some(ContentTransformRuleConfig {
+        query: None,
+        query_json: None,
+        transforms: ContentTransformConfig {
+            exclude_callouts,
+            exclude_headings,
+            exclude_frontmatter_keys,
+            exclude_inline_fields,
         },
-    )
+    })
 }
 
 fn build_content_transform_rules(
     exclude_callouts: &[String],
     exclude_headings: &[String],
+    exclude_frontmatter_keys: &[String],
+    exclude_inline_fields: &[String],
 ) -> Option<Vec<ContentTransformRuleConfig>> {
-    build_content_transform_rule(exclude_callouts, exclude_headings).map(|rule| vec![rule])
+    build_content_transform_rule(
+        exclude_callouts,
+        exclude_headings,
+        exclude_frontmatter_keys,
+        exclude_inline_fields,
+    )
+    .map(|rule| vec![rule])
 }
 
 fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> ExportProfileConfig {
@@ -17466,6 +17502,8 @@ fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> Expor
         content_transform_rules: build_content_transform_rules(
             request.exclude_callouts,
             request.exclude_headings,
+            request.exclude_frontmatter_keys,
+            request.exclude_inline_fields,
         ),
     }
 }
@@ -20820,6 +20858,8 @@ struct ExportProfileCreateRequest<'a> {
     graph_format: Option<GraphExportFormat>,
     exclude_callouts: &'a [String],
     exclude_headings: &'a [String],
+    exclude_frontmatter_keys: &'a [String],
+    exclude_inline_fields: &'a [String],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -21242,7 +21282,7 @@ fn prepare_transformed_export_data(
 ) -> Result<PreparedExportData, CliError> {
     let original_links = load_export_links(paths, &notes)?;
     let config = load_vault_config(paths).config;
-    let mut parsed_notes = notes
+    let parsed_notes = notes
         .into_iter()
         .map(|entry| {
             let content = match effective_transforms.get(&entry.note.document_path) {
@@ -21262,11 +21302,31 @@ fn prepare_transformed_export_data(
     let transformed_targets = note_targets_by_source(&transformed_links);
     let original_targets = note_targets_by_source(&original_links);
     let transformed_note_links = transformed_note_links_by_source(&transformed_links);
-    let note_lookup = load_note_index(paths).map_err(CliError::operation)?;
+    let (mut exported_notes, note_indexes) =
+        build_transformed_exported_notes(parsed_notes, &transformed_note_links, &config)?;
+    apply_transformed_backlink_adjustments(
+        &mut exported_notes,
+        &note_indexes,
+        &original_targets,
+        &transformed_targets,
+    );
+    evaluate_transformed_export_inline_expressions(paths, &mut exported_notes)?;
 
+    Ok(PreparedExportData {
+        notes: exported_notes,
+        links: transformed_links,
+    })
+}
+
+fn build_transformed_exported_notes(
+    parsed_notes: Vec<ParsedExportedNoteDocument>,
+    transformed_note_links: &HashMap<String, Vec<String>>,
+    config: &vulcan_core::VaultConfig,
+) -> Result<(Vec<ExportedNoteDocument>, HashMap<String, usize>), CliError> {
     let mut exported_notes = Vec::with_capacity(parsed_notes.len());
     let mut note_indexes = HashMap::<String, usize>::new();
-    for parsed_note in parsed_notes.drain(..) {
+
+    for parsed_note in parsed_notes {
         let mut note = parsed_note.note;
         note.tags = parsed_note
             .parsed
@@ -21278,13 +21338,16 @@ fn prepare_transformed_export_data(
             .get(&note.document_path)
             .cloned()
             .unwrap_or_default();
+        note.aliases.clone_from(&parsed_note.parsed.aliases);
+        note.frontmatter = transformed_export_frontmatter(&parsed_note.parsed);
+        note.properties = transformed_export_properties(&parsed_note.parsed, config)?;
         note.raw_inline_expressions = parsed_note
             .parsed
             .inline_expressions
             .iter()
             .map(|expression| expression.expression.clone())
             .collect();
-        note.inline_expressions = evaluate_note_inline_expressions(&note, &note_lookup);
+        note.inline_expressions.clear();
 
         note_indexes.insert(note.document_path.clone(), exported_notes.len());
         exported_notes.push(ExportedNoteDocument {
@@ -21293,6 +21356,15 @@ fn prepare_transformed_export_data(
         });
     }
 
+    Ok((exported_notes, note_indexes))
+}
+
+fn apply_transformed_backlink_adjustments(
+    exported_notes: &mut [ExportedNoteDocument],
+    note_indexes: &HashMap<String, usize>,
+    original_targets: &HashMap<String, BTreeSet<String>>,
+    transformed_targets: &HashMap<String, BTreeSet<String>>,
+) {
     let backlink_adjustments = exported_notes
         .iter()
         .map(|export_note| {
@@ -21337,11 +21409,43 @@ fn prepare_transformed_export_data(
             }
         }
     }
+}
 
-    Ok(PreparedExportData {
-        notes: exported_notes,
-        links: transformed_links,
-    })
+fn evaluate_transformed_export_inline_expressions(
+    paths: &VaultPaths,
+    exported_notes: &mut [ExportedNoteDocument],
+) -> Result<(), CliError> {
+    let mut note_lookup = load_note_index(paths).map_err(CliError::operation)?;
+    for export_note in exported_notes.iter() {
+        note_lookup.insert(export_note.note.file_name.clone(), export_note.note.clone());
+    }
+    for export_note in exported_notes.iter_mut() {
+        export_note.note.inline_expressions =
+            evaluate_note_inline_expressions(&export_note.note, &note_lookup);
+    }
+    Ok(())
+}
+
+fn transformed_export_frontmatter(parsed: &vulcan_core::ParsedDocument) -> Value {
+    parsed.frontmatter.as_ref().map_or_else(
+        || Value::Object(Map::new()),
+        |frontmatter| match serde_json::to_value(frontmatter) {
+            Ok(Value::Object(object)) => Value::Object(object),
+            Ok(_) | Err(_) => Value::Object(Map::new()),
+        },
+    )
+}
+
+fn transformed_export_properties(
+    parsed: &vulcan_core::ParsedDocument,
+    config: &vulcan_core::VaultConfig,
+) -> Result<Value, CliError> {
+    let Some(indexed) = extract_indexed_properties(parsed, config).map_err(CliError::operation)?
+    else {
+        return Ok(Value::Object(Map::new()));
+    };
+
+    serde_json::from_str(&indexed.canonical_json).map_err(CliError::operation)
 }
 
 fn build_effective_content_transforms(
@@ -31187,10 +31291,12 @@ mod tests {
                         frontmatter: false,
                         pretty: false,
                         graph_format: None,
-                        transforms: ExportTransformArgs {
+                        transforms: Box::new(ExportTransformArgs {
                             exclude_callouts: vec!["secret gm".to_string()],
                             exclude_headings: vec![],
-                        },
+                            exclude_frontmatter_keys: vec![],
+                            exclude_inline_fields: vec![],
+                        }),
                         replace: false,
                         dry_run: false,
                         no_commit: false,
@@ -31227,6 +31333,8 @@ mod tests {
                     transforms: ExportTransformArgs {
                         exclude_callouts: vec!["secret gm".to_string()],
                         exclude_headings: vec![],
+                        exclude_frontmatter_keys: vec![],
+                        exclude_inline_fields: vec![],
                     },
                 },
             }
