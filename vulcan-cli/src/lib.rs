@@ -1967,7 +1967,6 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Kanban { .. }
         | Command::Update { .. }
         | Command::Unset { .. }
-        | Command::Notes { .. }
         | Command::Search { .. }
         | Command::Changes { .. }
         | Command::Diff { .. }
@@ -12917,22 +12916,48 @@ fn detect_command_confusion(args: &[OsString]) -> Option<String> {
             if NOTE_SUBCOMMAND_HINTS.contains(&sub) {
                 return Some(format!(
                     "`vulcan notes {sub}` is not valid — did you mean `vulcan note {sub}`?\n\
-                     `vulcan notes` queries notes by property; `vulcan note` operates on a single note."
+                     `vulcan query --where ...` handles note-set queries; `vulcan note` operates on a single note."
                 ));
             }
         }
     }
 
-    // `vulcan note --where …` → should be `vulcan notes --where …`
+    // `vulcan note --where …` → should be `vulcan query --where …`
     if subcommand == "note" && rest.contains(&"--where") {
         return Some(
-            "`vulcan note --where` is not valid — did you mean `vulcan notes --where`?\n\
-             `vulcan notes --where` queries notes by property; `vulcan note` operates on a single note."
+            "`vulcan note --where` is not valid — did you mean `vulcan query --where ...`?\n\
+             `vulcan query --where ...` queries matching notes; `vulcan note` operates on a single note."
                 .to_string(),
         );
     }
 
     None
+}
+
+fn rewrite_legacy_notes_command(args: &[OsString]) -> Vec<OsString> {
+    let Some(command_index) = command_index_for_alias_expansion(args) else {
+        return args.to_vec();
+    };
+    let Some(command_name) = args.get(command_index).and_then(|value| value.to_str()) else {
+        return args.to_vec();
+    };
+    if command_name != "notes" {
+        return args.to_vec();
+    }
+    if args
+        .get(command_index + 1)
+        .and_then(|value| value.to_str())
+        .is_some_and(|next| NOTE_SUBCOMMAND_HINTS.contains(&next))
+    {
+        return args.to_vec();
+    }
+
+    let mut rewritten = args[..command_index].to_vec();
+    rewritten.push(OsString::from("query"));
+    rewritten.push(OsString::from("--format"));
+    rewritten.push(OsString::from("table"));
+    rewritten.extend_from_slice(&args[command_index + 1..]);
+    rewritten
 }
 
 fn command_index_for_alias_expansion(args: &[OsString]) -> Option<usize> {
@@ -13090,7 +13115,8 @@ where
     T: Into<OsString> + Clone,
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<OsString>>();
-    let expanded_args = expand_cli_aliases(&args);
+    let rewritten_args = rewrite_legacy_notes_command(&args);
+    let expanded_args = expand_cli_aliases(&rewritten_args);
     let cli = match Cli::try_parse_from(&expanded_args) {
         Ok(cli) => cli,
         Err(error) => match error.kind() {
@@ -13811,22 +13837,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => commands::query::handle_unset_command(
             cli, &paths, filters, stdin, key, dry_run, no_commit,
-        ),
-        Command::Notes {
-            ref filters,
-            ref sort,
-            desc,
-            ref export,
-        } => commands::query::handle_notes_command(
-            cli,
-            &paths,
-            filters,
-            sort.as_ref(),
-            desc,
-            export,
-            &list_controls,
-            stdout_is_tty,
-            use_stdout_color,
         ),
         Command::Tags {
             ref filters,
@@ -23996,6 +24006,20 @@ fn resolve_help_topic(topic: &[String]) -> Result<HelpTopicReport, CliError> {
     if let Some(report) = builtin_help_topic(&key) {
         return Ok(report);
     }
+    if key.eq_ignore_ascii_case("notes") {
+        let root = cli_command_tree();
+        let Some(command) = find_command(&root, &["query"]) else {
+            return Err(CliError::operation("unknown help topic `query`"));
+        };
+        let mut report = help_topic_from_command(command, &["query".to_string()]);
+        report.name = "notes".to_string();
+        report.summary = "Legacy alias for `query`; kept for backwards compatibility.".to_string();
+        report.body = format!(
+            "`vulcan notes` is now a compatibility alias that rewrites to `vulcan query --format table`.\n\n{}",
+            report.body
+        );
+        return Ok(report);
+    }
 
     let root = cli_command_tree();
     let topic_refs = topic.iter().map(String::as_str).collect::<Vec<_>>();
@@ -24058,7 +24082,7 @@ fn help_overview() -> HelpTopicReport {
             &[
                 (
                     "query",
-                    "Run a DQL query — `FROM notes WHERE ...` — and print results",
+                    "Run the shared query surface: DSL, Dataview DQL, or `--where` shortcuts",
                 ),
                 ("search", "Full-text and semantic search across the vault"),
                 ("tags", "List indexed tags and counts across matching notes"),
@@ -24308,9 +24332,9 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
         static_help_topic(
             "filters",
             HelpTopicKind::Concept,
-            "Typed `--where` filter grammar shared across notes, search, and mutations.",
+            "Typed `--where` filter grammar shared across query, search, and mutations.",
             include_str!("../../docs/guide/filters.md"),
-            &["notes", "search", "query"],
+            &["query", "search", "note update"],
         ),
         static_help_topic(
             "query-dsl",
@@ -24376,8 +24400,9 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
 # Vulcan Report System
 
 A **saved report** is a persisted query or check stored as a YAML file in `.vulcan/reports/`.
-Reports capture the parameters of a `search`, `notes`, `query`, or `bases` command so they
-can be re-run by name without repeating the flags.
+Reports capture the parameters of a `search`, `query`, or `bases` command so they
+can be re-run by name without repeating the flags. `saved create notes` is the
+shortcut form for a note-property query built from `query --where/--sort`.
 
 ## Creating reports
 
@@ -26710,7 +26735,6 @@ fn mcp_tool_list_requirement(tool: &McpToolWithPath) -> McpToolPermissionRequire
         | "graph_trends"
         | "graph_export"
         | "search"
-        | "notes"
         | "tags"
         | "properties"
         | "dataview_inline"
@@ -31185,6 +31209,46 @@ mod tests {
                 export: ExportArgs::default(),
             }
         );
+    }
+
+    #[test]
+    fn legacy_notes_command_rewrites_to_query_table() {
+        let rewritten = rewrite_legacy_notes_command(&[
+            OsString::from("vulcan"),
+            OsString::from("--output"),
+            OsString::from("json"),
+            OsString::from("notes"),
+            OsString::from("--where"),
+            OsString::from("status = done"),
+        ]);
+
+        assert_eq!(
+            rewritten,
+            vec![
+                OsString::from("vulcan"),
+                OsString::from("--output"),
+                OsString::from("json"),
+                OsString::from("query"),
+                OsString::from("--format"),
+                OsString::from("table"),
+                OsString::from("--where"),
+                OsString::from("status = done"),
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_notes_confusion_hint_points_note_where_to_query() {
+        let hint = detect_command_confusion(&[
+            OsString::from("vulcan"),
+            OsString::from("note"),
+            OsString::from("--where"),
+            OsString::from("status = done"),
+        ])
+        .expect("note --where should produce a hint");
+
+        assert!(hint.contains("vulcan query --where"));
+        assert!(!hint.contains("vulcan notes --where"));
     }
 
     #[test]

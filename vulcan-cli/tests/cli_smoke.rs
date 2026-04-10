@@ -7522,26 +7522,44 @@ fn notes_json_output_includes_evaluated_inline_expressions() {
 }
 
 #[test]
-fn notes_help_documents_filter_syntax() {
+fn query_help_documents_filter_shortcuts() {
     Command::cargo_bin("vulcan")
         .expect("binary should build")
-        .args(["notes", "--help"])
+        .args(["query", "--help"])
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("Filter syntax:")
+            predicate::str::contains("Query DSL syntax:")
                 .and(predicate::str::contains(
                     "Repeat --where to combine filters with AND.",
                 ))
                 .and(predicate::str::contains(
                     "file.path | file.name | file.ext | file.mtime",
                 ))
+                .and(predicate::str::contains("Shortcut operators:"))
                 .and(predicate::str::contains(
-                    "contains      list properties only",
+                    "vulcan query --where 'status = done'",
                 ))
                 .and(predicate::str::contains(
-                    "vulcan notes --where 'status = done'",
+                    "Bare `query` defaults to `from notes`.",
                 )),
+        );
+}
+
+#[test]
+fn legacy_notes_help_routes_to_query_help() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["notes", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(
+                "Run a Vulcan query, Dataview DQL query, or --where shortcut query",
+            )
+            .and(predicate::str::contains(
+                "vulcan query --where 'status = done'",
+            )),
         );
 }
 
@@ -11973,7 +11991,7 @@ fn help_json_output_returns_structured_topic_docs() {
     assert!(json["summary"]
         .as_str()
         .expect("summary should be present")
-        .contains("Run a query"));
+        .contains("Run a Vulcan query"));
     assert!(json["body"]
         .as_str()
         .expect("body should be present")
@@ -15020,6 +15038,43 @@ fn quiet_flag_suppresses_warnings_but_not_primary_output() {
             || parsed.get("added").is_some()
             || parsed.get("total").is_some(),
         "scan JSON output should contain count fields, got: {stdout}"
+    );
+}
+
+#[test]
+fn commands_exit_cleanly_when_stdout_pipe_closes_early() {
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .args(["completions", "fish"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("command should start");
+
+    let mut stdout = child.stdout.take().expect("stdout should be piped");
+    let mut buffer = [0_u8; 4096];
+    let read = stdout
+        .read(&mut buffer)
+        .expect("should read some bytes before closing stdout");
+    assert!(
+        read > 0,
+        "command should emit output before the pipe closes"
+    );
+    drop(stdout);
+
+    let output = child
+        .wait_with_output()
+        .expect("command should exit after stdout closes");
+    assert!(
+        output.status.success(),
+        "command should exit successfully on broken pipe, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked at"),
+        "broken pipe should not surface as a panic: {stderr}"
     );
 }
 

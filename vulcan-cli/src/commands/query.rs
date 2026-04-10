@@ -139,7 +139,7 @@ pub(crate) fn handle_query_command(
     }
 
     let read_filter = selected_read_permission_filter(cli, paths)?;
-    let ast = match (dsl, json) {
+    let report = match (dsl, json) {
         (Some(_), Some(_)) => {
             return Err(CliError::operation(
                 "provide either a DSL argument or --json, not both",
@@ -151,7 +151,9 @@ pub(crate) fn handle_query_command(
                     "`query --where/--sort/--desc` cannot be combined with a DSL string or --json",
                 ));
             }
-            QueryAst::from_dsl(dsl).map_err(CliError::operation)?
+            let ast = QueryAst::from_dsl(dsl).map_err(CliError::operation)?;
+            execute_query_report_with_filter(paths, ast, read_filter.as_ref())
+                .map_err(CliError::operation)?
         }
         (None, Some(json)) => {
             if !filters.is_empty() || sort.is_some() || desc {
@@ -159,25 +161,25 @@ pub(crate) fn handle_query_command(
                     "`query --where/--sort/--desc` cannot be combined with a DSL string or --json",
                 ));
             }
-            QueryAst::from_json(json).map_err(CliError::operation)?
+            let ast = QueryAst::from_json(json).map_err(CliError::operation)?;
+            execute_query_report_with_filter(paths, ast, read_filter.as_ref())
+                .map_err(CliError::operation)?
         }
-        (None, None) if !filters.is_empty() || sort.is_some() || desc => {
-            QueryAst::from_note_query(&NoteQuery {
+        (None, None) => {
+            let note_query = NoteQuery {
                 filters: filters.to_vec(),
                 sort_by: sort.cloned(),
                 sort_descending: desc,
-            })
-            .map_err(CliError::operation)?
+            };
+            let notes_report = query_notes_with_filter(paths, &note_query, read_filter.as_ref())
+                .map_err(CliError::operation)?;
+            let ast = QueryAst::from_note_query(&note_query).map_err(CliError::operation)?;
+            QueryReport {
+                query: ast,
+                notes: notes_report.notes,
+            }
         }
-        (None, None) => QueryAst::from_note_query(&NoteQuery {
-            filters: Vec::new(),
-            sort_by: None,
-            sort_descending: false,
-        })
-        .map_err(CliError::operation)?,
     };
-    let report = execute_query_report_with_filter(paths, ast, read_filter.as_ref())
-        .map_err(CliError::operation)?;
     let effective_controls = ListOutputControls {
         limit: list_controls.limit.or(report.query.limit),
         offset: if list_controls.offset > 0 {
@@ -412,40 +414,6 @@ pub(crate) fn handle_unset_command(
             .map_err(CliError::operation)?;
     }
     crate::print_bulk_mutation_report(cli.output, &report)
-}
-
-pub(crate) fn handle_notes_command(
-    cli: &Cli,
-    paths: &VaultPaths,
-    filters: &[String],
-    sort: Option<&String>,
-    desc: bool,
-    export: &crate::ExportArgs,
-    list_controls: &ListOutputControls,
-    stdout_is_tty: bool,
-    use_stdout_color: bool,
-) -> Result<(), CliError> {
-    let read_filter = selected_read_permission_filter(cli, paths)?;
-    let report = query_notes_with_filter(
-        paths,
-        &NoteQuery {
-            filters: filters.to_vec(),
-            sort_by: sort.cloned(),
-            sort_descending: desc,
-        },
-        read_filter.as_ref(),
-    )
-    .map_err(CliError::operation)?;
-    let export = crate::resolve_cli_export(export)?;
-    crate::print_notes_report(
-        cli.output,
-        &report,
-        list_controls,
-        stdout_is_tty,
-        use_stdout_color,
-        export.as_ref(),
-    )?;
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

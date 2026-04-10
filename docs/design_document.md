@@ -1117,7 +1117,17 @@ Web search and fetch capabilities serve AI integrations and the JS runtime. Sear
 
 Current recommendation: do not build in-process Telegram, Discord, Matrix, or similar chat adapters as part of the current Phase 9 critical path. Use an external runtime (`pi` first) for the conversation loop and keep Vulcan focused on the durable parts of the system: vault semantics, command contracts, permissions, `AGENTS.md`, and skill files.
 
-If native chat integrations are revisited later, they should be treated as a thin runtime layer on top of the same CLI tool surface used by external harnesses. They should not create a second mutation path or bypass the permission system.
+If native chat integrations are revisited later, they should be treated as a transport-oriented runtime layer on top of the same CLI tool surface used by external harnesses. They should not create a second mutation path or bypass the permission system.
+
+The first native-chat deliverable should be a cross-platform transport contract, not a Telegram-specific architecture. The reusable core should model:
+
+- external user principals such as `telegram:123456` and `matrix:@alice:example.com`
+- external chat spaces such as DMs, rooms, groups, guilds, channels, and threads
+- bindings from external principals to stable assistant-side identities and optional later Phase 17 auth principals
+- capability-based transport features such as messages, reactions, replies, attachments, message edits, and button-style interactions
+- hierarchical chat spaces so Discord-style guild/channel/thread trees inherit policy cleanly
+
+Platform adapters may still vary substantially in complexity. Telegram is mostly stateless bot I/O; Matrix is not. Some adapters require long-lived runtime state such as sync tokens, room state, media caches, and E2EE key stores. That state must live in daemon/runtime storage rather than vault notes or `.vulcan/cache.db`, because it is authoritative platform state rather than rebuildable vault-derived data. The vault should only store durable user-meaningful artifacts such as prompts, skills, memory files, and identity bindings.
 
 The current boundary is documented in [`docs/assistant/pi_integration.md`](./assistant/pi_integration.md) and the re-scoped Phase 9.12 roadmap entries. The preserved native-runtime steering that was cut from the active roadmap now lives in [`docs/assistant/native_runtime_deferred.md`](./assistant/native_runtime_deferred.md), and the optional embedded-host follow-on is tracked separately in Roadmap Phase 9.21. Native chat adapters should only be reconsidered after the permission layer and daemon/service infrastructure are mature enough to support them safely.
 

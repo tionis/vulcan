@@ -289,80 +289,265 @@ Preserved executable-skill idea:
 
 ## 9. Native chat runtime
 
-This entire area is now deferred, but the previous steering is preserved here.
+This entire area is now deferred, but if it is revived the preserved steering needs one adjustment up front: the first design target should be a cross-platform transport contract, not a Telegram-shaped assistant.
 
 ### Core idea
 
 - expose the assistant over messaging platforms
-- Telegram first
-- later Discord, Signal, Matrix, Slack
+- define a cross-platform chat transport contract before implementing any single adapter
+- Telegram can still be the first adapter, but it should not define the architecture
+- later adapters may include Matrix, Discord, Signal, Slack, or others
 - keep a platform-agnostic assistant core
-- keep platform adapters thin
+- keep platform adapters transport-focused
+- allow adapters to own substantial platform-specific runtime state when necessary
 
-### `ChatPlatform` trait
+### Cross-platform principals and spaces
 
-Original sketch:
+The key abstraction is not "chat platform" in the abstract. It is a pair of stable cross-platform identifiers:
+
+- an **external user principal** such as `telegram:123456` or `matrix:@alice:example.com`
+- an **external chat space** such as a DM, room, group, guild, channel, or thread
+
+Those are related but different. A user can speak in many spaces; a space can contain many users. Discord-style hierarchies require spaces to support parent/child relationships.
+
+Suggested Rust sketch:
 
 ```rust
-trait ChatPlatform {
+struct ExternalUserPrincipal {
+    canonical_id: String,        // "telegram:123456", "matrix:@alice:example.com"
+    platform: ChatPlatformKind,
+    external_id: String,
+    display_name: Option<String>,
+    metadata_json: serde_json::Value,
+}
+
+struct ChatSpace {
+    canonical_id: String,        // "telegram:-100123", "matrix:!room:example.com",
+                                 // "discord:guild/123/channel/456"
+    platform: ChatPlatformKind,
+    kind: ChatSpaceKind,
+    external_id: String,
+    parent_space_id: Option<String>,
+    display_name: Option<String>,
+    metadata_json: serde_json::Value,
+}
+
+enum ChatSpaceKind {
+    Dm,
+    Group,
+    Room,
+    Guild,
+    Channel,
+    Thread,
+}
+```
+
+The canonical string is the portable lookup key, but the structured fields still matter. Discord-style hierarchical spaces, Matrix room metadata, and Telegram chat types should not be reverse-engineered from a string every time.
+
+### Identity bindings
+
+The transport layer should not treat platform user IDs as the long-term identity source. External principals need a first-class binding to a stable assistant-side identity so permissions and memory can survive platform switches.
+
+Suggested Rust sketch:
+
+```rust
+struct IdentityBinding {
+    external_user_id: String,    // ExternalUserPrincipal::canonical_id
+    vault_identity: String,      // assistant-side stable ID, e.g. "alice"
+    auth_principal: Option<String>, // later Phase 17 principal, e.g. "user:alice"
+    note_path: Option<String>,   // optional in-vault profile note
+    status: BindingStatus,
+    metadata_json: serde_json::Value,
+}
+
+enum BindingStatus {
+    Claimed,
+    Verified,
+    Alias,
+    Imported,
+}
+```
+
+This gives three useful layers:
+
+- `vault_identity`: stable assistant identity used for memory/session routing
+- `auth_principal`: optional bridge to the Phase 17 user/ACL model
+- `note_path`: optional in-vault note for user-facing profile data
+
+Once two external principals bind to the same `vault_identity`, the assistant can treat them as the same human for memory and policy purposes.
+
+### Transport contract
+
+The shared contract should be event-based, not just request/response RPC.
+
+Suggested inbound event surface:
+
+- `message`
+- `reaction_added`
+- `reaction_removed`
+- `message_edited`
+- `message_deleted`
+- `attachment_received`
+- `interaction` (button/select/menu callback or equivalent)
+- `membership_changed`
+
+Suggested outbound action surface:
+
+- send message
+- edit message
+- reply to message
+- add/remove reaction
+- acknowledge interaction
+- present buttons or simple action choices when supported
+
+Suggested capability model:
+
+```rust
+struct AdapterCapabilities {
+    reactions: bool,
+    replies: bool,
+    message_edit: bool,
+    attachments: bool,
+    buttons: bool,
+    threads: bool,
+    ephemeral_messages: bool,
+}
+```
+
+The assistant core should rely on this capability set and degrade gracefully. If a platform has no buttons, the same workflow can fall back to numbered text prompts.
+
+### Runtime-state boundary
+
+The old "thin adapter" phrasing is too optimistic for some platforms. Telegram may be fairly light. Matrix is not.
+
+Examples of platform runtime state that must stay **outside** the vault and outside `.vulcan/cache.db`:
+
+- Matrix sync tokens
+- Matrix room-state caches
+- Matrix Olm/Megolm key stores
+- device verification state
+- media caches or upload staging areas
+- per-platform reconnect/backoff state
+
+This state is authoritative platform/runtime state, not rebuildable vault-derived state. It belongs in daemon-managed local storage next to other authoritative runtime data, not in vault notes. The vault should only store durable, user-meaningful artifacts such as prompts, skills, memory files, bindings, and exported transcripts.
+
+### Session and memory model
+
+The original idea of storing memory in the vault still holds, but the keying strategy should be revised.
+
+Prefer:
+
+- `AI/Memory/identities/<vault_identity>.md`
+- `AI/Memory/spaces/<internal_space_id>.md`
+- `AI/Sessions/<internal_space_id>/<session_ulid>.md`
+
+Avoid keying durable memory files directly by raw platform IDs after a verified binding exists. Otherwise the same person ends up with fragmented memory across Telegram and Matrix.
+
+Unbound users can still use platform-scoped fallback memory until linked.
+
+### Permissions and safety
+
+Per-platform and per-chat-type permissions are still the right idea, but the resolution model should be "restrictive intersection" rather than a naive override chain.
+
+Suggested inputs:
+
+- platform default profile
+- chat-space policy, inherited from parent spaces
+- external-user override
+- bound `vault_identity` policy
+- later Phase 17 `auth_principal` policy if available
+
+The effective profile should be the most restrictive combination of those layers. That gives the expected behavior:
+
+- a trusted user can still be read-only inside a shared group
+- a DM can allow more than the same user gets in a crowded room
+- guild-wide defaults can be narrowed by channel or thread
+
+Sensitive operations should still support confirmation, audit logging, rate limits, and optional admin approval flows where the platform makes that practical.
+
+### Suggested config sketch
+
+This is not a committed format, but it is a better starting point than platform-specific one-offs:
+
+```toml
+[assistant.chat]
+default_profile = "readonly"
+session_root = "AI/Sessions"
+memory_root = "AI/Memory"
+
+[assistant.chat.identities.alice]
+principal = "user:alice"
+note = "People/Alice.md"
+
+[[assistant.chat.bindings]]
+external_user = "telegram:123456789"
+vault_identity = "alice"
+verification = "admin-confirmed"
+
+[[assistant.chat.bindings]]
+external_user = "matrix:@alice:example.com"
+vault_identity = "alice"
+verification = "device-verified"
+
+[assistant.chat.spaces."telegram:-100987654321"]
+kind = "group"
+profile = "readonly"
+
+[assistant.chat.spaces."discord:guild/123"]
+kind = "guild"
+profile = "readonly"
+
+[assistant.chat.spaces."discord:guild/123/channel/456"]
+kind = "channel"
+parent = "discord:guild/123"
+profile = "edit"
+
+[assistant.chat.platforms.telegram]
+enabled = true
+token_env = "TELEGRAM_BOT_TOKEN"
+
+[assistant.chat.platforms.matrix]
+enabled = false
+homeserver = "https://matrix.example.com"
+access_token_env = "MATRIX_ACCESS_TOKEN"
+runtime_state_dir = "matrix"
+```
+
+### `ChatTransport` trait
+
+The original `ChatPlatform` sketch was a useful placeholder, but it is too narrow for richer platforms. A revised trait should be event-oriented and capability-aware:
+
+```rust
+trait ChatTransport {
     fn name(&self) -> &str;
-    fn poll_messages(&mut self) -> Result<Vec<IncomingMessage>>;
-    fn send_response(&self, chat_id: &str, response: AssistantResponse) -> Result<()>;
-    fn platform_user_id(&self, msg: &IncomingMessage) -> String;
+    fn capabilities(&self) -> AdapterCapabilities;
+    fn next_events(&mut self) -> Result<Vec<ChatEvent>>;
+    fn perform(&mut self, action: ChatAction) -> Result<()>;
 }
 ```
 
 Supporting types:
 
-- `IncomingMessage`
-- `AssistantResponse`
+- `ChatEvent`
+- `ChatAction`
+- `ExternalUserPrincipal`
+- `ChatSpace`
+- `IdentityBinding`
+- `AdapterCapabilities`
 
-### Native chat principles
+### Adapter-specific notes
 
-Preserved ideas:
+Telegram remains a good first adapter because it exercises the contract without forcing heavy platform state.
 
-- assistant core is platform-agnostic
-- memory lives in the vault as notes
-- older chat history is summarized aggressively
-- transport adapters only handle I/O and formatting
+Matrix should be treated as a separate viability gate because it introduces:
 
-### Session and memory model
+- long-lived sync loops
+- E2EE key stores
+- room-state persistence
+- device verification UX
+- media handling with stronger operational requirements
 
-Original storage ideas:
-
-- `AI/Sessions/<platform>/<chat_id>/<session_ulid>.md`
-- `AI/Memory/users/<platform>/<user_id>.md`
-- `AI/Memory/groups/<platform>/<group_id>.md`
-
-Original context stack:
-
-1. compact system prompt
-2. user memory
-3. recent turns
-4. summarized older turns
-5. on-demand vault context
-
-### Telegram-specific ideas
-
-Preserved steering:
-
-- config in `[assistant.platforms.telegram]`
-- allowlists for users and groups
-- `/start`, `/new`, `/memory`, `/status`
-- reply-to threading
-- MarkdownV2 formatting
-- multi-message splitting for long outputs
-- optional attachment ingestion
-
-### Permissions and safety
-
-Preserved ideas:
-
-- per-platform and per-chat-type tool permissions
-- stricter defaults in groups than DMs
-- rate limits on writes and message volume
-- audit trail in session metadata
-- sensitive operations can require admin approval
+Discord-like platforms are a good test of the `parent_space_id` hierarchy because guilds, channels, and threads should inherit policy and memory routing rules without custom one-off code.
 
 ### Git integration
 
