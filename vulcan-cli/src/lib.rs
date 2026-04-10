@@ -20,14 +20,15 @@ pub use cli::{
     ConfigCommand, ConfigImportArgs, ConfigImportCommand, ConfigImportSelection,
     ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, EpubTocStyle,
     ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand, ExportProfileFormatArg,
-    ExportQueryArgs, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
-    KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode, OutputFormat, PeriodicOpenArgs,
-    PeriodicSubcommand, PluginCommand, PropertySortArg, QueryEngineArg, QueryFormatArg,
-    RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand, SavedCreateCommand,
-    SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchExtractionMode, WebFetchMode,
+    ExportQueryArgs, ExportTransformArgs, GitCommand, GraphCommand, GraphExportFormat,
+    IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode,
+    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PropertySortArg,
+    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RepairCommand,
+    SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand,
+    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand,
+    WebFetchExtractionMode, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -68,8 +69,8 @@ use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use vulcan_core::config::{
-    ExportEpubTocStyleConfig, ExportGraphFormatConfig, ExportProfileConfig, ExportProfileFormat,
-    QuickAddImporter, TasksDefaultSource,
+    ContentTransformConfig, ExportEpubTocStyleConfig, ExportGraphFormatConfig, ExportProfileConfig,
+    ExportProfileFormat, QuickAddImporter, TasksDefaultSource,
 };
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
 use vulcan_core::expression::functions::{
@@ -80,20 +81,20 @@ use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, add_kanban_card, all_importers, annotate_import_conflicts,
-    archive_kanban_card, bulk_replace, cache_vacuum, convert_web_html_to_markdown,
-    create_checkpoint, delete_saved_report, doctor_fix, doctor_vault, ensure_vulcan_dir,
-    evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter,
-    evaluate_note_inline_expressions, evaluate_tasks_query, execute_query_report_with_filter,
-    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index,
-    extract_tasknote, git_blame, git_diff, git_log, git_recent_log, git_status, initialize_vault,
-    inspect_base_file, inspect_cache, link_mentions, list_checkpoints, list_daily_note_events,
-    list_saved_reports, load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
-    load_permission_profiles, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
-    move_kanban_card, move_note, parse_document, parse_dql_with_diagnostics,
-    parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
-    parse_tasks_query, period_range_for_date, plan_base_note_create, query_backlinks,
-    query_change_report, query_links, query_notes, rebuild_vault_with_progress, rename_alias,
-    rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
+    apply_content_transforms, archive_kanban_card, bulk_replace, cache_vacuum,
+    convert_web_html_to_markdown, create_checkpoint, delete_saved_report, doctor_fix, doctor_vault,
+    ensure_vulcan_dir, evaluate_base_file, evaluate_dataview_js_with_options,
+    evaluate_dql_with_filter, evaluate_note_inline_expressions, evaluate_tasks_query,
+    execute_query_report_with_filter, expected_periodic_note_path, export_daily_events_to_ics,
+    export_static_search_index, extract_tasknote, git_blame, git_diff, git_log, git_recent_log,
+    git_status, initialize_vault, inspect_base_file, inspect_cache, link_mentions,
+    list_checkpoints, list_daily_note_events, list_saved_reports, load_dataview_blocks,
+    load_events_for_periodic_note, load_kanban_board, load_permission_profiles, load_saved_report,
+    load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card, move_note, parse_document,
+    parse_dql_with_diagnostics, parse_tasknote_natural_language, parse_tasknote_reminders,
+    parse_tasknote_time_entries, parse_tasks_query, period_range_for_date, plan_base_note_create,
+    query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
     render_markdown_html, repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note,
     resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
     shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
@@ -111,14 +112,15 @@ use vulcan_core::{
     GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport,
     GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox,
     KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
-    KanbanMoveReport, KanbanTaskStatus, LinkResolutionProblem, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput,
-    PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode,
-    PermissionProfile, PluginEvent, PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport,
-    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
-    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    KanbanMoveReport, KanbanTaskStatus, LinkKind, LinkResolutionMode, LinkResolutionProblem,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
+    NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OriginContext, OutgoingLinkRecord,
+    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
+    PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile, PluginEvent,
+    PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, ResolvedPermissionProfile, ResolverDocument, ResolverIndex, ResolverLink,
+    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
     SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
     SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
     TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
@@ -14127,6 +14129,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         frontmatter,
                         pretty,
                         graph_format,
+                        transforms,
                         replace,
                         dry_run,
                         no_commit,
@@ -14146,6 +14149,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             frontmatter: *frontmatter,
                             pretty: *pretty,
                             graph_format: *graph_format,
+                            exclude_callouts: &transforms.exclude_callouts,
                         },
                         *replace,
                         ConfigMutationOptions {
@@ -14185,25 +14189,34 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         },
                     ),
                 },
-                ExportCommand::Markdown { query, path, title } => {
+                ExportCommand::Markdown {
+                    query,
+                    transforms,
+                    path,
+                    title,
+                } => {
                     let report = execute_export_query(
                         &paths,
                         query.query.as_deref(),
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let notes = load_exported_notes(&paths, &report)?;
-                    let payload = render_markdown_export_payload(&report, &notes, title.as_deref());
+                    let transform_config =
+                        build_content_transform_config(&transforms.exclude_callouts);
+                    let prepared = prepare_export_data(&paths, &report, transform_config.as_ref())?;
+                    let payload =
+                        render_markdown_export_payload(&report, &prepared.notes, title.as_deref());
                     let summary = MarkdownExportSummary {
                         path: path
                             .as_ref()
                             .map_or_else(String::new, |path| path.display().to_string()),
-                        result_count: notes.len(),
+                        result_count: prepared.notes.len(),
                     };
                     write_text_export(cli.output, path.as_ref(), &payload, &summary)
                 }
                 ExportCommand::Json {
                     query,
+                    transforms,
                     path,
                     pretty,
                 } => {
@@ -14213,13 +14226,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let notes = load_exported_notes(&paths, &report)?;
-                    let payload = render_json_export_payload(&report, &notes, *pretty)?;
+                    let transform_config =
+                        build_content_transform_config(&transforms.exclude_callouts);
+                    let prepared = prepare_export_data(&paths, &report, transform_config.as_ref())?;
+                    let payload = render_json_export_payload(&report, &prepared.notes, *pretty)?;
                     let summary = JsonExportSummary {
                         path: path
                             .as_ref()
                             .map_or_else(String::new, |path| path.display().to_string()),
-                        result_count: notes.len(),
+                        result_count: prepared.notes.len(),
                     };
                     write_text_export(cli.output, path.as_ref(), &payload, &summary)
                 }
@@ -14249,6 +14264,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
                 ExportCommand::Epub {
                     query,
+                    transforms,
                     path,
                     title,
                     author,
@@ -14262,11 +14278,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let notes = load_exported_notes(&paths, &report)?;
+                    let transform_config =
+                        build_content_transform_config(&transforms.exclude_callouts);
+                    let prepared = prepare_export_data(&paths, &report, transform_config.as_ref())?;
                     let summary = write_epub_export(
                         &paths,
                         path,
-                        &notes,
+                        &prepared.notes,
+                        &prepared.links,
                         EpubExportOptions {
                             title: title.as_deref(),
                             author: author.as_deref(),
@@ -14283,16 +14302,22 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         OutputFormat::Json => print_json(&summary),
                     }
                 }
-                ExportCommand::Zip { query, path } => {
+                ExportCommand::Zip {
+                    query,
+                    transforms,
+                    path,
+                } => {
                     let report = execute_export_query(
                         &paths,
                         query.query.as_deref(),
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
                     )?;
-                    let notes = load_exported_notes(&paths, &report)?;
-                    let links = load_export_links(&paths, &notes)?;
-                    let summary = write_zip_export(&paths, path, &report, &notes, &links)?;
+                    let transform_config =
+                        build_content_transform_config(&transforms.exclude_callouts);
+                    let prepared = prepare_export_data(&paths, &report, transform_config.as_ref())?;
+                    let summary =
+                        write_zip_export(&paths, path, &report, &prepared.notes, &prepared.links)?;
                     match cli.output {
                         OutputFormat::Human | OutputFormat::Markdown => {
                             println!("{}", summary.path);
@@ -17360,6 +17385,16 @@ fn export_epub_toc_style_config_from_cli(
     })
 }
 
+fn build_content_transform_config(exclude_callouts: &[String]) -> Option<ContentTransformConfig> {
+    let exclude_callouts = exclude_callouts
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    (!exclude_callouts.is_empty()).then_some(ContentTransformConfig { exclude_callouts })
+}
+
 fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> ExportProfileConfig {
     ExportProfileConfig {
         format: Some(export_profile_format_from_arg(request.format)),
@@ -17373,6 +17408,7 @@ fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> Expor
         frontmatter: request.frontmatter.then_some(true),
         pretty: request.pretty.then_some(true),
         graph_format: export_graph_format_config_from_cli(request.graph_format),
+        content_transforms: build_content_transform_config(request.exclude_callouts),
     }
 }
 
@@ -17385,6 +17421,16 @@ fn export_profile_requires_query(format: ExportProfileFormat) -> bool {
             | ExportProfileFormat::Epub
             | ExportProfileFormat::Zip
             | ExportProfileFormat::Sqlite
+    )
+}
+
+fn export_profile_supports_content_transforms(format: ExportProfileFormat) -> bool {
+    matches!(
+        format,
+        ExportProfileFormat::Markdown
+            | ExportProfileFormat::Json
+            | ExportProfileFormat::Epub
+            | ExportProfileFormat::Zip
     )
 }
 
@@ -17452,6 +17498,16 @@ fn validate_export_profile_config(
     if !matches!(format, ExportProfileFormat::Graph) && profile.graph_format.is_some() {
         return Err(CliError::operation(format!(
             "export profile `{name}` only supports `graph_format` for graph exports"
+        )));
+    }
+    if !export_profile_supports_content_transforms(format)
+        && profile
+            .content_transforms
+            .as_ref()
+            .is_some_and(|transforms| !transforms.is_empty())
+    {
+        return Err(CliError::operation(format!(
+            "export profile `{name}` only supports `content_transforms` for markdown, json, epub, and zip exports"
         )));
     }
     Ok(())
@@ -20551,6 +20607,25 @@ struct ExportedNoteDocument {
     content: String,
 }
 
+#[derive(Debug, Clone)]
+struct PreparedExportData {
+    notes: Vec<ExportedNoteDocument>,
+    links: Vec<ExportLinkRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedExportedNoteDocument {
+    note: NoteRecord,
+    content: String,
+    parsed: vulcan_core::ParsedDocument,
+}
+
+#[derive(Debug, Clone)]
+struct ExportResolvedDocument {
+    path: String,
+    extension: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct JsonNoteExportDocument {
     document_path: String,
@@ -20671,6 +20746,15 @@ struct ExportProfileCreateRequest<'a> {
     frontmatter: bool,
     pretty: bool,
     graph_format: Option<GraphExportFormat>,
+    exclude_callouts: &'a [String],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExportContentRequest<'a> {
+    query: Option<&'a str>,
+    query_json: Option<&'a str>,
+    read_filter: Option<&'a PermissionFilter>,
+    transforms: Option<&'a ContentTransformConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -20869,6 +20953,302 @@ fn load_exported_notes(
             })
         })
         .collect()
+}
+
+fn synthetic_export_file_link(path: &str, extension: &str) -> String {
+    if extension.eq_ignore_ascii_case("md") {
+        format!("[[{}]]", path.strip_suffix(".md").unwrap_or(path))
+    } else {
+        format!("[[{path}]]")
+    }
+}
+
+fn render_export_link_kind(kind: LinkKind) -> String {
+    match kind {
+        LinkKind::Wikilink => "wikilink",
+        LinkKind::Markdown => "markdown",
+        LinkKind::Embed => "embed",
+        LinkKind::External => "external",
+    }
+    .to_string()
+}
+
+fn render_export_origin_context(origin: OriginContext) -> String {
+    match origin {
+        OriginContext::Body => "body",
+        OriginContext::Frontmatter => "frontmatter",
+        OriginContext::Property => "property",
+    }
+    .to_string()
+}
+
+fn load_export_resolution_documents(
+    paths: &VaultPaths,
+) -> Result<(ResolverIndex, HashMap<String, ExportResolvedDocument>), CliError> {
+    let connection = Connection::open(paths.cache_db()).map_err(CliError::operation)?;
+
+    let mut alias_statement = connection
+        .prepare("SELECT document_id, alias_text FROM aliases ORDER BY document_id, alias_text")
+        .map_err(CliError::operation)?;
+    let alias_rows = alias_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(CliError::operation)?;
+    let mut aliases_by_document = HashMap::<String, Vec<String>>::new();
+    for row in alias_rows {
+        let (document_id, alias_text) = row.map_err(CliError::operation)?;
+        aliases_by_document
+            .entry(document_id)
+            .or_default()
+            .push(alias_text);
+    }
+
+    let mut document_statement = connection
+        .prepare("SELECT id, path, filename, extension FROM documents ORDER BY path")
+        .map_err(CliError::operation)?;
+    let document_rows = document_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(CliError::operation)?;
+
+    let mut resolver_documents = Vec::new();
+    let mut documents_by_id = HashMap::new();
+    for row in document_rows {
+        let (id, path, filename, extension) = row.map_err(CliError::operation)?;
+        resolver_documents.push(ResolverDocument {
+            id: id.clone(),
+            path: path.clone(),
+            filename,
+            aliases: aliases_by_document.remove(&id).unwrap_or_default(),
+        });
+        documents_by_id.insert(id, ExportResolvedDocument { path, extension });
+    }
+
+    Ok((ResolverIndex::build(&resolver_documents), documents_by_id))
+}
+
+fn derive_export_links_from_notes(
+    paths: &VaultPaths,
+    notes: &[ParsedExportedNoteDocument],
+    resolution_mode: LinkResolutionMode,
+) -> Result<Vec<ExportLinkRecord>, CliError> {
+    let (resolver_index, documents_by_id) = load_export_resolution_documents(paths)?;
+    let mut links = Vec::new();
+
+    for note in notes {
+        for link in &note.parsed.links {
+            let resolution = resolver_index.resolve(
+                &ResolverLink {
+                    source_document_id: note.note.document_id.clone(),
+                    source_path: note.note.document_path.clone(),
+                    target_path_candidate: link.target_path_candidate.clone(),
+                    link_kind: link.link_kind,
+                },
+                resolution_mode,
+            );
+            let resolved = resolution
+                .resolved_target_id
+                .as_deref()
+                .and_then(|id| documents_by_id.get(id));
+            let byte_offset = i64::try_from(link.byte_offset).map_err(|_| {
+                CliError::operation(format!(
+                    "link byte offset overflow in {}",
+                    note.note.document_path
+                ))
+            })?;
+
+            links.push(ExportLinkRecord {
+                source_document_path: note.note.document_path.clone(),
+                raw_text: link.raw_text.clone(),
+                link_kind: render_export_link_kind(link.link_kind),
+                display_text: link.display_text.clone(),
+                target_path_candidate: link.target_path_candidate.clone(),
+                target_heading: link.target_heading.clone(),
+                target_block: link.target_block.clone(),
+                resolved_target_path: resolved.map(|document| document.path.clone()),
+                origin_context: render_export_origin_context(link.origin_context),
+                byte_offset,
+                resolved_target_extension: resolved.map(|document| document.extension.clone()),
+            });
+        }
+    }
+
+    links.sort_by(|left, right| {
+        left.source_document_path
+            .cmp(&right.source_document_path)
+            .then(left.byte_offset.cmp(&right.byte_offset))
+    });
+    Ok(links)
+}
+
+fn note_targets_by_source(links: &[ExportLinkRecord]) -> HashMap<String, BTreeSet<String>> {
+    let mut targets = HashMap::<String, BTreeSet<String>>::new();
+    for link in links {
+        if link.link_kind != "wikilink" {
+            continue;
+        }
+        if !link
+            .resolved_target_extension
+            .as_deref()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        {
+            continue;
+        }
+        let Some(target_path) = link.resolved_target_path.as_ref() else {
+            continue;
+        };
+        targets
+            .entry(link.source_document_path.clone())
+            .or_default()
+            .insert(target_path.clone());
+    }
+    targets
+}
+
+fn transformed_note_links_by_source(links: &[ExportLinkRecord]) -> HashMap<String, Vec<String>> {
+    let mut grouped = HashMap::<String, Vec<(i64, String)>>::new();
+    for link in links {
+        if link.link_kind != "wikilink" {
+            continue;
+        }
+        grouped
+            .entry(link.source_document_path.clone())
+            .or_default()
+            .push((link.byte_offset, link.raw_text.clone()));
+    }
+
+    grouped
+        .into_iter()
+        .map(|(path, mut values)| {
+            values.sort_by_key(|(offset, _)| *offset);
+            (
+                path,
+                values
+                    .into_iter()
+                    .map(|(_, raw_text)| raw_text)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+fn prepare_export_data(
+    paths: &VaultPaths,
+    report: &QueryReport,
+    transforms: Option<&ContentTransformConfig>,
+) -> Result<PreparedExportData, CliError> {
+    let notes = load_exported_notes(paths, report)?;
+    let Some(transforms) = transforms.filter(|transforms| !transforms.is_empty()) else {
+        let links = load_export_links(paths, &notes)?;
+        return Ok(PreparedExportData { notes, links });
+    };
+
+    let original_links = load_export_links(paths, &notes)?;
+    let config = load_vault_config(paths).config;
+    let mut parsed_notes = notes
+        .into_iter()
+        .map(|entry| {
+            let content = apply_content_transforms(&entry.content, transforms);
+            let parsed = parse_document(&content, &config);
+            ParsedExportedNoteDocument {
+                note: entry.note,
+                content,
+                parsed,
+            }
+        })
+        .collect::<Vec<_>>();
+    let transformed_links =
+        derive_export_links_from_notes(paths, &parsed_notes, config.link_resolution)?;
+    let transformed_targets = note_targets_by_source(&transformed_links);
+    let original_targets = note_targets_by_source(&original_links);
+    let transformed_note_links = transformed_note_links_by_source(&transformed_links);
+    let note_lookup = load_note_index(paths).map_err(CliError::operation)?;
+
+    let mut exported_notes = Vec::with_capacity(parsed_notes.len());
+    let mut note_indexes = HashMap::<String, usize>::new();
+    for parsed_note in parsed_notes.drain(..) {
+        let mut note = parsed_note.note;
+        note.tags = parsed_note
+            .parsed
+            .tags
+            .iter()
+            .map(|tag| tag.tag_text.clone())
+            .collect();
+        note.links = transformed_note_links
+            .get(&note.document_path)
+            .cloned()
+            .unwrap_or_default();
+        note.raw_inline_expressions = parsed_note
+            .parsed
+            .inline_expressions
+            .iter()
+            .map(|expression| expression.expression.clone())
+            .collect();
+        note.inline_expressions = evaluate_note_inline_expressions(&note, &note_lookup);
+
+        note_indexes.insert(note.document_path.clone(), exported_notes.len());
+        exported_notes.push(ExportedNoteDocument {
+            note,
+            content: parsed_note.content,
+        });
+    }
+
+    let backlink_adjustments = exported_notes
+        .iter()
+        .map(|export_note| {
+            let source_path = export_note.note.document_path.clone();
+            let source_link = synthetic_export_file_link(&source_path, &export_note.note.file_ext);
+            let original = original_targets
+                .get(&source_path)
+                .cloned()
+                .unwrap_or_default();
+            let transformed = transformed_targets
+                .get(&source_path)
+                .cloned()
+                .unwrap_or_default();
+            (source_link, original, transformed)
+        })
+        .collect::<Vec<_>>();
+
+    for (source_link, original, transformed) in backlink_adjustments {
+        for target in original.difference(&transformed) {
+            let Some(&target_index) = note_indexes.get(target) else {
+                continue;
+            };
+            exported_notes[target_index]
+                .note
+                .inlinks
+                .retain(|candidate| candidate != &source_link);
+        }
+        for target in transformed.difference(&original) {
+            let Some(&target_index) = note_indexes.get(target) else {
+                continue;
+            };
+            if !exported_notes[target_index]
+                .note
+                .inlinks
+                .iter()
+                .any(|candidate| candidate == &source_link)
+            {
+                exported_notes[target_index]
+                    .note
+                    .inlinks
+                    .push(source_link.clone());
+            }
+        }
+    }
+
+    Ok(PreparedExportData {
+        notes: exported_notes,
+        links: transformed_links,
+    })
 }
 
 fn json_note_export_report(
@@ -21470,17 +21850,20 @@ fn run_markdown_export_profile(
     output: OutputFormat,
     paths: &VaultPaths,
     output_path: &Path,
-    query: Option<&str>,
-    query_json: Option<&str>,
-    read_filter: Option<&PermissionFilter>,
     title: Option<&str>,
+    request: ExportContentRequest<'_>,
 ) -> Result<Value, CliError> {
-    let report = execute_export_query(paths, query, query_json, read_filter)?;
-    let notes = load_exported_notes(paths, &report)?;
-    let payload = render_markdown_export_payload(&report, &notes, title);
+    let report = execute_export_query(
+        paths,
+        request.query,
+        request.query_json,
+        request.read_filter,
+    )?;
+    let prepared = prepare_export_data(paths, &report, request.transforms)?;
+    let payload = render_markdown_export_payload(&report, &prepared.notes, title);
     let summary = MarkdownExportSummary {
         path: output_path.display().to_string(),
-        result_count: notes.len(),
+        result_count: prepared.notes.len(),
     };
     finish_export_profile_text(output, output_path, &payload, &summary)
 }
@@ -21489,17 +21872,20 @@ fn run_json_export_profile(
     output: OutputFormat,
     paths: &VaultPaths,
     output_path: &Path,
-    query: Option<&str>,
-    query_json: Option<&str>,
-    read_filter: Option<&PermissionFilter>,
     pretty: bool,
+    request: ExportContentRequest<'_>,
 ) -> Result<Value, CliError> {
-    let report = execute_export_query(paths, query, query_json, read_filter)?;
-    let notes = load_exported_notes(paths, &report)?;
-    let payload = render_json_export_payload(&report, &notes, pretty)?;
+    let report = execute_export_query(
+        paths,
+        request.query,
+        request.query_json,
+        request.read_filter,
+    )?;
+    let prepared = prepare_export_data(paths, &report, request.transforms)?;
+    let payload = render_json_export_payload(&report, &prepared.notes, pretty)?;
     let summary = JsonExportSummary {
         path: output_path.display().to_string(),
-        result_count: notes.len(),
+        result_count: prepared.notes.len(),
     };
     finish_export_profile_text(output, output_path, &payload, &summary)
 }
@@ -21558,11 +21944,12 @@ fn run_epub_export_profile(
     profile: &ExportProfileConfig,
 ) -> Result<Value, CliError> {
     let report = execute_export_query(paths, query, query_json, read_filter)?;
-    let notes = load_exported_notes(paths, &report)?;
+    let prepared = prepare_export_data(paths, &report, profile.content_transforms.as_ref())?;
     let summary = write_epub_export(
         paths,
         output_path,
-        &notes,
+        &prepared.notes,
+        &prepared.links,
         EpubExportOptions {
             title: profile.title.as_deref(),
             author: profile.author.as_deref(),
@@ -21578,14 +21965,22 @@ fn run_zip_export_profile(
     output: OutputFormat,
     paths: &VaultPaths,
     output_path: &Path,
-    query: Option<&str>,
-    query_json: Option<&str>,
-    read_filter: Option<&PermissionFilter>,
+    request: ExportContentRequest<'_>,
 ) -> Result<Value, CliError> {
-    let report = execute_export_query(paths, query, query_json, read_filter)?;
-    let notes = load_exported_notes(paths, &report)?;
-    let links = load_export_links(paths, &notes)?;
-    let summary = write_zip_export(paths, output_path, &report, &notes, &links)?;
+    let report = execute_export_query(
+        paths,
+        request.query,
+        request.query_json,
+        request.read_filter,
+    )?;
+    let prepared = prepare_export_data(paths, &report, request.transforms)?;
+    let summary = write_zip_export(
+        paths,
+        output_path,
+        &report,
+        &prepared.notes,
+        &prepared.links,
+    )?;
     finish_export_profile_binary(output, &summary.path, &summary)
 }
 
@@ -21651,19 +22046,25 @@ fn run_export_profile(
             cli.output,
             paths,
             &output_path,
-            query,
-            query_json,
-            read_filter,
             profile.title.as_deref(),
+            ExportContentRequest {
+                query,
+                query_json,
+                read_filter,
+                transforms: profile.content_transforms.as_ref(),
+            },
         )?,
         ExportProfileFormat::Json => run_json_export_profile(
             cli.output,
             paths,
             &output_path,
-            query,
-            query_json,
-            read_filter,
             profile.pretty.unwrap_or(false),
+            ExportContentRequest {
+                query,
+                query_json,
+                read_filter,
+                transforms: profile.content_transforms.as_ref(),
+            },
         )?,
         ExportProfileFormat::Csv => run_csv_export_profile(
             cli.output,
@@ -21693,9 +22094,12 @@ fn run_export_profile(
             cli.output,
             paths,
             &output_path,
-            query,
-            query_json,
-            read_filter,
+            ExportContentRequest {
+                query,
+                query_json,
+                read_filter,
+                transforms: profile.content_transforms.as_ref(),
+            },
         )?,
         ExportProfileFormat::Sqlite => run_sqlite_export_profile(
             cli.output,
@@ -23258,17 +23662,17 @@ fn write_epub_export(
     paths: &VaultPaths,
     output_path: &Path,
     notes: &[ExportedNoteDocument],
+    links: &[ExportLinkRecord],
     options: EpubExportOptions<'_>,
 ) -> Result<EpubExportSummary, CliError> {
     prepare_export_output_path(output_path)?;
-    let links = load_export_links(paths, notes)?;
-    let assets = build_epub_assets(&links);
+    let assets = build_epub_assets(links);
     let asset_targets = build_epub_asset_targets(&assets);
     let tag_targets = build_epub_tag_targets(notes);
     let chapters = build_epub_chapters(
         paths,
         notes,
-        &links,
+        links,
         &asset_targets,
         options.backlinks,
         options.frontmatter,
@@ -30309,6 +30713,8 @@ mod tests {
             "--title",
             "Team Notes",
             "--backlinks",
+            "--exclude-callout",
+            "secret gm",
         ])
         .expect("cli should parse");
         let export_profile_delete = Cli::try_parse_from([
@@ -30332,6 +30738,8 @@ mod tests {
             "--author",
             "Vulcan",
             "--backlinks",
+            "--exclude-callout",
+            "secret gm",
         ])
         .expect("cli should parse");
         let links = Cli::try_parse_from(["vulcan", "links", "Home"]).expect("cli should parse");
@@ -30640,6 +31048,9 @@ mod tests {
                         frontmatter: false,
                         pretty: false,
                         graph_format: None,
+                        transforms: ExportTransformArgs {
+                            exclude_callouts: vec!["secret gm".to_string()],
+                        },
                         replace: false,
                         dry_run: false,
                         no_commit: false,
@@ -30673,6 +31084,9 @@ mod tests {
                     toc: EpubTocStyle::Tree,
                     backlinks: true,
                     frontmatter: false,
+                    transforms: ExportTransformArgs {
+                        exclude_callouts: vec!["secret gm".to_string()],
+                    },
                 },
             }
         );

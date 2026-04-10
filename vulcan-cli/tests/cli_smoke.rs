@@ -9902,6 +9902,202 @@ fn export_markdown_combines_matched_notes() {
     assert!(out.contains("Owned by [[People/Bob]]"));
 }
 
+fn build_export_transform_vault() -> (TempDir, PathBuf) {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+    fs::create_dir_all(vault_root.join("People")).expect("people dir should exist");
+    fs::create_dir_all(vault_root.join("assets")).expect("assets dir should exist");
+    fs::write(
+        vault_root.join("Home.md"),
+        concat!(
+            "# Home\n\n",
+            "Visible [[Projects/Alpha]].\n\n",
+            "> [!secret gm]- Internal\n",
+            "> Hidden [[People/Bob]].\n",
+            "> ![[assets/secret.png]]\n\n",
+            "![[assets/public.png]]\n",
+        ),
+    )
+    .expect("home note should write");
+    fs::write(vault_root.join("Projects/Alpha.md"), "# Alpha\n").expect("alpha note should write");
+    fs::write(vault_root.join("People/Bob.md"), "# Bob\n").expect("bob note should write");
+    fs::write(vault_root.join("assets/public.png"), b"public").expect("public asset should write");
+    fs::write(vault_root.join("assets/secret.png"), b"secret").expect("secret asset should write");
+    run_scan(&vault_root);
+    (temp_dir, vault_root)
+}
+
+#[test]
+fn export_json_exclude_callout_removes_hidden_content_and_links() {
+    let (_temp_dir, vault_root) = build_export_transform_vault();
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "json",
+            r#"from notes where file.path = "Home.md""#,
+            "--exclude-callout",
+            "secret gm",
+            "--pretty",
+        ])
+        .assert()
+        .success();
+    let json: Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("json export should emit valid JSON");
+
+    let content = json["notes"][0]["content"].as_str().unwrap_or_default();
+    let links = json["notes"][0]["links"]
+        .as_array()
+        .expect("links should be an array");
+    assert!(content.contains("Visible [[Projects/Alpha]]."));
+    assert!(!content.contains("Hidden [[People/Bob]]."));
+    assert!(!content.contains("assets/secret.png"));
+    assert!(links.iter().any(|value| value == "[[Projects/Alpha]]"));
+    assert!(!links.iter().any(|value| value == "[[People/Bob]]"));
+}
+
+#[test]
+fn export_zip_exclude_callout_skips_hidden_attachments() {
+    let (temp_dir, vault_root) = build_export_transform_vault();
+    let export_path = temp_dir.path().join("public.zip");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "zip",
+            r#"from notes where file.path = "Home.md""#,
+            "--exclude-callout",
+            "secret gm",
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("zip export should exist");
+    let mut archive = ZipArchive::new(file).expect("zip export should open");
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        names.push(
+            archive
+                .by_index(index)
+                .expect("zip entry should be readable")
+                .name()
+                .to_string(),
+        );
+    }
+
+    assert!(names.contains(&"Home.md".to_string()));
+    assert!(names.contains(&"assets/public.png".to_string()));
+    assert!(!names.contains(&"assets/secret.png".to_string()));
+
+    let mut notes_json = String::new();
+    archive
+        .by_name(".vulcan-export/notes.json")
+        .expect("notes manifest should exist")
+        .read_to_string(&mut notes_json)
+        .expect("notes manifest should be readable");
+    assert!(!notes_json.contains("assets/secret.png"));
+}
+
+#[test]
+fn export_epub_exclude_callout_filters_backlinks_and_hidden_assets() {
+    let (temp_dir, vault_root) = build_export_transform_vault();
+    let export_path = temp_dir.path().join("public.epub");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "epub",
+            r#"from notes where file.path matches "^(Home|Projects/Alpha|People/Bob)\.md$""#,
+            "--exclude-callout",
+            "secret gm",
+            "--backlinks",
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("epub export should exist");
+    let mut archive = ZipArchive::new(file).expect("epub export should open");
+
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        names.push(
+            archive
+                .by_index(index)
+                .expect("archive entry should be readable")
+                .name()
+                .to_string(),
+        );
+    }
+    let media_entries = names
+        .iter()
+        .filter(|name| name.starts_with("OEBPS/media/asset-"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(media_entries.len(), 1);
+    assert!(media_entries.iter().all(|name| has_extension(name, "png")));
+
+    let mut chapter_by_note = std::collections::HashMap::new();
+    for name in names
+        .iter()
+        .filter(|name| name.starts_with("OEBPS/text/chapter-"))
+    {
+        let mut chapter = String::new();
+        archive
+            .by_name(name)
+            .expect("chapter should exist")
+            .read_to_string(&mut chapter)
+            .expect("chapter should be readable");
+        if chapter.contains("Home.md") {
+            chapter_by_note.insert("Home.md", chapter);
+        } else if chapter.contains("Projects/Alpha.md") {
+            chapter_by_note.insert("Projects/Alpha.md", chapter);
+        } else if chapter.contains("People/Bob.md") {
+            chapter_by_note.insert("People/Bob.md", chapter);
+        }
+    }
+
+    let home_chapter = chapter_by_note
+        .get("Home.md")
+        .expect("home chapter should be captured");
+    let alpha_chapter = chapter_by_note
+        .get("Projects/Alpha.md")
+        .expect("alpha chapter should be captured");
+    let bob_chapter = chapter_by_note
+        .get("People/Bob.md")
+        .expect("bob chapter should be captured");
+
+    assert!(home_chapter.contains("asset-embed asset-embed-image"));
+    assert!(!home_chapter.contains("Hidden [[People/Bob]]."));
+    assert!(!home_chapter.contains("assets/secret.png"));
+    assert!(alpha_chapter.contains("<section class=\"backlinks\">"));
+    assert!(alpha_chapter.contains(">Home</a>"));
+    assert!(!bob_chapter.contains(">Home</a>"));
+}
+
 #[test]
 fn export_json_emits_note_metadata_and_content() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -10529,6 +10725,65 @@ fn export_profiles_list_and_run_named_epub_profile() {
 }
 
 #[test]
+fn export_profile_create_and_run_support_content_transforms() {
+    let (_temp_dir, vault_root) = build_export_transform_vault();
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let create_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "create",
+            "public_json",
+            "--format",
+            "json",
+            r#"from notes where file.path = "Home.md""#,
+            "-o",
+            "exports/public.json",
+            "--exclude-callout",
+            "secret gm",
+        ])
+        .assert()
+        .success();
+    let create_json = parse_stdout_json(&create_assert);
+    assert_eq!(create_json["profile"]["format"], "json");
+    assert_eq!(
+        create_json["profile"]["content_transforms"]["exclude_callouts"][0],
+        "secret gm"
+    );
+
+    let run_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "run",
+            "public_json",
+        ])
+        .assert()
+        .success();
+    let run_json = parse_stdout_json(&run_assert);
+    assert_eq!(run_json["name"], "public_json");
+
+    let exported = fs::read_to_string(vault_root.join("exports/public.json"))
+        .expect("profile output should exist");
+    assert!(!exported.contains("Hidden [[People/Bob]]."));
+    assert!(!exported.contains("assets/secret.png"));
+}
+
+#[test]
 fn export_profile_create_rejects_format_specific_invalid_flags() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -10556,6 +10811,38 @@ fn export_profile_create_rejects_format_specific_invalid_flags() {
         .failure()
         .stderr(predicate::str::contains(
             "does not use `query` or `query_json` for graph exports",
+        ));
+}
+
+#[test]
+fn export_profile_create_rejects_content_transforms_for_unsupported_formats() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "profile",
+            "create",
+            "search_index_bad",
+            "--format",
+            "search-index",
+            "-o",
+            "exports/search.json",
+            "--exclude-callout",
+            "secret gm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "only supports `content_transforms` for markdown, json, epub, and zip exports",
         ));
 }
 
