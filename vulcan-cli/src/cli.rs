@@ -882,6 +882,7 @@ Notes:
   `export profile run <name>` resolves relative profile paths from the vault root.
   `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.
   `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
+  `markdown`, `json`, `epub`, and `zip` support `--exclude-callout <type>` for publication-oriented content transforms.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
   `epub --backlinks` appends indexed inlinks after each exported note chapter.
   Archive exports require `-o/--path` because they produce binary or database files.
@@ -893,6 +894,7 @@ Examples:
   vulcan export profile run team-book
   vulcan export profile show team-book
   vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'
+  vulcan export json 'from notes' --exclude-callout 'secret gm' -o exports/public.json
   vulcan export profile delete team-book --dry-run
   vulcan export markdown 'from notes where file.path matches \"^Projects/\"'
   vulcan export json 'from notes where status = done' --pretty -o exports/done.json
@@ -1585,6 +1587,8 @@ pub enum ExportProfileCommand {
         pretty: bool,
         #[arg(long, value_enum, help = "Graph export format stored in the profile")]
         graph_format: Option<GraphExportFormat>,
+        #[command(flatten)]
+        transforms: ExportTransformArgs,
         #[arg(long, help = "Replace an existing profile with the same name")]
         replace: bool,
         #[arg(long, help = "Preview the config change without writing the file")]
@@ -1782,6 +1786,8 @@ pub enum ExportCommand {
     Markdown {
         #[command(flatten)]
         query: ExportQueryArgs,
+        #[command(flatten)]
+        transforms: ExportTransformArgs,
         #[arg(
             short = 'o',
             long = "path",
@@ -1795,6 +1801,8 @@ pub enum ExportCommand {
     Json {
         #[command(flatten)]
         query: ExportQueryArgs,
+        #[command(flatten)]
+        transforms: ExportTransformArgs,
         #[arg(
             short = 'o',
             long = "path",
@@ -1835,6 +1843,8 @@ pub enum ExportCommand {
     Epub {
         #[command(flatten)]
         query: ExportQueryArgs,
+        #[command(flatten)]
+        transforms: ExportTransformArgs,
         #[arg(
             short = 'o',
             long = "path",
@@ -1868,6 +1878,8 @@ pub enum ExportCommand {
     Zip {
         #[command(flatten)]
         query: ExportQueryArgs,
+        #[command(flatten)]
+        transforms: ExportTransformArgs,
         #[arg(
             short = 'o',
             long = "path",
@@ -1909,6 +1921,15 @@ pub struct ExportQueryArgs {
         help = "JSON note query payload; mutually exclusive with the positional query"
     )]
     pub query_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Args)]
+pub struct ExportTransformArgs {
+    #[arg(
+        long = "exclude-callout",
+        help = "Drop callout blocks whose type/class matches this value; repeat to exclude multiple callouts"
+    )]
+    pub exclude_callouts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
