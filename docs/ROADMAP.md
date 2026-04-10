@@ -4164,6 +4164,29 @@ The RPC client (9.21.2) is the key investment. When the daemon exists:
 - **Multi-vault:** The daemon can manage one pi process per registered vault instead of one per CLI invocation.
 - **No wasted work:** The typed command/event structs, the event dispatcher, and the extension UI handler are all transport-agnostic and carry forward directly.
 
+### 9.21.12 Telegram integration (Deferred native chat)
+
+Integrate Telegram directly into the Rust application leveraging the built-in pi RPC client. This implements the deferred native chat concepts (from 9.12.8) using the embedded pi architecture.
+
+- [ ] New module `vulcan-cli/src/assistant/telegram.rs` (using `teloxide` or similar crate)
+- [ ] Add `vulcan assistant --telegram` command to start a long-running polling loop connected to the Telegram Bot API
+- [ ] Config in `.vulcan/config.toml` for Telegram token and chat-level permission mapping:
+  ```toml
+  [assistant.telegram]
+  token_env = "TELEGRAM_BOT_TOKEN"
+  
+  [assistant.telegram.users."123456789"] # Vault Owner DM
+  permissions = "refactor"
+  
+  [assistant.telegram.groups."987654321"] # Shared group chat
+  permissions = "readonly"
+  ```
+- [ ] Map Telegram `chat_id` to a persistent pi session file: `.vulcan/assistant/sessions/telegram/<chat_id>.jsonl`
+- [ ] On incoming message, spawn/acquire a `PiRpcClient` and issue a `switch_session` command to load the chat's context
+- [ ] Buffer `text_delta` streaming events from pi and update the Telegram message in batches (e.g., every 1.5 seconds) to avoid Telegram API rate limits
+- [ ] Handle multimodal inputs: download images sent via Telegram, convert to base64, and pass them in the `prompt` RPC command
+- [ ] Enforce security at the Rust boundary: spawn pi with the exact `--permissions` profile mapped to the Telegram chat, guaranteeing the LLM cannot bypass vault rules when responding to group members
+
 ---
 
 ## Deferred enhancements (post-Phase 9)
