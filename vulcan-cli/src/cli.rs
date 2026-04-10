@@ -882,7 +882,7 @@ Notes:
   `export profile run <name>` resolves relative profile paths from the vault root.
   `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.
   `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
-  `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout <type>` and `--exclude-heading <heading>`.
+  `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, and `--exclude-inline-field`.
   Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; each rule query only narrows within the profile query result.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
   `epub --backlinks` appends indexed inlinks after each exported note chapter.
@@ -1589,7 +1589,7 @@ pub enum ExportProfileCommand {
         #[arg(long, value_enum, help = "Graph export format stored in the profile")]
         graph_format: Option<GraphExportFormat>,
         #[command(flatten)]
-        transforms: ExportTransformArgs,
+        transforms: Box<ExportTransformArgs>,
         #[arg(long, help = "Replace an existing profile with the same name")]
         replace: bool,
         #[arg(long, help = "Preview the config change without writing the file")]
@@ -1936,6 +1936,16 @@ pub struct ExportTransformArgs {
         help = "Drop heading sections whose title matches this value; nested subsections are removed too"
     )]
     pub exclude_headings: Vec<String>,
+    #[arg(
+        long = "exclude-frontmatter-key",
+        help = "Drop frontmatter keys whose normalized name matches this value; repeat to exclude multiple keys"
+    )]
+    pub exclude_frontmatter_keys: Vec<String>,
+    #[arg(
+        long = "exclude-inline-field",
+        help = "Drop inline fields whose normalized name matches this value; repeat to exclude multiple keys"
+    )]
+    pub exclude_inline_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

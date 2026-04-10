@@ -9955,6 +9955,54 @@ fn build_export_heading_transform_vault() -> (TempDir, PathBuf) {
     (temp_dir, vault_root)
 }
 
+fn build_export_metadata_transform_vault() -> (TempDir, PathBuf) {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+    fs::create_dir_all(vault_root.join("People")).expect("people dir should exist");
+    fs::create_dir_all(vault_root.join("assets")).expect("assets dir should exist");
+    fs::write(
+        vault_root.join("Home.md"),
+        concat!(
+            "---\n",
+            "public_label: visible\n",
+            "email: home@example.com\n",
+            "contact: \"[[People/Bob]]\"\n",
+            "secret-attachment: \"![[assets/secret-frontmatter.png]]\"\n",
+            "---\n\n",
+            "# Home\n\n",
+            "public:: visible\n",
+            "secret:: hidden\n",
+            "asset:: ![[assets/secret-inline.png]]\n",
+            "Visible [[Projects/Alpha]].\n\n",
+            "`= [[Projects/Alpha]].email`\n\n",
+            "![[assets/public.png]]\n",
+        ),
+    )
+    .expect("home note should write");
+    fs::write(
+        vault_root.join("Projects/Alpha.md"),
+        concat!(
+            "---\n",
+            "email: alpha@example.com\n",
+            "---\n\n",
+            "# Alpha\n"
+        ),
+    )
+    .expect("alpha note should write");
+    fs::write(vault_root.join("People/Bob.md"), "# Bob\n").expect("bob note should write");
+    fs::write(vault_root.join("assets/public.png"), b"public").expect("public asset should write");
+    fs::write(
+        vault_root.join("assets/secret-frontmatter.png"),
+        b"frontmatter",
+    )
+    .expect("frontmatter asset should write");
+    fs::write(vault_root.join("assets/secret-inline.png"), b"inline")
+        .expect("inline asset should write");
+    run_scan(&vault_root);
+    (temp_dir, vault_root)
+}
+
 #[test]
 fn export_json_exclude_callout_removes_hidden_content_and_links() {
     let (_temp_dir, vault_root) = build_export_transform_vault();
@@ -10026,6 +10074,98 @@ fn export_json_exclude_heading_removes_hidden_sections_and_links() {
 }
 
 #[test]
+fn export_json_metadata_transforms_redact_note_metadata_and_cross_note_lookups() {
+    let (_temp_dir, vault_root) = build_export_metadata_transform_vault();
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "json",
+            r#"from notes where file.path matches "^(Home|Projects/Alpha)\.md$""#,
+            "--exclude-frontmatter-key",
+            "email",
+            "--exclude-frontmatter-key",
+            "contact",
+            "--exclude-frontmatter-key",
+            "secret-attachment",
+            "--exclude-inline-field",
+            "secret",
+            "--exclude-inline-field",
+            "asset",
+            "--pretty",
+        ])
+        .assert()
+        .success();
+    let json: Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("json export should emit valid JSON");
+
+    let notes = json["notes"].as_array().expect("notes should be an array");
+    let home = notes
+        .iter()
+        .find(|note| note["document_path"] == "Home.md")
+        .expect("home note should be exported");
+    let alpha = notes
+        .iter()
+        .find(|note| note["document_path"] == "Projects/Alpha.md")
+        .expect("alpha note should be exported");
+
+    let home_content = home["content"].as_str().unwrap_or_default();
+    assert!(home_content.contains("Visible [[Projects/Alpha]]."));
+    assert!(!home_content.contains("secret:: hidden"));
+    assert!(!home_content.contains("[[People/Bob]]"));
+    assert!(!home_content.contains("secret-frontmatter.png"));
+    assert!(!home_content.contains("secret-inline.png"));
+
+    let home_links = home["links"].as_array().expect("links should be an array");
+    assert!(home_links.iter().any(|value| value == "[[Projects/Alpha]]"));
+    assert!(!home_links.iter().any(|value| value == "[[People/Bob]]"));
+
+    let home_frontmatter = home["frontmatter"]
+        .as_object()
+        .expect("frontmatter should be an object");
+    assert_eq!(
+        home_frontmatter.get("public_label"),
+        Some(&Value::String("visible".to_string()))
+    );
+    assert!(!home_frontmatter.contains_key("email"));
+    assert!(!home_frontmatter.contains_key("contact"));
+    assert!(!home_frontmatter.contains_key("secret-attachment"));
+
+    let home_properties = home["properties"]
+        .as_object()
+        .expect("properties should be an object");
+    assert_eq!(
+        home_properties.get("public"),
+        Some(&Value::String("visible".to_string()))
+    );
+    assert!(!home_properties.contains_key("secret"));
+    assert!(!home_properties.contains_key("asset"));
+    assert!(!home_properties.contains_key("email"));
+    assert!(!home_properties.contains_key("contact"));
+
+    let home_inline = home["inline_expressions"]
+        .as_array()
+        .expect("inline expressions should be an array");
+    assert_eq!(home_inline.len(), 1);
+    assert_eq!(home_inline[0]["expression"], "[[Projects/Alpha]].email");
+    assert_eq!(home_inline[0]["value"], Value::Null);
+
+    let alpha_frontmatter = alpha["frontmatter"]
+        .as_object()
+        .expect("frontmatter should be an object");
+    assert!(!alpha_frontmatter.contains_key("email"));
+    let alpha_properties = alpha["properties"]
+        .as_object()
+        .expect("properties should be an object");
+    assert!(!alpha_properties.contains_key("email"));
+}
+
+#[test]
 fn export_zip_exclude_callout_skips_hidden_attachments() {
     let (temp_dir, vault_root) = build_export_transform_vault();
     let export_path = temp_dir.path().join("public.zip");
@@ -10074,6 +10214,61 @@ fn export_zip_exclude_callout_skips_hidden_attachments() {
         .read_to_string(&mut notes_json)
         .expect("notes manifest should be readable");
     assert!(!notes_json.contains("assets/secret.png"));
+}
+
+#[test]
+fn export_zip_metadata_transforms_skip_hidden_metadata_attachments() {
+    let (temp_dir, vault_root) = build_export_metadata_transform_vault();
+    let export_path = temp_dir.path().join("public.zip");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "zip",
+            r#"from notes where file.path = "Home.md""#,
+            "--exclude-frontmatter-key",
+            "secret-attachment",
+            "--exclude-inline-field",
+            "asset",
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("zip export should exist");
+    let mut archive = ZipArchive::new(file).expect("zip export should open");
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        names.push(
+            archive
+                .by_index(index)
+                .expect("zip entry should be readable")
+                .name()
+                .to_string(),
+        );
+    }
+
+    assert!(names.contains(&"Home.md".to_string()));
+    assert!(names.contains(&"assets/public.png".to_string()));
+    assert!(!names.contains(&"assets/secret-frontmatter.png".to_string()));
+    assert!(!names.contains(&"assets/secret-inline.png".to_string()));
+
+    let mut notes_json = String::new();
+    archive
+        .by_name(".vulcan-export/notes.json")
+        .expect("notes manifest should exist")
+        .read_to_string(&mut notes_json)
+        .expect("notes manifest should be readable");
+    assert!(!notes_json.contains("secret-frontmatter.png"));
+    assert!(!notes_json.contains("secret-inline.png"));
 }
 
 #[test]
@@ -10858,6 +11053,10 @@ fn export_profile_create_and_run_support_content_transforms() {
             "secret gm",
             "--exclude-heading",
             "scratch",
+            "--exclude-frontmatter-key",
+            "email",
+            "--exclude-inline-field",
+            "owner",
         ])
         .assert()
         .success();
@@ -10870,6 +11069,14 @@ fn export_profile_create_and_run_support_content_transforms() {
     assert_eq!(
         create_json["profile"]["content_transforms"][0]["exclude_headings"][0],
         "scratch"
+    );
+    assert_eq!(
+        create_json["profile"]["content_transforms"][0]["exclude_frontmatter_keys"][0],
+        "email"
+    );
+    assert_eq!(
+        create_json["profile"]["content_transforms"][0]["exclude_inline_fields"][0],
+        "owner"
     );
 
     let run_assert = Command::cargo_bin("vulcan")

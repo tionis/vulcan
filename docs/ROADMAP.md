@@ -3322,7 +3322,7 @@ The export surface now covers documents, datasets, archives, and static search i
 - [x] Add reusable export `content_transforms` (initially `exclude_callouts`) so publication-oriented exports can strip callout blocks before packaging Markdown/JSON/EPUB/ZIP output
 - [x] Generalize profile `content_transforms` to ordered rule tables with optional rule queries; the export profile query still defines the exported note set, while each rule query only targets which exported notes receive that rule's transforms
 - [x] Extend `content_transforms` with section filtering (`exclude_headings`) so publication exports can drop whole heading sections and their subsections
-- [ ] Extend `content_transforms` with metadata filtering (`exclude_frontmatter_keys`, `exclude_inline_fields`) so exported/public notes can remove sensitive structured data without hand-editing sources
+- [x] Extend `content_transforms` with metadata filtering (`exclude_frontmatter_keys`, `exclude_inline_fields`) so exported/public notes can remove sensitive structured data without hand-editing sources; transformed export metadata, links, and inline-expression evaluation must all be rebuilt from the rewritten note content
 - [ ] Extend `content_transforms` with literal/regex replacement rules for publication redaction and normalization workflows
 - [ ] Add publication link policy controls for transformed exports and future site builds (`error`, `warn`, `drop-link`, `render-plain-text`) when content transforms remove the target or anchor context
 - [ ] Add publication asset policy controls so transformed exports and future site builds can exclude/rewrite attachments based on path, extension, or whether they are only referenced from stripped content

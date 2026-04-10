@@ -243,6 +243,8 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # [[export.profiles.team-book.content_transforms]]
 # exclude_callouts = ["secret gm", "internal"]
 # exclude_headings = ["Scratch"]
+# exclude_frontmatter_keys = ["email", "api-key"]
+# exclude_inline_fields = ["owner", "budget"]
 # [[export.profiles.team-book.content_transforms]]
 # query = 'from notes where file.path matches "^People/"'
 # exclude_callouts = ["internal"]
@@ -9307,6 +9309,8 @@ frontmatter = true
 [[export.profiles.team_book.content_transforms]]
 exclude_callouts = ["secret gm", "internal"]
 exclude_headings = ["Scratch"]
+exclude_frontmatter_keys = ["email"]
+exclude_inline_fields = ["owner"]
 "#,
         )
         .expect("config should be written");
@@ -9342,6 +9346,8 @@ exclude_headings = ["Scratch"]
                             rule.query.clone(),
                             rule.transforms.exclude_callouts.clone(),
                             rule.transforms.exclude_headings.clone(),
+                            rule.transforms.exclude_frontmatter_keys.clone(),
+                            rule.transforms.exclude_inline_fields.clone(),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -9350,6 +9356,8 @@ exclude_headings = ["Scratch"]
                 None,
                 vec!["secret gm".to_string(), "internal".to_string()],
                 vec!["Scratch".to_string()],
+                vec!["email".to_string()],
+                vec!["owner".to_string()],
             )])
         );
     }
@@ -9373,6 +9381,8 @@ backlinks = true
 [[export.profiles.team_book.content_transforms]]
 exclude_callouts = ["secret gm"]
 exclude_headings = ["Scratch"]
+exclude_frontmatter_keys = ["email"]
+exclude_inline_fields = ["owner"]
 "#,
         )
         .expect("shared config should be written");
@@ -9388,6 +9398,8 @@ toc = "flat"
 query = 'from notes where file.path matches "^People/"'
 exclude_callouts = ["internal", "private"]
 exclude_headings = ["Directory"]
+exclude_frontmatter_keys = ["phone"]
+exclude_inline_fields = ["manager"]
 
 [export.profiles.graph_dump]
 format = "graph"
@@ -9433,6 +9445,8 @@ graph_format = "dot"
                             rule.query.clone(),
                             rule.transforms.exclude_callouts.clone(),
                             rule.transforms.exclude_headings.clone(),
+                            rule.transforms.exclude_frontmatter_keys.clone(),
+                            rule.transforms.exclude_inline_fields.clone(),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -9441,6 +9455,8 @@ graph_format = "dot"
                 Some(r#"from notes where file.path matches "^People/""#.to_string()),
                 vec!["internal".to_string(), "private".to_string()],
                 vec!["Directory".to_string()],
+                vec!["phone".to_string()],
+                vec!["manager".to_string()],
             )])
         );
 
