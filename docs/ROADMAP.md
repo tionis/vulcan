@@ -1416,7 +1416,7 @@ Read and respect Dataview's per-vault configuration from `.obsidian/plugins/data
 - [x] **Doctor:** Report notes with DQL blocks that fail to parse. Report inline fields with type inconsistencies against the property catalog. Report DataviewJS blocks (diagnosed when feature not compiled in).
 - [x] **Browse TUI:** `Ctrl-V` toggles the detail pane between the raw file/snippet preview and a Dataview inspector showing evaluated inline expressions plus DQL/DataviewJS block results for the selected note.
 - [x] **HTTP API:** Single-vault serve mode exposes structured Dataview endpoints: `GET /dataview/query`, `GET /dataview/query-js`, `GET /dataview/eval`, and `GET /dataview/inline`.
-- [x] **Property queries:** Inline fields and `file.*` fields are queryable via the existing `--where` filter surface. `vulcan notes --where "due < date(today)"` finds notes where the `due` inline field is in the past. `vulcan notes --where "file.size > 10000"` finds large notes.
+- [x] **Property queries:** Inline fields and `file.*` fields are queryable via the existing `--where` filter surface. `vulcan query --where "due < date(today)"` finds notes where the `due` inline field is in the past. `vulcan query --where "file.size > 10000"` finds large notes.
 - [x] **Bases interop:** Bases views and DQL queries share the same expression evaluation engine and filter primitives. A Bases view and a DQL TABLE query with equivalent logic should produce identical results.
 - [x] **Dataview test vault:** `tests/fixtures/vaults/dataview/` must exercise all features: inline fields (all variants, type inference, formatting edge cases), list items (plain and task, nested), `file.*` metadata access (including `file.day`, `file.tags` subtag expansion), DQL queries (TABLE, LIST, TASK, CALENDAR), GROUP BY (with null keys, computed expressions), FLATTEN (with non-array expressions, sequential composition), inline expressions (with configurable prefix), function calls (including vectorization, regex functions in WHERE), link indexing (`[[Note]].field` including missing targets), date/duration arithmetic, null ordering, Tasks plugin emoji shorthand, and DataviewJS blocks (evaluated when feature is compiled in, diagnosed otherwise).
 
@@ -1988,7 +1988,7 @@ TaskNotes v4+ is built entirely on Obsidian Bases. Vulcan should register equiva
   |---|---|
   | `tasknotesTaskList` | Filterable, sortable, groupable task table |
   | `tasknotesKanban` | Kanban board (columns = status or custom field) |
-- [ ] Calendar Bases views (`tasknotesCalendar`, `tasknotesMiniCalendar`) deferred to post-WebUI — calendar rendering is a visual concern. See [Deferred enhancements — Calendar Bases views](#deferred-calendar-bases-views).
+- [-] Calendar Bases views (`tasknotesCalendar`, `tasknotesMiniCalendar`) deferred to post-WebUI — calendar rendering is a visual concern. See [Deferred enhancements — Calendar Bases views](#deferred-calendar-bases-views).
 - [x] Parse `.base` view files in `TaskNotes/Views/` (YAML format):
   - Filter conditions: grouped AND/OR tree of property-based conditions
   - Sort key and direction
@@ -3282,6 +3282,7 @@ Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q`
 **Structured error output**
 
 - [x] All commands in `--output json` mode should return errors as `{"error": "<message>", "code": "<error_code>"}` on stdout with appropriate exit code — not unstructured stderr text (partially implemented in 9.18.7, verify completeness)
+- [x] Handle closed stdout pipes gracefully so commands used with `head`, `sed`, or similar shell filters exit quietly instead of panicking on `Broken pipe`
 
 #### 9.19.9 Command clarity and discoverability
 
@@ -3333,7 +3334,7 @@ The command may not correctly toggle between TaskNotes-only and all-tasks (inclu
 `vulcan notes` (property query) and `vulcan note` (single-note CRUD) differ by one character. Users will constantly type the wrong one.
 
 - [x] At minimum, add a clear error message when `vulcan notes get` or `vulcan note --where` is attempted: suggest the correct command
-- [-] Long-term: absorb `notes` into `query` (see 9.19.7) to eliminate the confusion entirely
+- [x] Long-term: absorb `notes` into `query` (see 9.19.7) to eliminate the confusion entirely; `vulcan notes` now rewrites to `vulcan query --format table` and is no longer a first-class command
 
 #### 9.19.10 Web search backend expansion
 
@@ -4172,28 +4173,117 @@ The RPC client (9.21.2) is the key investment. When the daemon exists:
 - **Multi-vault:** The daemon can manage one pi process per registered vault instead of one per CLI invocation.
 - **No wasted work:** The typed command/event structs, the event dispatcher, and the extension UI handler are all transport-agnostic and carry forward directly.
 
-### 9.21.12 Telegram integration (Deferred native chat)
+### 9.21.12 Cross-platform chat transport contract (Deferred native chat)
 
-Integrate Telegram directly into the Rust application leveraging the built-in pi RPC client. This implements the deferred native chat concepts (from 9.12.8) using the embedded pi architecture.
+Do not make Telegram the architecture. If native chat is revived, start by defining the reusable assistant/chat boundary that all platforms plug into.
 
-- [ ] New module `vulcan-cli/src/assistant/telegram.rs` (using `teloxide` or similar crate)
-- [ ] Add `vulcan assistant --telegram` command to start a long-running polling loop connected to the Telegram Bot API
-- [ ] Config in `.vulcan/config.toml` for Telegram token and chat-level permission mapping:
+- [ ] New module `vulcan-cli/src/assistant/chat_transport.rs` (or similar) for the platform-neutral runtime contract
+- [ ] Define canonical external user principal strings for bindings and audit logs:
+  - `telegram:123456`
+  - `matrix:@alice:example.com`
+  - `discord:123456789012345678`
+- [ ] Define canonical external chat-space IDs for sessions and policy lookup:
+  - `telegram:-1001234567890` for a Telegram group/chat
+  - `matrix:!roomid:example.com` for a Matrix room
+  - `discord:guild/123/channel/456`
+  - `discord:guild/123/channel/456/thread/789`
+- [ ] Separate user principals from chat spaces in the data model; do not overload one string type for both
+- [ ] Model hierarchical spaces with `parent_space_id` so guild → channel → thread or workspace → room inheritance works naturally
+- [ ] Define typed transport-layer Rust structs:
+  - `ExternalUserPrincipal`
+  - `ChatSpace`
+  - `IdentityBinding`
+  - `ChatEvent`
+  - `ChatAction`
+  - `AdapterCapabilities`
+- [ ] Core inbound events must include at least:
+  - message
+  - reaction added / removed
+  - reply-to / message reference
+  - message edited / deleted
+  - attachment received
+  - interaction event (buttons/selects or equivalent)
+- [ ] Core outbound actions must include at least:
+  - send message
+  - edit message
+  - reply
+  - add/remove reaction
+  - acknowledge interaction
+  - render buttons when supported
+- [ ] Capability negotiation: adapters advertise whether they support reactions, message edits, replies, buttons, attachments, threads, or ephemeral messages; the assistant core degrades gracefully when a feature is absent
+- [ ] Identity binding layer maps an external user principal to:
+  - a stable assistant-side `vault_identity`
+  - an optional Phase 17 auth principal such as `user:alice`
+  - an optional canonical note path such as `People/Alice.md`
+- [ ] Session and memory routing should key off the internal `vault_identity` and internal space ID once a binding exists, so one human can share memory across Telegram and Matrix after verification
+- [ ] Unbound users fall back to platform-scoped memory/session routing until linked
+- [ ] Permission resolution should use the restrictive intersection of:
+  - platform default
+  - space hierarchy policy
+  - external-user override
+  - bound identity / Phase 17 principal policy
+- [ ] Keep non-rebuildable platform runtime state out of the vault and out of `.vulcan/cache.db`; define a daemon-managed state directory for adapter-specific databases, sync tokens, media caches, and crypto material
+- [ ] Add assistant chat config sketch to `.vulcan/config.toml` docs:
   ```toml
-  [assistant.telegram]
-  token_env = "TELEGRAM_BOT_TOKEN"
-  
-  [assistant.telegram.users."123456789"] # Vault Owner DM
-  permissions = "refactor"
-  
-  [assistant.telegram.groups."987654321"] # Shared group chat
-  permissions = "readonly"
+  [assistant.chat]
+  default_profile = "readonly"
+  session_root = "AI/Sessions"
+  memory_root = "AI/Memory"
+
+  [assistant.chat.identities.alice]
+  principal = "user:alice"
+  note = "People/Alice.md"
+
+  [[assistant.chat.bindings]]
+  external_user = "telegram:123456789"
+  vault_identity = "alice"
+  verification = "admin-confirmed"
+
+  [[assistant.chat.bindings]]
+  external_user = "matrix:@alice:example.com"
+  vault_identity = "alice"
+  verification = "device-verified"
+
+  [assistant.chat.spaces."discord:guild/123"]
+  profile = "readonly"
+
+  [assistant.chat.spaces."discord:guild/123/channel/456"]
+  parent = "discord:guild/123"
+  profile = "edit"
   ```
-- [ ] Map Telegram `chat_id` to a persistent pi session file: `.vulcan/assistant/sessions/telegram/<chat_id>.jsonl`
-- [ ] On incoming message, spawn/acquire a `PiRpcClient` and issue a `switch_session` command to load the chat's context
-- [ ] Buffer `text_delta` streaming events from pi and update the Telegram message in batches (e.g., every 1.5 seconds) to avoid Telegram API rate limits
-- [ ] Handle multimodal inputs: download images sent via Telegram, convert to base64, and pass them in the `prompt` RPC command
-- [ ] Enforce security at the Rust boundary: spawn pi with the exact `--permissions` profile mapped to the Telegram chat, guaranteeing the LLM cannot bypass vault rules when responding to group members
+
+### 9.21.13 Telegram adapter (Deferred native chat)
+
+Implement Telegram on top of the cross-platform contract from 9.21.12 rather than letting Telegram-specific concerns leak into the assistant core.
+
+- [ ] New module `vulcan-cli/src/assistant/platforms/telegram.rs` (using `teloxide` or similar crate)
+- [ ] Add `vulcan assistant --telegram` command only after the transport contract exists
+- [ ] Map Telegram users to `telegram:<user_id>` and spaces to `telegram:<chat_id>`
+- [ ] Support DM, group, and supergroup conversations through the shared `ChatSpace` model
+- [ ] Translate Telegram replies, reactions, attachments, and inline keyboard button callbacks into the shared event/action contract
+- [ ] Route sessions by internal chat-space ID rather than raw Telegram `chat_id` paths
+- [ ] Batch streaming message edits to respect Telegram API rate limits without making the assistant renderer Telegram-aware
+- [ ] Enforce security at the Rust boundary by resolving the effective profile from the transport contract, then spawning pi with the corresponding `--permissions` profile
+
+### 9.21.14 Matrix adapter research and viability gate (Deferred native chat)
+
+Matrix is explicitly more complex than Telegram because it brings sync loops, room state, media handling, and E2EE key management. Treat it as a separate design gate, not as "Telegram but different IDs."
+
+- [ ] Produce a research note covering Matrix SDK options, sync architecture, E2EE key storage, verification UX, and room/thread/reaction support
+- [ ] Evaluate `matrix-sdk` (or equivalent) for a daemon-managed long-lived adapter
+- [ ] Define daemon-managed runtime state requirements for:
+  - sync tokens
+  - room state caches
+  - Olm/Megolm key stores
+  - device verification state
+  - media cache / upload staging
+- [ ] Map Matrix users to `matrix:@user:server` and rooms to `matrix:!roomid:server`
+- [ ] Verify how replies, reactions, edits, attachments, and richer interactions map into the 9.21.12 transport contract
+- [ ] Decide whether Matrix lands as:
+  - a native daemon-managed adapter
+  - a separate sidecar process speaking the same transport contract
+  - or a deferred platform if the operational burden is too high for the native runtime
+- [ ] Exit criterion: do not start a production Matrix implementation until the runtime-state boundary and verification story are both explicit
 
 ---
 
@@ -4586,7 +4676,7 @@ trait SyncBackend: Send + Sync {
 
 ### 15.2 Telegram bot integration
 
-**Note:** Phase 9.12 no longer assumes a built-in conversational Telegram assistant. Phase 15.2 covers a daemon-hosted webhook/integration variant for simpler notification and command use cases; the richer embedded assistant/chat track is the optional follow-on in Phase 9.21 if external runtimes prove insufficient.
+**Note:** Phase 9.12 no longer assumes a built-in conversational Telegram assistant. Phase 15.2 covers a daemon-hosted webhook/integration variant for simpler notification and command use cases; the richer embedded assistant/chat track is the optional follow-on in Phase 9.21's cross-platform chat transport work (9.21.12+) if external runtimes prove insufficient.
 
 - [ ] Per-vault Telegram bot configuration (daemon mode):
   ```toml
@@ -5221,7 +5311,8 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `automerge` | CRDT document model for collaborative editing | 14 |
 | `rust-embed` or `include_dir` | Embed static WebUI assets | 13 |
 | `openidconnect` | OIDC client for SSO integration | 17.6 |
-| `teloxide` or `frankenstein` | Telegram Bot API client | 9.21.12 (deferred embedded Telegram runtime) |
+| `teloxide` or `frankenstein` | Telegram Bot API client | 9.21.13 (deferred chat transport Telegram adapter) |
+| `matrix-sdk` | Matrix client sync, room state, and E2EE integration | 9.21.14 (deferred Matrix adapter viability gate) |
 | `regex` | Regex matching in note patch and query predicates | 9.18.2, 9.18.3 |
 | `rquickjs` | QuickJS JS engine bindings (sandboxed runtime) | 9.18.5 (also 9.8.8) |
 | `reqwest` | HTTP client for web search/fetch | 9.18.6 |

@@ -80,9 +80,9 @@ Values:
   file.mtime: integer milliseconds since the Unix epoch
 
 Examples:
-  vulcan notes --where 'status = done'
-  vulcan notes --where 'tags contains sprint'
-  vulcan notes --where 'file.path starts_with \"Projects/\"' --sort due
+  vulcan query --where 'status = done'
+  vulcan query --where 'tags contains sprint'
+  vulcan query --where 'file.path starts_with \"Projects/\"' --sort due
 
 See also:
   `vulcan note` — single-note CRUD (get, set, create, append, patch, delete, rename)
@@ -301,7 +301,7 @@ Examples:
   vulcan note patch Projects/Alpha --find TODO --replace DONE
 
 See also:
-  `vulcan notes --where` — bulk property queries across all notes
+  `vulcan query --where` — bulk property queries across matching notes
   `vulcan query` — full DQL query language with FROM/WHERE/SELECT/ORDER BY";
 
 const QUERY_COMMAND_AFTER_HELP: &str = "\
@@ -321,6 +321,26 @@ Formats:
   paths   one path per line
   detail  path, metadata summary, and content preview
   count   matched row count only
+
+Shortcut filter syntax:
+  Repeat --where to combine filters with AND.
+  Form: <field> <operator> <value>
+  There is no OR or parenthesized filter syntax in --where today.
+
+Shortcut fields:
+  <property-key>
+  file.path | file.name | file.ext | file.mtime
+
+Shortcut operators:
+  = | > | >= | < | <= | starts_with | contains
+
+Shortcut values:
+  text: done, \"In Progress\", 'Rule Index'
+  booleans: true, false
+  null: null
+  numbers: 42, 3.5
+  dates: 2026-03-01 or 2026-03-01T09:30:00Z
+  file.mtime: integer milliseconds since the Unix epoch
 
 Shortcuts:
   Bare `query` defaults to `from notes`.
@@ -788,7 +808,7 @@ Examples:
 const TAGS_COMMAND_AFTER_HELP: &str = "\
 Notes:
   `tags` aggregates tags across indexed markdown notes.
-  `--where` reuses the same filter syntax as `vulcan notes`, including `file.path` and frontmatter fields.
+  `--where` reuses the same filter syntax as `vulcan query --where`, including `file.path` and frontmatter fields.
   Use global `--fields`, `--limit`, and `--offset` to shape list output.
 
 Examples:
@@ -3454,27 +3474,6 @@ pub enum Command {
         export: ExportArgs,
     },
     #[command(
-        about = "Query notes by typed properties",
-        after_help = NOTES_COMMAND_AFTER_HELP,
-        hide = true
-    )]
-    Notes {
-        #[arg(
-            long = "where",
-            help = "Filter expression such as `status = done`; repeatable and combined with AND"
-        )]
-        filters: Vec<String>,
-        #[arg(
-            long,
-            help = "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by"
-        )]
-        sort: Option<String>,
-        #[arg(long, help = "Sort descending instead of ascending")]
-        desc: bool,
-        #[command(flatten)]
-        export: ExportArgs,
-    },
-    #[command(
         about = "List indexed tags across matching notes",
         after_help = TAGS_COMMAND_AFTER_HELP
     )]
@@ -4065,7 +4064,7 @@ Examples:
         command: CacheCommand,
     },
     #[command(
-        about = "Run a query using the human DSL or a JSON payload",
+        about = "Run a Vulcan query, Dataview DQL query, or --where shortcut query",
         after_help = QUERY_COMMAND_AFTER_HELP
     )]
     Query {
