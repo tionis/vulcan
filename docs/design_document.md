@@ -1115,11 +1115,11 @@ Web search and fetch capabilities serve AI integrations and the JS runtime. Sear
 
 ## 17e. Deferred native chat integrations
 
-Current recommendation: do not build in-process Telegram, Discord, Matrix, or similar chat adapters as part of Phase 9. Use an external runtime (`pi` first) for the conversation loop and keep Vulcan focused on the durable parts of the system: vault semantics, command contracts, permissions, `AGENTS.md`, and skill files.
+Current recommendation: do not build in-process Telegram, Discord, Matrix, or similar chat adapters as part of the current Phase 9 critical path. Use an external runtime (`pi` first) for the conversation loop and keep Vulcan focused on the durable parts of the system: vault semantics, command contracts, permissions, `AGENTS.md`, and skill files.
 
 If native chat integrations are revisited later, they should be treated as a thin runtime layer on top of the same CLI tool surface used by external harnesses. They should not create a second mutation path or bypass the permission system.
 
-The current boundary is documented in [`docs/assistant/pi_integration.md`](./assistant/pi_integration.md) and the re-scoped Phase 9.12 roadmap entries. The preserved native-runtime steering that was cut from the active roadmap now lives in [`docs/assistant/native_runtime_deferred.md`](./assistant/native_runtime_deferred.md). Native chat adapters should only be reconsidered after the permission layer and daemon/service infrastructure are mature enough to support them safely.
+The current boundary is documented in [`docs/assistant/pi_integration.md`](./assistant/pi_integration.md) and the re-scoped Phase 9.12 roadmap entries. The preserved native-runtime steering that was cut from the active roadmap now lives in [`docs/assistant/native_runtime_deferred.md`](./assistant/native_runtime_deferred.md), and the optional embedded-host follow-on is tracked separately in Roadmap Phase 9.21. Native chat adapters should only be reconsidered after the permission layer and daemon/service infrastructure are mature enough to support them safely.
 
 ## 18. Recommended phased delivery plan
 

@@ -5432,6 +5432,13 @@ fn tasks_due_json_output_lists_due_tasknotes() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("tasknotes", &vault_root);
+    let write_docs_path = vault_root.join("TaskNotes/Tasks/Write Docs.md");
+    let write_docs = fs::read_to_string(&write_docs_path).expect("write docs fixture should exist");
+    fs::write(
+        &write_docs_path,
+        write_docs.replace("due: \"2026-04-10\"", "due: \"2999-01-01\""),
+    )
+    .expect("write docs due date should be updated");
     fs::write(
         vault_root.join("TaskNotes/Tasks/Old Task.md"),
         concat!(

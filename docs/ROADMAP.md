@@ -1805,6 +1805,7 @@ Detailed native assistant and chat-runtime ideas from the previous roadmap are p
 
 - [-] Do not implement `vulcan assistant serve` or in-process chat adapters in the current Phase 9 plan
 - [-] Revisit only after Phase 9.19.13 (permissions) and Phase 10 (daemon) are mature enough to support a safe long-lived service model
+- [-] If revived, treat that work as the separate embedded-host track captured in Phase 9.21 rather than expanding Phase 9.12 itself
 - [-] If revived later, keep the same rule: memory and durable artifacts live in the vault, and all mutations still go through the normal Vulcan command surface
 
 #### 9.12.9 Agent asset import
@@ -2839,7 +2840,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.17.6 (batch commands)  ← 9.17.1      │── Wave 3
 9.17.7 (init integration)← 9.17.6      │── Wave 3+
                                         │
---- AI path (CLI first, then external runtime, then native chat only if needed) ---
+--- AI path (CLI first, then external runtime, then embedded host mode only if needed) ---
 9.18.2 (note CRUD)       ← 7, 2        │── Wave 5 (CLI for LLMs)
 9.18.3 (query enhance)   ← 7.12        │── Wave 5
 9.18.6 (web tools)       ← standalone  │── Wave 5
@@ -2849,7 +2850,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
                                         │
 9.12.1-6 (pi integration) ← 9.18.2,6,7,8│── Wave 6 (after CLI tools)
                                         │
-9.12.8 (native chat, deferred)← 9.19.13,10│── revisit later only if needed
+9.21 (embedded assistant host mode)← 9.12,9.19.13,10│── revisit later only if needed
                                         │
 9.18.4 (refactor group)  ← 7           │── Wave 6+ (with 9.18.1)
 9.18.5 (JS runtime/REPL) ← 9.8.8       │── Wave 6+ (after DataviewJS)
@@ -2884,7 +2885,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 5. **Wave 5 — CLI for LLMs (parallel):** **9.18.2 (note CRUD)**, **9.18.3 (query enhancements)**, **9.18.6 (web tools)**, **9.18.7 (help/describe polish)**, **9.18.8 (git ops)**, 9.15 (TaskNotes). This wave makes the CLI usable as a tool surface by any LLM harness (Claude Code, Codex, Gemini CLI, `pi`, etc.) without a Vulcan-native runtime. Deliverables include: note CRUD commands, `describe --format` for tool schema export, `help --output json` for structured command docs, default skills (bundled), vault AGENTS.md template, and consistent JSON error output. Can proceed in parallel with Wave 4.
 6. **Wave 6 — External agent integration (sequential):** **9.12.1–9.12.6 as one coherent deliverable.** `pi` package/extension contract → tool boundary and trust model → AGENTS/skills-driven prompting → session/persistence boundary → rollout guidance and revisit criteria. Depends on Wave 5 for the tool surface.
 7. **Wave 6+ (sequential after prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10; **9.18.4 (refactor group)** ← with 9.18.1.
-8. **Wave 7 — Deferred native/chat runtimes:** revisit **9.12.8** only if external runtimes cannot cover the workflow and after permissions + daemon foundations are mature.
+8. **Wave 7 — Optional embedded host mode:** revisit **9.21** only if external runtimes cannot cover the workflow and after permissions + daemon foundations are mature. Treat 9.12.8 as the deferral gate and 9.21 as the implementation bucket.
 9. **Wave 8:** 9.13 (QuickAdd) — capture format compatibility and settings import. Benefits from 9.7 (template variables) and 9.16 (periodic notes) being in place. QuickAdd importer (9.13.2) uses `PluginImporter`.
 10. **9.17.7 (init integration)** can land anytime after 9.17.6.
 11. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
@@ -3788,15 +3789,22 @@ This phase is only worth doing early if later phases can build on it directly.
 
 ---
 
-## Phase 9.21: Embedded AI Assistant via pi RPC
+## Phase 9.21: Optional embedded assistant host mode via pi RPC
 
 **Goal:** Embed pi as an in-process agent engine inside Vulcan, using pi's RPC mode (JSON-RPC over stdin/stdout) so that `vulcan assistant` provides a fully integrated coding and vault-management assistant without the user needing to install, configure, or manage pi separately. Vulcan owns the process lifecycle, UI, and tool surface; pi owns model inference, session management, context compaction, and tool orchestration.
 
-**Why this phase exists now:** Phase 9.12 defined the contract for external agent runtimes shelling out to Vulcan. Phase 9.21 goes in the opposite direction — Vulcan embeds pi as the agent engine — which is the integration model that delivers the best user experience. The two models are complementary: 9.12 for users who bring their own pi, 9.21 for users who want a zero-config assistant built into Vulcan.
+**Status:** Optional later-phase revisit. This is not part of the current Phase 9 critical path. The numbering keeps it near the AI work it reuses, but it should not start before the safety gates identified in 9.12.8 are satisfied.
+
+**Why this phase exists separately:** Phase 9.12 defines the contract for external agent runtimes shelling out to Vulcan. Phase 9.21 flips the host/runtime relationship: Vulcan embeds pi as the agent engine. The phases intentionally share the same prompts, skills, permission profiles, and mutation rules, but they are different deliverables:
+
+- **9.12:** bring-your-own runtime (`pi`, Codex, Claude Code, Gemini CLI, etc.); Vulcan is the tool provider
+- **9.21:** built-in `vulcan assistant`; Vulcan is the host process and pi is the managed agent engine
 
 **Design principle — Vulcancentrism:** Vulcan is the host process. Pi is a managed subprocess. The user never interacts with pi directly; all interaction goes through the `vulcan assistant` command surface. Pi's built-in tools (read, bash, edit, write) are available but constrained by the active permission profile. Vault mutations are routed through Vulcan commands, not pi's raw file-edit tools, so the same safety checks, dry-run, and auto-commit guarantees apply.
 
-**Depends on:** Phase 9.12 (external agent contract and tool boundary already defined), Phase 9.18.2/9.18.7 (note CRUD and describe/help stability), Phase 9.3 (git auto-commit). Phase 9.6 (search) and Phase 7.12 (query model) are used for vault-aware tool execution.
+**Reused foundations from 9.12:** vault `AGENTS.md`, `AI/Skills/*.md`, CLI-to-tool 1:1 mapping, permission-profile semantics, and the rule that durable artifacts are normal vault notes while live chat/session state stays in pi by default.
+
+**Depends on:** Phase 9.12 (external agent contract and tool boundary already defined), Phase 9.19.13 (permission layer), and Phase 10 (daemon/service maturity gate from 9.12.8). Phase 9.18.2/9.18.7 provide note CRUD and describe/help stability; Phase 9.3 provides git auto-commit. Phase 9.6 (search) and Phase 7.12 (query model) are used for vault-aware tool execution.
 
 **Design refs:** `docs/assistant/pi_integration.md` (9.12 contract), pi RPC protocol documentation (`packages/coding-agent/docs/rpc.md` in the pi-mono repository), `docs/assistant/native_runtime_deferred.md` (preserved native-runtime design for revisit).
 
@@ -4578,7 +4586,7 @@ trait SyncBackend: Send + Sync {
 
 ### 15.2 Telegram bot integration
 
-**Note:** Phase 9.12 no longer assumes a built-in conversational Telegram assistant. Phase 15.2 covers a daemon-hosted webhook/integration variant for simpler notification and command use cases; a richer native chat runtime can be revisited later if external runtimes prove insufficient.
+**Note:** Phase 9.12 no longer assumes a built-in conversational Telegram assistant. Phase 15.2 covers a daemon-hosted webhook/integration variant for simpler notification and command use cases; the richer embedded assistant/chat track is the optional follow-on in Phase 9.21 if external runtimes prove insufficient.
 
 - [ ] Per-vault Telegram bot configuration (daemon mode):
   ```toml
@@ -5175,7 +5183,7 @@ Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and provides the parsing and query layer for inline checkbox tasks: Tasks DSL parser, recurring task expansion (RRULE), dependency graph, and custom status types. This shared infrastructure is reused by 9.15 (TaskNotes). The CLI surface is unified under `vulcan tasks` (defined in 9.15.9).
 Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.
-Phase 9.12 (external agent integration, `pi` first) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. The tool interface is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands, and external runtimes consume them through `describe`/`help` plus vault `AGENTS.md` and skills. Session history and compaction stay in the external runtime by default. Phase 9.12.8 remains a deferred native chat/runtime sketch rather than part of the current critical path.
+Phase 9.12 (external agent integration, `pi` first) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. The tool interface is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands, and external runtimes consume them through `describe`/`help` plus vault `AGENTS.md` and skills. Session history and compaction stay in the external runtime by default. The optional embedded-host follow-on is tracked separately in Phase 9.21; 9.12.8 is the deferral gate, not a second implementation plan.
 Phase 9.18 (CLI redesign) has varying sub-phase dependencies: 9.18.1 (reorg) and 9.18.2 (note CRUD) can start after Phase 7; 9.18.3 (query enhancements) after 7.12; 9.18.5 (JS runtime) after 9.8.8; 9.18.6 (web tools) is standalone; 9.18.7 (docs) is standalone; 9.18.8 (git) after 9.3; 9.18.9 (task mutations) after 9.10 and 9.15. The command tree reorganization (9.18.1) should land last — build new commands first, then rename in one pass.
 Phase 9.13 (QuickAdd) provides Obsidian-compatible capture format syntax and settings import. Macro/scripting functionality is handled by the JS runtime (9.18.5) and existing CLI commands rather than a separate automation DSL.
 Phase 9.15 (TaskNotes) is Vulcan's primary task management model. Builds on Phase 4 (properties/Bases, including 4.5.1 custom source types) and Phase 9.8 (Dataview metadata). Reuses shared task infrastructure from 9.10 (recurring tasks, dependencies, custom statuses). The unified `vulcan tasks` CLI (9.15.9) covers both TaskNotes file-based tasks and inline checkbox tasks. Calendar sync (9.15.10), HTTP API (9.15.12), and calendar Bases views are deferred to post-Phase 9. Time tracking (9.15.6) ships core+CLI only; GUI deferred to post-WebUI. Reminders (9.15.7) ship core evaluation only; delivery channels deferred to chat/daemon phases.
@@ -5213,7 +5221,7 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `automerge` | CRDT document model for collaborative editing | 14 |
 | `rust-embed` or `include_dir` | Embed static WebUI assets | 13 |
 | `openidconnect` | OIDC client for SSO integration | 17.6 |
-| `teloxide` or `frankenstein` | Telegram Bot API client | 9.12.8 (deferred native chat runtime) |
+| `teloxide` or `frankenstein` | Telegram Bot API client | 9.21.12 (deferred embedded Telegram runtime) |
 | `regex` | Regex matching in note patch and query predicates | 9.18.2, 9.18.3 |
 | `rquickjs` | QuickJS JS engine bindings (sandboxed runtime) | 9.18.5 (also 9.8.8) |
 | `reqwest` | HTTP client for web search/fetch | 9.18.6 |
