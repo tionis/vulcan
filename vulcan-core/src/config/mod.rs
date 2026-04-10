@@ -242,6 +242,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 #
 # [[export.profiles.team-book.content_transforms]]
 # exclude_callouts = ["secret gm", "internal"]
+# exclude_headings = ["Scratch"]
 # [[export.profiles.team-book.content_transforms]]
 # query = 'from notes where file.path matches "^People/"'
 # exclude_callouts = ["internal"]
@@ -9305,6 +9306,7 @@ frontmatter = true
 
 [[export.profiles.team_book.content_transforms]]
 exclude_callouts = ["secret gm", "internal"]
+exclude_headings = ["Scratch"]
 "#,
         )
         .expect("config should be written");
@@ -9335,12 +9337,19 @@ exclude_callouts = ["secret gm", "internal"]
             profile.content_transform_rules.as_ref().map(|rules| {
                 rules
                     .iter()
-                    .map(|rule| (rule.query.clone(), rule.transforms.exclude_callouts.clone()))
+                    .map(|rule| {
+                        (
+                            rule.query.clone(),
+                            rule.transforms.exclude_callouts.clone(),
+                            rule.transforms.exclude_headings.clone(),
+                        )
+                    })
                     .collect::<Vec<_>>()
             }),
             Some(vec![(
                 None,
                 vec!["secret gm".to_string(), "internal".to_string()],
+                vec!["Scratch".to_string()],
             )])
         );
     }
@@ -9363,6 +9372,7 @@ backlinks = true
 
 [[export.profiles.team_book.content_transforms]]
 exclude_callouts = ["secret gm"]
+exclude_headings = ["Scratch"]
 "#,
         )
         .expect("shared config should be written");
@@ -9377,6 +9387,7 @@ toc = "flat"
 [[export.profiles.team_book.content_transforms]]
 query = 'from notes where file.path matches "^People/"'
 exclude_callouts = ["internal", "private"]
+exclude_headings = ["Directory"]
 
 [export.profiles.graph_dump]
 format = "graph"
@@ -9417,12 +9428,19 @@ graph_format = "dot"
             team_book.content_transform_rules.as_ref().map(|rules| {
                 rules
                     .iter()
-                    .map(|rule| (rule.query.clone(), rule.transforms.exclude_callouts.clone()))
+                    .map(|rule| {
+                        (
+                            rule.query.clone(),
+                            rule.transforms.exclude_callouts.clone(),
+                            rule.transforms.exclude_headings.clone(),
+                        )
+                    })
                     .collect::<Vec<_>>()
             }),
             Some(vec![(
                 Some(r#"from notes where file.path matches "^People/""#.to_string()),
                 vec!["internal".to_string(), "private".to_string()],
+                vec!["Directory".to_string()],
             )])
         );
 

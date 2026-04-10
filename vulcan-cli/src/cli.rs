@@ -882,7 +882,7 @@ Notes:
   `export profile run <name>` resolves relative profile paths from the vault root.
   `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.
   `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
-  `markdown`, `json`, `epub`, and `zip` support `--exclude-callout <type>` for publication-oriented content transforms.
+  `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout <type>` and `--exclude-heading <heading>`.
   Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; each rule query only narrows within the profile query result.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
   `epub --backlinks` appends indexed inlinks after each exported note chapter.
@@ -1931,6 +1931,11 @@ pub struct ExportTransformArgs {
         help = "Drop callout blocks whose type/class matches this value; repeat to exclude multiple callouts"
     )]
     pub exclude_callouts: Vec<String>,
+    #[arg(
+        long = "exclude-heading",
+        help = "Drop heading sections whose title matches this value; nested subsections are removed too"
+    )]
+    pub exclude_headings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

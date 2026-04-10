@@ -100,6 +100,7 @@ Export, static site generation, and the future web wiki should share one publica
 
 - A publication/export profile query defines the complete document set included in the output.
 - Ordered content-transform rules may add their own `query` or `query_json`, but these queries only select **which already-selected documents** receive that rule's transforms. They must never add documents outside the profile query result.
+- The first useful transform families are structural stripping rules such as excluded callout classes and excluded heading sections, because they remove sensitive content without mutating the source vault.
 - If multiple rules match one document, Vulcan merges them deterministically before reparsing content. Additive exclusions should union together, replacement-style rules should preserve declaration order, and scalar policies should use last-wins semantics.
 - Link and asset policies should run after note-level transforms are resolved, so removed sections or metadata cannot leak through backlinks, embeds, or copied attachments.
 - The persisted configuration model should therefore stay rule-based even if the CLI offers simpler sugar for creating a single "apply to all selected notes" rule.
