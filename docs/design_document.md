@@ -1071,6 +1071,23 @@ For LLM harnesses and external runtimes that use Vulcan as a tool provider (Clau
 
 The default skills serve external runtimes directly — Claude Code, Codex, Gemini CLI, or a `pi` adapter reads `.agent/skills/js-api-guide/SKILL.md` and learns the vault JS API. If a native assistant is added later, it should use `skill_get("js-api-guide")` to consume the same material.
 
+### MCP-specific discovery boundary
+
+The CLI/harness pattern above does **not** map 1:1 onto generic MCP clients.
+
+- A subprocess-style harness can preload `AGENTS.md`, enumerate `.agent/skills/`, and decide which subset of tools to register before the model sees anything.
+- A generic MCP client usually receives only what the server exposes over the protocol. It cannot be assumed to have out-of-band access to Vulcan skills, command docs, or local helper files.
+
+That means Vulcan should treat MCP as a **server-native discovery surface**, not just as "the CLI tool list over JSON-RPC". In practice:
+
+- MCP `tools` should be limited to commands that make sense headlessly. Interactive/TUI/editor/desktop-launch commands are CLI affordances, not MCP tools.
+- Command help, skill bodies, and other reference material should be exposed over MCP `resources`, because MCP clients cannot rely on injected skills.
+- Reusable workflow starters should be stored as prompt files in the vault's configured prompts folder and exposed through MCP `prompts`, not hidden in a server-only prompt catalog.
+- Progressive disclosure for MCP should come from protocol-visible discovery primitives (`resources`, `prompts`, targeted help, and completion), not from assuming the host preloads a curated system prompt.
+- HTTP-based MCP transport should be implemented on the future axum daemon/router layer rather than extending the current minimal stdio server into a second ad hoc HTTP stack.
+
+This keeps the subprocess harness story and the MCP story aligned in spirit while acknowledging that they have different discovery constraints.
+
 ### Single-note CRUD design
 
 The `note` command group fills the gap of having no way to read or write individual note content from the CLI. Key design decisions:
