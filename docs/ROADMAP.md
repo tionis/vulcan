@@ -1665,54 +1665,54 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 - [x] Browse TUI: `o` hotkey on Kanban `.md` files opens a board view with columns displayed side-by-side
 - [-] WebUI: Kanban board rendered as interactive drag-and-drop columns (moved to Phase 13.3 Vault browser / WebUI work)
 
-### 9.12 External agent integration (pi first)
+### 9.12 External agent integration
 
-**Status:** Re-scoped from an in-process Rust assistant to an external-runtime integration layer. Vulcan remains the source of truth for vault semantics, tools, prompts, and skills; an external runtime such as `pi` owns inference, session state, and chat UX.
+**Status:** Re-scoped from an in-process Rust assistant to an external-runtime integration layer. Vulcan remains the source of truth for vault semantics, tools, prompts, and skills; an external runtime owns inference, session state, and chat UX.
 
-**Goal:** Make Vulcan feel native inside an external agent runtime, with `pi` as the first-class target. The model should read vault `AGENTS.md`, discover commands through `describe` and `help`, load `AI/Skills/*.md` on demand, and perform all vault reads and writes through Vulcan's JSON CLI instead of direct filesystem edits.
+**Goal:** Make Vulcan feel native inside external agent runtimes. The model should read vault `AGENTS.md`, discover commands through `describe` and `help`, load `.agent/skills/*/SKILL.md` on demand, and perform all vault reads and writes through Vulcan's JSON CLI instead of direct filesystem edits.
 
 **Builds on:** Phase 5 (vectors/embeddings for semantic search), Phase 7.12 (query model), Phase 9.6 (search), Phase 9.18.2 (note CRUD), Phase 9.18.6 (web tools), Phase 9.18.7 (help/describe polish), Phase 9.18.8 (git ops).
 
-#### 9.12.1 pi package / extension contract
+#### 9.12.1 External runtime contract
 
 - [ ] Define the integration contract in `docs/assistant/pi_integration.md`
-- [ ] Recommend a `pi` package/extension that shells out to `vulcan` in `--output json` mode; no direct SQLite access, parser duplication, or note mutation outside Vulcan
+- [ ] Document a reference runtime adapter that shells out to `vulcan` in `--output json` mode; no direct SQLite access, parser duplication, or note mutation outside Vulcan
 - [ ] Startup flow: locate vault root, load `AGENTS.md`, enumerate bundled/user skills, and call `vulcan describe --format openai-tools`
 - [ ] Tool registration modes:
   - static wrappers for the core note/search/query/property/inbox tools
   - dynamic discovery for the rest of the command surface via `help --output json`
-- [ ] Normalize stdout/stderr parsing, exit-code handling, and timeout errors so `pi` sees stable tool failures
+- [ ] Normalize stdout/stderr parsing, exit-code handling, and timeout errors so external runtimes see stable tool failures
 - [ ] Support both read-only and write-enabled profiles
 - [ ] External-runtime launch contract includes `--permissions <profile>` on every `vulcan` invocation, with `agent` as the default write-capable profile and `readonly` as the default browse-only profile
 
 #### 9.12.2 Tool boundary and trust model
 
-- [ ] Default recommendation: run `pi` without generic file-edit and shell-write tools for vault operations; all vault mutations should go through Vulcan commands
+- [ ] Default recommendation: run external runtimes without generic file-edit and shell-write tools for vault operations; all vault mutations should go through Vulcan commands
 - [ ] All note mutations flow through `vulcan note *`, `update`, `unset`, `inbox`, and `refactor *`
 - [ ] All vault reads flow through `note get`, `search`, `query`, graph tools, daily tools, git tools, and web tools as appropriate
-- [ ] Preserve CLI-to-tool 1:1 mapping; the `pi` layer must not invent a second vault API
+- [ ] Preserve CLI-to-tool 1:1 mapping; runtime adapters must not invent a second vault API
 - [ ] Document how `--dry-run`, `--check`, and git auto-commit fit into the agent workflow
 - [ ] Document a recommended least-privilege profile for read-only browsing, note editing, and high-trust refactoring
 - [ ] Tool wrappers and any future native assistant dispatch must treat Vulcan permission profiles as the authorization boundary: select a profile per session/tool call, pass it through unchanged, and rely on Vulcan-side denials instead of reimplementing policy in the runtime
 
 #### 9.12.3 Prompts, skills, and vault context
 
-- [ ] Treat vault `AGENTS.md` plus `AI/Skills/*.md` as the primary durable prompt surface
-- [ ] Keep bundled default skills written by `vulcan init`; user-defined skills remain plain vault files
-- [ ] `pi` integration injects only a compact tool summary up front; detailed schemas and skill content stay on-demand through `describe`, `help`, and skill files
-- [ ] Publish a `pi` usage guide: install path, launch flags, recommended permission profile, and common pitfalls
-- [ ] Optional follow-up wrapper command: `vulcan agent pi print-config` or similar to emit a ready-to-paste setup snippet once the contract is stable
+- [ ] Treat vault `AGENTS.md` plus `.agent/skills/*/SKILL.md` as the primary durable prompt surface
+- [ ] Keep bundled default skills written by `vulcan init --agent-files` or `vulcan agent install`; user-defined skills remain plain vault files
+- [ ] Runtime integrations inject only a compact tool summary up front; detailed schemas and skill content stay on-demand through `describe`, `help`, and skill files
+- [ ] Publish a runtime-integration usage guide with recommended permission profiles and common pitfalls
+- [ ] Optional follow-up wrapper command: `vulcan agent print-config --runtime <name>` or similar to emit ready-to-paste setup snippets once the contract is stable
 
 #### 9.12.4 Sessions and persistence boundary
 
-- [ ] `pi` owns live chat/session state, compaction, and transcript storage by default
+- [ ] The external runtime owns live chat/session state, compaction, and transcript storage by default
 - [ ] Vulcan does not initially implement gemini-scribe conversation files, assistant-specific memory notes, or a built-in `vulcan assistant --chat` runtime
 - [ ] Durable artifacts that matter to the user should be written as normal vault notes through the existing tool surface
-- [ ] Revisit session export/import only if `pi`'s native session model proves insufficient for vault workflows
+- [ ] Revisit session export/import only if external runtime session models prove insufficient for vault workflows
 
 #### 9.12.5 Exit criteria and revisit triggers
 
-- [ ] Daily-driver workflows succeed in `pi` without direct file editing: read note, patch note, search/query vault, run refactors, inspect git state, and consult skills
+- [ ] Daily-driver workflows succeed in at least one external runtime without direct file editing: read note, patch note, search/query vault, run refactors, inspect git state, and consult skills
 - [ ] Reassess a native embedded runtime only if one of these remains unsolved:
   - vault-native session transcripts become essential
   - confirmation and permission UX must be enforced inside Vulcan itself
@@ -1726,7 +1726,7 @@ Preserved native-runtime steering lives in `docs/assistant/native_runtime_deferr
 Prompts and skills stay as Markdown files in the vault. External runtimes consume them as reference material; Vulcan stays responsible for scaffolding defaults and documenting conventions.
 
 - [ ] Configurable prompts folder: `assistant.prompts_folder` in `.vulcan/config.toml` (default: `AI/Prompts/`)
-- [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `AI/Skills/`)
+- [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `.agent/skills/`)
 - [ ] Prompt file format — Markdown with YAML frontmatter:
   ```yaml
   ---
@@ -1743,7 +1743,10 @@ Prompts and skills stay as Markdown files in the vault. External runtimes consum
   2. Action items with owners
   3. Follow-up questions
   ```
-- [ ] Skill file format — Markdown with YAML frontmatter:
+- [ ] Skill file format — one directory per skill under `.agent/skills/<name>/SKILL.md`, with Markdown plus YAML frontmatter:
+  ```text
+  .agent/skills/daily-review/SKILL.md
+  ```
   ```yaml
   ---
   name: daily-review
@@ -1779,7 +1782,7 @@ Vulcan ships a standard library of skills that teach any external runtime how to
 
 **User-defined skills:**
 
-User skills live in the vault's skills folder (e.g., `AI/Skills/weekly-review.md`, `AI/Skills/session-prep.md`) and appear alongside defaults in `skill_list`. A GM might create a "session-prep" skill that pulls NPCs, locations, and plot threads for an RPG campaign. A researcher might create a "literature-review" skill that searches for related notes and generates a synthesis.
+User skills live in the vault's skills folder (e.g., `.agent/skills/weekly-review/SKILL.md`, `.agent/skills/session-prep/SKILL.md`) and appear alongside defaults in `skill_list`. A GM might create a "session-prep" skill that pulls NPCs, locations, and plot threads for an RPG campaign. A researcher might create a "literature-review" skill that searches for related notes and generates a synthesis.
 
 **Executable skill scripts:**
 
@@ -1787,7 +1790,7 @@ Advanced skills may include JavaScript scripts that expose functionality beyond 
 
 ```bash
 #!/usr/bin/env -S vulcan run --script
-// AI/Skills/session-prep/prepare.js
+// .agent/skills/session-prep/prepare.js
 const npcs = vault.notes().where(n => n.tags.includes("npc") && n.frontmatter.campaign === "current");
 const locations = vault.query("from notes where type = location and status = active");
 console.log(JSON.stringify({ npcs: npcs.map(n => n.name), locations: locations.map(n => n.name) }));
@@ -2709,7 +2712,7 @@ This sub-phase covers three related concerns: human-facing documentation (`help`
 - [x] `vulcan describe --format openai-tools` — export as OpenAI function-calling tool definitions (name, description, parameters as JSON Schema)
 - [x] `vulcan describe --format mcp` — export as MCP tool definitions for direct integration with Claude Code, Cursor, etc.
 - [x] Each format includes: command name, description, parameters with types/defaults/required flags, and examples
-- [x] External harnesses can call `describe` to auto-generate tool configs. `pi`-first integration work is tracked in Phase 9.12.
+- [x] External harnesses can call `describe` to auto-generate tool configs. Runtime-integration work is tracked in Phase 9.12.
 
 **External LLM harness support**
 
@@ -2718,9 +2721,10 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, `pi`, etc.) that use Vulcan a
 - [x] **Vault AGENTS.md template** — shipped with Vulcan, optionally written on `vulcan init`. Contents:
   - Available Vulcan commands organized by category with brief descriptions
   - Key conventions: always use `--output json`, `--dry-run` before mutations, note names may be ambiguous
-  - Pointers to the skills directory: "Read `AI/Skills/*.md` for detailed usage patterns and examples"
+  - Pointers to the skills directory: "Read `.agent/skills/*/SKILL.md` for detailed usage patterns and examples"
   - Common pitfalls: `note patch` fails on multiple matches (safety), property types are lenient, etc.
-- [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault on `vulcan init`. See 9.12.6 for the full skill list. These serve external harnesses identically: Claude Code or `pi` reads `AI/Skills/js-api-guide.md` and learns the vault JS API.
+- [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault via `vulcan init --agent-files` or `vulcan agent install`. See 9.12.6 for the full skill list. These serve external harnesses identically: Claude Code, Codex, Gemini CLI, or a reference `pi` adapter reads `.agent/skills/js-api-guide/SKILL.md` and learns the vault JS API.
+- [x] **Dedicated harness installer** — `vulcan agent install [--overwrite]` scaffolds root `AGENTS.md` plus `.agent/skills/<name>/SKILL.md`, and `init --agent-files` reuses the same bundled payload for first-run setup.
 - [x] **Consistent JSON error output** — all commands in `--output json` mode return structured errors: `{"error": "<message>", "code": "<error_code>"}` rather than unstructured stderr text. Error codes are stable and documented.
 - [x] **Non-interactive guarantee** — all commands detect non-TTY mode and never prompt. Ambiguous note matches return an error with candidates rather than opening a picker.
 
@@ -3800,20 +3804,20 @@ This phase is only worth doing early if later phases can build on it directly.
 
 ---
 
-## Phase 9.21: Optional embedded assistant host mode via pi RPC
+## Phase 9.21: Optional embedded assistant host mode via managed-engine RPC
 
-**Goal:** Embed pi as an in-process agent engine inside Vulcan, using pi's RPC mode (JSON-RPC over stdin/stdout) so that `vulcan assistant` provides a fully integrated coding and vault-management assistant without the user needing to install, configure, or manage pi separately. Vulcan owns the process lifecycle, UI, and tool surface; pi owns model inference, session management, context compaction, and tool orchestration.
+**Goal:** Embed a managed agent engine inside Vulcan so that `vulcan assistant` provides a fully integrated coding and vault-management assistant without the user needing to install, configure, or manage a separate runtime. The current sketch uses `pi` RPC (JSON-RPC over stdin/stdout) as one candidate engine. Vulcan owns the process lifecycle, UI, and tool surface; the managed engine owns model inference, session management, context compaction, and tool orchestration.
 
 **Status:** Optional later-phase revisit. This is not part of the current Phase 9 critical path. The numbering keeps it near the AI work it reuses, but it should not start before the safety gates identified in 9.12.8 are satisfied.
 
-**Why this phase exists separately:** Phase 9.12 defines the contract for external agent runtimes shelling out to Vulcan. Phase 9.21 flips the host/runtime relationship: Vulcan embeds pi as the agent engine. The phases intentionally share the same prompts, skills, permission profiles, and mutation rules, but they are different deliverables:
+**Why this phase exists separately:** Phase 9.12 defines the contract for external agent runtimes shelling out to Vulcan. Phase 9.21 flips the host/runtime relationship: Vulcan embeds a managed agent engine. The phases intentionally share the same prompts, skills, permission profiles, and mutation rules, but they are different deliverables:
 
-- **9.12:** bring-your-own runtime (`pi`, Codex, Claude Code, Gemini CLI, etc.); Vulcan is the tool provider
-- **9.21:** built-in `vulcan assistant`; Vulcan is the host process and pi is the managed agent engine
+- **9.12:** bring-your-own runtime (Codex, Claude Code, Gemini CLI, `pi`, etc.); Vulcan is the tool provider
+- **9.21:** built-in `vulcan assistant`; Vulcan is the host process and a managed agent engine is embedded behind it, with `pi` as one candidate engine
 
 **Design principle — Vulcancentrism:** Vulcan is the host process. Pi is a managed subprocess. The user never interacts with pi directly; all interaction goes through the `vulcan assistant` command surface. Pi's built-in tools (read, bash, edit, write) are available but constrained by the active permission profile. Vault mutations are routed through Vulcan commands, not pi's raw file-edit tools, so the same safety checks, dry-run, and auto-commit guarantees apply.
 
-**Reused foundations from 9.12:** vault `AGENTS.md`, `AI/Skills/*.md`, CLI-to-tool 1:1 mapping, permission-profile semantics, and the rule that durable artifacts are normal vault notes while live chat/session state stays in pi by default.
+**Reused foundations from 9.12:** vault `AGENTS.md`, `.agent/skills/*/SKILL.md`, CLI-to-tool 1:1 mapping, permission-profile semantics, and the rule that durable artifacts are normal vault notes while live chat/session state stays in pi by default.
 
 **Depends on:** Phase 9.12 (external agent contract and tool boundary already defined), Phase 9.19.13 (permission layer), and Phase 10 (daemon/service maturity gate from 9.12.8). Phase 9.18.2/9.18.7 provide note CRUD and describe/help stability; Phase 9.3 provides git auto-commit. Phase 9.6 (search) and Phase 7.12 (query model) are used for vault-aware tool execution.
 
@@ -3942,7 +3946,7 @@ At session start, inject vault context into pi so the assistant knows about the 
   - `build_session_context(vault_root, config) -> SessionContext`:
     - Read vault `AGENTS.md` if present
     - Call `vulcan describe --format openai-tools` to produce the tool summary for the system prompt
-    - Enumerate default and user skills from `AI/Skills/` (just names and descriptions, not full content)
+    - Enumerate default and user skills from `.agent/skills/` (just names and descriptions, not full content)
     - Collect vault metadata: vault name, note count, tag summary, property catalog summary
   - `format_system_prompt_append(context) -> String`:
     - Format the context as a structured block for pi's system prompt
@@ -5283,7 +5287,7 @@ Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and provides the parsing and query layer for inline checkbox tasks: Tasks DSL parser, recurring task expansion (RRULE), dependency graph, and custom status types. This shared infrastructure is reused by 9.15 (TaskNotes). The CLI surface is unified under `vulcan tasks` (defined in 9.15.9).
 Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.
-Phase 9.12 (external agent integration, `pi` first) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. The tool interface is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands, and external runtimes consume them through `describe`/`help` plus vault `AGENTS.md` and skills. Session history and compaction stay in the external runtime by default. The optional embedded-host follow-on is tracked separately in Phase 9.21; 9.12.8 is the deferral gate, not a second implementation plan.
+Phase 9.12 (external agent integration) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. The tool interface is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands, and external runtimes consume them through `describe`/`help` plus vault `AGENTS.md` and skills. Session history and compaction stay in the external runtime by default. The optional embedded-host follow-on is tracked separately in Phase 9.21; 9.12.8 is the deferral gate, not a second implementation plan.
 Phase 9.18 (CLI redesign) has varying sub-phase dependencies: 9.18.1 (reorg) and 9.18.2 (note CRUD) can start after Phase 7; 9.18.3 (query enhancements) after 7.12; 9.18.5 (JS runtime) after 9.8.8; 9.18.6 (web tools) is standalone; 9.18.7 (docs) is standalone; 9.18.8 (git) after 9.3; 9.18.9 (task mutations) after 9.10 and 9.15. The command tree reorganization (9.18.1) should land last — build new commands first, then rename in one pass.
 Phase 9.13 (QuickAdd) provides Obsidian-compatible capture format syntax and settings import. Macro/scripting functionality is handled by the JS runtime (9.18.5) and existing CLI commands rather than a separate automation DSL.
 Phase 9.15 (TaskNotes) is Vulcan's primary task management model. Builds on Phase 4 (properties/Bases, including 4.5.1 custom source types) and Phase 9.8 (Dataview metadata). Reuses shared task infrastructure from 9.10 (recurring tasks, dependencies, custom statuses). The unified `vulcan tasks` CLI (9.15.9) covers both TaskNotes file-based tasks and inline checkbox tasks. Calendar sync (9.15.10), HTTP API (9.15.12), and calendar Bases views are deferred to post-Phase 9. Time tracking (9.15.6) ships core+CLI only; GUI deferred to post-WebUI. Reminders (9.15.7) ship core evaluation only; delivery channels deferred to chat/daemon phases.

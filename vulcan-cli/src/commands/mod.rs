@@ -1,3 +1,4 @@
+pub(crate) mod agent;
 pub(crate) mod bases;
 pub(crate) mod browse;
 pub(crate) mod dataview;

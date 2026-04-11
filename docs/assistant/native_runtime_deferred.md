@@ -1,12 +1,12 @@
 # Deferred Native Assistant Reference
 
-This document preserves the native assistant steering that existed before Phase 9.12 was re-scoped around external runtime integration with `pi`.
+This document preserves the native assistant steering that existed before Phase 9.12 was re-scoped around external runtime integration.
 
 It is not the current implementation plan.
 
 Current plan:
 
-- Vulcan is `pi`-first for agent/runtime integration.
+- Vulcan is runtime-agnostic for agent/runtime integration, with specific hosts treated as reference implementations rather than the core architecture.
 - Native assistant and chat runtime work are deferred.
 
 This document exists so the earlier design work is not lost. If Vulcan later needs an in-process assistant, this should be the starting point for the revisit.
@@ -209,7 +209,7 @@ Additional ideas:
 - list sessions with title, date, and message count
 - auto-title sessions after the first exchange
 
-This is explicitly deferred under the `pi`-first plan, but it remains a strong candidate if external runtimes prove insufficient.
+This is explicitly deferred under the external-runtime plan, but it remains a strong candidate if external runtimes prove insufficient.
 
 ## 7. Prompt system
 
@@ -281,7 +281,7 @@ Preserved default skill ideas:
 
 Preserved user-skill idea:
 
-- user-defined Markdown skills live alongside defaults in `AI/Skills/`
+- user-defined Markdown skills live alongside defaults in `.agent/skills/`
 
 Preserved executable-skill idea:
 

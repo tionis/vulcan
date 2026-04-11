@@ -8054,8 +8054,12 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let json = parse_stdout_json(&assert);
 
     assert!(vault_root.join("AGENTS.md").exists());
-    assert!(vault_root.join("AI/Skills/note-operations.md").exists());
-    assert!(vault_root.join("AI/Skills/js-api-guide.md").exists());
+    assert!(vault_root
+        .join(".agent/skills/note-operations/SKILL.md")
+        .exists());
+    assert!(vault_root
+        .join(".agent/skills/js-api-guide/SKILL.md")
+        .exists());
     assert!(fs::read_to_string(vault_root.join("AGENTS.md"))
         .expect("agents template should be readable")
         .contains("Use Vulcan as the primary automation surface"));
@@ -8064,7 +8068,88 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .any(|item| item["path"] == "AGENTS.md")
         && items
             .iter()
-            .any(|item| item["path"] == "AI/Skills/js-api-guide.md")));
+            .any(|item| item["path"] == ".agent/skills/js-api-guide/SKILL.md")));
+}
+
+#[test]
+fn agent_install_overwrite_refreshes_bundled_skill_contents() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    let initial_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "install",
+        ])
+        .assert()
+        .success();
+    let initial_json = parse_stdout_json(&initial_assert);
+    assert!(initial_json["support_files"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["path"]
+            == ".agent/skills/note-operations/SKILL.md"
+            && item["status"] == "created")));
+
+    let skill_path = vault_root.join(".agent/skills/note-operations/SKILL.md");
+    fs::write(&skill_path, "customized\n").expect("skill should be editable");
+
+    let kept_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "install",
+        ])
+        .assert()
+        .success();
+    let kept_json = parse_stdout_json(&kept_assert);
+    assert_eq!(
+        fs::read_to_string(&skill_path).expect("skill should be readable"),
+        "customized\n"
+    );
+    assert!(kept_json["support_files"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["path"]
+            == ".agent/skills/note-operations/SKILL.md"
+            && item["status"] == "kept")));
+
+    let overwrite_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "install",
+            "--overwrite",
+        ])
+        .assert()
+        .success();
+    let overwrite_json = parse_stdout_json(&overwrite_assert);
+
+    let refreshed = fs::read_to_string(&skill_path).expect("skill should be readable");
+    assert!(refreshed.contains("# Note Operations"));
+    assert!(overwrite_json["support_files"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["path"]
+            == ".agent/skills/note-operations/SKILL.md"
+            && item["status"] == "updated")));
 }
 
 #[test]
