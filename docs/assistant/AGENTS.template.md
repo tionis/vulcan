@@ -7,7 +7,7 @@ Core conventions:
 - Prefer `vulcan --output json ...` for all tool-driven workflows.
 - Use `--dry-run` before bulk or destructive mutations.
 - Note names can be ambiguous; prefer vault-relative paths when precision matters.
-- `note patch` fails on multiple matches by design. Treat that as a safety guard, not a bug.
+- `note patch` fails on multiple matches by design. Treat that as a safety guard, not a bug, and narrow the edit with `--section`, `--heading`, `--block-ref`, or `--lines`.
 
 Useful command groups:
 
@@ -27,5 +27,6 @@ Documentation workflow:
 Common pitfalls:
 
 - Search is for note text. Query is for structured metadata.
+- Search JSON hits include `section_id` and `line_spans`; use them to follow a search hit with `note get` or `note patch` instead of reopening the full note.
 - Property typing is lenient and may need validation through `doctor`.
 - Some runtime-oriented JS APIs are still rolling out; prefer stable CLI commands when available.

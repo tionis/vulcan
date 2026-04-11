@@ -3513,6 +3513,27 @@ pub enum NoteCommand {
     Patch {
         #[arg(help = "Note path, filename, or alias to update")]
         note: String,
+        #[arg(
+            long = "section",
+            conflicts_with = "heading",
+            help = "Limit the patch to one semantic section id from `note outline`"
+        )]
+        section_id: Option<String>,
+        #[arg(
+            long,
+            help = "Limit the patch to one heading section by exact heading text"
+        )]
+        heading: Option<String>,
+        #[arg(
+            long = "block-ref",
+            help = "Limit the patch to one block by block reference id"
+        )]
+        block_ref: Option<String>,
+        #[arg(
+            long,
+            help = "Limit the patch to a 1-based line range such as 1-10, 50-, or -5"
+        )]
+        lines: Option<String>,
         #[arg(long, help = "Literal text or /regex/ pattern to find")]
         find: String,
         #[arg(long, help = "Replacement text")]

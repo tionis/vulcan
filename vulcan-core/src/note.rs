@@ -80,6 +80,13 @@ pub struct NoteReadSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteLocatedRange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_id: Option<String>,
+    pub line_span: NoteLineSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteSelectedLine {
     pub line_number: usize,
     pub text: String,
@@ -288,6 +295,42 @@ pub fn read_note(
         section_id,
         match_count,
     ))
+}
+
+#[must_use]
+pub fn locate_note_range(
+    source: &str,
+    parsed: &ParsedDocument,
+    start: usize,
+    end: usize,
+) -> Option<NoteLocatedRange> {
+    let source_lines = build_source_lines(source);
+    let line_span = line_span_for_byte_range(&source_lines, start, end)?;
+    let outline = outline_note(source, parsed);
+    let section_id = outline
+        .sections
+        .iter()
+        .filter(|section| {
+            line_span.start_line >= section.start_line && line_span.end_line <= section.end_line
+        })
+        .max_by_key(|section| section.level)
+        .map(|section| section.id.clone());
+    Some(NoteLocatedRange {
+        section_id,
+        line_span,
+    })
+}
+
+#[must_use]
+pub fn byte_range_for_line_span(source: &str, span: &NoteLineSpan) -> Option<(usize, usize)> {
+    if span.start_line == 0 || span.end_line < span.start_line {
+        return None;
+    }
+
+    let source_lines = build_source_lines(source);
+    let start = source_lines.get(span.start_line.saturating_sub(1))?.start;
+    let end = source_lines.get(span.end_line.saturating_sub(1))?.end;
+    Some((start, end))
 }
 
 fn build_note_read_selection(
@@ -801,6 +844,41 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "multiple heading entries named 'Repeated'"
+        );
+    }
+
+    #[test]
+    fn locate_note_range_returns_containing_section_and_line_span() {
+        let parsed = parse_document(sample_source(), &VaultConfig::default());
+        let start = sample_source()
+            .find("TODO nested")
+            .expect("nested todo should exist");
+        let end = start + "TODO nested".len();
+        let located =
+            locate_note_range(sample_source(), &parsed, start, end).expect("range should resolve");
+
+        assert_eq!(located.section_id.as_deref(), Some("tasks/nested@9"));
+        assert_eq!(
+            located.line_span,
+            NoteLineSpan {
+                start_line: 10,
+                end_line: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn byte_range_for_line_span_round_trips_to_source_slice() {
+        let span = NoteLineSpan {
+            start_line: 6,
+            end_line: 8,
+        };
+        let (start, end) =
+            byte_range_for_line_span(sample_source(), &span).expect("span should resolve");
+
+        assert_eq!(
+            &sample_source()[start..end],
+            "## Tasks\nBefore\nTODO first\n"
         );
     }
 }
