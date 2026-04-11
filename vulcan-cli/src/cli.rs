@@ -880,11 +880,12 @@ Subcommands:
 Notes:
   Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.
   `export profile run <name>` resolves relative profile paths from the vault root.
-  `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.
+  `export profile create|set|delete` updates shared `.vulcan/config.toml`; `show` prints the effective merged profile.
   `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
   `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, `--exclude-inline-field`, and ordered `--replace-rule` rewrites.
   Direct export flags build one implicit transform rule that applies to all exported notes.
-  Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; each rule query only narrows within the profile query result.
+  Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; `export profile rule ...` edits those rules explicitly.
+  Each rule query only narrows within the profile query result; rule order matters for replacement rewrites.
   If multiple rules match one note, exclusions are unioned and replacement rules run in declaration order.
   Exported metadata, links, backlinks, inline expressions, and copied attachments are rebuilt from transformed note content before packaging.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
@@ -898,9 +899,14 @@ Examples:
   vulcan export profile run team-book
   vulcan export profile show team-book
   vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'
+  vulcan export profile set team-book --backlinks --frontmatter
+  vulcan export profile rule list team-book
+  vulcan export profile rule add team-book --exclude-callout internal
+  vulcan export profile rule add team-book 'from notes where file.path starts_with \"People/\"' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted
+  vulcan export profile rule update team-book 1 --exclude-callout internal --exclude-heading Scratch
+  vulcan export profile rule move team-book 2 --before 1
   vulcan export json 'from notes' --exclude-callout 'secret gm' -o exports/public.json
   vulcan export json 'from notes' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted -o exports/public.json
-  vulcan export profile create public --format json 'from notes' -o exports/public.json --exclude-callout internal --replace-rule literal '[[People/Bob]]' '[[People/Alice]]'
   vulcan export profile delete team-book --dry-run
   vulcan export markdown 'from notes where file.path matches \"^Projects/\"'
   vulcan export json 'from notes where status = done' --pretty -o exports/done.json
@@ -1553,7 +1559,7 @@ pub enum ExportProfileCommand {
         #[arg(help = "Export profile name from [export.profiles.<name>]")]
         name: String,
     },
-    #[command(about = "Create or replace an export profile in .vulcan/config.toml")]
+    #[command(about = "Create or replace an export profile in shared .vulcan/config.toml")]
     Create {
         #[arg(help = "Export profile name")]
         name: String,
@@ -1593,10 +1599,105 @@ pub enum ExportProfileCommand {
         pretty: bool,
         #[arg(long, value_enum, help = "Graph export format stored in the profile")]
         graph_format: Option<GraphExportFormat>,
-        #[command(flatten)]
-        transforms: Box<ExportTransformArgs>,
         #[arg(long, help = "Replace an existing profile with the same name")]
         replace: bool,
+        #[arg(long, help = "Preview the config change without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit for this config mutation")]
+        no_commit: bool,
+    },
+    #[command(about = "Update profile-wide export settings in shared .vulcan/config.toml")]
+    Set {
+        #[arg(help = "Export profile name")]
+        name: String,
+        #[arg(long, value_enum, help = "Export format to store for this profile")]
+        format: Option<ExportProfileFormatArg>,
+        #[arg(
+            help = "Native note query DSL string; omit with --query-json",
+            conflicts_with_all = ["query_json", "clear_query"]
+        )]
+        query: Option<String>,
+        #[arg(
+            long = "query-json",
+            help = "JSON note query payload; mutually exclusive with the positional query",
+            conflicts_with_all = ["query", "clear_query"]
+        )]
+        query_json: Option<String>,
+        #[arg(long, help = "Clear any stored query or query_json")]
+        clear_query: bool,
+        #[arg(
+            short = 'o',
+            long = "path",
+            help = "Destination file path stored in the profile",
+            conflicts_with = "clear_path"
+        )]
+        path: Option<PathBuf>,
+        #[arg(long, help = "Clear any stored destination path")]
+        clear_path: bool,
+        #[arg(
+            long,
+            help = "Optional heading or book title stored in the profile",
+            conflicts_with = "clear_title"
+        )]
+        title: Option<String>,
+        #[arg(long, help = "Clear any stored title")]
+        clear_title: bool,
+        #[arg(
+            long,
+            help = "Optional EPUB author/creator metadata stored in the profile",
+            conflicts_with = "clear_author"
+        )]
+        author: Option<String>,
+        #[arg(long, help = "Clear any stored author")]
+        clear_author: bool,
+        #[arg(
+            long,
+            value_enum,
+            help = "EPUB table of contents style",
+            conflicts_with = "clear_toc"
+        )]
+        toc: Option<EpubTocStyle>,
+        #[arg(long, help = "Clear any stored EPUB table of contents style")]
+        clear_toc: bool,
+        #[arg(
+            long,
+            help = "Enable EPUB backlinks in the stored profile",
+            conflicts_with = "no_backlinks"
+        )]
+        backlinks: bool,
+        #[arg(
+            long = "no-backlinks",
+            help = "Remove any stored EPUB backlinks setting"
+        )]
+        no_backlinks: bool,
+        #[arg(
+            long,
+            help = "Include EPUB frontmatter panels in the stored profile",
+            conflicts_with = "no_frontmatter"
+        )]
+        frontmatter: bool,
+        #[arg(
+            long = "no-frontmatter",
+            help = "Remove any stored EPUB frontmatter panel setting"
+        )]
+        no_frontmatter: bool,
+        #[arg(
+            long,
+            help = "Pretty-print JSON or search-index profile output",
+            conflicts_with = "no_pretty"
+        )]
+        pretty: bool,
+        #[arg(long = "no-pretty", help = "Remove any stored pretty-print setting")]
+        no_pretty: bool,
+        #[arg(
+            long,
+            value_enum,
+            help = "Graph export format stored in the profile",
+            conflicts_with = "clear_graph_format"
+        )]
+        graph_format: Option<GraphExportFormat>,
+        #[arg(long, help = "Clear any stored graph export format")]
+        clear_graph_format: bool,
         #[arg(long, help = "Preview the config change without writing the file")]
         dry_run: bool,
         #[arg(long, help = "Skip auto-commit for this config mutation")]
@@ -1606,6 +1707,113 @@ pub enum ExportProfileCommand {
     Delete {
         #[arg(help = "Export profile name")]
         name: String,
+        #[arg(long, help = "Preview the config change without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit for this config mutation")]
+        no_commit: bool,
+    },
+    #[command(
+        about = "List or edit ordered content transform rules in shared .vulcan/config.toml"
+    )]
+    Rule {
+        #[command(subcommand)]
+        command: ExportProfileRuleCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ExportProfileRuleCommand {
+    #[command(about = "List content transform rules for one export profile")]
+    List {
+        #[arg(help = "Export profile name")]
+        profile: String,
+    },
+    #[command(about = "Add one content transform rule to an export profile")]
+    Add {
+        #[arg(help = "Export profile name")]
+        profile: String,
+        #[arg(
+            long,
+            help = "Insert before this 1-based rule index; omit to append at the end"
+        )]
+        before: Option<usize>,
+        #[arg(
+            help = "Native note query DSL string for this rule; omit with --query-json",
+            conflicts_with = "query_json"
+        )]
+        query: Option<String>,
+        #[arg(
+            long = "query-json",
+            help = "JSON note query payload for this rule; mutually exclusive with the positional query",
+            conflicts_with = "query"
+        )]
+        query_json: Option<String>,
+        #[command(flatten)]
+        transforms: Box<ExportTransformArgs>,
+        #[arg(long, help = "Preview the config change without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit for this config mutation")]
+        no_commit: bool,
+    },
+    #[command(about = "Replace one content transform rule in an export profile")]
+    Update {
+        #[arg(help = "Export profile name")]
+        profile: String,
+        #[arg(help = "1-based rule index to replace")]
+        index: usize,
+        #[arg(
+            help = "Native note query DSL string for this rule; omit with --query-json",
+            conflicts_with = "query_json"
+        )]
+        query: Option<String>,
+        #[arg(
+            long = "query-json",
+            help = "JSON note query payload for this rule; mutually exclusive with the positional query",
+            conflicts_with = "query"
+        )]
+        query_json: Option<String>,
+        #[command(flatten)]
+        transforms: Box<ExportTransformArgs>,
+        #[arg(long, help = "Preview the config change without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit for this config mutation")]
+        no_commit: bool,
+    },
+    #[command(about = "Delete one content transform rule from an export profile")]
+    Delete {
+        #[arg(help = "Export profile name")]
+        profile: String,
+        #[arg(help = "1-based rule index to delete")]
+        index: usize,
+        #[arg(long, help = "Preview the config change without writing the file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit for this config mutation")]
+        no_commit: bool,
+    },
+    #[command(about = "Move one content transform rule to a new position")]
+    Move {
+        #[arg(help = "Export profile name")]
+        profile: String,
+        #[arg(help = "1-based rule index to move")]
+        index: usize,
+        #[arg(
+            long,
+            help = "Move before this 1-based rule index",
+            conflicts_with_all = ["after", "last"]
+        )]
+        before: Option<usize>,
+        #[arg(
+            long,
+            help = "Move after this 1-based rule index",
+            conflicts_with_all = ["before", "last"]
+        )]
+        after: Option<usize>,
+        #[arg(
+            long,
+            help = "Move the rule to the last position",
+            conflicts_with_all = ["before", "after"]
+        )]
+        last: bool,
         #[arg(long, help = "Preview the config change without writing the file")]
         dry_run: bool,
         #[arg(long, help = "Skip auto-commit for this config mutation")]

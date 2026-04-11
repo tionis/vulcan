@@ -808,7 +808,11 @@ vulcan export json 'from notes where file.path starts_with "People/"' --replace-
 vulcan export profile list
 vulcan export profile run team-book
 vulcan export profile show team-book
-vulcan export profile create team-book --format epub 'from notes where file.path matches "^(People|Projects)/"' -o exports/team-book.epub --title "Team Book" --backlinks --frontmatter --exclude-callout internal
+vulcan export profile create team-book --format epub 'from notes where file.path matches "^(People|Projects)/"' -o exports/team-book.epub --title "Team Book"
+vulcan export profile set team-book --backlinks --frontmatter
+vulcan export profile rule add team-book --exclude-callout internal
+vulcan export profile rule add team-book 'from notes where file.path starts_with "People/"' --replace-rule regex '[A-Za-z0-9._%+-]+@example\.com' redacted
+vulcan export profile rule list team-book
 vulcan export profile delete team-book
 vulcan automation run release-dashboard due-soon --scan --doctor
 vulcan automation run --all --verify-cache --fail-on-issues
@@ -819,7 +823,8 @@ Automation notes:
 - `automation run --doctor-fix` applies deterministic doctor fixes before reporting status.
 - `automation run --fail-on-issues` returns exit code `2` when checks complete but issues remain.
 - `export profile list` lists named recipes from `[export.profiles.<name>]`.
-- `export profile create|delete` writes the shared `.vulcan/config.toml`.
+- `export profile create|set|delete` writes the shared `.vulcan/config.toml`.
+- `export profile rule list|add|update|delete|move` edits the ordered `content_transforms` rules stored in shared config.
 - `export profile show` prints the effective merged profile after shared/local config merge.
 - `export profile run <name>` runs a config-driven export and resolves relative profile paths from the vault root.
 - `export epub` preserves the selected note tree in the table of contents by default and can be flattened with `--toc flat`.
@@ -847,6 +852,8 @@ Selection and rule semantics:
 - Transform rules never add notes. A rule query only narrows within the already-selected export set.
 - Direct CLI flags such as `--exclude-callout` or `--replace-rule` are sugar for one implicit rule that applies to all exported notes.
 - Profiles store the persisted form as ordered `[[export.profiles.<name>.content_transforms]]` tables.
+- `export profile create` and `export profile set` only manage profile-wide fields such as format, query, path, and EPUB/JSON options.
+- `export profile rule ...` manages ordered persisted transform rules explicitly instead of flattening transform flags into profile creation.
 - If multiple rules match one note, Vulcan merges them before reparsing the note. Exclusions union together, and replacement rules keep declaration order.
 
 Export pipeline behavior:
@@ -870,7 +877,29 @@ vulcan export json 'from notes where file.path starts_with "People/"' \
   -o exports/people.json
 ```
 
-Profile config examples:
+Profile CLI examples:
+
+```bash
+vulcan export profile create public_json --format json \
+  'from notes where file.path matches "^(People|Projects)/"' \
+  -o exports/public.json
+
+vulcan export profile set public_json --pretty
+
+vulcan export profile rule add public_json \
+  --exclude-callout internal \
+  --exclude-heading Scratch
+
+vulcan export profile rule add public_json \
+  'from notes where file.path starts_with "People/"' \
+  --exclude-frontmatter-key email \
+  --exclude-inline-field owner \
+  --replace-rule literal '[[People/Bob]]' '[[People/Alice]]'
+
+vulcan export profile rule move public_json 2 --before 1
+```
+
+Persisted config example:
 
 ```toml
 [export.profiles.public_json]
@@ -904,6 +933,7 @@ Reading the config example:
 - The second rule applies only to the exported notes under `People/`.
 - The nested `replace` tables belong to the most recent `content_transforms` rule table.
 - `regex = true` switches one replacement entry from literal matching to Rust regex matching.
+- The profile CLI edits this persisted rule list directly instead of inventing a second "simple profile transform" schema.
 
 ### Query output modes
 

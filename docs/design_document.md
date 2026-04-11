@@ -104,7 +104,7 @@ Export, static site generation, and the future web wiki should share one publica
 - If multiple rules match one document, Vulcan merges them deterministically before reparsing content. Additive exclusions should union together, replacement-style rules should preserve declaration order, and scalar policies should use last-wins semantics.
 - Export/render pipelines that consume transformed notes must rebuild derived metadata such as frontmatter JSON, merged properties, resolved links, copied attachments, and inline-expression evaluation from the transformed content so stripped data cannot leak through cached projections.
 - Link and asset policies should run after note-level transforms are resolved, so removed sections or metadata cannot leak through backlinks, embeds, or copied attachments.
-- The persisted configuration model should therefore stay rule-based even if the CLI offers simpler sugar for creating a single "apply to all selected notes" rule.
+- The persisted configuration model should stay rule-based. Direct one-off export commands may still offer single-rule sugar, but the export profile CLI should manage ordered persisted rules explicitly.
 
 ## 5. Data model overview
 

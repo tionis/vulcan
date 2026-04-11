@@ -13,6 +13,6 @@ Automation conventions:
 - Prefer `--output json` for scripts and external harnesses.
 - Use `--dry-run` before bulk or destructive mutations.
 - Note names may be ambiguous; pass a full relative path when precision matters.
-- When you need repeatable public exports, prefer `export profile create` and store transform rules in `.vulcan/config.toml`.
+- When you need repeatable public exports, prefer `export profile create` for the profile-wide settings and `export profile rule ...` for the ordered transform rules stored in `.vulcan/config.toml`.
 
 See also: `help examples`, `help filters`, `help query-dsl`, `vulcan export --help`.
