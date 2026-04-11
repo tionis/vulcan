@@ -6869,13 +6869,32 @@
       },
       {
         "about": "Read and mutate one note with selector-aware CRUD commands",
-        "after_help": "Subcommands:\n  get         read one note, optionally with heading, block, line, or regex selectors\n  set         replace one note's contents from stdin or --file\n  create      create a new note, optionally from a template and extra frontmatter\n  append      append text to the end of a note, at the top, or under a heading\n  update      bulk-set a frontmatter property across filtered or piped notes\n  unset       bulk-remove a frontmatter property across filtered or piped notes\n  patch       perform a guarded single-note find/replace\n  delete      delete a note and report inbound links that would become unresolved\n  rename      rename a note in place and rewrite inbound links\n  info        show one note's summary metadata and graph stats\n  history     show git history scoped to one note\n\nNotes:\n  `--check` runs non-blocking doctor-like diagnostics for the resulting note.\n  Mutating note commands support --no-commit; `patch` also supports --dry-run.\n  `note get --output json` returns content, parsed frontmatter, and selection metadata.\n  `note get --mode html` renders the selected markdown through Vulcan's HTML pipeline.\n  `note append --periodic <daily|weekly|monthly>` creates the target periodic note first when missing.\n  Repeat `--var key=value` to satisfy QuickAdd-style `{{VALUE}}` / `{{VDATE:...}}` prompts in automation.\n\nExamples:\n  vulcan note get Projects/Alpha --heading Status\n  vulcan note get Projects/Alpha --mode html\n  vulcan note info Projects/Alpha\n  vulcan note history Projects/Alpha --limit 5\n  vulcan note set Projects/Alpha --no-frontmatter < body.md\n  vulcan note create Inbox/Idea --template daily --frontmatter status=idea\n  vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"\n  vulcan note append Projects/Alpha \"Pinned\" --prepend\n  vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"\n  vulcan ls --tag project | vulcan note update --stdin --key status --value done\n  vulcan ls --tag project | vulcan note unset --stdin --key due\n  vulcan note delete Projects/Alpha --dry-run\n  vulcan note rename Projects/Alpha Beta\n  vulcan note patch Projects/Alpha --find TODO --replace DONE\n\nSee also:\n  `vulcan query --where` — bulk property queries across matching notes\n  `vulcan query` — full DQL query language with FROM/WHERE/SELECT/ORDER BY",
+        "after_help": "Subcommands:\n  outline     inspect a note's section/block structure with semantic ids\n  get         read one note, optionally with heading, block, line, or regex selectors\n  set         replace one note's contents from stdin or --file\n  create      create a new note, optionally from a template and extra frontmatter\n  append      append text to the end of a note, at the top, or under a heading\n  update      bulk-set a frontmatter property across filtered or piped notes\n  unset       bulk-remove a frontmatter property across filtered or piped notes\n  patch       perform a guarded single-note find/replace\n  delete      delete a note and report inbound links that would become unresolved\n  rename      rename a note in place and rewrite inbound links\n  info        show one note's summary metadata and graph stats\n  history     show git history scoped to one note\n\nNotes:\n  `--check` runs non-blocking doctor-like diagnostics for the resulting note.\n  Mutating note commands support --no-commit; `patch` also supports --dry-run.\n  `note get --output json` returns content, parsed frontmatter, and selection metadata.\n  `note get --mode html` renders the selected markdown through Vulcan's HTML pipeline.\n  `note append --periodic <daily|weekly|monthly>` creates the target periodic note first when missing.\n  Repeat `--var key=value` to satisfy QuickAdd-style `{{VALUE}}` / `{{VDATE:...}}` prompts in automation.\n\nExamples:\n  vulcan note outline Projects/Alpha\n  vulcan note get Projects/Alpha --heading Status\n  vulcan note get Projects/Alpha --section status@12\n  vulcan note get Projects/Alpha --mode html\n  vulcan note info Projects/Alpha\n  vulcan note history Projects/Alpha --limit 5\n  vulcan note set Projects/Alpha --no-frontmatter < body.md\n  vulcan note create Inbox/Idea --template daily --frontmatter status=idea\n  vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"\n  vulcan note append Projects/Alpha \"Pinned\" --prepend\n  vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"\n  vulcan ls --tag project | vulcan note update --stdin --key status --value done\n  vulcan ls --tag project | vulcan note unset --stdin --key due\n  vulcan note delete Projects/Alpha --dry-run\n  vulcan note rename Projects/Alpha Beta\n  vulcan note patch Projects/Alpha --find TODO --replace DONE\n\nSee also:\n  `vulcan query --where` — bulk property queries across matching notes\n  `vulcan query` — full DQL query language with FROM/WHERE/SELECT/ORDER BY",
         "name": "note",
         "options": [],
         "subcommands": [
           {
+            "about": "Inspect one note's section and block outline",
+            "after_help": "Outline contents:\n  frontmatter span        leading YAML block, if present\n  sections                semantic read units with ids, heading paths, and absolute line spans\n  block refs              ^block anchors with absolute line spans and containing section ids\n\nExamples:\n  vulcan note outline Dashboard\n  vulcan note get Dashboard --section tasks@9",
+            "name": "outline",
+            "options": [
+              {
+                "help": "Note path, filename, or alias to inspect",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Read one note, optionally narrowed by selectors",
-            "after_help": "Selectors:\n  --mode <markdown|html>    render selected content as markdown (default) or HTML\n  --heading <name>        limit to one heading section, including nested subheadings\n  --block-ref <id>        limit to the block tagged with ^<id>\n  --lines <range>         limit to a 1-based line range within the current selection\n  --match <regex>         keep only lines matching the regex\n  --context <n>           include N surrounding lines around each --match hit\n  --no-frontmatter        strip a leading YAML frontmatter block from the output\n  --raw                   print only the selected content without line numbers\n\nLine range syntax:\n  1-10    first ten lines\n  50-     line 50 through the end\n  -5      last five lines\n  7       only line 7\n\nExamples:\n  vulcan note get Dashboard\n  vulcan note get Dashboard --mode html\n  vulcan note get Dashboard --heading Tasks --match TODO --context 1\n  vulcan note get Dashboard --block-ref status-card\n  vulcan note get Dashboard --lines 10-20 --raw",
+            "after_help": "Selectors:\n  --mode <markdown|html>    render selected content as markdown (default) or HTML\n  --section <id>          limit to one semantic section from `note outline`\n  --heading <name>        limit to one heading section, including nested subheadings\n  --block-ref <id>        limit to the block tagged with ^<id>\n  --lines <range>         limit to a 1-based line range within the current selection\n  --match <regex>         keep only lines matching the regex\n  --context <n>           include N surrounding lines around each --match hit\n  --no-frontmatter        strip a leading YAML frontmatter block from the output\n  --raw                   print only the selected content without line numbers\n\nLine range syntax:\n  1-10    first ten lines\n  50-     line 50 through the end\n  -5      last five lines\n  7       only line 7\n\nExamples:\n  vulcan note get Dashboard\n  vulcan note get Dashboard --section tasks@9\n  vulcan note outline Dashboard\n  vulcan note get Dashboard --mode html\n  vulcan note get Dashboard --heading Tasks --match TODO --context 1\n  vulcan note get Dashboard --block-ref status-card\n  vulcan note get Dashboard --lines 10-20 --raw",
             "name": "get",
             "options": [
               {
@@ -6901,6 +6920,17 @@
                 "short": null,
                 "value_names": [
                   "MODE"
+                ]
+              },
+              {
+                "help": "Extract one semantic section by id from `note outline`",
+                "id": "section_id",
+                "long": "section",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SECTION_ID"
                 ]
               },
               {

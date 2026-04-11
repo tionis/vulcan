@@ -275,6 +275,7 @@ Examples:
 
 const NOTE_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  outline     inspect a note's section/block structure with semantic ids
   get         read one note, optionally with heading, block, line, or regex selectors
   set         replace one note's contents from stdin or --file
   create      create a new note, optionally from a template and extra frontmatter
@@ -296,7 +297,9 @@ Notes:
   Repeat `--var key=value` to satisfy QuickAdd-style `{{VALUE}}` / `{{VDATE:...}}` prompts in automation.
 
 Examples:
+  vulcan note outline Projects/Alpha
   vulcan note get Projects/Alpha --heading Status
+  vulcan note get Projects/Alpha --section status@12
   vulcan note get Projects/Alpha --mode html
   vulcan note info Projects/Alpha
   vulcan note history Projects/Alpha --limit 5
@@ -371,6 +374,7 @@ Examples:
 const NOTE_GET_COMMAND_AFTER_HELP: &str = "\
 Selectors:
   --mode <markdown|html>    render selected content as markdown (default) or HTML
+  --section <id>          limit to one semantic section from `note outline`
   --heading <name>        limit to one heading section, including nested subheadings
   --block-ref <id>        limit to the block tagged with ^<id>
   --lines <range>         limit to a 1-based line range within the current selection
@@ -387,10 +391,22 @@ Line range syntax:
 
 Examples:
   vulcan note get Dashboard
+  vulcan note get Dashboard --section tasks@9
+  vulcan note outline Dashboard
   vulcan note get Dashboard --mode html
   vulcan note get Dashboard --heading Tasks --match TODO --context 1
   vulcan note get Dashboard --block-ref status-card
   vulcan note get Dashboard --lines 10-20 --raw";
+
+const NOTE_OUTLINE_COMMAND_AFTER_HELP: &str = "\
+Outline contents:
+  frontmatter span        leading YAML block, if present
+  sections                semantic read units with ids, heading paths, and absolute line spans
+  block refs              ^block anchors with absolute line spans and containing section ids
+
+Examples:
+  vulcan note outline Dashboard
+  vulcan note get Dashboard --section tasks@9";
 
 const GIT_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -3314,6 +3330,14 @@ pub enum TemplateSubcommand {
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum NoteCommand {
     #[command(
+        about = "Inspect one note's section and block outline",
+        after_help = NOTE_OUTLINE_COMMAND_AFTER_HELP
+    )]
+    Outline {
+        #[arg(help = "Note path, filename, or alias to inspect")]
+        note: String,
+    },
+    #[command(
         about = "Read one note, optionally narrowed by selectors",
         after_help = NOTE_GET_COMMAND_AFTER_HELP
     )]
@@ -3327,6 +3351,12 @@ pub enum NoteCommand {
             help = "Return selected content as markdown or rendered HTML"
         )]
         mode: NoteGetMode,
+        #[arg(
+            long = "section",
+            conflicts_with = "heading",
+            help = "Extract one semantic section by id from `note outline`"
+        )]
+        section_id: Option<String>,
         #[arg(long, help = "Extract one heading section by exact heading text")]
         heading: Option<String>,
         #[arg(long = "block-ref", help = "Extract one block by block reference id")]

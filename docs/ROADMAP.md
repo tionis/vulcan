@@ -1771,7 +1771,7 @@ Prompts and skills stay as Markdown files in the vault. External runtimes consum
 
 Vulcan ships a standard library of skills that teach any external runtime how to use the tool surface effectively. These are bundled in the binary (via `include_str!`) and written to the vault on `vulcan init`.
 
-- [ ] **note-operations** — reading, creating, editing notes. Covers `note get` selectors (heading, block-ref, lines, match), `note append` under headings, `note patch` find/replace safety (fails on multiple matches), frontmatter conventions. Common mistake: using `note set` when `note patch` or `note append` is safer.
+- [ ] **note-operations** — reading, creating, editing notes. Covers `note outline`, semantic `note get` selectors (section, heading, block-ref, lines, match), `note append` under headings, `note patch` find/replace safety (fails on multiple matches), frontmatter conventions. Common mistake: using `note set` when `note patch` or `note append` is safer.
 - [ ] **vault-query** — query DSL usage, filter expressions, property operators, sorting, `search` vs `query` guidance (search for content, query for metadata). Common mistake: using search when a property query is more precise.
 - [ ] **js-api-guide** — vault JS API patterns. `vault.note()`, `vault.notes().where().sortBy()`, `vault.query()`, `vault.graph`, `vault.transaction()` for atomic batch mutations. Examples for common operations: bulk property updates, cross-note analysis, generating summary tables.
 - [ ] **graph-exploration** — links, backlinks, shortest paths, hubs, dead ends, connected components. When to use graph traversal vs search. Common mistake: traversing large graphs without limiting depth.
@@ -2405,7 +2405,9 @@ Restructure all existing commands into logical groups. The public command surfac
 
 **`note get` — Read note content with selectors**
 
+- [x] `vulcan note outline <note>` — return the note's semantic section ids, heading paths, block refs, and line spans for low-bloat follow-up reads
 - [x] `vulcan note get <note>` — print full note content
+- [x] `--section <id>` — extract a section by semantic id from `note outline`
 - [x] `--heading <name>` — extract section under heading (inclusive of subheadings until next heading at same or higher level)
 - [x] `--block-ref <id>` — extract block by reference ID
 - [x] `--lines <range>` — extract line range (syntax: `1-10`, `50-`, `-5` for last 5 lines)
@@ -2414,7 +2416,9 @@ Restructure all existing commands into logical groups. The public command surfac
 - [x] `--no-frontmatter` — strip YAML header from output
 - [x] `--raw` — no formatting, no line numbers, just content
 - [x] `--output json` returns structured object with content, frontmatter, metadata
+- [x] JSON metadata includes continuation hints (`total_lines`, `has_more_before`, `has_more_after`) plus `section_id` when a semantic section is selected
 - [x] Selectors are composable: `--heading "Section" --match "TODO"` searches within the heading
+- [x] Shared core note-outline/selection logic powers CLI, MCP, and JS runtime reads so semantic partial reads behave the same everywhere
 
 **`note set` — Replace note content**
 
@@ -2547,6 +2551,8 @@ The JS runtime exposes deep access to vault internals, not just CLI wrappers. Th
 // Note objects with rich properties
 const note = vault.note("MyNote");
 note.content          // raw markdown
+note.outline()        // semantic sections, block refs, line spans
+note.read({ section: "tasks@22" }) // partial read using the same selectors as `note get`
 note.frontmatter      // parsed YAML as JS object
 note.tags             // parsed tags array
 note.aliases          // aliases array

@@ -69,9 +69,15 @@ pub(crate) fn handle_note_command(
     use_stderr_color: bool,
 ) -> Result<(), CliError> {
     match command {
+        NoteCommand::Outline { note } => {
+            check_read_note_access(cli, paths, note)?;
+            let report = crate::run_note_outline_command(paths, note)?;
+            crate::print_note_outline_report(cli.output, &report)
+        }
         NoteCommand::Get {
             note,
             mode,
+            section_id,
             heading,
             block_ref,
             lines,
@@ -86,6 +92,7 @@ pub(crate) fn handle_note_command(
                 NoteGetOptions {
                     note,
                     mode: *mode,
+                    section_id: section_id.as_deref(),
                     heading: heading.as_deref(),
                     block_ref: block_ref.as_deref(),
                     lines: lines.as_deref(),
