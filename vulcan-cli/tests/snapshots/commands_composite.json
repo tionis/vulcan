@@ -7460,6 +7460,50 @@
                 ]
               },
               {
+                "help": "Limit the patch to one semantic section id from `note outline`",
+                "id": "section_id",
+                "long": "section",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SECTION_ID"
+                ]
+              },
+              {
+                "help": "Limit the patch to one heading section by exact heading text",
+                "id": "heading",
+                "long": "heading",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HEADING"
+                ]
+              },
+              {
+                "help": "Limit the patch to one block by block reference id",
+                "id": "block_ref",
+                "long": "block-ref",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BLOCK_REF"
+                ]
+              },
+              {
+                "help": "Limit the patch to a 1-based line range such as 1-10, 50-, or -5",
+                "id": "lines",
+                "long": "lines",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LINES"
+                ]
+              },
+              {
                 "help": "Literal text or /regex/ pattern to find",
                 "id": "find",
                 "long": "find",

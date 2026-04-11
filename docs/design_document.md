@@ -1093,7 +1093,8 @@ This keeps the subprocess harness story and the MCP story aligned in spirit whil
 The `note` command group fills the gap of having no way to read or write individual note content from the CLI. Key design decisions:
 
 - **`note outline` + `note get`** replace `cat | grep | head | tail` for notes. Agents can inspect semantic section ids first, then read by `--section`, `--heading`, `--block-ref`, `--lines`, `--match`, `--context`, `--no-frontmatter`, and `--raw` with consistent JSON metadata and continuation hints.
-- **`note patch`** fails on multiple matches by default (safety against unintended bulk edits). `--all` opts into replacing all occurrences. This reuses the `bulk_replace` infrastructure.
+- **`note patch`** fails on multiple matches by default (safety against unintended bulk edits). `--all` opts into replacing all occurrences, while `--section`, `--heading`, `--block-ref`, and `--lines` narrow the replacement to one semantic region before matching. This reuses the `bulk_replace` infrastructure.
+- **Search hit follow-up** uses the same note-structure layer: JSON search hits include `section_id` and absolute `line_spans` so agents can move from discovery to a precise `note get`/`note patch` call without re-reading the whole note.
 - **`--check`** on write commands runs doctor-like diagnostics after writing. Non-blocking (writes succeed, warnings printed to stderr).
 
 ### Regex support

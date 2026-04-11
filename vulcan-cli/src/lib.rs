@@ -1599,6 +1599,11 @@ struct NotePatchReport {
     path: String,
     dry_run: bool,
     checked: bool,
+    section_id: Option<String>,
+    heading: Option<String>,
+    block_ref: Option<String>,
+    lines: Option<String>,
+    line_spans: Vec<vulcan_core::NoteLineSpan>,
     pattern: String,
     regex: bool,
     replace: String,
@@ -10825,6 +10830,10 @@ enum NotePatchMatcher {
 #[derive(Debug, Clone, Copy)]
 struct NotePatchOptions<'a> {
     note: &'a str,
+    section_id: Option<&'a str>,
+    heading: Option<&'a str>,
+    block_ref: Option<&'a str>,
+    lines: Option<&'a str>,
     find: &'a str,
     replace: &'a str,
     replace_all: bool,
@@ -10838,6 +10847,14 @@ struct NotePatchApplication {
     match_count: usize,
     changes: Vec<RefactorChange>,
     regex: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NotePatchScopeSelection {
+    section_id: Option<String>,
+    line_spans: Vec<vulcan_core::NoteLineSpan>,
+    byte_start: usize,
+    byte_end: usize,
 }
 
 fn run_note_get_command(
@@ -11265,6 +11282,10 @@ fn run_note_patch_command(
 ) -> Result<NotePatchReport, CliError> {
     let NotePatchOptions {
         note,
+        section_id,
+        heading,
+        block_ref,
+        lines,
         find,
         replace,
         replace_all,
@@ -11273,7 +11294,38 @@ fn run_note_patch_command(
     } = options;
     let (relative_path, existing) = read_existing_note_source(paths, note)?;
     let matcher = parse_note_patch_matcher(find)?;
-    let application = apply_note_patch(&existing, &matcher, replace, replace_all)?;
+    let scope = resolve_note_patch_scope_selection(
+        &existing,
+        &load_vault_config(paths).config,
+        section_id,
+        heading,
+        block_ref,
+        lines,
+    )?;
+    let application = if let Some(scope) = scope.as_ref() {
+        let updated_scope = apply_note_patch(
+            &existing[scope.byte_start..scope.byte_end],
+            &matcher,
+            replace,
+            replace_all,
+            "selected note scope",
+        )?;
+        let mut updated_content = String::with_capacity(
+            existing.len() - (scope.byte_end - scope.byte_start)
+                + updated_scope.updated_content.len(),
+        );
+        updated_content.push_str(&existing[..scope.byte_start]);
+        updated_content.push_str(&updated_scope.updated_content);
+        updated_content.push_str(&existing[scope.byte_end..]);
+        NotePatchApplication {
+            updated_content,
+            match_count: updated_scope.match_count,
+            changes: updated_scope.changes,
+            regex: updated_scope.regex,
+        }
+    } else {
+        apply_note_patch(&existing, &matcher, replace, replace_all, "note")?
+    };
     if !dry_run {
         dispatch_note_write_plugin_hooks(
             paths,
@@ -11297,6 +11349,15 @@ fn run_note_patch_command(
         path: relative_path,
         dry_run,
         checked: check,
+        section_id: scope
+            .as_ref()
+            .and_then(|selection| selection.section_id.clone()),
+        heading: heading.map(ToOwned::to_owned),
+        block_ref: block_ref.map(ToOwned::to_owned),
+        lines: lines.map(ToOwned::to_owned),
+        line_spans: scope
+            .as_ref()
+            .map_or_else(Vec::new, |selection| selection.line_spans.clone()),
         pattern: find.to_string(),
         regex: application.regex,
         replace: replace.to_string(),
@@ -11748,6 +11809,7 @@ fn apply_note_patch(
     matcher: &NotePatchMatcher,
     replace: &str,
     all: bool,
+    target: &str,
 ) -> Result<NotePatchApplication, CliError> {
     match matcher {
         NotePatchMatcher::Literal(find) => {
@@ -11762,7 +11824,7 @@ fn apply_note_patch(
                     )
                 })
                 .collect::<Vec<_>>();
-            build_note_patch_application(source, patch_matches, all, false)
+            build_note_patch_application(source, patch_matches, all, false, target)
         }
         NotePatchMatcher::Regex(regex) => {
             let patch_matches = regex
@@ -11782,7 +11844,7 @@ fn apply_note_patch(
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            build_note_patch_application(source, patch_matches, all, true)
+            build_note_patch_application(source, patch_matches, all, true, target)
         }
     }
 }
@@ -11792,11 +11854,14 @@ fn build_note_patch_application(
     matches: Vec<(usize, usize, String, String)>,
     all: bool,
     regex: bool,
+    target: &str,
 ) -> Result<NotePatchApplication, CliError> {
     match matches.len() {
-        0 => Err(CliError::operation("pattern not found in note")),
+        0 => Err(CliError::operation(format!(
+            "pattern not found in {target}"
+        ))),
         count if count > 1 && !all => Err(CliError::operation(format!(
-            "pattern matched {count} times; rerun with --all to replace every match"
+            "pattern matched {count} times in {target}; rerun with --all to replace every match"
         ))),
         _ => {
             let mut updated = source.to_string();
@@ -11814,6 +11879,54 @@ fn build_note_patch_application(
             })
         }
     }
+}
+
+fn resolve_note_patch_scope_selection(
+    source: &str,
+    config: &vulcan_core::VaultConfig,
+    section_id: Option<&str>,
+    heading: Option<&str>,
+    block_ref: Option<&str>,
+    lines: Option<&str>,
+) -> Result<Option<NotePatchScopeSelection>, CliError> {
+    if section_id.is_none() && heading.is_none() && block_ref.is_none() && lines.is_none() {
+        return Ok(None);
+    }
+
+    let parsed = vulcan_core::parse_document(source, config);
+    let selection = vulcan_core::read_note(
+        source,
+        &parsed,
+        &vulcan_core::NoteReadOptions {
+            heading: heading.map(ToOwned::to_owned),
+            section_id: section_id.map(ToOwned::to_owned),
+            block_ref: block_ref.map(ToOwned::to_owned),
+            lines: lines.map(ToOwned::to_owned),
+            match_pattern: None,
+            context: 0,
+            no_frontmatter: false,
+        },
+    )
+    .map_err(CliError::operation)?;
+
+    let [line_span] = selection.line_spans.as_slice() else {
+        return Err(CliError::operation(
+            "selected note scope is empty or not contiguous",
+        ));
+    };
+    let Some((byte_start, byte_end)) = vulcan_core::byte_range_for_line_span(source, line_span)
+    else {
+        return Err(CliError::operation(
+            "selected note scope could not be mapped back to source bytes",
+        ));
+    };
+
+    Ok(Some(NotePatchScopeSelection {
+        section_id: selection.section_id,
+        line_spans: selection.line_spans,
+        byte_start,
+        byte_end,
+    }))
 }
 
 fn maybe_check_note(
@@ -26561,6 +26674,8 @@ fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
             "heading_path": Vec::<String>::new(),
             "snippet": Value::Null,
             "matched_line": Value::Null,
+            "section_id": Value::Null,
+            "line_spans": Vec::<vulcan_core::NoteLineSpan>::new(),
             "rank": Value::Null,
             "explain": Value::Null,
             "no_results": true,
@@ -26586,6 +26701,8 @@ fn search_hit_rows(report: &SearchReport, hits: &[SearchHit]) -> Vec<Value> {
                 "heading_path": hit.heading_path,
                 "snippet": hit.snippet,
                 "matched_line": hit.matched_line,
+                "section_id": hit.section_id,
+                "line_spans": hit.line_spans,
                 "rank": hit.rank,
                 "explain": hit.explain,
             })
@@ -30168,6 +30285,10 @@ mod tests {
             "note",
             "patch",
             "Dashboard",
+            "--heading",
+            "Tasks",
+            "--lines",
+            "2-4",
             "--find",
             "/TODO \\d+/",
             "--replace",
@@ -30184,6 +30305,10 @@ mod tests {
             Command::Note {
                 command: NoteCommand::Patch {
                     note: "Dashboard".to_string(),
+                    section_id: None,
+                    heading: Some("Tasks".to_string()),
+                    block_ref: None,
+                    lines: Some("2-4".to_string()),
                     find: "/TODO \\d+/".to_string(),
                     replace: "DONE".to_string(),
                     all: true,

@@ -22,13 +22,13 @@ Use this skill when the task is centered on one note or a small set of notes and
 
 1. Start with `note outline` when the note might be long or structurally complex, then use `note get --section <id>` or `note get --heading <name>` to narrow the read.
 2. Read the target with `note get` before patching so the agent is editing the right content.
-3. Prefer `note append` for additive changes and `note patch` for surgical replacements.
+3. Prefer `note append` for additive changes and `note patch --section|--heading|--block-ref|--lines` for surgical replacements inside one resolved scope.
 4. Use `note set` only when replacing the whole note is intentional.
 5. Switch to a vault-relative path when note names or aliases are ambiguous.
 
 ## Guardrails
 
-- `note patch` fails on multiple matches by design. Narrow the selector instead of forcing a broad replacement.
+- `note patch` fails on multiple matches by design. Narrow the scope with `--section`, `--heading`, `--block-ref`, or `--lines` instead of forcing a broad replacement.
 - Prefer section, heading, block-ref, or `--match`-based targeting over whole-note rewrites.
 - Keep frontmatter changes structured. If the task is really metadata work, use `update` or `unset` instead of editing YAML by hand.
 

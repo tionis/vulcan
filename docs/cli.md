@@ -465,6 +465,7 @@ Additional explain behavior:
 
 - When `--explain` finds no hits, Vulcan includes query suggestions such as likely operator typos and task-specific hints.
 - JSON search output includes `matched_line` when Vulcan can identify the best line within the matched chunk.
+- JSON search hits also include `section_id` and absolute `line_spans` so agents can follow a hit with `note get --section <id>` or a narrow line-range read instead of reopening the whole note.
 
 Raw FTS5 example:
 
@@ -664,6 +665,7 @@ vulcan note set Dashboard --no-frontmatter < body.md
 vulcan note create Inbox/Idea --template brief --frontmatter status=idea
 vulcan note append Dashboard "Shipped" --heading "## Done"
 vulcan note patch Dashboard --find "/TODO \\d+/" --replace DONE --all --dry-run
+vulcan note patch Dashboard --heading Nested --find TODO --replace DONE
 ```
 
 Behavior:
@@ -678,6 +680,7 @@ Behavior:
 - `note create --frontmatter key=value` adds or overrides top-level frontmatter keys after template rendering.
 - `note append` accepts literal text or `-` to read appended content from stdin.
 - `note patch` accepts literal strings or `/regex/` patterns. It fails when the pattern matches more than once unless `--all` is passed.
+- `note patch` can also be narrowed with `--section`, `--heading`, `--block-ref`, and `--lines`, reusing the same semantic selectors as `note get`.
 - `note patch --dry-run` reports the planned replacements without modifying the note.
 - Mutating note commands rescan the vault incrementally after a successful write and participate in auto-commit unless `--no-commit` is passed.
 - `--check` on `set`, `create`, `append`, and `patch` runs non-blocking doctor-like diagnostics for the resulting note and includes those diagnostics in JSON output.

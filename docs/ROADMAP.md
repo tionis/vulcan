@@ -2419,6 +2419,7 @@ Restructure all existing commands into logical groups. The public command surfac
 - [x] JSON metadata includes continuation hints (`total_lines`, `has_more_before`, `has_more_after`) plus `section_id` when a semantic section is selected
 - [x] Selectors are composable: `--heading "Section" --match "TODO"` searches within the heading
 - [x] Shared core note-outline/selection logic powers CLI, MCP, and JS runtime reads so semantic partial reads behave the same everywhere
+- [x] Search JSON hits expose `section_id` and absolute `line_spans` so agents can pivot from discovery to a precise follow-up note read
 
 **`note set` — Replace note content**
 
@@ -2451,6 +2452,7 @@ Restructure all existing commands into logical groups. The public command surfac
 - [x] `--find` accepts literal strings or regex (prefix with `/` for regex: `--find '/\d{4}-\d{2}-\d{2}/'`)
 - [x] **Safety: fails if `--find` matches more than once** (prevents accidental bulk edits)
 - [x] `--all` flag to allow multiple replacements
+- [x] `--section`, `--heading`, `--block-ref`, and `--lines` narrow patching to one semantic region before matching
 - [x] `--check` — run diagnostics after patch
 - [x] `--dry-run` — show planned changes without writing
 - [x] Reuses `bulk_replace` infrastructure from `vulcan-core::suggestions`
@@ -3664,6 +3666,7 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 - [ ] Prepare the MCP core so that Phase 10's axum daemon can expose the same registry over **Streamable HTTP** without redesigning the feature surface
 - [-] Actual Streamable HTTP transport implementation lands with the Phase 10 daemon/router work, not on the current hand-rolled single-vault server
 - [ ] When the HTTP transport lands, reuse daemon authentication and permission enforcement rather than inventing MCP-specific auth semantics
+- [ ] Reuse the shared note outline/read/patch/search-hit contracts for daemon HTTP APIs instead of inventing a separate paging or chunk-follow-up model
 
 **Explicit deferrals**
 

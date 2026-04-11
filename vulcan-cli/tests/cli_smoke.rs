@@ -1865,6 +1865,52 @@ fn note_get_markdown_output_preserves_raw_markdown() {
 }
 
 #[test]
+fn note_patch_supports_semantic_scope_selectors() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "patch",
+            "Dashboard",
+            "--heading",
+            "Nested",
+            "--find",
+            "TODO",
+            "--replace",
+            "DONE",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let updated = fs::read_to_string(vault_root.join("Dashboard.md"))
+        .expect("Dashboard.md should remain readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(json["path"], "Dashboard.md");
+    assert_eq!(json["heading"], "Nested");
+    assert_eq!(json["section_id"], "dashboard/tasks/nested@13");
+    assert_eq!(json["match_count"], 1);
+    assert_eq!(json["line_spans"][0]["start_line"], 13);
+    assert_eq!(json["line_spans"][0]["end_line"], 14);
+    assert!(updated.contains("TODO first"));
+    assert!(updated.contains("DONE nested"));
+    assert!(!updated.contains("TODO nested"));
+}
+
+#[test]
 fn note_info_json_output_reports_summary_metadata() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -8921,6 +8967,44 @@ fn search_json_output_returns_ranked_hits_and_supports_filters() {
         .as_str()
         .expect("snippet should be a string")
         .contains("Bob"));
+}
+
+#[test]
+fn search_json_output_includes_section_metadata_for_follow_up_reads() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "--fields",
+            "document_path,section_id,line_spans",
+            "search",
+            "references",
+        ])
+        .assert()
+        .success();
+    let json_lines = parse_stdout_json_lines(&assert);
+
+    assert_eq!(json_lines.len(), 1);
+    assert_eq!(json_lines[0]["document_path"], "Projects/Alpha.md");
+    assert_eq!(json_lines[0]["section_id"], "alpha/status@12");
+    let start_line = json_lines[0]["line_spans"][0]["start_line"]
+        .as_u64()
+        .expect("start line should be numeric");
+    let end_line = json_lines[0]["line_spans"][0]["end_line"]
+        .as_u64()
+        .expect("end line should be numeric");
+    assert!(start_line <= 14);
+    assert!(end_line >= 14);
 }
 
 #[test]

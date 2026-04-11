@@ -235,6 +235,10 @@ pub(crate) fn handle_note_command(
         }
         NoteCommand::Patch {
             note,
+            section_id,
+            heading,
+            block_ref,
+            lines,
             find,
             replace,
             all,
@@ -249,6 +253,10 @@ pub(crate) fn handle_note_command(
                 paths,
                 NotePatchOptions {
                     note,
+                    section_id: section_id.as_deref(),
+                    heading: heading.as_deref(),
+                    block_ref: block_ref.as_deref(),
+                    lines: lines.as_deref(),
                     find,
                     replace,
                     replace_all: *all,

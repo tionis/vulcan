@@ -4,7 +4,10 @@ use crate::properties::{
     FilterField, FilterOperator, FilterValue, ParsedFilter,
 };
 use crate::vector::query_hybrid_candidates;
-use crate::{CacheDatabase, CacheError, PropertyError, VaultPaths};
+use crate::{
+    load_vault_config, parse_document, CacheDatabase, CacheError, NoteLineSpan, PropertyError,
+    VaultPaths,
+};
 use regex::Regex;
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
@@ -12,6 +15,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Write};
+use std::fs;
 
 #[derive(Debug)]
 pub enum SearchError {
@@ -230,6 +234,10 @@ pub struct SearchHit {
     pub snippet: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line_spans: Vec<NoteLineSpan>,
     pub rank: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explain: Option<SearchHitExplain>,
@@ -362,6 +370,7 @@ pub fn search_vault_with_filter(
             hits = execute_search(paths, connection, query, &prepared, filter)?;
         }
     }
+    annotate_hit_note_structure(paths, connection, &mut hits)?;
     let suggestions = if query.explain && hits.is_empty() {
         no_result_suggestions(&query.text, &prepared)
     } else {
@@ -598,6 +607,8 @@ fn keyword_search_hits(
                 })?,
                 snippet: row.get(3)?,
                 matched_line: None,
+                section_id: None,
+                line_spans: Vec::new(),
                 rank: row.get(4)?,
                 explain: None,
             },
@@ -1288,6 +1299,8 @@ fn hybrid_search_hits(
                 heading_path: hit.heading_path.clone(),
                 snippet: hit.snippet.clone(),
                 matched_line: None,
+                section_id: None,
+                line_spans: Vec::new(),
                 rank: 0.0,
                 explain: None,
             });
@@ -1321,6 +1334,101 @@ fn hybrid_search_hits(
 
 fn reciprocal_rank(index: usize) -> f64 {
     1.0 / (60.0 + f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 1.0)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SearchHitChunkRange {
+    byte_start: usize,
+    byte_end: usize,
+}
+
+fn annotate_hit_note_structure(
+    paths: &VaultPaths,
+    connection: &Connection,
+    hits: &mut [SearchHit],
+) -> Result<(), SearchError> {
+    let chunk_ranges = load_hit_chunk_ranges(connection, hits)?;
+    if chunk_ranges.is_empty() {
+        return Ok(());
+    }
+
+    let config = load_vault_config(paths).config;
+    let mut parsed_notes = HashMap::<String, (String, crate::ParsedDocument)>::new();
+
+    for hit in hits {
+        let Some(range) = chunk_ranges.get(hit.chunk_id.as_str()) else {
+            continue;
+        };
+        if !parsed_notes.contains_key(hit.document_path.as_str()) {
+            let Ok(source) = fs::read_to_string(paths.vault_root().join(&hit.document_path)) else {
+                continue;
+            };
+            let parsed = parse_document(&source, &config);
+            parsed_notes.insert(hit.document_path.clone(), (source, parsed));
+        }
+        let (source, parsed) = parsed_notes
+            .get(hit.document_path.as_str())
+            .expect("parsed note should be cached");
+        if let Some(located) =
+            crate::locate_note_range(source, parsed, range.byte_start, range.byte_end)
+        {
+            hit.section_id = located.section_id;
+            hit.line_spans = vec![located.line_span];
+        }
+    }
+
+    Ok(())
+}
+
+fn load_hit_chunk_ranges(
+    connection: &Connection,
+    hits: &[SearchHit],
+) -> Result<HashMap<String, SearchHitChunkRange>, SearchError> {
+    let chunk_ids = hits
+        .iter()
+        .map(|hit| hit.chunk_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if chunk_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = vec!["?"; chunk_ids.len()].join(", ");
+    let sql = format!(
+        "
+        SELECT id, byte_offset_start, byte_offset_end
+        FROM chunks
+        WHERE id IN ({placeholders})
+        "
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(chunk_ids.iter()), |row| {
+        let byte_start = usize::try_from(row.get::<_, i64>(1)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Integer,
+                Box::new(error),
+            )
+        })?;
+        let byte_end = usize::try_from(row.get::<_, i64>(2)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Integer,
+                Box::new(error),
+            )
+        })?;
+        Ok((
+            row.get::<_, String>(0)?,
+            SearchHitChunkRange {
+                byte_start,
+                byte_end,
+            },
+        ))
+    })?;
+
+    rows.collect::<Result<HashMap<_, _>, _>>()
+        .map_err(SearchError::from)
 }
 
 fn keyword_order_clause(sort: SearchSort, use_fts: bool) -> &'static str {
@@ -2962,6 +3070,32 @@ mod tests {
         assert_eq!(report.hits.len(), 1);
         assert_eq!(report.hits[0].document_path, "Home.md");
         assert!(report.hits[0].snippet.contains("[dashboard]"));
+    }
+
+    #[test]
+    fn search_hits_include_note_sections_and_line_spans() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = search_vault(
+            &paths,
+            &SearchQuery {
+                text: "references".to_string(),
+                ..SearchQuery::default()
+            },
+        )
+        .expect("search should succeed");
+
+        assert_eq!(report.hits.len(), 1);
+        let hit = &report.hits[0];
+        assert_eq!(hit.document_path, "Projects/Alpha.md");
+        assert_eq!(hit.section_id.as_deref(), Some("alpha/status@12"));
+        assert_eq!(hit.line_spans.len(), 1);
+        assert!(hit.line_spans[0].start_line <= 14);
+        assert!(hit.line_spans[0].end_line >= 14);
     }
 
     #[test]
