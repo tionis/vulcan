@@ -1942,12 +1942,22 @@ class Note {
     return this.__ensureDetails().blocks ?? [];
   }
 
+  outline() {
+    return this.__ensureDetails().outline ?? { total_lines: 0, sections: [], block_refs: [] };
+  }
+
   get tasks() {
     return this.file.tasks ?? [];
   }
 
   get dataview_fields() {
     return this.__ensureDetails().dataview_fields ?? [];
+  }
+
+  read(opts = {}) {
+    return JSON.parse(
+      __vulcan_note_read_json(this.file.path, JSON.stringify(__vulcanPlain(opts)))
+    );
   }
 
   links() {
@@ -1978,6 +1988,7 @@ class Note {
       merged.frontmatter = this.__details.frontmatter ?? merged.frontmatter;
       merged.headings = this.__details.headings ?? merged.headings;
       merged.blocks = this.__details.blocks ?? merged.blocks;
+      merged.outline = this.__details.outline ?? merged.outline;
       merged.dataview_fields = this.__details.dataview_fields ?? merged.dataview_fields;
     }
     return merged;
@@ -2224,8 +2235,10 @@ Example:
   vault.note("Projects/Alpha").content  // raw markdown from disk
 
 Note properties:
-  note.content  - raw markdown source
-  note.html     - rendered HTML using Vulcan's markdown pipeline
+  note.content       - raw markdown source
+  note.html          - rendered HTML using Vulcan's markdown pipeline
+  note.outline()     - section and block outline with semantic ids and line spans
+  note.read(opts)    - partial note read using heading/section/block/line/match selectors
 
 See also: vault.notes(), vault.query()`
 );
@@ -2885,6 +2898,24 @@ globalThis.Function = undefined;
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
+        let note_read_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_note_read_json",
+                Func::from(move |ctx: Ctx<'_>, path: String, options_json: String| {
+                    let options = parse_json_string::<crate::NoteReadOptions>(&ctx, &options_json)?;
+                    with_note_index(&note_read_state, &ctx, |_note_index| {
+                        to_json_string(
+                            &ctx,
+                            read_note_selection(&note_read_state.paths, &path, &options).map_err(
+                                |error| Exception::throw_message(&ctx, &error.to_string()),
+                            )?,
+                        )
+                    })
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
         let note_links_state = Arc::clone(&state);
         globals
             .set(
@@ -3444,12 +3475,14 @@ globalThis.Function = undefined;
             .ok_or_else(|| DataviewJsError::Message(format!("note is not indexed: {path}")))?;
         let config = load_vault_config(paths).config;
         let parsed = parse_document(&source, &config);
+        let outline = crate::outline_note(&source, &parsed);
         Ok(serde_json::json!({
             "page": page_object(note),
             "file": FileMetadataResolver::object(note),
             "frontmatter": note.frontmatter.clone(),
             "content": source,
             "html": render_markdown_html(&source),
+            "outline": outline,
             "headings": parsed.headings.into_iter().map(|heading| serde_json::json!({
                 "level": heading.level,
                 "text": heading.text,
@@ -3468,6 +3501,20 @@ globalThis.Function = undefined;
                 "kind": format!("{:?}", field.kind).to_ascii_lowercase(),
             })).collect::<Vec<_>>(),
         }))
+    }
+
+    fn read_note_selection(
+        paths: &VaultPaths,
+        note: &str,
+        options: &crate::NoteReadOptions,
+    ) -> Result<crate::NoteReadSelection, DataviewJsError> {
+        let path = resolve_existing_note_path(paths, note)?;
+        let source = fs::read_to_string(paths.vault_root().join(&path))
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let config = load_vault_config(paths).config;
+        let parsed = parse_document(&source, &config);
+        crate::read_note(&source, &parsed, options)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))
     }
 
     fn load_note_relationships(
@@ -5737,6 +5784,61 @@ cpu_limit_ms = 25
                 DataviewJsOutput::Table { headers, rows } => {
                     assert_eq!(headers, &vec!["raw".to_string(), "html".to_string()]);
                     assert_eq!(rows, &vec![vec![Value::Bool(true), Value::Bool(true)]]);
+                }
+                other => panic!("expected table output, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn dataviewjs_note_outline_and_partial_reads_share_cli_selectors() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const note = vault.note("Dashboard");
+                const outline = note.outline();
+                const tasks = outline.sections.find((section) => section.heading === "Tasks");
+                const selection = note.read({ section: tasks.id, match: "Write", context: 1 });
+                dv.table(
+                  ["sections", "section", "start", "content", "before", "after"],
+                  [[
+                    outline.sections.length,
+                    selection.section_id,
+                    selection.line_spans[0].start_line,
+                    selection.content.includes("Write docs") && selection.content.includes("Ship release"),
+                    selection.has_more_before,
+                    selection.has_more_after
+                  ]]
+                );
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            match &result.outputs[0] {
+                DataviewJsOutput::Table { headers, rows } => {
+                    assert_eq!(
+                        headers,
+                        &vec![
+                            "sections".to_string(),
+                            "section".to_string(),
+                            "start".to_string(),
+                            "content".to_string(),
+                            "before".to_string(),
+                            "after".to_string(),
+                        ]
+                    );
+                    assert!(rows[0][0].as_i64().is_some_and(|value| value >= 2));
+                    assert_eq!(rows[0][1], Value::String("tasks@22".to_string()));
+                    assert_eq!(rows[0][2], Value::from(22));
+                    assert_eq!(rows[0][3], Value::Bool(true));
+                    assert_eq!(rows[0][4], Value::Bool(true));
+                    assert_eq!(rows[0][5], Value::Bool(true));
                 }
                 other => panic!("expected table output, got {other:?}"),
             }

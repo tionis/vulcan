@@ -1672,8 +1672,81 @@ fn note_get_json_output_supports_composable_selectors() {
     assert_eq!(json["metadata"]["heading"], "Tasks");
     assert_eq!(json["metadata"]["match_pattern"], "TODO");
     assert_eq!(json["metadata"]["match_count"], 2);
+    assert_eq!(json["metadata"]["section_id"], "dashboard/tasks@9");
+    assert_eq!(json["metadata"]["total_lines"], 18);
+    assert_eq!(json["metadata"]["has_more_before"], true);
+    assert_eq!(json["metadata"]["has_more_after"], true);
     assert_eq!(json["metadata"]["line_spans"][0]["start_line"], 10);
     assert_eq!(json["metadata"]["line_spans"][0]["end_line"], 14);
+}
+
+#[test]
+fn note_outline_and_section_reads_expose_semantic_spans() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let outline_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "outline",
+            "Dashboard",
+        ])
+        .assert()
+        .success();
+    let outline = parse_stdout_json(&outline_assert);
+    let tasks_section = outline["sections"]
+        .as_array()
+        .expect("sections should be an array")
+        .iter()
+        .find(|section| section["heading"] == "Tasks")
+        .cloned()
+        .expect("Tasks section should be present");
+
+    assert_eq!(outline["path"], "Dashboard.md");
+    assert_eq!(outline["total_lines"], 18);
+    assert_eq!(outline["frontmatter_span"]["start_line"], 1);
+    assert_eq!(tasks_section["id"], "dashboard/tasks@9");
+    assert_eq!(tasks_section["start_line"], 9);
+    assert_eq!(tasks_section["end_line"], 14);
+
+    let section_id = tasks_section["id"]
+        .as_str()
+        .expect("section id should be a string");
+    let get_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "get",
+            "Dashboard",
+            "--section",
+            section_id,
+        ])
+        .assert()
+        .success();
+    let section_read = parse_stdout_json(&get_assert);
+
+    assert_eq!(
+        section_read["content"],
+        "## Tasks\nBefore\nTODO first\nContext after\n### Nested\nTODO nested\n"
+    );
+    assert_eq!(section_read["metadata"]["section_id"], section_id);
+    assert_eq!(section_read["metadata"]["line_spans"][0]["start_line"], 9);
+    assert_eq!(section_read["metadata"]["line_spans"][0]["end_line"], 14);
 }
 
 #[test]

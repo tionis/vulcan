@@ -1047,9 +1047,9 @@ The CLI's tool surface is designed for gradual discovery rather than loading all
 Skills serve double duty: they teach external runtimes how to use Vulcan effectively, and any future native assistant should consume the same files rather than invent a second prompt/skill system. The prompt includes a skill directory (names + one-line descriptions) so the LLM knows what knowledge is available.
 
 **Default skills shipped with Vulcan** (standard library):
-- **note-operations** — reading, creating, editing notes; `note get` selectors, frontmatter conventions, `note patch` safety
+- **note-operations** — reading, creating, editing notes; `note outline`, semantic `note get` selectors, frontmatter conventions, `note patch` safety
 - **vault-query** — query DSL, filter expressions, property operators, `search` vs `query` guidance
-- **js-api-guide** — vault JS API patterns, `vault.note()`, `vault.query()`, collection chains, `vault.transaction()`
+- **js-api-guide** — vault JS API patterns, `vault.note()`, semantic note outlining/partial reads, `vault.query()`, collection chains, `vault.transaction()`
 - **graph-exploration** — links, backlinks, graph paths, hubs, dead ends, when to use graph vs search
 - **daily-notes** — periodic note workflow, appending entries, reviewing date ranges, event syntax
 - **properties-and-tags** — metadata management, property types, tag conventions, querying by metadata
@@ -1092,7 +1092,7 @@ This keeps the subprocess harness story and the MCP story aligned in spirit whil
 
 The `note` command group fills the gap of having no way to read or write individual note content from the CLI. Key design decisions:
 
-- **`note get`** replaces `cat | grep | head | tail` for notes. Selectors (`--heading`, `--block-ref`, `--lines`, `--match`, `--context`, `--no-frontmatter`, `--raw`) are composable and work with `--output json`.
+- **`note outline` + `note get`** replace `cat | grep | head | tail` for notes. Agents can inspect semantic section ids first, then read by `--section`, `--heading`, `--block-ref`, `--lines`, `--match`, `--context`, `--no-frontmatter`, and `--raw` with consistent JSON metadata and continuation hints.
 - **`note patch`** fails on multiple matches by default (safety against unintended bulk edits). `--all` opts into replacing all occurrences. This reuses the `bulk_replace` infrastructure.
 - **`--check`** on write commands runs doctor-like diagnostics after writing. Non-blocking (writes succeed, warnings printed to stderr).
 

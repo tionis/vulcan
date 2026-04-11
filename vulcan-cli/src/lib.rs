@@ -1511,12 +1511,14 @@ struct NoteGetReport {
     frontmatter: Option<Value>,
     metadata: NoteGetMetadata,
     #[serde(skip)]
-    display_lines: Vec<NoteDisplayLine>,
+    display_lines: Vec<vulcan_core::NoteSelectedLine>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 struct NoteGetMetadata {
     mode: String,
+    section_id: Option<String>,
     heading: Option<String>,
     block_ref: Option<String>,
     lines: Option<String>,
@@ -1525,19 +1527,19 @@ struct NoteGetMetadata {
     no_frontmatter: bool,
     raw: bool,
     match_count: usize,
-    line_spans: Vec<NoteGetLineSpan>,
+    total_lines: usize,
+    has_more_before: bool,
+    has_more_after: bool,
+    line_spans: Vec<vulcan_core::NoteLineSpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct NoteGetLineSpan {
-    start_line: usize,
-    end_line: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NoteDisplayLine {
-    line_number: usize,
-    text: String,
+struct NoteOutlineReport {
+    path: String,
+    total_lines: usize,
+    frontmatter_span: Option<vulcan_core::NoteLineSpan>,
+    sections: Vec<vulcan_core::NoteOutlineSection>,
+    block_refs: Vec<vulcan_core::NoteOutlineBlockRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -10800,19 +10802,11 @@ fn markdown_heading_level(line: &str) -> Option<usize> {
         .then_some(hashes)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SourceLine {
-    number: usize,
-    raw: String,
-    text: String,
-    start: usize,
-    end: usize,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct NoteGetOptions<'a> {
     note: &'a str,
     mode: NoteGetMode,
+    section_id: Option<&'a str>,
     heading: Option<&'a str>,
     block_ref: Option<&'a str>,
     lines: Option<&'a str>,
@@ -10853,6 +10847,7 @@ fn run_note_get_command(
     let NoteGetOptions {
         note,
         mode,
+        section_id,
         heading,
         block_ref,
         lines,
@@ -10864,38 +10859,25 @@ fn run_note_get_command(
     let (relative_path, source) = read_existing_note_source(paths, note)?;
     let config = load_vault_config(paths).config;
     let parsed = vulcan_core::parse_document(&source, &config);
-    let source_lines = build_source_lines(&source);
+    let selection = vulcan_core::read_note(
+        &source,
+        &parsed,
+        &vulcan_core::NoteReadOptions {
+            heading: heading.map(ToOwned::to_owned),
+            section_id: section_id.map(ToOwned::to_owned),
+            block_ref: block_ref.map(ToOwned::to_owned),
+            lines: lines.map(ToOwned::to_owned),
+            match_pattern: match_pattern.map(ToOwned::to_owned),
+            context,
+            no_frontmatter,
+        },
+    )
+    .map_err(CliError::operation)?;
 
-    let mut selected = (0..source_lines.len()).collect::<Vec<_>>();
-    if let Some(heading) = heading {
-        let allowed = heading_line_indices(&source, &source_lines, &parsed, heading)?;
-        selected = intersect_sorted_line_indices(&selected, &allowed);
-    }
-    if let Some(block_ref) = block_ref {
-        let allowed = block_ref_line_indices(&source_lines, &parsed, block_ref)?;
-        selected = intersect_sorted_line_indices(&selected, &allowed);
-    }
-    if let Some(spec) = lines {
-        selected = select_line_range(&selected, spec)?;
-    }
-
-    let mut match_count = 0;
-    if let Some(pattern) = match_pattern {
-        let regex = Regex::new(pattern).map_err(CliError::operation)?;
-        let (filtered, hits) = select_matching_lines(&selected, &source_lines, &regex, context);
-        selected = filtered;
-        match_count = hits;
-    }
-
-    if no_frontmatter {
-        selected = strip_frontmatter_lines(&selected, &source, &source_lines);
-    }
-
-    let line_spans = selected_line_spans(&selected, &source_lines);
-    let selected_content = render_selected_raw_content(&selected, &source_lines);
-    let selection_is_full_document = selection_covers_full_document(&selected, &source_lines);
+    let selection_is_full_document =
+        selection_covers_full_document(&selection.selected_lines, selection.total_lines);
     let rendered_content = render_note_get_content(
-        &selected_content,
+        &selection.content,
         mode,
         selection_is_full_document && !no_frontmatter,
     );
@@ -10912,6 +10894,7 @@ fn run_note_get_command(
         frontmatter,
         metadata: NoteGetMetadata {
             mode: note_get_mode_name(mode).to_string(),
+            section_id: selection.section_id.clone(),
             heading: heading.map(ToOwned::to_owned),
             block_ref: block_ref.map(ToOwned::to_owned),
             lines: lines.map(ToOwned::to_owned),
@@ -10919,16 +10902,28 @@ fn run_note_get_command(
             context,
             no_frontmatter,
             raw,
-            match_count,
-            line_spans,
+            match_count: selection.match_count,
+            total_lines: selection.total_lines,
+            has_more_before: selection.has_more_before,
+            has_more_after: selection.has_more_after,
+            line_spans: selection.line_spans.clone(),
         },
-        display_lines: selected
-            .iter()
-            .map(|index| NoteDisplayLine {
-                line_number: source_lines[*index].number,
-                text: source_lines[*index].text.clone(),
-            })
-            .collect(),
+        display_lines: selection.selected_lines,
+    })
+}
+
+fn run_note_outline_command(paths: &VaultPaths, note: &str) -> Result<NoteOutlineReport, CliError> {
+    let (relative_path, source) = read_existing_note_source(paths, note)?;
+    let config = load_vault_config(paths).config;
+    let parsed = vulcan_core::parse_document(&source, &config);
+    let outline = vulcan_core::outline_note(&source, &parsed);
+
+    Ok(NoteOutlineReport {
+        path: relative_path,
+        total_lines: outline.total_lines,
+        frontmatter_span: outline.frontmatter_span,
+        sections: outline.sections,
+        block_refs: outline.block_refs,
     })
 }
 
@@ -10952,12 +10947,15 @@ fn note_get_mode_name(mode: NoteGetMode) -> &'static str {
     }
 }
 
-fn selection_covers_full_document(selected: &[usize], source_lines: &[SourceLine]) -> bool {
-    selected.len() == source_lines.len()
+fn selection_covers_full_document(
+    selected: &[vulcan_core::NoteSelectedLine],
+    total_lines: usize,
+) -> bool {
+    selected.len() == total_lines
         && selected
             .iter()
             .enumerate()
-            .all(|(expected, actual)| expected == *actual)
+            .all(|(expected, actual)| actual.line_number == expected + 1)
 }
 
 #[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
@@ -11721,259 +11719,6 @@ fn merge_explicit_frontmatter(
             Some(existing)
         }
     }
-}
-
-fn build_source_lines(source: &str) -> Vec<SourceLine> {
-    let mut offset = 0usize;
-    source
-        .split_inclusive('\n')
-        .enumerate()
-        .map(|(index, raw_line)| {
-            let line = SourceLine {
-                number: index + 1,
-                raw: raw_line.to_string(),
-                text: raw_line.trim_end_matches(['\n', '\r']).to_string(),
-                start: offset,
-                end: offset + raw_line.len(),
-            };
-            offset += raw_line.len();
-            line
-        })
-        .collect()
-}
-
-fn heading_line_indices(
-    source: &str,
-    source_lines: &[SourceLine],
-    parsed: &vulcan_core::ParsedDocument,
-    heading: &str,
-) -> Result<Vec<usize>, CliError> {
-    let matches = parsed
-        .headings
-        .iter()
-        .filter(|candidate| candidate.text == heading)
-        .collect::<Vec<_>>();
-    let heading = match matches.as_slice() {
-        [] => {
-            return Err(CliError::operation(format!(
-                "no heading named '{heading}' found"
-            )))
-        }
-        [heading] => *heading,
-        _ => {
-            return Err(CliError::operation(format!(
-                "multiple heading entries named '{heading}'"
-            )))
-        }
-    };
-    let end = parsed
-        .headings
-        .iter()
-        .filter(|candidate| candidate.byte_offset > heading.byte_offset)
-        .find(|candidate| candidate.level <= heading.level)
-        .map_or(source.len(), |candidate| candidate.byte_offset);
-    Ok(line_indices_for_byte_range(
-        source_lines,
-        heading.byte_offset,
-        end,
-    ))
-}
-
-fn block_ref_line_indices(
-    source_lines: &[SourceLine],
-    parsed: &vulcan_core::ParsedDocument,
-    block_ref: &str,
-) -> Result<Vec<usize>, CliError> {
-    let matches = parsed
-        .block_refs
-        .iter()
-        .filter(|candidate| candidate.block_id_text == block_ref)
-        .collect::<Vec<_>>();
-    let block_ref = match matches.as_slice() {
-        [] => {
-            return Err(CliError::operation(format!(
-                "no block ref named '{block_ref}' found"
-            )))
-        }
-        [block_ref] => *block_ref,
-        _ => {
-            return Err(CliError::operation(format!(
-                "multiple block refs named '{block_ref}'"
-            )))
-        }
-    };
-    Ok(line_indices_for_byte_range(
-        source_lines,
-        block_ref.target_block_byte_start,
-        block_ref.target_block_byte_end,
-    ))
-}
-
-fn line_indices_for_byte_range(
-    source_lines: &[SourceLine],
-    start: usize,
-    end: usize,
-) -> Vec<usize> {
-    source_lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| line.start < end && line.end > start)
-        .map(|(index, _)| index)
-        .collect()
-}
-
-fn intersect_sorted_line_indices(current: &[usize], allowed: &[usize]) -> Vec<usize> {
-    let mut left = 0usize;
-    let mut right = 0usize;
-    let mut intersection = Vec::new();
-    while left < current.len() && right < allowed.len() {
-        match current[left].cmp(&allowed[right]) {
-            std::cmp::Ordering::Less => left += 1,
-            std::cmp::Ordering::Greater => right += 1,
-            std::cmp::Ordering::Equal => {
-                intersection.push(current[left]);
-                left += 1;
-                right += 1;
-            }
-        }
-    }
-    intersection
-}
-
-fn select_line_range(current: &[usize], spec: &str) -> Result<Vec<usize>, CliError> {
-    if current.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let trimmed = spec.trim();
-    if trimmed.is_empty() {
-        return Err(CliError::operation("line range must not be empty"));
-    }
-
-    let length = current.len();
-    let (start, end) = if let Some(last_count) = trimmed.strip_prefix('-') {
-        let count = parse_positive_usize(last_count, "line range")?;
-        let start = length.saturating_sub(count).saturating_add(1);
-        (start.max(1), length)
-    } else if let Some((start, end)) = trimmed.split_once('-') {
-        let start = parse_positive_usize(start, "line range start")?;
-        let end = if end.trim().is_empty() {
-            length
-        } else {
-            parse_positive_usize(end, "line range end")?
-        };
-        (start, end)
-    } else {
-        let line = parse_positive_usize(trimmed, "line range")?;
-        (line, line)
-    };
-
-    if start == 0 || end == 0 || start > end {
-        return Err(CliError::operation(format!("invalid line range: {spec}")));
-    }
-
-    let start_index = start.saturating_sub(1).min(length);
-    let end_index = end.min(length);
-    Ok(current[start_index..end_index].to_vec())
-}
-
-fn parse_positive_usize(value: &str, label: &str) -> Result<usize, CliError> {
-    let parsed = value.trim().parse::<usize>().map_err(CliError::operation)?;
-    if parsed == 0 {
-        return Err(CliError::operation(format!("{label} must be >= 1")));
-    }
-    Ok(parsed)
-}
-
-fn select_matching_lines(
-    current: &[usize],
-    source_lines: &[SourceLine],
-    pattern: &Regex,
-    context: usize,
-) -> (Vec<usize>, usize) {
-    let hit_positions = current
-        .iter()
-        .enumerate()
-        .filter_map(|(position, index)| {
-            pattern
-                .is_match(&source_lines[*index].text)
-                .then_some(position)
-        })
-        .collect::<Vec<_>>();
-
-    if hit_positions.is_empty() {
-        return (Vec::new(), 0);
-    }
-
-    let mut selected_positions = Vec::new();
-    for hit_position in &hit_positions {
-        let start = hit_position.saturating_sub(context);
-        let end = (*hit_position + context + 1).min(current.len());
-        for position in start..end {
-            if selected_positions.last() != Some(&position) {
-                selected_positions.push(position);
-            }
-        }
-    }
-
-    (
-        selected_positions
-            .into_iter()
-            .map(|position| current[position])
-            .collect(),
-        hit_positions.len(),
-    )
-}
-
-fn strip_frontmatter_lines(
-    current: &[usize],
-    source: &str,
-    source_lines: &[SourceLine],
-) -> Vec<usize> {
-    let Some((_, _, body_start)) = find_frontmatter_block(source) else {
-        return current.to_vec();
-    };
-
-    current
-        .iter()
-        .copied()
-        .filter(|index| source_lines[*index].start >= body_start)
-        .collect()
-}
-
-fn selected_line_spans(selected: &[usize], source_lines: &[SourceLine]) -> Vec<NoteGetLineSpan> {
-    if selected.is_empty() {
-        return Vec::new();
-    }
-
-    let mut spans = Vec::new();
-    let mut start_index = selected[0];
-    let mut previous_index = selected[0];
-
-    for current_index in selected.iter().copied().skip(1) {
-        if current_index != previous_index + 1 {
-            spans.push(NoteGetLineSpan {
-                start_line: source_lines[start_index].number,
-                end_line: source_lines[previous_index].number,
-            });
-            start_index = current_index;
-        }
-        previous_index = current_index;
-    }
-
-    spans.push(NoteGetLineSpan {
-        start_line: source_lines[start_index].number,
-        end_line: source_lines[previous_index].number,
-    });
-    spans
-}
-
-fn render_selected_raw_content(selected: &[usize], source_lines: &[SourceLine]) -> String {
-    let mut rendered = String::new();
-    for index in selected {
-        rendered.push_str(&source_lines[*index].raw);
-    }
-    rendered
 }
 
 fn parse_note_patch_matcher(pattern: &str) -> Result<NotePatchMatcher, CliError> {
@@ -16931,6 +16676,67 @@ fn print_note_get_report(
             } else {
                 print_markdown_output(output, &report.content, stdout_is_tty, use_color)?;
                 return Ok(());
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_note_outline_report(
+    output: OutputFormat,
+    report: &NoteOutlineReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!("{}", report.path);
+            println!("Total lines: {}", report.total_lines);
+            if let Some(frontmatter) = &report.frontmatter_span {
+                println!(
+                    "Frontmatter: {}-{}",
+                    frontmatter.start_line, frontmatter.end_line
+                );
+            }
+
+            println!("Sections:");
+            if report.sections.is_empty() {
+                println!("- none");
+            } else {
+                for section in &report.sections {
+                    let label = section
+                        .heading_path
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" > ");
+                    let label = if label.is_empty() {
+                        "(preamble)".to_string()
+                    } else {
+                        label
+                    };
+                    println!(
+                        "- {} [{}-{}] {}",
+                        section.id, section.start_line, section.end_line, label
+                    );
+                }
+            }
+
+            println!("Block refs:");
+            if report.block_refs.is_empty() {
+                println!("- none");
+            } else {
+                for block_ref in &report.block_refs {
+                    match &block_ref.section_id {
+                        Some(section_id) => println!(
+                            "- {} [{}-{}] section={section_id}",
+                            block_ref.id, block_ref.start_line, block_ref.end_line
+                        ),
+                        None => println!(
+                            "- {} [{}-{}]",
+                            block_ref.id, block_ref.start_line, block_ref.end_line
+                        ),
+                    }
+                }
             }
             Ok(())
         }
@@ -30267,6 +30073,7 @@ mod tests {
                 command: NoteCommand::Get {
                     note: "Dashboard".to_string(),
                     mode: NoteGetMode::Markdown,
+                    section_id: None,
                     heading: Some("Tasks".to_string()),
                     block_ref: None,
                     lines: None,
@@ -30290,6 +30097,7 @@ mod tests {
                 command: NoteCommand::Get {
                     note: "Dashboard".to_string(),
                     mode: NoteGetMode::Html,
+                    section_id: None,
                     heading: None,
                     block_ref: None,
                     lines: None,
@@ -30297,6 +30105,21 @@ mod tests {
                     context: 0,
                     no_frontmatter: false,
                     raw: false,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_outline_command() {
+        let cli = Cli::try_parse_from(["vulcan", "note", "outline", "Dashboard"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::Outline {
+                    note: "Dashboard".to_string(),
                 },
             }
         );

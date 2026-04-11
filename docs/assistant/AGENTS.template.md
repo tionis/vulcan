@@ -11,7 +11,7 @@ Core conventions:
 
 Useful command groups:
 
-- Notes: `note get`, `note create`, `note set`, `note append`, `note patch`
+- Notes: `note outline`, `note get`, `note create`, `note set`, `note append`, `note patch`
 - Querying: `search`, `query`, `ls`, `backlinks`, `links`, `graph ...`
 - Refactors: `refactor rename-alias`, `rename-heading`, `rename-property`, `merge-tags`, `move`
 - Web and git: `web search`, `web fetch`, `git status`, `git diff`, `git log`, `git commit`

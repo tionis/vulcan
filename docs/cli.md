@@ -267,6 +267,7 @@ Behavior:
 - `--sandbox strict|fs|net|none` selects the runtime capability tier for one script run or REPL session.
 - The REPL supports multiline input, tab completion, history in `.vulcan/repl_history`, pretty-printed objects, and preserved JS variables between prompts.
 - The runtime exposes `vault.note()`, `vault.notes()`, `vault.query()`, `vault.search()`, `vault.graph.*`, `vault.daily.*`, `vault.events()`, `vault.set/create/append/patch/update/unset`, `vault.transaction()`, `vault.refactor.*`, `web.search()`, `web.fetch()`, and `help(obj)`.
+- `vault.note(path).outline()` returns the same semantic section/block outline as `vulcan note outline`, and `vault.note(path).read(opts)` reuses the same section/heading/block/line/match selectors as `vulcan note get`.
 
 ### Plugin commands
 
@@ -655,6 +656,8 @@ Behavior:
 Examples:
 
 ```bash
+vulcan note outline Dashboard
+vulcan note get Dashboard --section dashboard/tasks@9
 vulcan note get Dashboard --heading Tasks --match TODO --context 1
 vulcan note get Dashboard --block-ref done-item --raw
 vulcan note set Dashboard --no-frontmatter < body.md
@@ -665,9 +668,10 @@ vulcan note patch Dashboard --find "/TODO \\d+/" --replace DONE --all --dry-run
 
 Behavior:
 
-- `note get` reads one note from disk and can compose `--heading`, `--block-ref`, `--lines`, `--match`, `--context`, and `--no-frontmatter`.
+- `note outline` returns section ids, heading paths, block refs, and absolute line spans so agents can discover a note's structure before reading it.
+- `note get` reads one note from disk and can compose `--section`, `--heading`, `--block-ref`, `--lines`, `--match`, `--context`, and `--no-frontmatter`.
 - `note get --raw` prints only the selected content; without `--raw`, line-oriented selectors show line numbers in human output.
-- `note get --output json` returns the selected `content`, parsed `frontmatter`, and selection `metadata`.
+- `note get --output json` returns the selected `content`, parsed `frontmatter`, and selection `metadata`, including continuation hints (`total_lines`, `has_more_before`, `has_more_after`) and `section_id` when applicable.
 - `note set` reads replacement content from stdin by default; `--file <path>` switches the input source.
 - `note set --no-frontmatter` preserves the leading YAML block byte-for-byte and replaces only the note body.
 - `note create` creates an empty note when stdin is a TTY, or merges piped stdin content with an optional template body when provided.
