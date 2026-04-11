@@ -2877,7 +2877,8 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.19.12 (plugin system)  ← 9.19.1,9.19.2,9.19.6│── Wave 8+ (after fixes+trust+cmds)
 9.19.13 (permissions)    ← 9.19.6,9.19.12│── Wave 9 (after full cmd surface+plugins)
 9.19.14 (binary size)    ← standalone  │── anytime (research)
-9.19.15 (test hardening) ← 9.19.6,9.19.7,9.19.13,9.19.12│── final hardening wave before 9.20/10
+9.19.15 (MCP rework)     ← 9.12.6,9.18.7,9.19.6,9.19.13│── Wave 9 (after vault-native prompts + permissions + basic MCP)
+9.19.16 (test hardening) ← 9.19.6,9.19.7,9.19.13,9.19.12│── final hardening wave before 9.20/10
 ```
 
 **Recommended implementation order:**
@@ -2896,7 +2897,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 10. **9.17.7 (init integration)** can land anytime after 9.17.6.
 11. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
 
-**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the AI path, the critical chain is: 9.18.2/9.18.7/9.18.8 → 9.12.1–9.12.6 (`pi` integration). Native chat adapters are explicitly off the current critical path. For JS runtime: 9.8.8 → 9.18.5.
+**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the subprocess-runtime AI path, the critical chain is: 9.18.2/9.18.7/9.18.8 → 9.12.1–9.12.6 (`pi` integration). For the MCP-native AI path, the follow-on chain is: 9.12.6 (vault-native prompts/skills) → 9.19.6 (basic MCP server) → 9.19.13 (permissions) → 9.19.15 (protocol-native MCP rework). Native chat adapters are explicitly off the current critical path. For JS runtime: 9.8.8 → 9.18.5.
 
 **Note on 9.8.3 and 9.16:** The `file.day` metadata field in 9.8.3 depends on periodic note configuration from 9.16. However, `file.day` can be stubbed initially (return null when no periodic config exists) and filled in when 9.16 lands. This avoids blocking all of 9.8 on 9.16.
 
@@ -2931,7 +2932,8 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 12. [x] **9.19.12** (plugins) — after permissions design is clear
 13. [x] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
 14. [x] **9.19.14** (binary size) — informational, anytime
-15. [x] **9.19.15** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
+15. [ ] **9.19.15** (MCP protocol-native rework) — promote MCP from "CLI-over-JSON-RPC" to a protocol-native surface with curated tools, vault-native prompts, resources, completion, and structured results
+16. [x] **9.19.16** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
 
 #### 9.19.1 Bug fixes
 
@@ -3176,17 +3178,7 @@ The `config` group currently only has `import`. Users need to inspect and modify
 - [x] MCP server should respect the permission layer (9.19.13) via `--permissions <profile>`
 - [x] Add `vulcan mcp` to the top-level command list (it's an integration point, not a subcommand of `index`)
 
-**Follow-on MCP refinement (not started):**
-
-The initial stdio server above is enough for local harnesses that already know Vulcan's command surface, but it is not the end-state for generic MCP clients. In the CLI/subprocess case the harness can inject `AGENTS.md` and skill summaries up front; a generic MCP client usually cannot. That means MCP needs its own protocol-native discovery surface instead of assuming out-of-band skill injection.
-
-- [ ] Split the command surface into headless MCP tools vs CLI-only interactive affordances (TUI commands, `$EDITOR` launches, desktop openers, nested server startup)
-- [ ] Expose command docs, vault-local assistant material, and skill/reference content over MCP `resources/list` + `resources/read`
-- [ ] Expose reusable workflow starters from the configured vault prompts folder over MCP `prompts/list` + `prompts/get` instead of relying only on injected AGENTS/skills
-- [ ] Add MCP-native completion for prompt/resource arguments so progressive disclosure works inside the protocol rather than through the hidden CLI `complete` command
-- [ ] Add an HTTP MCP transport on the future axum daemon/router layer; keep the current stdio server as the local-process option
-- [-] Defer MCP `tasks` until Vulcan has a concrete long-running/session model that benefits from them
-- [-] Defer MCP Apps integration until there is a concrete host/UI flow to target; do not add app-specific surface area speculatively
+Full MCP follow-on work is tracked in **9.19.15 MCP protocol-native rework** below.
 
 #### 9.19.7 Command reorganization
 
@@ -3598,11 +3590,93 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 - [x] Narrow `zip` features to `deflate` now that exports only use stored and deflated entries
 - [x] Document findings in `docs/performance.md`
 
-#### 9.19.15 Integration hardening and fuzzing
+#### 9.19.15 MCP protocol-native rework
+
+**Goal:** Turn the initial `vulcan mcp` stdio wrapper into a protocol-native MCP server that works well for generic MCP clients, not only subprocess-style harnesses that already know Vulcan's tool and skill layout.
+
+**Depends on:** 9.12.6 (vault-native prompts and skills), 9.18.7 (stable `describe`/`help` docs), 9.19.6 (basic stdio MCP server), and 9.19.13 (permission layer). The HTTP transport portion shares contracts with Phase 10's axum daemon/router work rather than inventing a separate server stack.
+
+**Design principle:** MCP is not just "the CLI schema over JSON-RPC". In the subprocess/CLI case the host can preload `AGENTS.md`, prompt files, and skill summaries. Generic MCP clients usually cannot. Vulcan therefore needs its own protocol-native discovery and progressive-disclosure surface.
+
+**Protocol baseline**
+
+- [ ] Upgrade the MCP server baseline to **protocolVersion `2025-06-18`** rather than staying on `2024-11-05`
+- [ ] Advertise protocol-native capabilities instead of only `{ tools: {} }`: `tools`, `resources`, `prompts`, and `completions`, with `listChanged` where supported
+- [ ] Keep **stdio** as the local-process/default transport for Phase 9
+- [ ] Define an internal transport-agnostic MCP server core (registry + dispatcher + serializers) so stdio and later HTTP transports share the same behavior
+- [ ] Treat `2025-11-25` `tasks` as explicitly out of scope for this sub-phase; do not upgrade solely to pick up experimental task primitives
+
+**Tool surface curation**
+
+- [ ] Replace "all visible CLI leaf commands become MCP tools" with an explicit MCP tool registry
+- [ ] Curate a **headless-only** default MCP tool surface: hide TUI/editor/desktop-launch/server-management commands such as `browse`, `edit`, `open`, `bases_tui`, `config edit`, nested `mcp`, and similar interactive affordances
+- [ ] Define server-side MCP tool packs or exposure modes such as `core`, `extended`, and `admin`, with `core` as the default for generic clients
+- [ ] Ensure MCP tool exposure composes with permission profiles rather than bypassing them
+- [ ] Decide how `vulcan describe --format mcp` maps to the curated surface so CLI schema export and live MCP exposure do not drift silently
+
+**Tool metadata and structured results**
+
+- [ ] Add MCP tool metadata beyond `name`/`description`/`inputSchema`: `title` plus `annotations` such as `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`
+- [ ] Add `outputSchema` for tools whose JSON result shape is stable enough to declare
+- [ ] Return `structuredContent` plus a text fallback for tool calls instead of wrapping raw CLI JSON stdout as opaque text
+- [ ] Distinguish JSON-RPC protocol errors (unknown tool, invalid params, server error) from tool execution failures returned with `isError: true`
+- [ ] For very large results, support summarized text plus embedded resource references rather than forcing the entire payload into one text blob
+
+**Vault-native prompts**
+
+- [ ] Implement a shared prompt loader over `assistant.prompts_folder` from `.vulcan/config.toml`
+- [ ] Expose prompt files from that configured vault folder through MCP `prompts/list` + `prompts/get`
+- [ ] Support a Markdown + frontmatter prompt format that can declare prompt `name`, `description`, `arguments`, `version`, and tags without introducing a second prompt store
+- [ ] Reuse the same prompt loader for subprocess-runtime helpers and later 9.21 integrated-assistant flows
+- [ ] Allow `vulcan init --agent-files` / `vulcan agent install` to scaffold example prompt files into the configured prompts folder
+- [ ] Emit `notifications/prompts/list_changed` when the available vault prompt set changes
+
+**Resources and reference material**
+
+- [ ] Expose protocol-native reference material over `resources/list` + `resources/read`: command docs/help, vault `AGENTS.md`, assistant config summaries, skill indexes, and skill content
+- [ ] Use MCP resource templates where appropriate instead of trying to enumerate every high-cardinality item eagerly
+- [ ] Add stable resource URIs for machine-readable command docs and assistant material, e.g. command help by command path and skill content by skill name
+- [ ] Emit `notifications/resources/list_changed` when relevant vault assistant files or config-backed docs change
+- [ ] Treat resources as the MCP replacement for out-of-band injected skill/reference text in generic clients
+
+**Completion and progressive disclosure**
+
+- [ ] Implement MCP `completion/complete` for prompt arguments and resource-template arguments
+- [ ] Reuse the existing dynamic completion engine where practical: note names, prompt names, skill names, command paths, bases views, task views, and periodic dates
+- [ ] Use completions plus prompt/resource discovery to keep the default MCP surface compact while still making advanced capability discoverable on demand
+- [ ] Ensure completion responses respect permission profiles and avoid leaking hidden or unauthorized names
+
+**Dispatch and performance**
+
+- [ ] Replace per-tool subprocess respawning with direct in-process dispatch to the same command handlers/serializers used by the CLI
+- [ ] Preserve CLI/MCP parity for refresh behavior, permission checks, and JSON report structs while removing process spawn overhead
+- [ ] Keep a single source of truth for MCP permission requirements, annotations, and output schemas so the registry does not drift from command behavior
+- [ ] Add cancellation/timeout handling where practical so long-running MCP calls fail predictably rather than hanging the client
+
+**HTTP transport follow-through**
+
+- [ ] Prepare the MCP core so that Phase 10's axum daemon can expose the same registry over **Streamable HTTP** without redesigning the feature surface
+- [-] Actual Streamable HTTP transport implementation lands with the Phase 10 daemon/router work, not on the current hand-rolled single-vault server
+- [ ] When the HTTP transport lands, reuse daemon authentication and permission enforcement rather than inventing MCP-specific auth semantics
+
+**Explicit deferrals**
+
+- [-] Defer MCP `tasks` until Vulcan has a concrete long-running/session model that benefits from them
+- [-] Defer MCP Apps integration until there is a concrete host/UI flow to target; do not add app-specific surface area speculatively
+
+**Testing**
+
+- [ ] Add end-to-end MCP integration tests for initialize/capability negotiation, `tools/*`, `resources/*`, `prompts/*`, and `completion/complete`
+- [ ] Add regression tests for permission-filtered tool/resource/prompt visibility and denial paths
+- [ ] Add fixture-driven tests for vault prompt loading from `assistant.prompts_folder` and prompt change notifications
+- [ ] Add parity tests asserting that structured MCP outputs match the corresponding CLI `--output json` report shapes
+- [ ] Add tests covering curated tool exposure so interactive-only commands cannot accidentally leak back into the MCP surface
+
+#### 9.19.16 Integration hardening and fuzzing
 
 **Goal:** Make the application difficult to break by expanding automated coverage far beyond per-command happy paths. This phase focuses on end-to-end integration flows, edge cases, regression harnesses, and parser/query fuzzing so later phases inherit a stable base rather than stacking on brittle behavior.
 
-**Depends on:** 9.19.6 (full CLI surface), 9.19.7 (command reorg stabilized), 9.19.13 (permission layer), and ideally 9.19.12 once plugin flows exist. Work can start earlier, but this phase should be treated as the final hardening pass before Phase 9.20 and Phase 10 become the main focus.
+**Depends on:** 9.19.6 (full CLI surface), 9.19.7 (command reorg stabilized), 9.19.13 (permission layer), and ideally 9.19.12 once plugin flows exist. Work can start earlier, but this phase should be treated as the final hardening pass before Phase 9.20 and Phase 10 become the main focus. If 9.19.15 lands before later platform work, extend this harness to cover the protocol-native MCP surface as part of normal regression expansion.
 
 **Principle:** Prefer tests that reflect how real users and external runtimes actually drive Vulcan:
 
