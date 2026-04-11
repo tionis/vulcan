@@ -10003,6 +10003,45 @@ fn build_export_metadata_transform_vault() -> (TempDir, PathBuf) {
     (temp_dir, vault_root)
 }
 
+fn build_export_replacement_transform_vault() -> (TempDir, PathBuf) {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+    fs::create_dir_all(vault_root.join("People")).expect("people dir should exist");
+    fs::create_dir_all(vault_root.join("assets")).expect("assets dir should exist");
+    fs::write(
+        vault_root.join("Home.md"),
+        concat!(
+            "---\n",
+            "email: home@example.com\n",
+            "contact: \"[[People/Bob]]\"\n",
+            "asset: \"![[assets/secret.png]]\"\n",
+            "---\n\n",
+            "# Home\n\n",
+            "Visible [[People/Bob]].\n\n",
+            "`= [[Projects/Alpha]].email`\n\n",
+            "![[assets/secret.png]]\n",
+        ),
+    )
+    .expect("home note should write");
+    fs::write(
+        vault_root.join("Projects/Alpha.md"),
+        concat!(
+            "---\n",
+            "email: alpha@example.com\n",
+            "---\n\n",
+            "# Alpha\n"
+        ),
+    )
+    .expect("alpha note should write");
+    fs::write(vault_root.join("People/Bob.md"), "# Bob\n").expect("bob note should write");
+    fs::write(vault_root.join("People/Alice.md"), "# Alice\n").expect("alice note should write");
+    fs::write(vault_root.join("assets/public.png"), b"public").expect("public asset should write");
+    fs::write(vault_root.join("assets/secret.png"), b"secret").expect("secret asset should write");
+    run_scan(&vault_root);
+    (temp_dir, vault_root)
+}
+
 #[test]
 fn export_json_exclude_callout_removes_hidden_content_and_links() {
     let (_temp_dir, vault_root) = build_export_transform_vault();
@@ -10166,6 +10205,103 @@ fn export_json_metadata_transforms_redact_note_metadata_and_cross_note_lookups()
 }
 
 #[test]
+fn export_json_replacement_transforms_rewrite_content_links_and_metadata() {
+    let (_temp_dir, vault_root) = build_export_replacement_transform_vault();
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "json",
+            r#"from notes where file.path matches "^(Home|Projects/Alpha)\.md$""#,
+            "--replace-rule",
+            "literal",
+            "[[People/Bob]]",
+            "[[People/Alice]]",
+            "--replace-rule",
+            "regex",
+            "[A-Za-z0-9._%+-]+@example\\.com",
+            "redacted",
+            "--pretty",
+        ])
+        .assert()
+        .success();
+    let json: Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("json export should emit valid JSON");
+
+    let notes = json["notes"].as_array().expect("notes should be an array");
+    let home = notes
+        .iter()
+        .find(|note| note["document_path"] == "Home.md")
+        .expect("home note should be exported");
+    let alpha = notes
+        .iter()
+        .find(|note| note["document_path"] == "Projects/Alpha.md")
+        .expect("alpha note should be exported");
+
+    let home_content = home["content"].as_str().unwrap_or_default();
+    assert!(home_content.contains("Visible [[People/Alice]]."));
+    assert!(!home_content.contains("[[People/Bob]]"));
+
+    let home_links = home["links"].as_array().expect("links should be an array");
+    assert!(home_links.iter().any(|value| value == "[[People/Alice]]"));
+    assert!(!home_links.iter().any(|value| value == "[[People/Bob]]"));
+
+    let home_frontmatter = home["frontmatter"]
+        .as_object()
+        .expect("frontmatter should be an object");
+    assert_eq!(
+        home_frontmatter.get("email"),
+        Some(&Value::String("redacted".to_string()))
+    );
+    assert_eq!(
+        home_frontmatter.get("contact"),
+        Some(&Value::String("[[People/Alice]]".to_string()))
+    );
+
+    let home_properties = home["properties"]
+        .as_object()
+        .expect("properties should be an object");
+    assert_eq!(
+        home_properties.get("email"),
+        Some(&Value::String("redacted".to_string()))
+    );
+    assert_eq!(
+        home_properties.get("contact"),
+        Some(&Value::String("[[People/Alice]]".to_string()))
+    );
+
+    let home_inline = home["inline_expressions"]
+        .as_array()
+        .expect("inline expressions should be an array");
+    assert_eq!(home_inline.len(), 1);
+    assert_eq!(home_inline[0]["expression"], "[[Projects/Alpha]].email");
+    assert_eq!(
+        home_inline[0]["value"],
+        Value::String("redacted".to_string())
+    );
+
+    let alpha_frontmatter = alpha["frontmatter"]
+        .as_object()
+        .expect("frontmatter should be an object");
+    assert_eq!(
+        alpha_frontmatter.get("email"),
+        Some(&Value::String("redacted".to_string()))
+    );
+    let alpha_properties = alpha["properties"]
+        .as_object()
+        .expect("properties should be an object");
+    assert_eq!(
+        alpha_properties.get("email"),
+        Some(&Value::String("redacted".to_string()))
+    );
+}
+
+#[test]
 fn export_zip_exclude_callout_skips_hidden_attachments() {
     let (temp_dir, vault_root) = build_export_transform_vault();
     let export_path = temp_dir.path().join("public.zip");
@@ -10269,6 +10405,69 @@ fn export_zip_metadata_transforms_skip_hidden_metadata_attachments() {
         .expect("notes manifest should be readable");
     assert!(!notes_json.contains("secret-frontmatter.png"));
     assert!(!notes_json.contains("secret-inline.png"));
+}
+
+#[test]
+fn export_zip_replacement_transforms_rewrite_attachment_references() {
+    let (temp_dir, vault_root) = build_export_replacement_transform_vault();
+    let export_path = temp_dir.path().join("public.zip");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "zip",
+            r#"from notes where file.path = "Home.md""#,
+            "--replace-rule",
+            "literal",
+            "assets/secret.png",
+            "assets/public.png",
+            "-o",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("zip export should exist");
+    let mut archive = ZipArchive::new(file).expect("zip export should open");
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        names.push(
+            archive
+                .by_index(index)
+                .expect("zip entry should be readable")
+                .name()
+                .to_string(),
+        );
+    }
+
+    assert!(names.contains(&"Home.md".to_string()));
+    assert!(names.contains(&"assets/public.png".to_string()));
+    assert!(!names.contains(&"assets/secret.png".to_string()));
+
+    let mut exported_home = String::new();
+    archive
+        .by_name("Home.md")
+        .expect("exported note should exist")
+        .read_to_string(&mut exported_home)
+        .expect("exported note should be readable");
+    assert!(exported_home.contains("assets/public.png"));
+    assert!(!exported_home.contains("assets/secret.png"));
+
+    let mut notes_json = String::new();
+    archive
+        .by_name(".vulcan-export/notes.json")
+        .expect("notes manifest should exist")
+        .read_to_string(&mut notes_json)
+        .expect("notes manifest should be readable");
+    assert!(notes_json.contains("assets/public.png"));
+    assert!(!notes_json.contains("assets/secret.png"));
 }
 
 #[test]
@@ -11027,7 +11226,7 @@ fn export_profiles_list_and_run_named_epub_profile() {
 
 #[test]
 fn export_profile_create_and_run_support_content_transforms() {
-    let (_temp_dir, vault_root) = build_export_transform_vault();
+    let (_temp_dir, vault_root) = build_export_replacement_transform_vault();
     let vault_root_str = vault_root
         .to_str()
         .expect("vault path should be valid utf-8")
@@ -11046,37 +11245,42 @@ fn export_profile_create_and_run_support_content_transforms() {
             "public_json",
             "--format",
             "json",
-            r#"from notes where file.path = "Home.md""#,
+            r#"from notes where file.path matches "^(Home|Projects/Alpha)\.md$""#,
             "-o",
             "exports/public.json",
-            "--exclude-callout",
-            "secret gm",
-            "--exclude-heading",
-            "scratch",
-            "--exclude-frontmatter-key",
-            "email",
-            "--exclude-inline-field",
-            "owner",
+            "--replace-rule",
+            "literal",
+            "[[People/Bob]]",
+            "[[People/Alice]]",
+            "--replace-rule",
+            "regex",
+            "[A-Za-z0-9._%+-]+@example\\.com",
+            "redacted",
         ])
         .assert()
         .success();
     let create_json = parse_stdout_json(&create_assert);
     assert_eq!(create_json["profile"]["format"], "json");
     assert_eq!(
-        create_json["profile"]["content_transforms"][0]["exclude_callouts"][0],
-        "secret gm"
+        create_json["profile"]["content_transforms"][0]["replace"][0]["pattern"],
+        "[[People/Bob]]"
     );
     assert_eq!(
-        create_json["profile"]["content_transforms"][0]["exclude_headings"][0],
-        "scratch"
+        create_json["profile"]["content_transforms"][0]["replace"][0]["replacement"],
+        "[[People/Alice]]"
+    );
+    assert!(create_json["profile"]["content_transforms"][0]["replace"][0]["regex"].is_null());
+    assert_eq!(
+        create_json["profile"]["content_transforms"][0]["replace"][1]["pattern"],
+        "[A-Za-z0-9._%+-]+@example\\.com"
     );
     assert_eq!(
-        create_json["profile"]["content_transforms"][0]["exclude_frontmatter_keys"][0],
-        "email"
+        create_json["profile"]["content_transforms"][0]["replace"][1]["replacement"],
+        "redacted"
     );
     assert_eq!(
-        create_json["profile"]["content_transforms"][0]["exclude_inline_fields"][0],
-        "owner"
+        create_json["profile"]["content_transforms"][0]["replace"][1]["regex"],
+        Value::Bool(true)
     );
 
     let run_assert = Command::cargo_bin("vulcan")
@@ -11098,12 +11302,14 @@ fn export_profile_create_and_run_support_content_transforms() {
 
     let exported = fs::read_to_string(vault_root.join("exports/public.json"))
         .expect("profile output should exist");
-    assert!(!exported.contains("Hidden [[People/Bob]]."));
-    assert!(!exported.contains("assets/secret.png"));
+    assert!(exported.contains("[[People/Alice]]"));
+    assert!(!exported.contains("[[People/Bob]]"));
+    assert!(exported.contains("redacted"));
 
     let config_contents =
         fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("config should exist");
     assert!(config_contents.contains("[[export.profiles.public_json.content_transforms]]"));
+    assert!(config_contents.contains("[[export.profiles.public_json.content_transforms.replace]]"));
 }
 
 #[test]
@@ -11300,6 +11506,72 @@ exclude_callouts = ["secret gm"]
         .as_str()
         .unwrap_or_default()
         .contains("Hidden [[People/Bob]]."));
+}
+
+#[test]
+fn export_json_rejects_invalid_regex_replacement_rules() {
+    let (_temp_dir, vault_root) = build_export_replacement_transform_vault();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "json",
+            r#"from notes where file.path = "Home.md""#,
+            "--replace-rule",
+            "regex",
+            "(",
+            "[redacted]",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "content transform replacement rule 1 has invalid regex pattern",
+        ));
+}
+
+#[test]
+fn export_profile_run_rejects_invalid_regex_replacement_rules() {
+    let (_temp_dir, vault_root) = build_export_replacement_transform_vault();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[export.profiles.public_json]
+format = "json"
+query = 'from notes where file.path = "Home.md"'
+path = "exports/public.json"
+
+[[export.profiles.public_json.content_transforms]]
+[[export.profiles.public_json.content_transforms.replace]]
+pattern = "("
+replacement = "[redacted]"
+regex = true
+"#,
+    )
+    .expect("config should be written");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "profile",
+            "run",
+            "public_json",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "content_transforms rule 1 replace entry 1 in export profile `public_json` has invalid regex pattern",
+        ));
 }
 
 #[test]

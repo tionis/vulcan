@@ -69,9 +69,9 @@ use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use vulcan_core::config::{
-    ContentTransformConfig, ContentTransformRuleConfig, ExportEpubTocStyleConfig,
-    ExportGraphFormatConfig, ExportProfileConfig, ExportProfileFormat, QuickAddImporter,
-    TasksDefaultSource,
+    ContentReplacementRuleConfig, ContentTransformConfig, ContentTransformRuleConfig,
+    ExportEpubTocStyleConfig, ExportGraphFormatConfig, ExportProfileConfig, ExportProfileFormat,
+    QuickAddImporter, TasksDefaultSource,
 };
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
 use vulcan_core::expression::functions::{
@@ -14154,6 +14154,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             exclude_headings: &transforms.exclude_headings,
                             exclude_frontmatter_keys: &transforms.exclude_frontmatter_keys,
                             exclude_inline_fields: &transforms.exclude_inline_fields,
+                            replacement_rules: &transforms.replace_rules,
                         },
                         *replace,
                         ConfigMutationOptions {
@@ -14210,7 +14211,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.exclude_headings,
                         &transforms.exclude_frontmatter_keys,
                         &transforms.exclude_inline_fields,
-                    );
+                        &transforms.replace_rules,
+                    )?;
                     let prepared = prepare_export_data(
                         &paths,
                         &report,
@@ -14244,7 +14246,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.exclude_headings,
                         &transforms.exclude_frontmatter_keys,
                         &transforms.exclude_inline_fields,
-                    );
+                        &transforms.replace_rules,
+                    )?;
                     let prepared = prepare_export_data(
                         &paths,
                         &report,
@@ -14305,7 +14308,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.exclude_headings,
                         &transforms.exclude_frontmatter_keys,
                         &transforms.exclude_inline_fields,
-                    );
+                        &transforms.replace_rules,
+                    )?;
                     let prepared = prepare_export_data(
                         &paths,
                         &report,
@@ -14349,7 +14353,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.exclude_headings,
                         &transforms.exclude_frontmatter_keys,
                         &transforms.exclude_inline_fields,
-                    );
+                        &transforms.replace_rules,
+                    )?;
                     let prepared = prepare_export_data(
                         &paths,
                         &report,
@@ -17425,12 +17430,71 @@ fn export_epub_toc_style_config_from_cli(
     })
 }
 
+fn validate_content_replacement_rule(
+    rule: &ContentReplacementRuleConfig,
+    context: &str,
+) -> Result<(), CliError> {
+    if rule.pattern.trim().is_empty() {
+        return Err(CliError::operation(format!(
+            "{context} must set a non-empty `pattern`"
+        )));
+    }
+    if rule.regex {
+        Regex::new(&rule.pattern).map_err(|error| {
+            CliError::operation(format!(
+                "{context} has invalid regex pattern `{}`: {error}",
+                rule.pattern
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn parse_content_replacement_rules(
+    values: &[String],
+) -> Result<Vec<ContentReplacementRuleConfig>, CliError> {
+    let chunks = values.chunks_exact(3);
+    if !chunks.remainder().is_empty() {
+        return Err(CliError::operation(
+            "content transform replacement rules must be provided as MODE PATTERN REPLACEMENT triples",
+        ));
+    }
+
+    let mut rules = Vec::new();
+    for (index, chunk) in values.chunks_exact(3).enumerate() {
+        let mode = chunk[0].trim().to_ascii_lowercase();
+        let regex = match mode.as_str() {
+            "literal" => false,
+            "regex" => true,
+            _ => {
+                return Err(CliError::operation(format!(
+                    "content transform replacement rule {} must use mode `literal` or `regex`, got `{}`",
+                    index + 1,
+                    chunk[0]
+                )));
+            }
+        };
+        let rule = ContentReplacementRuleConfig {
+            pattern: chunk[1].clone(),
+            replacement: chunk[2].clone(),
+            regex,
+        };
+        validate_content_replacement_rule(
+            &rule,
+            &format!("content transform replacement rule {}", index + 1),
+        )?;
+        rules.push(rule);
+    }
+    Ok(rules)
+}
+
 fn build_content_transform_rule(
     exclude_callouts: &[String],
     exclude_headings: &[String],
     exclude_frontmatter_keys: &[String],
     exclude_inline_fields: &[String],
-) -> Option<ContentTransformRuleConfig> {
+    replacement_rules: &[String],
+) -> Result<Option<ContentTransformRuleConfig>, CliError> {
     let exclude_callouts = exclude_callouts
         .iter()
         .map(|value| value.trim())
@@ -17455,10 +17519,12 @@ fn build_content_transform_rule(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    (!(exclude_callouts.is_empty()
+    let replace = parse_content_replacement_rules(replacement_rules)?;
+    Ok((!(exclude_callouts.is_empty()
         && exclude_headings.is_empty()
         && exclude_frontmatter_keys.is_empty()
-        && exclude_inline_fields.is_empty()))
+        && exclude_inline_fields.is_empty()
+        && replace.is_empty()))
     .then_some(ContentTransformRuleConfig {
         query: None,
         query_json: None,
@@ -17467,8 +17533,9 @@ fn build_content_transform_rule(
             exclude_headings,
             exclude_frontmatter_keys,
             exclude_inline_fields,
+            replace,
         },
-    })
+    }))
 }
 
 fn build_content_transform_rules(
@@ -17476,18 +17543,22 @@ fn build_content_transform_rules(
     exclude_headings: &[String],
     exclude_frontmatter_keys: &[String],
     exclude_inline_fields: &[String],
-) -> Option<Vec<ContentTransformRuleConfig>> {
+    replacement_rules: &[String],
+) -> Result<Option<Vec<ContentTransformRuleConfig>>, CliError> {
     build_content_transform_rule(
         exclude_callouts,
         exclude_headings,
         exclude_frontmatter_keys,
         exclude_inline_fields,
+        replacement_rules,
     )
-    .map(|rule| vec![rule])
+    .map(|rule| rule.map(|rule| vec![rule]))
 }
 
-fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> ExportProfileConfig {
-    ExportProfileConfig {
+fn build_export_profile_config(
+    request: ExportProfileCreateRequest<'_>,
+) -> Result<ExportProfileConfig, CliError> {
+    Ok(ExportProfileConfig {
         format: Some(export_profile_format_from_arg(request.format)),
         query: request.query.map(ToOwned::to_owned),
         query_json: request.query_json.map(ToOwned::to_owned),
@@ -17504,8 +17575,9 @@ fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> Expor
             request.exclude_headings,
             request.exclude_frontmatter_keys,
             request.exclude_inline_fields,
-        ),
-    }
+            request.replacement_rules,
+        )?,
+    })
 }
 
 fn export_profile_requires_query(format: ExportProfileFormat) -> bool {
@@ -17619,6 +17691,20 @@ fn validate_export_profile_config(
         return Err(CliError::operation(format!(
             "export profile `{name}` only supports `content_transforms` for markdown, json, epub, and zip exports"
         )));
+    }
+    if let Some(content_transform_rules) = profile.content_transform_rules.as_ref() {
+        for (rule_index, rule) in content_transform_rules.iter().enumerate() {
+            for (replace_index, replacement_rule) in rule.transforms.replace.iter().enumerate() {
+                validate_content_replacement_rule(
+                    replacement_rule,
+                    &format!(
+                        "content_transforms rule {} replace entry {} in export profile `{name}`",
+                        rule_index + 1,
+                        replace_index + 1
+                    ),
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -20860,6 +20946,7 @@ struct ExportProfileCreateRequest<'a> {
     exclude_headings: &'a [String],
     exclude_frontmatter_keys: &'a [String],
     exclude_inline_fields: &'a [String],
+    replacement_rules: &'a [String],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -21891,7 +21978,7 @@ fn run_export_profile_create(
     mutation: ConfigMutationOptions,
 ) -> Result<(), CliError> {
     validate_export_profile_name(name)?;
-    let profile = build_export_profile_config(request);
+    let profile = build_export_profile_config(request)?;
     validate_export_profile_config(name, &profile)?;
 
     let config_path = paths.config_file().to_path_buf();
@@ -22280,6 +22367,7 @@ fn run_export_profile(
     read_filter: Option<&PermissionFilter>,
 ) -> Result<(), CliError> {
     let profile = require_export_profile_config(paths, name)?;
+    validate_export_profile_config(name, &profile)?;
     let format = require_export_profile_format(name, &profile)?;
     let output_path = require_export_profile_path(paths, name, &profile)?;
     let (query, query_json) = export_profile_query_args(name, format, &profile)?;
@@ -31296,6 +31384,7 @@ mod tests {
                             exclude_headings: vec![],
                             exclude_frontmatter_keys: vec![],
                             exclude_inline_fields: vec![],
+                            replace_rules: vec![],
                         }),
                         replace: false,
                         dry_run: false,
@@ -31335,6 +31424,7 @@ mod tests {
                         exclude_headings: vec![],
                         exclude_frontmatter_keys: vec![],
                         exclude_inline_fields: vec![],
+                        replace_rules: vec![],
                     },
                 },
             }

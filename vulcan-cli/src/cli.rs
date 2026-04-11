@@ -882,7 +882,7 @@ Notes:
   `export profile run <name>` resolves relative profile paths from the vault root.
   `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.
   `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
-  `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, and `--exclude-inline-field`.
+  `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, `--exclude-inline-field`, and ordered `--replace-rule` rewrites.
   Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; each rule query only narrows within the profile query result.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
   `epub --backlinks` appends indexed inlinks after each exported note chapter.
@@ -1946,6 +1946,13 @@ pub struct ExportTransformArgs {
         help = "Drop inline fields whose normalized name matches this value; repeat to exclude multiple keys"
     )]
     pub exclude_inline_fields: Vec<String>,
+    #[arg(
+        long = "replace-rule",
+        num_args = 3,
+        value_names = ["MODE", "PATTERN", "REPLACEMENT"],
+        help = "Apply an ordered replacement rule to exported content; MODE must be `literal` or `regex`"
+    )]
+    pub replace_rules: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
