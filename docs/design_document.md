@@ -1069,13 +1069,13 @@ For LLM harnesses and external runtimes that use Vulcan as a tool provider (Clau
 - **Vault AGENTS.md template** — shipped with Vulcan and optionally written on `vulcan init` or `vulcan agent install`. Teaches external harnesses: available commands, conventions, what not to do, and points to the skills directory for reference material.
 - **Consistent JSON error output** — all commands return structured errors in JSON mode (`{"error": "...", "code": "..."}`) rather than unstructured stderr text.
 
-The default skills serve external runtimes directly — Claude Code, Codex, Gemini CLI, or a `pi` adapter reads `.agent/skills/js-api-guide/SKILL.md` and learns the vault JS API. If a native assistant is added later, it should use `skill_get("js-api-guide")` to consume the same material.
+The default skills serve external runtimes directly — Claude Code, Codex, Gemini CLI, or a `pi` adapter reads `.agents/skills/js-api-guide/SKILL.md` and learns the vault JS API. If a native assistant is added later, it should use `skill_get("js-api-guide")` to consume the same material.
 
 ### MCP-specific discovery boundary
 
 The CLI/harness pattern above does **not** map 1:1 onto generic MCP clients.
 
-- A subprocess-style harness can preload `AGENTS.md`, enumerate `.agent/skills/`, and decide which subset of tools to register before the model sees anything.
+- A subprocess-style harness can preload `AGENTS.md`, enumerate `.agents/skills/`, and decide which subset of tools to register before the model sees anything.
 - A generic MCP client usually receives only what the server exposes over the protocol. It cannot be assumed to have out-of-band access to Vulcan skills, command docs, or local helper files.
 
 That means Vulcan should treat MCP as a **server-native discovery surface**, not just as "the CLI tool list over JSON-RPC". In practice:

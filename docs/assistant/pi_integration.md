@@ -2,7 +2,7 @@
 
 Current recommendation for Phase 9.12: use an external agent runtime instead of building an in-process Rust assistant. `pi` is a useful reference implementation, but it is not the architectural center of the design.
 
-This document is specifically about **subprocess-style runtimes** that can preload vault files such as `AGENTS.md`, the configured prompts folder, and `.agent/skills/`. It is not the MCP integration design by itself. Generic MCP clients do not get that same out-of-band bootstrap, so MCP needs its own server-native discovery surface (`resources`, `prompts`, filtered tool exposure, and later HTTP transport) rather than assuming the exact same pattern.
+This document is specifically about **subprocess-style runtimes** that can preload vault files such as `AGENTS.md`, the configured prompts folder, and `.agents/skills/`. It is not the MCP integration design by itself. Generic MCP clients do not get that same out-of-band bootstrap, so MCP needs its own server-native discovery surface (`resources`, `prompts`, filtered tool exposure, and later HTTP transport) rather than assuming the exact same pattern.
 
 The older native assistant and chat-runtime steering was not discarded; it was moved to [`native_runtime_deferred.md`](./native_runtime_deferred.md) so the runtime-agnostic decision does not erase those ideas.
 
@@ -33,7 +33,7 @@ Vulcan already has the right shape for this:
 - single-note CRUD
 - search/query/web/git tools
 - default `AGENTS.md`
-- vault-native skill bundles in `.agent/skills/`
+- vault-native skill bundles in `.agents/skills/`
 
 That means the runtime can stay outside Vulcan without losing the important guarantees.
 
@@ -66,11 +66,11 @@ Recommended sequence:
 1. Call `vulcan describe --format openai-tools`
 2. Register the core tools directly
 3. Use `vulcan help --output json <command>` only when the model needs an unfamiliar command
-4. Read `.agent/skills/*/SKILL.md` or use `skill_get(name)` when a workflow-specific guide is needed
+4. Read `.agents/skills/*/SKILL.md` or use `skill_get(name)` when a workflow-specific guide is needed
 
 This keeps context small while preserving full surface area.
 
-Run `vulcan agent install` once per vault to scaffold `AGENTS.md` plus the bundled `.agent/skills/` directory. Re-run with `--overwrite` after upgrading Vulcan if the bundled files should be refreshed.
+Run `vulcan agent install` once per vault to scaffold `AGENTS.md` plus the bundled `.agents/skills/` directory. Re-run with `--overwrite` after upgrading Vulcan if the bundled files should be refreshed.
 
 ### 3. Tool execution
 

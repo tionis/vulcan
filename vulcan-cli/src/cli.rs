@@ -44,7 +44,7 @@ Color:
 const AGENT_COMMAND_AFTER_HELP: &str = "\
 Notes:
   `agent install` writes the bundled `AGENTS.md` template and default Vulcan skills.
-  Skills are installed in the harness-friendly layout `.agent/skills/<name>/SKILL.md`.
+  Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.
   Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.
 
 Examples:
@@ -2340,7 +2340,7 @@ pub struct InitArgs {
     pub no_import: bool,
     #[arg(
         long,
-        help = "Write AGENTS.md plus bundled harness skills into .agent/skills/"
+        help = "Write AGENTS.md plus bundled harness skills into .agents/skills/"
     )]
     pub agent_files: bool,
 }
