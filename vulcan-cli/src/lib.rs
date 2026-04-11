@@ -251,52 +251,52 @@ const BUNDLED_AGENT_TEMPLATE: BundledTextFile = BundledTextFile {
 const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/note-operations/SKILL.md",
+        relative_path: ".agents/skills/note-operations/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/note-operations.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/vault-query/SKILL.md",
+        relative_path: ".agents/skills/vault-query/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/vault-query.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/js-api-guide/SKILL.md",
+        relative_path: ".agents/skills/js-api-guide/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/js-api-guide.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/graph-exploration/SKILL.md",
+        relative_path: ".agents/skills/graph-exploration/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/graph-exploration.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/daily-notes/SKILL.md",
+        relative_path: ".agents/skills/daily-notes/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/daily-notes.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/properties-and-tags/SKILL.md",
+        relative_path: ".agents/skills/properties-and-tags/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/properties-and-tags.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/refactoring/SKILL.md",
+        relative_path: ".agents/skills/refactoring/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/refactoring.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/web-research/SKILL.md",
+        relative_path: ".agents/skills/web-research/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/web-research.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/git-workflow/SKILL.md",
+        relative_path: ".agents/skills/git-workflow/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/git-workflow.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agent/skills/task-management/SKILL.md",
+        relative_path: ".agents/skills/task-management/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/task-management.md"),
     },
 ];

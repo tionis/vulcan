@@ -281,7 +281,7 @@ Preserved default skill ideas:
 
 Preserved user-skill idea:
 
-- user-defined Markdown skills live alongside defaults in `.agent/skills/`
+- user-defined Markdown skills live alongside defaults in `.agents/skills/`
 
 Preserved executable-skill idea:
 

@@ -1669,7 +1669,7 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 
 **Status:** Re-scoped from an in-process Rust assistant to an external-runtime integration layer. Vulcan remains the source of truth for vault semantics, tools, prompts, and skills; an external runtime owns inference, session state, and chat UX.
 
-**Goal:** Make Vulcan feel native inside external agent runtimes. The model should read vault `AGENTS.md`, discover commands through `describe` and `help`, load `.agent/skills/*/SKILL.md` on demand, and perform all vault reads and writes through Vulcan's JSON CLI instead of direct filesystem edits.
+**Goal:** Make Vulcan feel native inside external agent runtimes. The model should read vault `AGENTS.md`, discover commands through `describe` and `help`, load `.agents/skills/*/SKILL.md` on demand, and perform all vault reads and writes through Vulcan's JSON CLI instead of direct filesystem edits.
 
 **Builds on:** Phase 5 (vectors/embeddings for semantic search), Phase 7.12 (query model), Phase 9.6 (search), Phase 9.18.2 (note CRUD), Phase 9.18.6 (web tools), Phase 9.18.7 (help/describe polish), Phase 9.18.8 (git ops).
 
@@ -1697,7 +1697,7 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 
 #### 9.12.3 Prompts, skills, and vault context
 
-- [ ] Treat vault `AGENTS.md`, the configured prompts folder, and `.agent/skills/*/SKILL.md` as the primary durable prompt surface
+- [ ] Treat vault `AGENTS.md`, the configured prompts folder, and `.agents/skills/*/SKILL.md` as the primary durable prompt surface
 - [ ] Keep bundled default skills written by `vulcan init --agent-files` or `vulcan agent install`; user-defined skills remain plain vault files
 - [ ] Runtime integrations inject only a compact tool summary up front; detailed schemas and skill content stay on-demand through `describe`, `help`, and skill files
 - [ ] Publish a runtime-integration usage guide with recommended permission profiles and common pitfalls
@@ -1726,7 +1726,7 @@ Preserved native-runtime steering lives in `docs/assistant/native_runtime_deferr
 Prompts and skills stay as Markdown files in the vault. External runtimes consume them as reference material; MCP should expose the same prompt files through protocol-native prompt discovery, and any later integrated `vulcan assistant` should reuse the same loader rather than inventing a second prompt store.
 
 - [ ] Configurable prompts folder: `assistant.prompts_folder` in `.vulcan/config.toml` (default: `AI/Prompts/`)
-- [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `.agent/skills/`)
+- [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `.agents/skills/`)
 - [ ] Shared prompt loader/discovery API in Vulcan: enumerate prompt files from `assistant.prompts_folder`, parse metadata, and load/render prompt bodies for reuse by external-runtime helpers, MCP `prompts/*`, and later 9.21 integrated-assistant flows
 - [ ] `vulcan init --agent-files` / `vulcan agent install` should be able to scaffold example prompt files into the configured prompts folder without making them special runtime-only assets
 - [ ] Prompt file format — Markdown with YAML frontmatter:
@@ -1745,9 +1745,9 @@ Prompts and skills stay as Markdown files in the vault. External runtimes consum
   2. Action items with owners
   3. Follow-up questions
   ```
-- [ ] Skill file format — one directory per skill under `.agent/skills/<name>/SKILL.md`, with Markdown plus YAML frontmatter:
+- [ ] Skill file format — one directory per skill under `.agents/skills/<name>/SKILL.md`, with Markdown plus YAML frontmatter:
   ```text
-  .agent/skills/daily-review/SKILL.md
+  .agents/skills/daily-review/SKILL.md
   ```
   ```yaml
   ---
@@ -1784,7 +1784,7 @@ Vulcan ships a standard library of skills that teach any external runtime how to
 
 **User-defined skills:**
 
-User skills live in the vault's skills folder (e.g., `.agent/skills/weekly-review/SKILL.md`, `.agent/skills/session-prep/SKILL.md`) and appear alongside defaults in `skill_list`. A GM might create a "session-prep" skill that pulls NPCs, locations, and plot threads for an RPG campaign. A researcher might create a "literature-review" skill that searches for related notes and generates a synthesis.
+User skills live in the vault's skills folder (e.g., `.agents/skills/weekly-review/SKILL.md`, `.agents/skills/session-prep/SKILL.md`) and appear alongside defaults in `skill_list`. A GM might create a "session-prep" skill that pulls NPCs, locations, and plot threads for an RPG campaign. A researcher might create a "literature-review" skill that searches for related notes and generates a synthesis.
 
 **Executable skill scripts:**
 
@@ -1792,7 +1792,7 @@ Advanced skills may include JavaScript scripts that expose functionality beyond 
 
 ```bash
 #!/usr/bin/env -S vulcan run --script
-// .agent/skills/session-prep/prepare.js
+// .agents/skills/session-prep/prepare.js
 const npcs = vault.notes().where(n => n.tags.includes("npc") && n.frontmatter.campaign === "current");
 const locations = vault.query("from notes where type = location and status = active");
 console.log(JSON.stringify({ npcs: npcs.map(n => n.name), locations: locations.map(n => n.name) }));
@@ -2723,10 +2723,10 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, `pi`, etc.) that use Vulcan a
 - [x] **Vault AGENTS.md template** — shipped with Vulcan, optionally written on `vulcan init`. Contents:
   - Available Vulcan commands organized by category with brief descriptions
   - Key conventions: always use `--output json`, `--dry-run` before mutations, note names may be ambiguous
-  - Pointers to the skills directory: "Read `.agent/skills/*/SKILL.md` for detailed usage patterns and examples"
+  - Pointers to the skills directory: "Read `.agents/skills/*/SKILL.md` for detailed usage patterns and examples"
   - Common pitfalls: `note patch` fails on multiple matches (safety), property types are lenient, etc.
-- [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault via `vulcan init --agent-files` or `vulcan agent install`. See 9.12.6 for the full skill list. These serve external harnesses identically: Claude Code, Codex, Gemini CLI, or a reference `pi` adapter reads `.agent/skills/js-api-guide/SKILL.md` and learns the vault JS API.
-- [x] **Dedicated harness installer** — `vulcan agent install [--overwrite]` scaffolds root `AGENTS.md` plus `.agent/skills/<name>/SKILL.md`, and `init --agent-files` reuses the same bundled payload for first-run setup.
+- [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault via `vulcan init --agent-files` or `vulcan agent install`. See 9.12.6 for the full skill list. These serve external harnesses identically: Claude Code, Codex, Gemini CLI, or a reference `pi` adapter reads `.agents/skills/js-api-guide/SKILL.md` and learns the vault JS API.
+- [x] **Dedicated harness installer** — `vulcan agent install [--overwrite]` scaffolds root `AGENTS.md` plus `.agents/skills/<name>/SKILL.md`, and `init --agent-files` reuses the same bundled payload for first-run setup.
 - [x] **Consistent JSON error output** — all commands in `--output json` mode return structured errors: `{"error": "<message>", "code": "<error_code>"}` rather than unstructured stderr text. Error codes are stable and documented.
 - [x] **Non-interactive guarantee** — all commands detect non-TTY mode and never prompt. Ambiguous note matches return an error with candidates rather than opening a picker.
 
@@ -3905,7 +3905,7 @@ This phase is only worth doing early if later phases can build on it directly.
 
 **Design principle — Vulcancentrism:** Vulcan is the host process. Pi is a managed subprocess. The user never interacts with pi directly; all interaction goes through the `vulcan assistant` command surface. Pi's built-in tools (read, bash, edit, write) are available but constrained by the active permission profile. Vault mutations are routed through Vulcan commands, not pi's raw file-edit tools, so the same safety checks, dry-run, and auto-commit guarantees apply.
 
-**Reused foundations from 9.12:** vault `AGENTS.md`, `.agent/skills/*/SKILL.md`, CLI-to-tool 1:1 mapping, permission-profile semantics, and the rule that durable artifacts are normal vault notes while live chat/session state stays in pi by default.
+**Reused foundations from 9.12:** vault `AGENTS.md`, `.agents/skills/*/SKILL.md`, CLI-to-tool 1:1 mapping, permission-profile semantics, and the rule that durable artifacts are normal vault notes while live chat/session state stays in pi by default.
 
 **Depends on:** Phase 9.12 (external agent contract and tool boundary already defined), Phase 9.19.13 (permission layer), and Phase 10 (daemon/service maturity gate from 9.12.8). Phase 9.18.2/9.18.7 provide note CRUD and describe/help stability; Phase 9.3 provides git auto-commit. Phase 9.6 (search) and Phase 7.12 (query model) are used for vault-aware tool execution.
 
@@ -4034,7 +4034,7 @@ At session start, inject vault context into pi so the assistant knows about the 
   - `build_session_context(vault_root, config) -> SessionContext`:
     - Read vault `AGENTS.md` if present
     - Call `vulcan describe --format openai-tools` to produce the tool summary for the system prompt
-    - Enumerate default and user skills from `.agent/skills/` (just names and descriptions, not full content)
+    - Enumerate default and user skills from `.agents/skills/` (just names and descriptions, not full content)
     - Collect vault metadata: vault name, note count, tag summary, property catalog summary
   - `format_system_prompt_append(context) -> String`:
     - Format the context as a structured block for pi's system prompt

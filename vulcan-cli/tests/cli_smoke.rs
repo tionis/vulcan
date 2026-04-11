@@ -8055,10 +8055,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
 
     assert!(vault_root.join("AGENTS.md").exists());
     assert!(vault_root
-        .join(".agent/skills/note-operations/SKILL.md")
+        .join(".agents/skills/note-operations/SKILL.md")
         .exists());
     assert!(vault_root
-        .join(".agent/skills/js-api-guide/SKILL.md")
+        .join(".agents/skills/js-api-guide/SKILL.md")
         .exists());
     assert!(fs::read_to_string(vault_root.join("AGENTS.md"))
         .expect("agents template should be readable")
@@ -8068,7 +8068,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .any(|item| item["path"] == "AGENTS.md")
         && items
             .iter()
-            .any(|item| item["path"] == ".agent/skills/js-api-guide/SKILL.md")));
+            .any(|item| item["path"] == ".agents/skills/js-api-guide/SKILL.md")));
 }
 
 #[test]
@@ -8095,10 +8095,10 @@ fn agent_install_overwrite_refreshes_bundled_skill_contents() {
     assert!(initial_json["support_files"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["path"]
-            == ".agent/skills/note-operations/SKILL.md"
+            == ".agents/skills/note-operations/SKILL.md"
             && item["status"] == "created")));
 
-    let skill_path = vault_root.join(".agent/skills/note-operations/SKILL.md");
+    let skill_path = vault_root.join(".agents/skills/note-operations/SKILL.md");
     fs::write(&skill_path, "customized\n").expect("skill should be editable");
 
     let kept_assert = Command::cargo_bin("vulcan")
@@ -8123,7 +8123,7 @@ fn agent_install_overwrite_refreshes_bundled_skill_contents() {
     assert!(kept_json["support_files"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["path"]
-            == ".agent/skills/note-operations/SKILL.md"
+            == ".agents/skills/note-operations/SKILL.md"
             && item["status"] == "kept")));
 
     let overwrite_assert = Command::cargo_bin("vulcan")
@@ -8148,7 +8148,7 @@ fn agent_install_overwrite_refreshes_bundled_skill_contents() {
     assert!(overwrite_json["support_files"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["path"]
-            == ".agent/skills/note-operations/SKILL.md"
+            == ".agents/skills/note-operations/SKILL.md"
             && item["status"] == "updated")));
 }
 
