@@ -803,10 +803,12 @@ vulcan automation list
 vulcan export epub 'from notes where file.path matches "^(People|Projects)/"' -o exports/team.epub --title "Team Notes" --backlinks
 vulcan export epub 'from notes where file.path starts_with "Projects/"' -o exports/projects.epub --toc flat
 vulcan export epub 'from notes where file.path = "Home.md"' -o exports/home.epub --frontmatter
+vulcan export json 'from notes where file.path starts_with "Projects/"' --exclude-callout internal -o exports/public.json
+vulcan export json 'from notes where file.path starts_with "People/"' --replace-rule regex '[A-Za-z0-9._%+-]+@example\.com' redacted -o exports/people.json
 vulcan export profile list
 vulcan export profile run team-book
 vulcan export profile show team-book
-vulcan export profile create team-book --format epub 'from notes where file.path matches "^(People|Projects)/"' -o exports/team-book.epub --title "Team Book" --backlinks --frontmatter
+vulcan export profile create team-book --format epub 'from notes where file.path matches "^(People|Projects)/"' -o exports/team-book.epub --title "Team Book" --backlinks --frontmatter --exclude-callout internal
 vulcan export profile delete team-book
 vulcan automation run release-dashboard due-soon --scan --doctor
 vulcan automation run --all --verify-cache --fail-on-issues
@@ -822,9 +824,86 @@ Automation notes:
 - `export profile run <name>` runs a config-driven export and resolves relative profile paths from the vault root.
 - `export epub` preserves the selected note tree in the table of contents by default and can be flattened with `--toc flat`.
 - `export epub --frontmatter` includes each note's YAML metadata in a styled collapsible panel before the rendered note body.
+- `markdown`, `json`, `epub`, and `zip` support publication transforms that rewrite exported notes without mutating source files.
 - `saved create search` uses the same syntax as `search`.
 - `saved create notes` uses the same `--where` and `--sort` shortcut shape as `query`.
 - Hidden compatibility aliases such as `batch` and the legacy `saved search|notes|bases` forms still work, but the preferred public forms are `automation ...` and `saved create ...`.
+
+### Publication transforms
+
+`markdown`, `json`, `epub`, and `zip` can apply publication-oriented transforms to exported notes before Vulcan packages the output.
+
+Supported transform families today:
+
+- `exclude_callouts`: drop matching callout blocks and their contents.
+- `exclude_headings`: drop heading sections and nested subsections.
+- `exclude_frontmatter_keys`: remove selected YAML frontmatter keys.
+- `exclude_inline_fields`: remove selected inline fields.
+- `replace`: apply ordered literal or regex replacements.
+
+Selection and rule semantics:
+
+- The export query still defines which notes are exported.
+- Transform rules never add notes. A rule query only narrows within the already-selected export set.
+- Direct CLI flags such as `--exclude-callout` or `--replace-rule` are sugar for one implicit rule that applies to all exported notes.
+- Profiles store the persisted form as ordered `[[export.profiles.<name>.content_transforms]]` tables.
+- If multiple rules match one note, Vulcan merges them before reparsing the note. Exclusions union together, and replacement rules keep declaration order.
+
+Export pipeline behavior:
+
+- Transforms run on note content before packaging.
+- After rewriting the content, Vulcan reparses the transformed note and rebuilds exported frontmatter, properties, tags, links, backlinks, inline-expression evaluation, and copied attachment references from the transformed content.
+- This prevents removed callouts, stripped metadata, or rewritten links from leaking back into JSON, EPUB, or ZIP output through cached projections.
+
+Direct export examples:
+
+```bash
+vulcan export json 'from notes where file.path starts_with "Projects/"' \
+  --exclude-callout internal \
+  --exclude-heading Scratch \
+  -o exports/public.json
+
+vulcan export json 'from notes where file.path starts_with "People/"' \
+  --replace-rule literal '[[People/Bob]]' '[[People/Alice]]' \
+  --replace-rule regex '[A-Za-z0-9._%+-]+@example\.com' redacted \
+  --pretty \
+  -o exports/people.json
+```
+
+Profile config examples:
+
+```toml
+[export.profiles.public_json]
+format = "json"
+query = 'from notes where file.path matches "^(People|Projects)/"'
+path = "exports/public.json"
+pretty = true
+
+[[export.profiles.public_json.content_transforms]]
+exclude_callouts = ["internal", "secret gm"]
+exclude_headings = ["Scratch"]
+
+[[export.profiles.public_json.content_transforms.replace]]
+pattern = "[A-Za-z0-9._%+-]+@example\\.com"
+replacement = "redacted"
+regex = true
+
+[[export.profiles.public_json.content_transforms]]
+query = 'from notes where file.path starts_with "People/"'
+exclude_frontmatter_keys = ["email", "phone"]
+exclude_inline_fields = ["owner"]
+
+[[export.profiles.public_json.content_transforms.replace]]
+pattern = "[[People/Bob]]"
+replacement = "[[People/Alice]]"
+```
+
+Reading the config example:
+
+- The first rule applies to every exported note selected by the profile query.
+- The second rule applies only to the exported notes under `People/`.
+- The nested `replace` tables belong to the most recent `content_transforms` rule table.
+- `regex = true` switches one replacement entry from literal matching to Rust regex matching.
 
 ### Query output modes
 
