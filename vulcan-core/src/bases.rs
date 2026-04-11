@@ -2389,6 +2389,7 @@ mod tests {
     fn evaluates_supported_bases_view_and_reports_unsupported_features() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("bases", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -2448,6 +2449,7 @@ mod tests {
     fn bases_and_dql_equivalent_filters_produce_matching_rows() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         fs::write(
             vault_root.join("parity.base"),
@@ -2513,6 +2515,7 @@ SORT file.path ASC"#,
             .join(name);
 
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {
@@ -2640,6 +2643,7 @@ SORT file.path ASC"#,
     fn base_create_context_derives_folder_properties_and_template() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault should be created");
         fs::write(
             vault_root.join("release.base"),
@@ -2690,6 +2694,7 @@ SORT file.path ASC"#,
     fn base_create_context_ignores_non_equality_filters_and_null_values() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault should be created");
         fs::write(
             vault_root.join("release.base"),
@@ -2780,6 +2785,7 @@ SORT file.path ASC"#,
     fn custom_sources_receive_config_and_use_shared_formula_sort_pipeline() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should be created");
         fs::write(
             vault_root.join("custom.base"),
@@ -2880,6 +2886,7 @@ SORT file.path ASC"#,
     fn tasknotes_source_filters_archived_notes_and_exposes_builtin_formulas() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("tasknotes", &vault_root);
         fs::create_dir_all(vault_root.join("TaskNotes/Views"))
             .expect("tasknotes views dir should be created");
@@ -2955,6 +2962,7 @@ SORT file.path ASC"#,
     fn unsupported_custom_source_reports_diagnostic() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should be created");
         fs::write(
             vault_root.join("unsupported.base"),
@@ -2975,6 +2983,7 @@ SORT file.path ASC"#,
     fn bases_view_add_creates_new_view() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("bases", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
@@ -3005,6 +3014,7 @@ SORT file.path ASC"#,
     fn bases_view_delete_removes_named_view() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("bases", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
@@ -3033,6 +3043,7 @@ SORT file.path ASC"#,
     fn bases_view_rename_changes_view_name() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("bases", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
@@ -3064,6 +3075,7 @@ SORT file.path ASC"#,
     fn bases_view_edit_patches_view_filters() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("bases", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");

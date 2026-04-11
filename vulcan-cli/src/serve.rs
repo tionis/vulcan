@@ -617,6 +617,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::write(vault_root.join("Alpha.md"), "dashboard").expect("alpha note should write");
         fs::write(vault_root.join("Beta.md"), "dashboard").expect("beta note should write");
         fs::write(vault_root.join("Gamma.md"), "dashboard").expect("gamma note should write");
@@ -692,6 +693,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::write(vault_root.join("Upper.md"), "Bob builds dashboards.")
             .expect("upper note should write");
         fs::write(vault_root.join("Lower.md"), "bob builds dashboards.")
@@ -970,6 +972,7 @@ shell = "deny"
             .join("../tests/fixtures/vaults")
             .join(name);
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &std::path::Path, destination: &std::path::Path) {

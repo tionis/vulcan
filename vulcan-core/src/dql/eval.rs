@@ -1447,6 +1447,7 @@ mod tests {
     fn evaluates_table_queries_against_dataview_fixture() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -1480,6 +1481,7 @@ LIMIT 1"#,
     fn evaluate_dql_with_filter_restricts_visible_notes() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -1507,6 +1509,7 @@ LIMIT 1"#,
     fn evaluates_list_queries_with_expression_values() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -1539,6 +1542,7 @@ SORT file.name ASC"#,
     fn evaluates_link_indexing_inside_dql_expressions() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -1564,6 +1568,7 @@ WHERE [[People/Bob]].role = "editor""#,
     fn from_tag_sources_include_subtags() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should be created");
         fs::write(
             vault_root.join("Projects/Alpha.md"),
@@ -1598,6 +1603,7 @@ SORT path ASC",
     fn evaluates_task_queries_using_inherited_page_fields() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -1640,6 +1646,7 @@ SORT due ASC"#,
     fn task_queries_include_child_tasks_when_parent_matches() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -1669,6 +1676,7 @@ WHERE text = "Write docs [due:: 2026-04-01]""#,
     fn evaluates_calendar_queries_from_expression_values() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join("Daily")).expect("daily dir should be created");
         fs::write(
             vault_root.join("Daily/2026-04-01.md"),
@@ -1714,6 +1722,7 @@ SORT file.name ASC"#,
     fn evaluates_group_by_queries_with_null_keys_and_row_swizzling() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
         fs::write(vault_root.join("Notes/A.md"), "category:: alpha\n")
             .expect("first note should be written");
@@ -1759,6 +1768,7 @@ SORT key ASC"#,
     fn evaluates_flatten_queries_for_arrays_scalars_and_sequential_composition() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -1807,6 +1817,7 @@ FLATTEN plain"#,
     fn reports_unsupported_function_and_method_diagnostics_without_aborting_query() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -1839,6 +1850,7 @@ SORT file.name ASC"#,
     fn fixture_queries_cover_tags_regex_date_math_and_missing_links() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -1878,6 +1890,7 @@ FROM "Dashboard""#,
     fn evaluates_incoming_and_outgoing_from_sources_via_link_joins() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
         fs::write(vault_root.join("Notes/A.md"), "[[Notes/B]]\n")
             .expect("note A should be written");
@@ -1913,6 +1926,7 @@ SORT page ASC",
     fn respects_configured_primary_and_group_column_names() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
         fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
         fs::write(
@@ -1945,6 +1959,7 @@ GROUP BY category"#,
     fn respects_configured_timezone_in_dql_expressions() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
         fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should be created");
         fs::write(
@@ -1979,6 +1994,7 @@ FROM "Notes""#,
         // evaluated.  `WHERE file.name != this.file.name` must exclude only the source note.
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir");
         // Three notes: the query lives in "Dashboard.md" (the source note).
         // The WHERE clause should return only the two non-Dashboard notes.
@@ -2010,6 +2026,7 @@ FROM "Notes""#,
         // that `file.name != this.file.name` is vacuously true — all notes pass the filter.
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir");
         fs::write(vault_root.join("Alpha.md"), "# Alpha\n").expect("Alpha note");
 
@@ -2034,6 +2051,7 @@ FROM "Notes""#,
             .join("../tests/fixtures/vaults")
             .join(name);
         copy_dir_all(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_all(source: &Path, destination: &Path) {

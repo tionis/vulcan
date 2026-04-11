@@ -794,6 +794,7 @@ mod tests {
     fn move_rewrite_respects_vault_link_style_for_plain_links() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("move-rewrite", &vault_root);
         fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
         fs::write(
@@ -824,6 +825,7 @@ mod tests {
     fn move_rewrite_fixture_updates_inbound_links_and_roundtrips() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("move-rewrite", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -869,6 +871,7 @@ mod tests {
     fn concurrent_scan_and_move_produce_consistent_state() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("move-rewrite", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -906,6 +909,7 @@ mod tests {
     fn move_rewrite_updates_attachment_embeds() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("attachments", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -936,6 +940,7 @@ mod tests {
             .join(name);
 
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {

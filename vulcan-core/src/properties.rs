@@ -2866,6 +2866,7 @@ mod tests {
     fn query_notes_filters_and_sorts_using_property_tables() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -2947,6 +2948,7 @@ mod tests {
     fn query_notes_supports_file_tag_filters_with_subtags() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should be created");
         fs::write(
             vault_root.join("Projects/Alpha.md"),
@@ -2985,6 +2987,7 @@ mod tests {
     fn query_notes_expression_filters_support_regex_functions() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3072,6 +3075,7 @@ mod tests {
     fn query_notes_sorts_missing_properties_like_nulls() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault directory should be created");
         fs::write(vault_root.join("A.md"), "# A\n").expect("note should be written");
         fs::write(vault_root.join("B.md"), "---\nrank: null\n---\n# B\n")
@@ -3162,6 +3166,7 @@ mod tests {
     fn query_notes_exposes_bookmarked_notes_via_file_starred() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".obsidian"))
             .expect("obsidian directory should be created");
         fs::create_dir_all(vault_root.join("Projects"))
@@ -3228,6 +3233,7 @@ mod tests {
     fn inline_fields_merge_into_properties_but_frontmatter_wins_filters() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3316,6 +3322,7 @@ mod tests {
     fn query_notes_expression_filters_support_date_and_duration_rhs_functions() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault directory should be created");
         fs::write(
             vault_root.join("Long.md"),
@@ -3372,6 +3379,7 @@ mod tests {
     fn load_note_index_applies_custom_task_status_config() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
         fs::write(
             vault_root.join("Tasks.md"),
@@ -3413,6 +3421,7 @@ completed = ["x", "v"]
     fn load_note_index_imports_tasks_plugin_status_definitions() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-tasks-plugin"))
             .expect("tasks plugin dir should be created");
         fs::write(
@@ -3466,6 +3475,7 @@ completed = ["x", "v"]
     fn load_note_index_persists_derived_task_recurrence_properties() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
         fs::write(
             vault_root.join("Tasks.md"),
@@ -3522,6 +3532,7 @@ completed = ["x", "v"]
     fn load_note_index_exposes_tasknotes_as_synthetic_file_tasks() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("tasknotes", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3572,6 +3583,7 @@ completed = ["x", "v"]
     fn list_properties_reports_counts_and_observed_types() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3629,6 +3641,7 @@ completed = ["x", "v"]
     fn list_query_fields_reports_builtin_supports_and_property_examples() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3663,6 +3676,7 @@ completed = ["x", "v"]
             .join(name);
 
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {

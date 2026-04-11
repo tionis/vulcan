@@ -330,6 +330,8 @@ mod tests {
     fn watch_vault_until_returns_when_stop_requested() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         std::fs::write(temp_dir.path().join("Home.md"), "# Home\n").expect("note should write");
+        std::fs::create_dir_all(temp_dir.path().join(".vulcan"))
+            .expect(".vulcan dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
         let mut startup_reports = 0_usize;
 

@@ -146,6 +146,7 @@ mod disabled_tests {
     fn dataviewjs_requires_runtime_feature() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -161,6 +162,7 @@ mod disabled_tests {
             .join(name);
 
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {
@@ -5314,6 +5316,8 @@ globalThis.Function = undefined;
         fn dataviewjs_exposes_current_page_lookup_and_pages_helpers() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5361,6 +5365,8 @@ globalThis.Function = undefined;
         fn dataviewjs_supports_render_helpers_and_execute() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5391,6 +5397,8 @@ globalThis.Function = undefined;
         fn dataviewjs_supports_csv_loading_and_external_views() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5429,6 +5437,8 @@ globalThis.Function = undefined;
         fn dataviewjs_supports_query_markdown_and_return_values() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5456,6 +5466,8 @@ globalThis.Function = undefined;
         fn dataviewjs_exposes_vault_daily_namespace_and_events() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
             fs::write(
                 vault_root.join(".vulcan/config.toml"),
@@ -5522,6 +5534,8 @@ globalThis.Function = undefined;
         fn dataviewjs_exposes_vault_note_query_search_graph_and_help_helpers() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5588,6 +5602,8 @@ globalThis.Function = undefined;
         fn dataviewjs_rejects_paths_outside_the_vault() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5609,6 +5625,8 @@ globalThis.Function = undefined;
         fn dataviewjs_times_out_infinite_loops() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
             fs::write(
@@ -5636,6 +5654,8 @@ globalThis.Function = undefined;
         fn dataviewjs_permission_profile_caps_runtime_timeout() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
             fs::write(
@@ -5680,6 +5700,8 @@ cpu_limit_ms = 25
         fn dataviewjs_session_preserves_values_between_evaluations() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5704,6 +5726,8 @@ cpu_limit_ms = 25
         fn dataviewjs_note_class_exposes_details_and_relationships() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5760,6 +5784,8 @@ cpu_limit_ms = 25
         fn dataviewjs_note_content_is_raw_markdown_and_html_is_rendered() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5793,6 +5819,8 @@ cpu_limit_ms = 25
         fn dataviewjs_note_outline_and_partial_reads_share_cli_selectors() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5848,6 +5876,8 @@ cpu_limit_ms = 25
         fn dataviewjs_enforces_fs_sandbox_and_supports_transactions() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -5921,10 +5951,13 @@ cpu_limit_ms = 25
             assert!(!vault_root.join("Temp.md").exists());
         }
 
+        #[allow(clippy::too_many_lines)]
         #[test]
         fn dataviewjs_web_helpers_require_net_sandbox_and_can_fetch() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
             let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
@@ -6034,6 +6067,8 @@ cpu_limit_ms = 25
         fn dataviewjs_reports_runtime_disabled_primitives() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6065,6 +6100,8 @@ cpu_limit_ms = 25
         fn dataviewjs_supports_dv_func_and_luxon_helpers() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6120,6 +6157,8 @@ cpu_limit_ms = 25
         fn dataviewjs_exposes_formattable_dates_for_dv_date_and_file_day() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             fs::create_dir_all(vault_root.join("Journal")).expect("journal dir should exist");
             fs::write(vault_root.join("Journal/2026-04-03.md"), "# Daily\n")
@@ -6162,6 +6201,8 @@ cpu_limit_ms = 25
         fn dataviewjs_plain_serializes_functions_as_string() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6181,6 +6222,8 @@ cpu_limit_ms = 25
         fn dataviewjs_help_no_arg_returns_welcome_message() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6204,6 +6247,8 @@ cpu_limit_ms = 25
         fn dataviewjs_help_vault_returns_api_overview() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6222,6 +6267,8 @@ cpu_limit_ms = 25
         fn dataviewjs_help_bare_function_shows_tip() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6243,6 +6290,8 @@ cpu_limit_ms = 25
         fn dataviewjs_special_variables_track_last_result_and_error() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6274,6 +6323,8 @@ cpu_limit_ms = 25
         fn dataviewjs_app_stub_get_name_returns_string() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6290,6 +6341,8 @@ cpu_limit_ms = 25
         fn dataviewjs_app_stub_get_markdown_files_returns_array() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6317,6 +6370,8 @@ cpu_limit_ms = 25
         fn dataviewjs_app_stub_workspace_throws_descriptive_error() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault("dataview", &vault_root);
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
@@ -6339,6 +6394,7 @@ cpu_limit_ms = 25
                 .join(name);
 
             copy_dir_recursive(&source, destination);
+            fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
         }
 
         fn copy_dir_recursive(source: &Path, destination: &Path) {

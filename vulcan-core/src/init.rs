@@ -1,5 +1,6 @@
 use crate::cache::CacheError;
 use crate::config::create_default_config;
+use crate::paths::initialize_vulcan_dir;
 use crate::write_lock::acquire_write_lock;
 use crate::{CacheDatabase, VaultPaths};
 use serde::Serialize;
@@ -53,6 +54,7 @@ impl From<std::io::Error> for InitError {
 }
 
 pub fn initialize_vault(paths: &VaultPaths) -> Result<InitSummary, InitError> {
+    initialize_vulcan_dir(paths)?;
     let _lock = acquire_write_lock(paths)?;
     let created_cache = !paths.cache_db().exists();
     let created_config = create_default_config(paths)?;

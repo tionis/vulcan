@@ -1597,6 +1597,7 @@ mod tests {
     fn rename_property_updates_frontmatter_and_reindexes() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("refactors", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1624,6 +1625,7 @@ mod tests {
     fn merge_tags_updates_frontmatter_and_inline_tags() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("refactors", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1644,6 +1646,7 @@ mod tests {
     fn rename_alias_heading_and_block_ref_update_note_graph() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("refactors", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1688,6 +1691,7 @@ mod tests {
     fn rename_alias_dry_run_preserves_source_files() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("refactors", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1708,6 +1712,7 @@ mod tests {
     fn set_note_property_updates_frontmatter_and_reindexes() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1735,6 +1740,7 @@ mod tests {
     fn set_note_property_creates_frontmatter_when_missing() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         fs::write(
             vault_root.join("Scratch.md"),
@@ -1766,6 +1772,7 @@ mod tests {
     fn set_note_property_with_empty_value_removes_property() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1874,6 +1881,7 @@ mod tests {
     fn set_note_property_produces_minimal_diff_for_scalar() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1909,6 +1917,7 @@ mod tests {
     fn repeated_set_property_is_stable() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1934,6 +1943,7 @@ mod tests {
     fn rename_property_preserves_comments_and_list_formatting() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         let paths = VaultPaths::new(&vault_root);
         fs::create_dir_all(&vault_root).expect("vault dir should create");
 
@@ -1977,6 +1987,7 @@ mod tests {
             .join("../tests/fixtures/vaults")
             .join(name);
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {

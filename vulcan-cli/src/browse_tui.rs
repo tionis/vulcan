@@ -4256,6 +4256,7 @@ mod tests {
     }
 
     fn scan_fixture(paths: &VaultPaths) {
+        fs::create_dir_all(paths.vulcan_dir()).expect(".vulcan dir should be created");
         scan_vault(paths, ScanMode::Full).expect("vault scan should succeed");
     }
 

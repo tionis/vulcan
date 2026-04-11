@@ -865,6 +865,7 @@ fn properties_command_lists_counts_and_types() {
 fn config_import_templater_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
     fs::create_dir_all(vault_root.join(".obsidian/plugins/templater-obsidian"))
         .expect("templater plugin dir should be created");
     fs::write(
@@ -931,6 +932,7 @@ fn config_import_templater_json_output_reports_mappings() {
 fn config_import_core_json_output_reports_sources_and_target_file() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
     fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
     fs::write(
         vault_root.join(".obsidian/app.json"),
@@ -1017,6 +1019,7 @@ fn config_import_core_json_output_reports_sources_and_target_file() {
 fn config_import_dataview_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
     fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
         .expect("dataview plugin dir should be created");
     fs::write(
@@ -1403,6 +1406,7 @@ template = "Daily Shared"
 fn config_import_kanban_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
     fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-kanban"))
         .expect("kanban plugin dir should be created");
     fs::write(
@@ -1471,6 +1475,7 @@ fn config_import_kanban_json_output_reports_mappings() {
 fn config_import_periodic_notes_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
     fs::create_dir_all(vault_root.join(".obsidian/plugins/periodic-notes"))
         .expect("periodic plugin dir should be created");
     fs::write(
@@ -1598,6 +1603,7 @@ fn daily_today_creates_note_from_template_and_updates_cache() {
 fn daily_append_creates_note_and_appends_under_heading() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
 
     let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -2168,6 +2174,7 @@ fn note_append_prepend_renders_quickadd_value_tokens() {
 fn note_append_periodic_creates_note_and_renders_quickadd_tokens() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
 
     let assert = cargo_vulcan_fixed_now()
         .args([
@@ -2208,6 +2215,7 @@ fn note_append_periodic_creates_note_and_renders_quickadd_tokens() {
 fn today_alias_json_output_opens_daily_note() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
 
     let assert = cargo_vulcan_fixed_now()
         .args([
@@ -4261,6 +4269,7 @@ fn config_import_tasks_json_output_writes_config_and_reports_mapping() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(&vault_root).expect("vault root should exist");
+    initialize_vulcan_dir(&vault_root);
     write_tasks_import_fixture(&vault_root);
 
     let assert = Command::cargo_bin("vulcan")
@@ -8524,6 +8533,35 @@ fn doctor_fix_json_output_plans_repairs_for_uninitialized_vault() {
     assert_eq!(json["dry_run"], true);
     assert!(fixes.iter().any(|fix| fix["kind"] == "initialize"));
     assert!(fixes.iter().any(|fix| fix["kind"] == "scan"));
+}
+
+#[test]
+fn scan_json_output_requires_initialized_vulcan_dir() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should be created");
+    fs::write(vault_root.join("Home.md"), "# Home\n").expect("note should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "scan",
+            "--full",
+        ])
+        .assert()
+        .failure();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["code"], "operation_failed");
+    assert!(json["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("Run `vulcan init`")));
 }
 
 #[test]
@@ -15136,7 +15174,13 @@ fn document_paths(database: &CacheDatabase) -> Vec<String> {
         .collect()
 }
 
+fn initialize_vulcan_dir(vault_root: &Path) {
+    fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+}
+
 fn run_scan(vault_root: &Path) {
+    initialize_vulcan_dir(vault_root);
+
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -15152,6 +15196,8 @@ fn run_scan(vault_root: &Path) {
 }
 
 fn run_incremental_scan(vault_root: &Path) {
+    initialize_vulcan_dir(vault_root);
+
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -15862,6 +15908,7 @@ fn copy_fixture_vault(name: &str, destination: &Path) {
         .join(name);
 
     copy_dir_recursive(&source, destination);
+    fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
 }
 
 fn copy_dir_recursive(source: &Path, destination: &Path) {
@@ -16789,6 +16836,7 @@ fn template_show_subcommand_displays_template_contents() {
 fn periodic_show_subcommand_is_generalized_from_daily_show() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
     fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
 
     fs::write(
@@ -16819,6 +16867,7 @@ fn periodic_show_subcommand_is_generalized_from_daily_show() {
 fn periodic_append_subcommand_delegates_to_daily_append() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
     fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
     fs::write(
         vault_root.join("Journal/Daily/2026-04-04.md"),

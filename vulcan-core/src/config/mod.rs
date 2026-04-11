@@ -10635,9 +10635,23 @@ default_mode = "off"
     }
 
     #[test]
+    fn create_default_config_requires_existing_vulcan_dir() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let error = create_default_config(&paths).expect_err("missing .vulcan should fail");
+        assert!(
+            error.to_string().contains("Run `vulcan init`"),
+            "expected actionable init guidance: {error}"
+        );
+        assert!(!paths.config_file().exists());
+    }
+
+    #[test]
     fn create_default_config_is_idempotent() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).expect(".vulcan dir should be created");
 
         assert!(create_default_config(&paths).expect("config should be created"));
         assert!(!create_default_config(&paths).expect("config creation should be idempotent"));
@@ -11763,6 +11777,7 @@ default_mode = "off"
     fn import_core_plugin_config_writes_settings_from_all_supported_sources() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
         fs::write(
             vault_root.join(".obsidian/app.json"),
@@ -11818,6 +11833,7 @@ default_mode = "off"
     fn core_importer_supports_partial_sources_and_local_target() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
         fs::write(
             vault_root.join(".obsidian/app.json"),

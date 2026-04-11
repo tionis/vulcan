@@ -31118,6 +31118,7 @@ mod tests {
     #[test]
     fn config_import_target_local_writes_local_config_file() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
+        fs::create_dir_all(temp_dir.path().join(".vulcan")).expect(".vulcan dir should exist");
         let obsidian_dir = temp_dir.path().join(".obsidian");
         fs::create_dir_all(&obsidian_dir).expect("obsidian dir should be created");
         fs::write(
@@ -31342,6 +31343,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         fs::write(temp_dir.path().join("Home.md"), "# Home\n").expect("note should be written");
         let paths = VaultPaths::new(temp_dir.path());
+        fs::create_dir_all(paths.vulcan_dir()).expect(".vulcan dir should exist");
         vulcan_core::scan_vault(&paths, ScanMode::Incremental).expect("scan should succeed");
         init_git_repo(temp_dir.path());
         run_git(temp_dir.path(), &["add", "Home.md"]);

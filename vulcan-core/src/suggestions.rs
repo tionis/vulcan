@@ -1057,6 +1057,7 @@ mod tests {
     fn suggest_mentions_reports_unambiguous_and_ambiguous_candidates() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("suggestions", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1080,6 +1081,7 @@ mod tests {
     fn link_mentions_dry_run_preserves_files_and_apply_links_unambiguous_mentions() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("suggestions", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1103,6 +1105,7 @@ mod tests {
     fn suggest_duplicates_reports_titles_aliases_and_merge_candidates() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("suggestions", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1203,6 +1206,7 @@ mod tests {
     fn suggest_mentions_benchmark_with_large_candidate_set() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault directory should be created");
         let candidate_count = 1_200_usize;
         let matched_indexes = [7_usize, 456, 1_199];
@@ -1249,6 +1253,7 @@ mod tests {
     fn bulk_replace_filters_selected_notes_and_reindexes() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1274,6 +1279,7 @@ mod tests {
             .join("../tests/fixtures/vaults")
             .join(name);
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn write_note(vault_root: &Path, relative_path: &str, contents: &str) {

@@ -488,6 +488,7 @@ mod tests {
     fn evaluates_status_and_property_filters() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         write_eval_fixture(&vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -516,6 +517,7 @@ mod tests {
     fn evaluates_date_dependency_and_id_filters() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         write_eval_fixture(&vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -546,6 +548,7 @@ mod tests {
     fn sorts_groups_limits_and_explains_queries() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         write_eval_fixture(&vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -579,6 +582,7 @@ mod tests {
     fn evaluates_tasknotes_file_tasks_through_the_shared_query_engine() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("tasknotes", &vault_root);
         fs::write(
             vault_root.join("TaskNotes/Tasks/Archived Flag.md"),
@@ -686,6 +690,7 @@ mod tests {
             .join(name);
 
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {

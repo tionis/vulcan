@@ -3054,6 +3054,7 @@ mod tests {
     fn search_returns_ranked_chunk_hits_with_snippets() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3076,6 +3077,7 @@ mod tests {
     fn search_hits_include_note_sections_and_line_spans() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3102,6 +3104,7 @@ mod tests {
     fn search_matches_aliases_and_filters_by_tag_and_path_prefix() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3165,6 +3168,7 @@ mod tests {
     fn search_matches_extracted_attachment_text() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("attachments", &vault_root);
         write_attachment_sidecar(
             &vault_root,
@@ -3195,6 +3199,7 @@ mod tests {
     fn search_filters_by_property_presence_and_where_clauses() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3224,6 +3229,7 @@ mod tests {
     fn search_excludes_dataview_query_metadata_but_keeps_inline_field_values() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(
             vault_root.join("Search.md"),
@@ -3281,6 +3287,7 @@ mod tests {
     fn static_search_index_export_includes_chunk_content_and_headings() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3301,6 +3308,7 @@ mod tests {
     fn search_parses_inline_filters_and_explain_plan() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3340,6 +3348,7 @@ mod tests {
     fn search_parenthesized_grouping_preserves_or_scope() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(vault_root.join("Alpha.md"), "alpha project").expect("note should write");
         fs::write(vault_root.join("Beta.md"), "beta project").expect("note should write");
@@ -3377,6 +3386,7 @@ mod tests {
     fn search_grouped_negation_requires_all_terms_in_negated_group() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(vault_root.join("Both.md"), "alpha work meetup").expect("note should write");
         fs::write(vault_root.join("Work.md"), "alpha work").expect("note should write");
@@ -3419,6 +3429,7 @@ mod tests {
     fn search_file_operator_matches_filename_without_fts_terms() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(vault_root.join("Alpha.md"), "project").expect("note should write");
         fs::write(vault_root.join("Beta.md"), "project").expect("note should write");
@@ -3455,6 +3466,7 @@ mod tests {
     fn search_content_operator_ignores_title_only_matches() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(
             vault_root.join("AliasOnly.md"),
@@ -3499,6 +3511,7 @@ mod tests {
     fn search_match_case_operator_filters_case_sensitive_hits() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(vault_root.join("Upper.md"), "Bob builds dashboards.")
             .expect("note should write");
@@ -3538,6 +3551,7 @@ mod tests {
     fn search_global_match_case_and_ignore_case_override_work() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(vault_root.join("Upper.md"), "Bob builds dashboards.")
             .expect("note should write");
@@ -3602,6 +3616,7 @@ mod tests {
     fn search_line_operator_requires_terms_on_same_line() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(vault_root.join("SameLine.md"), "mix flour\noven ready")
             .expect("note should write");
@@ -3640,6 +3655,7 @@ mod tests {
     fn search_explain_adds_no_result_suggestions() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(vault_root.join("Release.md"), "release notes only").expect("note should write");
         let paths = VaultPaths::new(&vault_root);
@@ -3688,6 +3704,7 @@ mod tests {
     fn search_block_operator_requires_terms_in_same_block() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(
             vault_root.join("SameBlock.md"),
@@ -3728,6 +3745,7 @@ mod tests {
     fn search_section_operator_matches_across_chunks_in_same_heading() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(
             vault_root.join("SameSection.md"),
@@ -3772,6 +3790,7 @@ mod tests {
     fn search_task_operators_filter_by_task_state() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(
             vault_root.join("Tasks.md"),
@@ -3861,6 +3880,7 @@ mod tests {
     fn search_bracket_property_filters_match_existing_filter_paths() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         copy_fixture_vault("basic", &vault_root.join("basic"));
 
@@ -3936,6 +3956,7 @@ mod tests {
     fn search_inline_regex_filters_content_and_paths() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join("Journal")).expect("journal dir should exist");
         fs::write(vault_root.join("Notes.md"), "Meeting on 2026-03-26.")
             .expect("note should write");
@@ -4003,6 +4024,7 @@ mod tests {
     fn search_fuzzy_fallback_matches_nearby_terms() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4038,6 +4060,7 @@ mod tests {
     fn search_sort_orders_results_and_explain_plan() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault root should exist");
         fs::write(vault_root.join("Alpha.md"), "# Alpha\n\ndashboard").expect("note should write");
         fs::write(vault_root.join("Beta.md"), "# Beta\n\ndashboard").expect("note should write");
@@ -4136,6 +4159,7 @@ mod tests {
             .join(name);
 
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn write_attachment_extraction_config(vault_root: &Path) {
