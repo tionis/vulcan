@@ -19,9 +19,10 @@ Useful command groups:
 
 Documentation workflow:
 
-- Read `AI/Skills/*.md` for task-specific usage patterns.
+- Read `.agent/skills/*/SKILL.md` for task-specific usage patterns.
 - Use `vulcan help <topic>` for integrated documentation.
 - Use `vulcan describe --format openai-tools` or `--format mcp` to export machine-readable tool schemas.
+- Run `vulcan agent install --overwrite` after upgrading Vulcan if the bundled harness files need a refresh.
 
 Common pitfalls:
 

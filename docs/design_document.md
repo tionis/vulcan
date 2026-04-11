@@ -1062,14 +1062,14 @@ Each skill includes: when to use it, core patterns with examples, common mistake
 
 ### External harness support
 
-For LLM harnesses and external runtimes that use Vulcan as a tool provider (`pi`, Claude Code via CLAUDE.md/AGENTS.md, Codex, Gemini CLI, etc.):
+For LLM harnesses and external runtimes that use Vulcan as a tool provider (Claude Code via CLAUDE.md/AGENTS.md, Codex, Gemini CLI, `pi`, etc.):
 
 - **`describe --format mcp|openai-tools|json-schema`** — exports tool definitions in standard formats for direct integration with harness tool-calling protocols.
 - **`help --output json <command>`** — structured help output that a harness can parse to build tool definitions dynamically.
-- **Vault AGENTS.md template** — shipped with Vulcan and optionally written on `vulcan init`. Teaches external harnesses: available commands, conventions, what not to do, and points to the skills directory for reference material.
+- **Vault AGENTS.md template** — shipped with Vulcan and optionally written on `vulcan init` or `vulcan agent install`. Teaches external harnesses: available commands, conventions, what not to do, and points to the skills directory for reference material.
 - **Consistent JSON error output** — all commands return structured errors in JSON mode (`{"error": "...", "code": "..."}`) rather than unstructured stderr text.
 
-The default skills serve external runtimes directly — `pi` or Claude Code reads `AI/Skills/js-api-guide.md` and learns the vault JS API. If a native assistant is added later, it should use `skill_get("js-api-guide")` to consume the same material.
+The default skills serve external runtimes directly — Claude Code, Codex, Gemini CLI, or a `pi` adapter reads `.agent/skills/js-api-guide/SKILL.md` and learns the vault JS API. If a native assistant is added later, it should use `skill_get("js-api-guide")` to consume the same material.
 
 ### Single-note CRUD design
 
@@ -1127,7 +1127,7 @@ Web search and fetch capabilities serve AI integrations and the JS runtime. Sear
 
 ## 17e. Deferred native chat integrations
 
-Current recommendation: do not build in-process Telegram, Discord, Matrix, or similar chat adapters as part of the current Phase 9 critical path. Use an external runtime (`pi` first) for the conversation loop and keep Vulcan focused on the durable parts of the system: vault semantics, command contracts, permissions, `AGENTS.md`, and skill files.
+Current recommendation: do not build in-process Telegram, Discord, Matrix, or similar chat adapters as part of the current Phase 9 critical path. Use an external runtime for the conversation loop and keep Vulcan focused on the durable parts of the system: vault semantics, command contracts, permissions, `AGENTS.md`, and skill files.
 
 If native chat integrations are revisited later, they should be treated as a transport-oriented runtime layer on top of the same CLI tool surface used by external harnesses. They should not create a second mutation path or bypass the permission system.
 
@@ -1227,7 +1227,7 @@ Maintain a set of test vaults in the repository (e.g., `tests/fixtures/vaults/`)
 - **`kanban/`**: Kanban board files with `kanban-plugin` frontmatter, heading-based columns, card items with inline dates and tags, YAML config blocks, and an archive section. Tests board detection, column/card extraction, configurable date triggers, and linked page metadata. See Roadmap Phase 9.11.
 - **`tasknotes/`**: TaskNotes task files with rich YAML frontmatter (status, priority, due, scheduled, contexts, projects, recurrence, blockedBy, timeEntries, reminders), custom user fields, and `.base` view files with filter/sort/group/formula configs. Tests task file parsing, field mapping, NLP input parsing, dependency graph construction, and Bases view evaluation with custom source types. See Roadmap Phase 9.15.
 - **`periodic/`**: Daily, weekly, and monthly note folders with date-formatted filenames, testing periodic note discovery, reverse date resolution, `file.day` integration, and gap detection. See Roadmap Phase 9.16.
-- **`agent-assets/`**: Sample `AGENTS.md`, prompt files, and skill files for external runtime integration. If Vulcan later adds session export/import, extend this fixture with transcript examples. See Roadmap Phase 9.12.
+- **`agent-assets/`**: Sample `AGENTS.md`, prompt files, and harness-style skill bundles for external runtime integration. If Vulcan later adds session export/import, extend this fixture with transcript examples. See Roadmap Phase 9.12.
 - **`daily-events/`**: Daily notes with structured event syntax under `## Schedule` headings (`- 09:00-10:00 Meeting @location(Zoom) #work`, `- all-day Holiday`). Tests event parsing, time range extraction, metadata (@key(value)) and tag parsing, lenient handling of non-event list items, and `events` cache table population. See Roadmap Phase 9.16.3.
 - **`note-crud/`**: Notes for testing single-note CRUD operations: `note get` with heading/block-ref/lines/match selectors, `note set` with frontmatter preservation, `note create` with templates, `note append` under headings, `note patch` with single-match safety and regex patterns, and `--check` post-write diagnostics. See Roadmap 9.18.2.
 - **`js-runtime/`**: JS scripts testing the vault API: `vault.note()` properties, `vault.graph` traversal, `vault.notes().where().sortBy()` collection operations, `vault.transaction()` atomicity, sandbox enforcement (memory/CPU limits, tier access restrictions), and `help()` introspection. See Roadmap 9.18.5.

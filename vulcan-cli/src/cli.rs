@@ -25,7 +25,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   Scripting:   run, web, render
   Git:         git, changes
   Automation:  saved, automation, export, checkpoint
-  Setup:       init, config, trust, plugin
+  Setup:       init, agent, config, trust, plugin
 
 Reference:
   vulcan help <command>              Integrated help for any command
@@ -40,6 +40,17 @@ Freshness:
 Color:
   --color always|never|auto   Force or suppress ANSI color output (default: auto)
   NO_COLOR env var also suppresses color when set";
+
+const AGENT_COMMAND_AFTER_HELP: &str = "\
+Notes:
+  `agent install` writes the bundled `AGENTS.md` template and default Vulcan skills.
+  Skills are installed in the harness-friendly layout `.agent/skills/<name>/SKILL.md`.
+  Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.
+
+Examples:
+  vulcan agent install
+  vulcan agent install --overwrite
+  vulcan init --agent-files";
 
 const RENDER_COMMAND_AFTER_HELP: &str = "\
 Notes:
@@ -2299,6 +2310,21 @@ pub enum PluginCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct AgentInstallArgs {
+    #[arg(
+        long,
+        help = "Overwrite existing bundled AGENTS.md and skill files when contents differ"
+    )]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum AgentCommand {
+    #[command(about = "Install bundled AGENTS.md and harness skill files into the vault")]
+    Install(AgentInstallArgs),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct InitArgs {
     #[arg(
         long,
@@ -2314,7 +2340,7 @@ pub struct InitArgs {
     pub no_import: bool,
     #[arg(
         long,
-        help = "Write AGENTS.md plus bundled AI skill markdown files into the vault"
+        help = "Write AGENTS.md plus bundled harness skills into .agent/skills/"
     )]
     pub agent_files: bool,
 }
@@ -3838,6 +3864,14 @@ pub enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    #[command(
+        about = "Install bundled files for external agent harnesses",
+        after_help = AGENT_COMMAND_AFTER_HELP
+    )]
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
     },
     #[command(
         about = "Open, inspect, and append to daily notes",

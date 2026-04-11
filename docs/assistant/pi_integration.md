@@ -1,8 +1,8 @@
-# `pi` Integration Sketch
+# External Harness Integration Sketch
 
-Current recommendation for Phase 9.12: use an external agent runtime, with `pi` as the first-class target, instead of building an in-process Rust assistant.
+Current recommendation for Phase 9.12: use an external agent runtime instead of building an in-process Rust assistant. `pi` is a useful reference implementation, but it is not the architectural center of the design.
 
-The older native assistant and chat-runtime steering was not discarded; it was moved to [`native_runtime_deferred.md`](./native_runtime_deferred.md) so the `pi`-first decision does not erase those ideas.
+The older native assistant and chat-runtime steering was not discarded; it was moved to [`native_runtime_deferred.md`](./native_runtime_deferred.md) so the runtime-agnostic decision does not erase those ideas.
 
 Vulcan remains responsible for:
 
@@ -12,7 +12,7 @@ Vulcan remains responsible for:
 - prompts and skills stored in the vault
 - permissions and safety checks
 
-`pi` remains responsible for:
+The external runtime remains responsible for:
 
 - model inference
 - chat/session UX
@@ -31,7 +31,7 @@ Vulcan already has the right shape for this:
 - single-note CRUD
 - search/query/web/git tools
 - default `AGENTS.md`
-- vault-native skill files in `AI/Skills/`
+- vault-native skill bundles in `.agent/skills/`
 
 That means the runtime can stay outside Vulcan without losing the important guarantees.
 
@@ -39,17 +39,17 @@ That means the runtime can stay outside Vulcan without losing the important guar
 
 Phase 9.12 should not:
 
-- add a second vault API just for `pi`
-- let `pi` mutate notes through direct filesystem writes
+- add a second vault API just for one runtime
+- let an external runtime mutate notes through direct filesystem writes
 - duplicate parser or cache logic in a JS package
 - implement vault-native chat transcripts or memory notes up front
 - build Telegram/Discord/Signal adapters yet
 
-## Recommended runtime model
+## Recommended Runtime Model
 
 ### 1. Startup context
 
-At session start, `pi` should load:
+At session start, the runtime should load:
 
 - vault `AGENTS.md` if present
 - the compact command map from `vulcan describe`
@@ -64,9 +64,11 @@ Recommended sequence:
 1. Call `vulcan describe --format openai-tools`
 2. Register the core tools directly
 3. Use `vulcan help --output json <command>` only when the model needs an unfamiliar command
-4. Read `AI/Skills/*.md` or use `skill_get(name)` when a workflow-specific guide is needed
+4. Read `.agent/skills/*/SKILL.md` or use `skill_get(name)` when a workflow-specific guide is needed
 
 This keeps context small while preserving full surface area.
+
+Run `vulcan agent install` once per vault to scaffold `AGENTS.md` plus the bundled `.agent/skills/` directory. Re-run with `--overwrite` after upgrading Vulcan if the bundled files should be refreshed.
 
 ### 3. Tool execution
 
@@ -85,7 +87,7 @@ Wrapper behavior:
 
 The wrapper must not inspect SQLite directly or rewrite notes itself.
 
-## Recommended tool shape in `pi`
+## Recommended Tool Shape In A Reference Integration
 
 Use two layers.
 
@@ -122,7 +124,7 @@ Recommended rule:
 
 This preserves the CLI-to-tool 1:1 mapping and avoids drift.
 
-## Trust and permission model
+## Trust And Permission Model
 
 The runtime should be configured so generic write/edit/shell tools are disabled or deprioritized for vault work. Vulcan should be the only path for note mutations.
 
@@ -141,7 +143,7 @@ Rules:
 
 ## Session and persistence boundary
 
-Default assumption: session history lives in `pi`, not in the vault.
+Default assumption: session history lives in the external runtime, not in the vault.
 
 That means Vulcan does not initially need:
 
@@ -162,11 +164,11 @@ Those should be explicit exports, not the default storage model.
 
 ## Suggested package structure
 
-This is a sketch, not a committed implementation:
+This is a sketch for a reference integration, not a committed implementation:
 
 ```text
 packages/
-  pi-vulcan/
+  runtime-vulcan/
     README.md
     src/
       index.ts          # runtime entrypoint
@@ -188,7 +190,7 @@ The critical point is ownership:
 ### Milestone 1
 
 - document the contract
-- prove a `pi` session can read notes, search, query, and patch notes only through Vulcan
+- prove a reference runtime session can read notes, search, query, and patch notes only through Vulcan
 
 ### Milestone 2
 
@@ -198,11 +200,11 @@ The critical point is ownership:
 ### Milestone 3
 
 - tighten permission profiles
-- decide whether a generated `pi` config helper from Vulcan is worth adding
+- decide whether generated runtime-specific config helpers from Vulcan are worth adding
 
-## Revisit criteria for a native runtime
+## Revisit Criteria For A Native Runtime
 
-Re-open the embedded assistant only if one of these remains painful after the `pi` integration lands:
+Re-open the embedded assistant only if one of these remains painful after the external-runtime contract lands:
 
 - vault-native transcripts are essential
 - the runtime cannot express the required permission model

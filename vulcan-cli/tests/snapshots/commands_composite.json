@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render\n  Git:         git, changes\n  Automation:  saved, automation, export, checkpoint\n  Setup:       init, config, trust, plugin\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render\n  Git:         git, changes\n  Automation:  saved, automation, export, checkpoint\n  Setup:       init, agent, config, trust, plugin\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -136,7 +136,7 @@
                 ]
               },
               {
-                "help": "Write AGENTS.md plus bundled AI skill markdown files into the vault",
+                "help": "Write AGENTS.md plus bundled harness skills into .agent/skills/",
                 "id": "agent_files",
                 "long": "agent-files",
                 "possible_values": [
@@ -5367,6 +5367,35 @@
                 "subcommands": []
               }
             ]
+          }
+        ]
+      },
+      {
+        "about": "Install bundled files for external agent harnesses",
+        "after_help": "Notes:\n  `agent install` writes the bundled `AGENTS.md` template and default Vulcan skills.\n  Skills are installed in the harness-friendly layout `.agent/skills/<name>/SKILL.md`.\n  Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.\n\nExamples:\n  vulcan agent install\n  vulcan agent install --overwrite\n  vulcan init --agent-files",
+        "name": "agent",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Install bundled AGENTS.md and harness skill files into the vault",
+            "name": "install",
+            "options": [
+              {
+                "help": "Overwrite existing bundled AGENTS.md and skill files when contents differ",
+                "id": "overwrite",
+                "long": "overwrite",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OVERWRITE"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },

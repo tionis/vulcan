@@ -16,19 +16,19 @@ mod terminal_markdown;
 mod trust;
 
 pub use cli::{
-    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, ColorMode, Command,
-    ConfigCommand, ConfigImportArgs, ConfigImportCommand, ConfigImportSelection,
-    ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, EpubTocStyle,
-    ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand, ExportProfileFormatArg,
-    ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs, GitCommand, GraphCommand,
-    GraphExportFormat, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand,
-    NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
-    PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs,
-    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
-    SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
-    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchExtractionMode, WebFetchMode,
+    AgentCommand, AgentInstallArgs, AutomationCommand, BasesCommand, CacheCommand,
+    CheckpointCommand, Cli, ColorMode, Command, ConfigCommand, ConfigImportArgs,
+    ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg, DailyCommand,
+    DataviewCommand, DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat,
+    ExportProfileCommand, ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs,
+    ExportTransformArgs, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
+    KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode, OutputFormat, PeriodicOpenArgs,
+    PeriodicSubcommand, PluginCommand, PropertySortArg, QueryEngineArg, QueryFormatArg,
+    RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand, SavedCreateCommand,
+    SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
+    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
+    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchExtractionMode, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -251,55 +251,61 @@ const BUNDLED_AGENT_TEMPLATE: BundledTextFile = BundledTextFile {
 const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/note-operations.md",
+        relative_path: ".agent/skills/note-operations/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/note-operations.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/vault-query.md",
+        relative_path: ".agent/skills/vault-query/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/vault-query.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/js-api-guide.md",
+        relative_path: ".agent/skills/js-api-guide/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/js-api-guide.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/graph-exploration.md",
+        relative_path: ".agent/skills/graph-exploration/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/graph-exploration.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/daily-notes.md",
+        relative_path: ".agent/skills/daily-notes/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/daily-notes.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/properties-and-tags.md",
+        relative_path: ".agent/skills/properties-and-tags/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/properties-and-tags.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/refactoring.md",
+        relative_path: ".agent/skills/refactoring/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/refactoring.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/web-research.md",
+        relative_path: ".agent/skills/web-research/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/web-research.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/git-workflow.md",
+        relative_path: ".agent/skills/git-workflow/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/git-workflow.md"),
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: "AI/Skills/task-management.md",
+        relative_path: ".agent/skills/task-management/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/task-management.md"),
     },
 ];
+
+pub(crate) fn bundled_support_relative_paths() -> Vec<&'static str> {
+    std::iter::once(BUNDLED_AGENT_TEMPLATE.relative_path)
+        .chain(BUNDLED_SKILL_FILES.iter().map(|file| file.relative_path))
+        .collect()
+}
 
 #[derive(Clone, Copy)]
 enum RefreshTarget {
@@ -1710,11 +1716,29 @@ struct ConfigImportRenderedBatchReport {
     reports: Vec<ConfigImportRenderedReport>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SupportFileStatus {
+    Created,
+    Updated,
+    Kept,
+}
+
+impl SupportFileStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Updated => "updated",
+            Self::Kept => "kept",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct InitSupportFile {
+struct SupportFileReport {
     path: String,
     kind: String,
-    created: bool,
+    status: SupportFileStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1724,9 +1748,14 @@ struct InitReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     importable_sources: Vec<ConfigImportDiscoveryItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    support_files: Vec<InitSupportFile>,
+    support_files: Vec<SupportFileReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     imported: Option<ConfigImportBatchReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AgentInstallReport {
+    support_files: Vec<SupportFileReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13302,6 +13331,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Plugin { ref command } => {
             handle_plugin_command(cli, &paths, command, stdout_is_tty, use_stdout_color)
         }
+        Command::Agent { ref command } => {
+            commands::agent::handle_agent_command(cli, &paths, command)
+        }
         Command::Status => {
             let report = run_status_command(&paths)?;
             print_status_report(cli.output, &report, use_stdout_color)
@@ -13382,6 +13414,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Init(ref args) => {
+            selected_permission_guard(cli, &paths)?
+                .check_index()
+                .map_err(CliError::operation)?;
             let report = run_init_command(&paths, args)?;
             print_init_summary(cli.output, &paths, &report)?;
             Ok(())
@@ -16633,7 +16668,7 @@ fn print_backlinks_report(
 fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, CliError> {
     let summary = initialize_vault(paths).map_err(CliError::operation)?;
     let support_files = if args.agent_files {
-        write_bundled_support_files(paths)?
+        write_bundled_support_files(paths, false)?
     } else {
         Vec::new()
     };
@@ -16676,6 +16711,15 @@ fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, C
         importable_sources,
         support_files,
         imported,
+    })
+}
+
+pub(crate) fn run_agent_install_command(
+    paths: &VaultPaths,
+    args: &AgentInstallArgs,
+) -> Result<AgentInstallReport, CliError> {
+    Ok(AgentInstallReport {
+        support_files: write_bundled_support_files(paths, args.overwrite)?,
     })
 }
 
@@ -16747,10 +16791,7 @@ fn print_init_summary(
             }
             if !normalized.support_files.is_empty() {
                 println!("Bundled agent support files:");
-                for file in &normalized.support_files {
-                    let status = if file.created { "created" } else { "kept" };
-                    println!("- {} [{}; {}]", file.path, file.kind, status);
-                }
+                print_support_file_reports(&normalized.support_files);
             }
             Ok(())
         }
@@ -16758,11 +16799,42 @@ fn print_init_summary(
     }
 }
 
-fn write_bundled_support_files(paths: &VaultPaths) -> Result<Vec<InitSupportFile>, CliError> {
+pub(crate) fn print_agent_install_summary(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    report: &AgentInstallReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "Installed bundled agent support files for {}",
+                paths.vault_root().display()
+            );
+            print_support_file_reports(&report.support_files);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_support_file_reports(files: &[SupportFileReport]) {
+    for file in files {
+        println!("- {} [{}; {}]", file.path, file.kind, file.status.label());
+    }
+}
+
+fn write_bundled_support_files(
+    paths: &VaultPaths,
+    overwrite: bool,
+) -> Result<Vec<SupportFileReport>, CliError> {
     let mut reports = Vec::new();
-    reports.push(write_bundled_text_file(paths, &BUNDLED_AGENT_TEMPLATE)?);
+    reports.push(write_bundled_text_file(
+        paths,
+        &BUNDLED_AGENT_TEMPLATE,
+        overwrite,
+    )?);
     for file in BUNDLED_SKILL_FILES {
-        reports.push(write_bundled_text_file(paths, file)?);
+        reports.push(write_bundled_text_file(paths, file, overwrite)?);
     }
     Ok(reports)
 }
@@ -16770,30 +16842,49 @@ fn write_bundled_support_files(paths: &VaultPaths) -> Result<Vec<InitSupportFile
 fn write_bundled_text_file(
     paths: &VaultPaths,
     file: &BundledTextFile,
-) -> Result<InitSupportFile, CliError> {
+    overwrite: bool,
+) -> Result<SupportFileReport, CliError> {
     let destination = paths.vault_root().join(file.relative_path);
-    let created = write_text_file_if_missing(&destination, file.contents)?;
-    Ok(InitSupportFile {
+    let status = write_bundled_text_contents(&destination, file.contents, overwrite)?;
+    Ok(SupportFileReport {
         path: file.relative_path.to_string(),
         kind: file.kind.to_string(),
-        created,
+        status,
     })
 }
 
-fn write_text_file_if_missing(path: &Path, contents: &str) -> Result<bool, CliError> {
-    if path.exists() {
-        return Ok(false);
-    }
+fn write_bundled_text_contents(
+    path: &Path,
+    contents: &str,
+    overwrite: bool,
+) -> Result<SupportFileStatus, CliError> {
+    let rendered = if contents.ends_with('\n') {
+        contents.as_bytes().to_vec()
+    } else {
+        format!("{contents}\n").into_bytes()
+    };
+    let existed_before = match fs::read(path) {
+        Ok(existing) => {
+            if existing == rendered {
+                return Ok(SupportFileStatus::Kept);
+            }
+            if !overwrite {
+                return Ok(SupportFileStatus::Kept);
+            }
+            true
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(CliError::operation(error)),
+    };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(CliError::operation)?;
     }
-    let rendered = if contents.ends_with('\n') {
-        contents.to_string()
+    fs::write(path, &rendered).map_err(CliError::operation)?;
+    Ok(if existed_before {
+        SupportFileStatus::Updated
     } else {
-        format!("{contents}\n")
-    };
-    fs::write(path, rendered).map_err(CliError::operation)?;
-    Ok(true)
+        SupportFileStatus::Created
+    })
 }
 
 fn print_note_get_report(
@@ -31028,6 +31119,19 @@ mod tests {
                 no_import: false,
                 agent_files: true,
             })
+        );
+    }
+
+    #[test]
+    fn parses_agent_install_overwrite_flag() {
+        let cli = Cli::try_parse_from(["vulcan", "agent", "install", "--overwrite"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Agent {
+                command: AgentCommand::Install(AgentInstallArgs { overwrite: true })
+            }
         );
     }
 
