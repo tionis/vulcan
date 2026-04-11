@@ -1,5 +1,7 @@
 use crate::bases::inspect_base_file;
-pub use crate::content_transforms::{ContentTransformConfig, ContentTransformRuleConfig};
+pub use crate::content_transforms::{
+    ContentReplacementRuleConfig, ContentTransformConfig, ContentTransformRuleConfig,
+};
 use crate::paths::{
     ensure_vulcan_dir, normalize_relative_input_path, RelativePathOptions, VaultPaths,
 };
@@ -245,6 +247,13 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # exclude_headings = ["Scratch"]
 # exclude_frontmatter_keys = ["email", "api-key"]
 # exclude_inline_fields = ["owner", "budget"]
+# [[export.profiles.team-book.content_transforms.replace]]
+# pattern = "[[People/Bob]]"
+# replacement = "[[People/Alice]]"
+# [[export.profiles.team-book.content_transforms.replace]]
+# pattern = "[A-Za-z0-9._%+-]+@example\\.com"
+# replacement = "[redacted]"
+# regex = true
 # [[export.profiles.team-book.content_transforms]]
 # query = 'from notes where file.path matches "^People/"'
 # exclude_callouts = ["internal"]
@@ -9311,6 +9320,13 @@ exclude_callouts = ["secret gm", "internal"]
 exclude_headings = ["Scratch"]
 exclude_frontmatter_keys = ["email"]
 exclude_inline_fields = ["owner"]
+[[export.profiles.team_book.content_transforms.replace]]
+pattern = "[[People/Bob]]"
+replacement = "[[People/Alice]]"
+[[export.profiles.team_book.content_transforms.replace]]
+pattern = "[A-Za-z0-9._%+-]+@example\\.com"
+replacement = "[redacted]"
+regex = true
 "#,
         )
         .expect("config should be written");
@@ -9348,6 +9364,7 @@ exclude_inline_fields = ["owner"]
                             rule.transforms.exclude_headings.clone(),
                             rule.transforms.exclude_frontmatter_keys.clone(),
                             rule.transforms.exclude_inline_fields.clone(),
+                            rule.transforms.replace.clone(),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -9358,11 +9375,24 @@ exclude_inline_fields = ["owner"]
                 vec!["Scratch".to_string()],
                 vec!["email".to_string()],
                 vec!["owner".to_string()],
+                vec![
+                    ContentReplacementRuleConfig {
+                        pattern: "[[People/Bob]]".to_string(),
+                        replacement: "[[People/Alice]]".to_string(),
+                        regex: false,
+                    },
+                    ContentReplacementRuleConfig {
+                        pattern: "[A-Za-z0-9._%+-]+@example\\.com".to_string(),
+                        replacement: "[redacted]".to_string(),
+                        regex: true,
+                    },
+                ],
             )])
         );
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn local_config_can_override_export_profile_fields() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
@@ -9383,6 +9413,9 @@ exclude_callouts = ["secret gm"]
 exclude_headings = ["Scratch"]
 exclude_frontmatter_keys = ["email"]
 exclude_inline_fields = ["owner"]
+[[export.profiles.team_book.content_transforms.replace]]
+pattern = "secret"
+replacement = "public"
 "#,
         )
         .expect("shared config should be written");
@@ -9400,6 +9433,10 @@ exclude_callouts = ["internal", "private"]
 exclude_headings = ["Directory"]
 exclude_frontmatter_keys = ["phone"]
 exclude_inline_fields = ["manager"]
+[[export.profiles.team_book.content_transforms.replace]]
+pattern = "\\b[A-Z0-9]{32}\\b"
+replacement = "[token]"
+regex = true
 
 [export.profiles.graph_dump]
 format = "graph"
@@ -9447,6 +9484,7 @@ graph_format = "dot"
                             rule.transforms.exclude_headings.clone(),
                             rule.transforms.exclude_frontmatter_keys.clone(),
                             rule.transforms.exclude_inline_fields.clone(),
+                            rule.transforms.replace.clone(),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -9457,6 +9495,11 @@ graph_format = "dot"
                 vec!["Directory".to_string()],
                 vec!["phone".to_string()],
                 vec!["manager".to_string()],
+                vec![ContentReplacementRuleConfig {
+                    pattern: "\\b[A-Z0-9]{32}\\b".to_string(),
+                    replacement: "[token]".to_string(),
+                    regex: true,
+                }],
             )])
         );
 

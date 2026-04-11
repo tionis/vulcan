@@ -2,6 +2,7 @@ use crate::config::VaultConfig;
 use crate::expression::eval::normalize_field_name;
 use crate::parser::parse_document;
 use crate::parser::types::InlineFieldKind;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ops::Range;
@@ -16,6 +17,8 @@ pub struct ContentTransformConfig {
     pub exclude_frontmatter_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_inline_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replace: Vec<ContentReplacementRuleConfig>,
 }
 
 impl ContentTransformConfig {
@@ -25,6 +28,10 @@ impl ContentTransformConfig {
             && self.exclude_headings.is_empty()
             && self.exclude_frontmatter_keys.is_empty()
             && self.exclude_inline_fields.is_empty()
+            && self
+                .replace
+                .iter()
+                .all(ContentReplacementRuleConfig::is_empty)
     }
 
     pub fn merge_in(&mut self, other: &Self) {
@@ -38,6 +45,22 @@ impl ContentTransformConfig {
             &mut self.exclude_inline_fields,
             &other.exclude_inline_fields,
         );
+        merge_replacement_rules(&mut self.replace, &other.replace);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContentReplacementRuleConfig {
+    pub pattern: String,
+    pub replacement: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub regex: bool,
+}
+
+impl ContentReplacementRuleConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pattern.trim().is_empty()
     }
 }
 
@@ -93,6 +116,9 @@ pub fn apply_content_transforms(source: &str, transforms: &ContentTransformConfi
     }
     if !excluded_inline_fields.is_empty() {
         rendered = strip_excluded_inline_fields(&rendered, &excluded_inline_fields);
+    }
+    if !transforms.replace.is_empty() {
+        rendered = apply_replacement_rules(&rendered, &transforms.replace);
     }
     rendered
 }
@@ -315,6 +341,18 @@ fn merge_string_lists(target: &mut Vec<String>, values: &[String]) {
     }
 }
 
+fn merge_replacement_rules(
+    target: &mut Vec<ContentReplacementRuleConfig>,
+    values: &[ContentReplacementRuleConfig],
+) {
+    target.extend(values.iter().filter(|rule| !rule.is_empty()).cloned());
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn expand_inline_field_removal_range(
     source: &str,
     range: Range<usize>,
@@ -345,6 +383,23 @@ fn expand_inline_field_removal_range(
     } else {
         range
     }
+}
+
+fn apply_replacement_rules(source: &str, rules: &[ContentReplacementRuleConfig]) -> String {
+    let mut rendered = source.to_string();
+    for rule in rules.iter().filter(|rule| !rule.is_empty()) {
+        if rule.regex {
+            let Ok(regex) = Regex::new(&rule.pattern) else {
+                continue;
+            };
+            rendered = regex
+                .replace_all(&rendered, rule.replacement.as_str())
+                .into_owned();
+        } else {
+            rendered = rendered.replace(&rule.pattern, &rule.replacement);
+        }
+    }
+    rendered
 }
 
 fn remove_byte_ranges(source: &str, ranges: &[Range<usize>]) -> String {
@@ -462,7 +517,10 @@ fn remove_yaml_key_block(yaml: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_content_transforms, ContentTransformConfig, ContentTransformRuleConfig};
+    use super::{
+        apply_content_transforms, ContentReplacementRuleConfig, ContentTransformConfig,
+        ContentTransformRuleConfig,
+    };
 
     #[test]
     fn excludes_matching_callout_blocks() {
@@ -482,6 +540,7 @@ mod tests {
                 exclude_headings: Vec::new(),
                 exclude_frontmatter_keys: Vec::new(),
                 exclude_inline_fields: Vec::new(),
+                replace: Vec::new(),
             },
         );
 
@@ -509,6 +568,7 @@ mod tests {
                 exclude_headings: Vec::new(),
                 exclude_frontmatter_keys: Vec::new(),
                 exclude_inline_fields: Vec::new(),
+                replace: Vec::new(),
             },
         );
 
@@ -529,6 +589,7 @@ mod tests {
                 exclude_headings: Vec::new(),
                 exclude_frontmatter_keys: Vec::new(),
                 exclude_inline_fields: Vec::new(),
+                replace: Vec::new(),
             },
         );
 
@@ -549,6 +610,11 @@ mod tests {
             exclude_headings: vec!["scratch".to_string()],
             exclude_frontmatter_keys: vec!["api key".to_string()],
             exclude_inline_fields: vec!["owner".to_string()],
+            replace: vec![ContentReplacementRuleConfig {
+                pattern: "secret".to_string(),
+                replacement: "[redacted]".to_string(),
+                regex: false,
+            }],
         };
         base.merge_in(&ContentTransformConfig {
             exclude_callouts: vec![
@@ -559,6 +625,11 @@ mod tests {
             exclude_headings: vec!["private".to_string(), "scratch".to_string()],
             exclude_frontmatter_keys: vec!["email".to_string(), "api key".to_string()],
             exclude_inline_fields: vec!["budget".to_string(), "owner".to_string()],
+            replace: vec![ContentReplacementRuleConfig {
+                pattern: r"\b[A-Z0-9]{8}\b".to_string(),
+                replacement: "[token]".to_string(),
+                regex: true,
+            }],
         });
 
         assert_eq!(
@@ -577,6 +648,21 @@ mod tests {
             base.exclude_inline_fields,
             vec!["owner".to_string(), "budget".to_string()]
         );
+        assert_eq!(
+            base.replace,
+            vec![
+                ContentReplacementRuleConfig {
+                    pattern: "secret".to_string(),
+                    replacement: "[redacted]".to_string(),
+                    regex: false,
+                },
+                ContentReplacementRuleConfig {
+                    pattern: r"\b[A-Z0-9]{8}\b".to_string(),
+                    replacement: "[token]".to_string(),
+                    regex: true,
+                }
+            ]
+        );
     }
 
     #[test]
@@ -590,6 +676,7 @@ mod tests {
                 exclude_headings: Vec::new(),
                 exclude_frontmatter_keys: Vec::new(),
                 exclude_inline_fields: Vec::new(),
+                replace: Vec::new(),
             },
         }
         .is_empty());
@@ -615,6 +702,7 @@ mod tests {
                 exclude_headings: vec!["scratch".to_string()],
                 exclude_frontmatter_keys: Vec::new(),
                 exclude_inline_fields: Vec::new(),
+                replace: Vec::new(),
             },
         );
 
@@ -648,6 +736,7 @@ mod tests {
                 exclude_headings: vec!["scratch".to_string()],
                 exclude_frontmatter_keys: Vec::new(),
                 exclude_inline_fields: Vec::new(),
+                replace: Vec::new(),
             },
         );
 
@@ -677,6 +766,7 @@ mod tests {
                 exclude_headings: Vec::new(),
                 exclude_frontmatter_keys: vec!["api-key".to_string(), "related".to_string()],
                 exclude_inline_fields: Vec::new(),
+                replace: Vec::new(),
             },
         );
 
@@ -709,6 +799,7 @@ mod tests {
                     "due".to_string(),
                     "private".to_string(),
                 ],
+                replace: Vec::new(),
             },
         );
 
@@ -718,5 +809,54 @@ mod tests {
         assert!(!rendered.contains("[due:: 2026-04-01]"));
         assert!(!rendered.contains("(private:: yes)"));
         assert!(rendered.contains("- [ ] Ship"));
+    }
+
+    #[test]
+    fn applies_literal_and_regex_replacements_in_order() {
+        let source = concat!(
+            "---\n",
+            "email: alpha@example.com\n",
+            "---\n\n",
+            "Visible [[People/Bob]].\n",
+            "secret token\n",
+        );
+
+        let rendered = apply_content_transforms(
+            source,
+            &ContentTransformConfig {
+                exclude_callouts: Vec::new(),
+                exclude_headings: Vec::new(),
+                exclude_frontmatter_keys: Vec::new(),
+                exclude_inline_fields: Vec::new(),
+                replace: vec![
+                    ContentReplacementRuleConfig {
+                        pattern: "[[People/Bob]]".to_string(),
+                        replacement: "[[People/Alice]]".to_string(),
+                        regex: false,
+                    },
+                    ContentReplacementRuleConfig {
+                        pattern: r"[A-Za-z0-9._%+-]+@example\.com".to_string(),
+                        replacement: "[redacted]".to_string(),
+                        regex: true,
+                    },
+                    ContentReplacementRuleConfig {
+                        pattern: "secret".to_string(),
+                        replacement: "public".to_string(),
+                        regex: false,
+                    },
+                    ContentReplacementRuleConfig {
+                        pattern: r"\bpublic token\b".to_string(),
+                        replacement: "[token]".to_string(),
+                        regex: true,
+                    },
+                ],
+            },
+        );
+
+        assert!(rendered.contains("email: [redacted]"));
+        assert!(rendered.contains("[[People/Alice]]"));
+        assert!(!rendered.contains("[[People/Bob]]"));
+        assert!(rendered.contains("[token]"));
+        assert!(!rendered.contains("secret token"));
     }
 }
