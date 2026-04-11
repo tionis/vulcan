@@ -191,15 +191,24 @@ pub fn doctor_vault(paths: &VaultPaths) -> Result<DoctorReport, DoctorError> {
 
 pub fn doctor_fix(paths: &VaultPaths, dry_run: bool) -> Result<DoctorFixReport, DoctorError> {
     let before = doctor_vault(paths)?;
-    let needs_scaffold = !paths.vulcan_dir().exists()
-        || !paths.config_file().exists()
-        || !paths.cache_db().exists()
-        || !paths.gitignore_file().exists();
-    let needs_scan = needs_scaffold
-        || before.summary.stale_index_rows > 0
-        || before.summary.missing_index_rows > 0;
-    let needs_fts_repair = !needs_scaffold && fts_repair_needed(paths)?;
-    let fixes = planned_fixes(needs_scaffold, needs_scan, needs_fts_repair);
+    let root_missing = !paths.vulcan_dir().exists();
+    let plan = DoctorFixPlan {
+        root_missing,
+        needs_scaffold: root_missing
+            || !paths.config_file().exists()
+            || !paths.cache_db().exists()
+            || !paths.gitignore_file().exists(),
+        needs_scan: false,
+        needs_fts_repair: false,
+    };
+    let plan = DoctorFixPlan {
+        needs_scan: plan.needs_scaffold
+            || before.summary.stale_index_rows > 0
+            || before.summary.missing_index_rows > 0,
+        needs_fts_repair: !plan.needs_scaffold && fts_repair_needed(paths)?,
+        ..plan
+    };
+    let fixes = planned_fixes(plan);
 
     if dry_run {
         let issues_before = before.summary.clone();
@@ -212,13 +221,26 @@ pub fn doctor_fix(paths: &VaultPaths, dry_run: bool) -> Result<DoctorFixReport, 
         });
     }
 
-    if needs_scaffold {
+    if plan.root_missing {
+        return Err(DoctorError::Init(crate::InitError::Io(
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "missing {}. Run `vulcan init` in {} first",
+                    paths.vulcan_dir().display(),
+                    paths.vault_root().display()
+                ),
+            ),
+        )));
+    }
+
+    if plan.needs_scaffold {
         initialize_vault(paths)?;
     }
-    if needs_scan {
+    if plan.needs_scan {
         crate::scan_vault(paths, crate::ScanMode::Incremental)?;
     }
-    if needs_fts_repair {
+    if plan.needs_fts_repair {
         repair_fts(paths, &RepairFtsQuery { dry_run: false })?;
     }
 
@@ -248,25 +270,34 @@ fn empty_report(on_disk_paths: BTreeSet<String>) -> DoctorReport {
     )
 }
 
-fn planned_fixes(
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy)]
+struct DoctorFixPlan {
+    root_missing: bool,
     needs_scaffold: bool,
     needs_scan: bool,
     needs_fts_repair: bool,
-) -> Vec<DoctorFixAction> {
+}
+
+fn planned_fixes(plan: DoctorFixPlan) -> Vec<DoctorFixAction> {
     let mut fixes = Vec::new();
-    if needs_scaffold {
+    if plan.needs_scaffold {
         fixes.push(DoctorFixAction {
             kind: "initialize".to_string(),
-            description: "Create or repair .vulcan scaffolding".to_string(),
+            description: if plan.root_missing {
+                "Run `vulcan init` to create .vulcan scaffolding".to_string()
+            } else {
+                "Create or repair .vulcan scaffolding".to_string()
+            },
         });
     }
-    if needs_scan {
+    if plan.needs_scan {
         fixes.push(DoctorFixAction {
             kind: "scan".to_string(),
             description: "Refresh the cache from disk".to_string(),
         });
     }
-    if needs_fts_repair {
+    if plan.needs_fts_repair {
         fixes.push(DoctorFixAction {
             kind: "repair_fts".to_string(),
             description: "Rebuild the full-text search index from cached chunks".to_string(),
@@ -860,6 +891,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         fs::create_dir_all(&vault_root).expect("vault root should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::write(
             vault_root.join("Dashboard.md"),
             concat!(
@@ -902,6 +934,7 @@ mod tests {
     fn doctor_reports_property_type_mismatches() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
         fs::write(
             vault_root.join(".obsidian/types.json"),
@@ -950,6 +983,7 @@ mod tests {
             "# Home\n\nMissing target [[Ghost]].\n",
         )
         .expect("note should be written");
+        fs::create_dir_all(missing_root.join(".vulcan")).expect(".vulcan dir should be created");
         let missing_paths = VaultPaths::new(&missing_root);
 
         scan_vault(&missing_paths, ScanMode::Full).expect("scan should succeed");
@@ -967,6 +1001,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         fs::create_dir_all(&vault_root).expect("vault root should be created");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::write(
             vault_root.join("Alpha.md"),
             "# Alpha\n\n<a href=\"https://example.com\">Example</a>\n",
@@ -1045,11 +1080,32 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        fs::remove_dir_all(paths.vulcan_dir()).expect(".vulcan dir should be removable");
 
         let report = doctor_fix(&paths, true).expect("doctor fix dry run should succeed");
 
         assert!(report.dry_run);
         assert_eq!(report.fixes.len(), 2);
+        assert!(!paths.vulcan_dir().exists());
+        assert_eq!(
+            report.fixes[0].description,
+            "Run `vulcan init` to create .vulcan scaffolding"
+        );
+    }
+
+    #[test]
+    fn doctor_fix_requires_init_when_root_directory_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        fs::remove_dir_all(paths.vulcan_dir()).expect(".vulcan dir should be removable");
+
+        let error = doctor_fix(&paths, false).expect_err("doctor fix should require init");
+        assert!(
+            error.to_string().contains("Run `vulcan init`"),
+            "expected actionable init guidance: {error}"
+        );
         assert!(!paths.vulcan_dir().exists());
     }
 
@@ -1098,6 +1154,7 @@ mod tests {
             .join(name);
 
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {

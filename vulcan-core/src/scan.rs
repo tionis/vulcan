@@ -3493,6 +3493,7 @@ mod tests {
     fn full_scan_indexes_fixture_vault() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3533,6 +3534,7 @@ mod tests {
     fn full_scan_indexes_tasknotes_projection_rows() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("tasknotes", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3613,6 +3615,7 @@ mod tests {
     fn attachment_extraction_indexes_search_rows_for_supported_assets() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("attachments", &vault_root);
         write_attachment_sidecar(
             &vault_root,
@@ -3639,6 +3642,7 @@ mod tests {
     fn scan_progress_reports_scan_and_resolve_phases() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
         let mut events = Vec::new();
@@ -3678,6 +3682,7 @@ mod tests {
     fn mixed_properties_vault_indexes_property_projections_and_type_diagnostics() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("mixed-properties", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3710,6 +3715,7 @@ mod tests {
     fn dataview_fixture_indexes_inline_fields_tasks_and_metadata() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3734,6 +3740,7 @@ mod tests {
     fn scan_indexes_periodic_notes_and_daily_events() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
         fs::write(
             vault_root.join(".vulcan/config.toml"),
@@ -3827,6 +3834,7 @@ mod tests {
     fn scan_persists_tasks_query_blocks() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
         fs::write(
             vault_root.join("Tasks.md"),
@@ -3877,6 +3885,7 @@ mod tests {
     fn dataview_fixture_expression_evaluation_covers_core_semantics() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -3948,6 +3957,7 @@ mod tests {
     fn dataview_fixture_inline_expressions_evaluate_against_note_metadata() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("dataview", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4017,6 +4027,7 @@ mod tests {
     fn incremental_scan_skips_unchanged_files() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4041,6 +4052,7 @@ mod tests {
     fn no_op_incremental_scan_preserves_existing_link_resolution_rows() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("ambiguous-links", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4070,6 +4082,7 @@ mod tests {
     fn no_op_incremental_scan_preserves_chunk_search_rows() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4093,6 +4106,7 @@ mod tests {
     fn full_scan_populates_chunk_search_index() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4117,6 +4131,7 @@ mod tests {
     fn incremental_scan_refreshes_chunk_search_rows_for_changed_notes() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4154,6 +4169,7 @@ mod tests {
     fn incremental_scan_reuses_chunk_ids_when_frontmatter_changes_only() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4186,6 +4202,7 @@ mod tests {
     fn scan_respects_gitignore_and_hidden_directories() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join("notes")).expect("notes dir should be created");
         fs::create_dir_all(vault_root.join(".hidden")).expect("hidden dir should be created");
         fs::write(vault_root.join(".gitignore"), "ignored.md\n").expect("gitignore should exist");
@@ -4210,6 +4227,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let parent_root = temp_dir.path().join("parent");
         let vault_root = parent_root.join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join("notes")).expect("notes dir should be created");
         fs::write(parent_root.join(".gitignore"), "**/*.md\n")
             .expect("parent gitignore should exist");
@@ -4231,6 +4249,7 @@ mod tests {
     fn fixture_config_is_loaded_with_obsidian_defaults() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4249,6 +4268,7 @@ mod tests {
     fn dataview_plugin_settings_control_inline_expression_prefixes() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
             .expect("dataview plugin dir should be created");
         fs::write(
@@ -4291,6 +4311,7 @@ mod tests {
     fn broken_frontmatter_vault_emits_parse_diagnostics() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("broken-frontmatter", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4310,6 +4331,7 @@ mod tests {
     fn messy_block_scalar_frontmatter_is_recovered_without_parse_errors() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         fs::create_dir_all(&vault_root).expect("vault should be created");
         fs::write(
             vault_root.join("card.md"),
@@ -4344,6 +4366,7 @@ mod tests {
     fn ambiguous_links_fixture_resolves_and_emits_diagnostics() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("ambiguous-links", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -4378,6 +4401,8 @@ mod tests {
         for fixture in fixture_names() {
             let temp_dir = TempDir::new().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault(fixture, &vault_root);
             let paths = VaultPaths::new(&vault_root);
 
@@ -4414,6 +4439,8 @@ mod tests {
         for fixture in fixture_names() {
             let temp_dir = TempDir::new().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
             copy_fixture_vault(fixture, &vault_root);
             let paths = VaultPaths::new(&vault_root);
 
@@ -5068,6 +5095,7 @@ mod tests {
             .join(name);
 
         copy_dir_recursive(&source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn write_attachment_extraction_config(vault_root: &Path) {

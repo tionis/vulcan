@@ -1412,6 +1412,7 @@ mod tests {
     fn query_links_resolves_path_filename_and_alias() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1445,6 +1446,7 @@ mod tests {
     fn query_backlinks_returns_sources_with_context() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1472,6 +1474,7 @@ mod tests {
     fn ambiguous_identifiers_are_reported() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("ambiguous-links", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1494,6 +1497,7 @@ mod tests {
     fn graph_analysis_reports_paths_hubs_components_and_stats() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1544,6 +1548,7 @@ mod tests {
     fn list_note_identities_includes_paths_and_aliases() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1562,6 +1567,7 @@ mod tests {
     fn list_tags_returns_distinct_tag_counts() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1599,6 +1605,7 @@ mod tests {
     fn list_tagged_note_identities_resolves_inline_and_frontmatter_tags() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
 
@@ -1633,6 +1640,8 @@ mod tests {
             .join(name);
 
         copy_dir_recursive(&source, destination);
+        std::fs::create_dir_all(destination.join(".vulcan"))
+            .expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {

@@ -184,9 +184,23 @@ mod tests {
     use ulid::Ulid;
 
     #[test]
+    fn open_requires_initialized_vulcan_dir() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        let error = CacheDatabase::open(&paths).expect_err("missing .vulcan should fail");
+        assert!(
+            error.to_string().contains("Run `vulcan init`"),
+            "expected actionable init guidance: {error}"
+        );
+        assert!(!paths.cache_db().exists());
+    }
+
+    #[test]
     fn open_initializes_cache_schema_and_runtime_metadata() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).expect(".vulcan dir should be created");
         let database = CacheDatabase::open(&paths).expect("database should open");
 
         assert!(paths.cache_db().exists());
@@ -252,6 +266,7 @@ mod tests {
     fn clear_all_removes_cached_rows_but_preserves_runtime_metadata() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).expect(".vulcan dir should be created");
         let mut database = CacheDatabase::open(&paths).expect("database should open");
 
         insert_document(database.connection(), "doc-1", "one.md");
@@ -282,6 +297,7 @@ mod tests {
     fn rebuild_with_resets_existing_rows_before_running_callback() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).expect(".vulcan dir should be created");
         let mut database = CacheDatabase::open(&paths).expect("database should open");
 
         insert_document(database.connection(), "doc-1", "one.md");

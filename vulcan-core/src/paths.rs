@@ -11,6 +11,17 @@ pub const DEFAULT_ATTACHMENT_FOLDER: &str = ".";
 const DEFAULT_VULCAN_GITIGNORE: &str =
     "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n";
 
+fn missing_vulcan_dir_error(paths: &VaultPaths) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "missing {}. Run `vulcan init` in {} first",
+            paths.vulcan_dir().display(),
+            paths.vault_root().display()
+        ),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelativePathOptions {
     pub expected_extension: Option<&'static str>,
@@ -118,8 +129,29 @@ impl VaultPaths {
     }
 }
 
-pub fn ensure_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
+pub fn initialize_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
     fs::create_dir_all(paths.vulcan_dir())?;
+    ensure_vulcan_dir(paths)
+}
+
+pub fn ensure_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
+    let metadata = match fs::metadata(paths.vulcan_dir()) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(missing_vulcan_dir_error(paths));
+        }
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "expected {} to be a directory. Run `vulcan init` after fixing it",
+                paths.vulcan_dir().display()
+            ),
+        ));
+    }
+
     fs::create_dir_all(paths.reports_dir())?;
 
     let gitignore = paths.gitignore_file();
@@ -243,11 +275,25 @@ mod tests {
     }
 
     #[test]
-    fn ensure_vulcan_dir_creates_default_gitignore_without_overwriting() {
+    fn ensure_vulcan_dir_requires_initialized_root_directory() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
 
-        ensure_vulcan_dir(&paths).expect("vulcan dir should be created");
+        let error = ensure_vulcan_dir(&paths).expect_err("missing .vulcan should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            error.to_string().contains("Run `vulcan init`"),
+            "expected actionable init guidance: {error}"
+        );
+        assert!(!paths.vulcan_dir().exists());
+    }
+
+    #[test]
+    fn initialize_vulcan_dir_creates_default_gitignore_without_overwriting() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+
+        initialize_vulcan_dir(&paths).expect("vulcan dir should be created");
         assert!(paths.reports_dir().exists());
         assert_eq!(
             fs::read_to_string(paths.gitignore_file()).expect("gitignore should exist"),

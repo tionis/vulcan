@@ -280,6 +280,7 @@ mod tests {
     fn save_and_load_saved_report_round_trip() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).expect(".vulcan dir should be created");
         let definition = SavedReportDefinition {
             name: "weekly-search".to_string(),
             description: Some("dashboard hits".to_string()),
@@ -317,6 +318,7 @@ mod tests {
     fn list_saved_reports_returns_sorted_summaries() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).expect(".vulcan dir should be created");
         save_saved_report(
             &paths,
             &SavedReportDefinition {
@@ -389,6 +391,7 @@ mod tests {
     fn delete_saved_report_removes_definition_file() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).expect(".vulcan dir should be created");
         save_saved_report(
             &paths,
             &SavedReportDefinition {
