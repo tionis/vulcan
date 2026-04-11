@@ -1697,7 +1697,7 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 
 #### 9.12.3 Prompts, skills, and vault context
 
-- [ ] Treat vault `AGENTS.md` plus `.agent/skills/*/SKILL.md` as the primary durable prompt surface
+- [ ] Treat vault `AGENTS.md`, the configured prompts folder, and `.agent/skills/*/SKILL.md` as the primary durable prompt surface
 - [ ] Keep bundled default skills written by `vulcan init --agent-files` or `vulcan agent install`; user-defined skills remain plain vault files
 - [ ] Runtime integrations inject only a compact tool summary up front; detailed schemas and skill content stay on-demand through `describe`, `help`, and skill files
 - [ ] Publish a runtime-integration usage guide with recommended permission profiles and common pitfalls
@@ -1723,10 +1723,12 @@ Preserved native-runtime steering lives in `docs/assistant/native_runtime_deferr
 
 #### 9.12.6 Prompts and skills remain vault-native
 
-Prompts and skills stay as Markdown files in the vault. External runtimes consume them as reference material; Vulcan stays responsible for scaffolding defaults and documenting conventions.
+Prompts and skills stay as Markdown files in the vault. External runtimes consume them as reference material; MCP should expose the same prompt files through protocol-native prompt discovery, and any later integrated `vulcan assistant` should reuse the same loader rather than inventing a second prompt store.
 
 - [ ] Configurable prompts folder: `assistant.prompts_folder` in `.vulcan/config.toml` (default: `AI/Prompts/`)
 - [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `.agent/skills/`)
+- [ ] Shared prompt loader/discovery API in Vulcan: enumerate prompt files from `assistant.prompts_folder`, parse metadata, and load/render prompt bodies for reuse by external-runtime helpers, MCP `prompts/*`, and later 9.21 integrated-assistant flows
+- [ ] `vulcan init --agent-files` / `vulcan agent install` should be able to scaffold example prompt files into the configured prompts folder without making them special runtime-only assets
 - [ ] Prompt file format — Markdown with YAML frontmatter:
   ```yaml
   ---
@@ -3173,6 +3175,18 @@ The `config` group currently only has `import`. Users need to inspect and modify
 - [x] Support MCP tool calls by dispatching to the same command handlers used by the CLI
 - [x] MCP server should respect the permission layer (9.19.13) via `--permissions <profile>`
 - [x] Add `vulcan mcp` to the top-level command list (it's an integration point, not a subcommand of `index`)
+
+**Follow-on MCP refinement (not started):**
+
+The initial stdio server above is enough for local harnesses that already know Vulcan's command surface, but it is not the end-state for generic MCP clients. In the CLI/subprocess case the harness can inject `AGENTS.md` and skill summaries up front; a generic MCP client usually cannot. That means MCP needs its own protocol-native discovery surface instead of assuming out-of-band skill injection.
+
+- [ ] Split the command surface into headless MCP tools vs CLI-only interactive affordances (TUI commands, `$EDITOR` launches, desktop openers, nested server startup)
+- [ ] Expose command docs, vault-local assistant material, and skill/reference content over MCP `resources/list` + `resources/read`
+- [ ] Expose reusable workflow starters from the configured vault prompts folder over MCP `prompts/list` + `prompts/get` instead of relying only on injected AGENTS/skills
+- [ ] Add MCP-native completion for prompt/resource arguments so progressive disclosure works inside the protocol rather than through the hidden CLI `complete` command
+- [ ] Add an HTTP MCP transport on the future axum daemon/router layer; keep the current stdio server as the local-process option
+- [-] Defer MCP `tasks` until Vulcan has a concrete long-running/session model that benefits from them
+- [-] Defer MCP Apps integration until there is a concrete host/UI flow to target; do not add app-specific surface area speculatively
 
 #### 9.19.7 Command reorganization
 
