@@ -883,7 +883,10 @@ Notes:
   `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.
   `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
   `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, `--exclude-inline-field`, and ordered `--replace-rule` rewrites.
+  Direct export flags build one implicit transform rule that applies to all exported notes.
   Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; each rule query only narrows within the profile query result.
+  If multiple rules match one note, exclusions are unioned and replacement rules run in declaration order.
+  Exported metadata, links, backlinks, inline expressions, and copied attachments are rebuilt from transformed note content before packaging.
   Text exports print to stdout by default; pass `-o/--path` to write a file instead.
   `epub --backlinks` appends indexed inlinks after each exported note chapter.
   Archive exports require `-o/--path` because they produce binary or database files.
@@ -896,6 +899,8 @@ Examples:
   vulcan export profile show team-book
   vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'
   vulcan export json 'from notes' --exclude-callout 'secret gm' -o exports/public.json
+  vulcan export json 'from notes' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted -o exports/public.json
+  vulcan export profile create public --format json 'from notes' -o exports/public.json --exclude-callout internal --replace-rule literal '[[People/Bob]]' '[[People/Alice]]'
   vulcan export profile delete team-book --dry-run
   vulcan export markdown 'from notes where file.path matches \"^Projects/\"'
   vulcan export json 'from notes where status = done' --pretty -o exports/done.json

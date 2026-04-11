@@ -10,5 +10,9 @@ Recipes:
   `vulcan refactor rename-property status phase --dry-run`
 - Search the web, then save notes yourself:
   `vulcan web search "sqlite wal tuning" --output json`
+- Make a public JSON export that strips internal callouts:
+  `vulcan export json 'from notes where file.path starts_with "Projects/"' --exclude-callout internal -o exports/public.json`
+- Redact email addresses during export without changing the vault:
+  `vulcan export json 'from notes where file.path starts_with "People/"' --replace-rule regex '[A-Za-z0-9._%+-]+@example\.com' redacted -o exports/people.json`
 
-See also: `help getting-started`, `help filters`, `help refactor`.
+See also: `help getting-started`, `help filters`, `help refactor`, `vulcan export --help`.
