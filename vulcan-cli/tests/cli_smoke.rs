@@ -11225,6 +11225,80 @@ fn export_profiles_list_and_run_named_epub_profile() {
 }
 
 #[test]
+fn export_profile_set_updates_profile_fields() {
+    let (_temp_dir, vault_root) = build_export_transform_vault();
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "create",
+            "team_book",
+            "--format",
+            "epub",
+            r#"from notes where file.path matches "^(Home|Projects/Alpha)\.md$""#,
+            "-o",
+            "exports/team.epub",
+            "--title",
+            "Team Book",
+        ])
+        .assert()
+        .success();
+
+    let set_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "set",
+            "team_book",
+            "--backlinks",
+            "--frontmatter",
+            "--author",
+            "Vulcan",
+        ])
+        .assert()
+        .success();
+    let set_json = parse_stdout_json(&set_assert);
+    assert_eq!(set_json["action"], "updated");
+    assert_eq!(set_json["profile"]["author"], "Vulcan");
+    assert_eq!(set_json["profile"]["backlinks"], Value::Bool(true));
+    assert_eq!(set_json["profile"]["frontmatter"], Value::Bool(true));
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "show",
+            "team_book",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["profile"]["author"], "Vulcan");
+    assert_eq!(show_json["profile"]["backlinks"], Value::Bool(true));
+    assert_eq!(show_json["profile"]["frontmatter"], Value::Bool(true));
+}
+
+#[test]
 fn export_profile_create_and_run_support_content_transforms() {
     let (_temp_dir, vault_root) = build_export_replacement_transform_vault();
     let vault_root_str = vault_root
@@ -11248,6 +11322,25 @@ fn export_profile_create_and_run_support_content_transforms() {
             r#"from notes where file.path matches "^(Home|Projects/Alpha)\.md$""#,
             "-o",
             "exports/public.json",
+        ])
+        .assert()
+        .success();
+    let create_json = parse_stdout_json(&create_assert);
+    assert_eq!(create_json["profile"]["format"], "json");
+    assert!(create_json["profile"]["content_transforms"].is_null());
+
+    let add_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "rule",
+            "add",
+            "public_json",
             "--replace-rule",
             "literal",
             "[[People/Bob]]",
@@ -11259,29 +11352,21 @@ fn export_profile_create_and_run_support_content_transforms() {
         ])
         .assert()
         .success();
-    let create_json = parse_stdout_json(&create_assert);
-    assert_eq!(create_json["profile"]["format"], "json");
+    let add_json = parse_stdout_json(&add_assert);
+    assert_eq!(add_json["action"], "added");
+    assert_eq!(add_json["rule_index"], 1);
+    assert_eq!(add_json["rule"]["replace"][0]["pattern"], "[[People/Bob]]");
     assert_eq!(
-        create_json["profile"]["content_transforms"][0]["replace"][0]["pattern"],
-        "[[People/Bob]]"
-    );
-    assert_eq!(
-        create_json["profile"]["content_transforms"][0]["replace"][0]["replacement"],
+        add_json["rule"]["replace"][0]["replacement"],
         "[[People/Alice]]"
     );
-    assert!(create_json["profile"]["content_transforms"][0]["replace"][0]["regex"].is_null());
+    assert!(add_json["rule"]["replace"][0]["regex"].is_null());
     assert_eq!(
-        create_json["profile"]["content_transforms"][0]["replace"][1]["pattern"],
+        add_json["rule"]["replace"][1]["pattern"],
         "[A-Za-z0-9._%+-]+@example\\.com"
     );
-    assert_eq!(
-        create_json["profile"]["content_transforms"][0]["replace"][1]["replacement"],
-        "redacted"
-    );
-    assert_eq!(
-        create_json["profile"]["content_transforms"][0]["replace"][1]["regex"],
-        Value::Bool(true)
-    );
+    assert_eq!(add_json["rule"]["replace"][1]["replacement"], "redacted");
+    assert_eq!(add_json["rule"]["replace"][1]["regex"], Value::Bool(true));
 
     let run_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -11365,6 +11450,22 @@ fn export_profile_create_rejects_content_transforms_for_unsupported_formats() {
             "search-index",
             "-o",
             "exports/search.json",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "profile",
+            "rule",
+            "add",
+            "search_index_bad",
             "--exclude-callout",
             "secret gm",
         ])
@@ -11373,6 +11474,127 @@ fn export_profile_create_rejects_content_transforms_for_unsupported_formats() {
         .stderr(predicate::str::contains(
             "only supports `content_transforms` for markdown, json, epub, and zip exports",
         ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn export_profile_rule_move_reorders_replacement_rules() {
+    let (_temp_dir, vault_root) = build_export_replacement_transform_vault();
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "export",
+            "profile",
+            "create",
+            "public_json",
+            "--format",
+            "json",
+            r#"from notes where file.path = "Home.md""#,
+            "-o",
+            "exports/public.json",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "export",
+            "profile",
+            "rule",
+            "add",
+            "public_json",
+            "--replace-rule",
+            "literal",
+            "[[People/Bob]]",
+            "[[People/Alice]]",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "export",
+            "profile",
+            "rule",
+            "add",
+            "public_json",
+            "--replace-rule",
+            "literal",
+            "[[People/Alice]]",
+            "[[People/Carol]]",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "export",
+            "profile",
+            "run",
+            "public_json",
+        ])
+        .assert()
+        .success();
+    let exported_before = fs::read_to_string(vault_root.join("exports/public.json"))
+        .expect("profile output should exist");
+    assert!(exported_before.contains("[[People/Carol]]"));
+    assert!(!exported_before.contains("[[People/Alice]]"));
+
+    let move_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "rule",
+            "move",
+            "public_json",
+            "2",
+            "--before",
+            "1",
+        ])
+        .assert()
+        .success();
+    let move_json = parse_stdout_json(&move_assert);
+    assert_eq!(move_json["action"], "moved");
+    assert_eq!(move_json["previous_rule_index"], 2);
+    assert_eq!(move_json["rule_index"], 1);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "export",
+            "profile",
+            "run",
+            "public_json",
+        ])
+        .assert()
+        .success();
+    let exported_after = fs::read_to_string(vault_root.join("exports/public.json"))
+        .expect("profile output should exist");
+    assert!(exported_after.contains("[[People/Alice]]"));
+    assert!(!exported_after.contains("[[People/Carol]]"));
 }
 
 fn build_export_transform_rule_vault() -> (TempDir, PathBuf) {

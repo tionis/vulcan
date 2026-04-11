@@ -3470,7 +3470,7 @@
       },
       {
         "about": "Write static export artifacts derived from the cache",
-        "after_help": "Subcommands:\n  profile       Run or manage named export profiles\n  markdown      Export matched notes as one combined Markdown document\n  json          Export matched notes with metadata and raw content as JSON\n  csv           Export note query results as CSV\n  graph         Export the resolved link graph for external tools\n  epub          Render matched notes as an EPUB book\n  zip           Export matched notes and linked attachments as a ZIP archive\n  sqlite        Export matched notes into a standalone SQLite database\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.\n  `export profile run <name>` resolves relative profile paths from the vault root.\n  `export profile create|delete` updates `.vulcan/config.toml`; `show` prints the effective merged profile.\n  `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.\n  `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, `--exclude-inline-field`, and ordered `--replace-rule` rewrites.\n  Direct export flags build one implicit transform rule that applies to all exported notes.\n  Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; each rule query only narrows within the profile query result.\n  If multiple rules match one note, exclusions are unioned and replacement rules run in declaration order.\n  Exported metadata, links, backlinks, inline expressions, and copied attachments are rebuilt from transformed note content before packaging.\n  Text exports print to stdout by default; pass `-o/--path` to write a file instead.\n  `epub --backlinks` appends indexed inlinks after each exported note chapter.\n  Archive exports require `-o/--path` because they produce binary or database files.\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export profile list\n  vulcan export profile run team-book\n  vulcan export profile show team-book\n  vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'\n  vulcan export json 'from notes' --exclude-callout 'secret gm' -o exports/public.json\n  vulcan export json 'from notes' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted -o exports/public.json\n  vulcan export profile create public --format json 'from notes' -o exports/public.json --exclude-callout internal --replace-rule literal '[[People/Bob]]' '[[People/Alice]]'\n  vulcan export profile delete team-book --dry-run\n  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'\n  vulcan export json 'from notes where status = done' --pretty -o exports/done.json\n  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv\n  vulcan export graph --format dot -o exports/graph.dot\n  vulcan export epub 'from notes where file.path matches \"^(Projects|People)/\"' -o exports/team.epub --title 'Team Notes' --backlinks\n  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip\n  vulcan export sqlite 'from notes where status = done' -o exports/done.db\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
+        "after_help": "Subcommands:\n  profile       Run or manage named export profiles\n  markdown      Export matched notes as one combined Markdown document\n  json          Export matched notes with metadata and raw content as JSON\n  csv           Export note query results as CSV\n  graph         Export the resolved link graph for external tools\n  epub          Render matched notes as an EPUB book\n  zip           Export matched notes and linked attachments as a ZIP archive\n  sqlite        Export matched notes into a standalone SQLite database\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.\n  `export profile run <name>` resolves relative profile paths from the vault root.\n  `export profile create|set|delete` updates shared `.vulcan/config.toml`; `show` prints the effective merged profile.\n  `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.\n  `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, `--exclude-inline-field`, and ordered `--replace-rule` rewrites.\n  Direct export flags build one implicit transform rule that applies to all exported notes.\n  Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; `export profile rule ...` edits those rules explicitly.\n  Each rule query only narrows within the profile query result; rule order matters for replacement rewrites.\n  If multiple rules match one note, exclusions are unioned and replacement rules run in declaration order.\n  Exported metadata, links, backlinks, inline expressions, and copied attachments are rebuilt from transformed note content before packaging.\n  Text exports print to stdout by default; pass `-o/--path` to write a file instead.\n  `epub --backlinks` appends indexed inlinks after each exported note chapter.\n  Archive exports require `-o/--path` because they produce binary or database files.\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export profile list\n  vulcan export profile run team-book\n  vulcan export profile show team-book\n  vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'\n  vulcan export profile set team-book --backlinks --frontmatter\n  vulcan export profile rule list team-book\n  vulcan export profile rule add team-book --exclude-callout internal\n  vulcan export profile rule add team-book 'from notes where file.path starts_with \"People/\"' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted\n  vulcan export profile rule update team-book 1 --exclude-callout internal --exclude-heading Scratch\n  vulcan export profile rule move team-book 2 --before 1\n  vulcan export json 'from notes' --exclude-callout 'secret gm' -o exports/public.json\n  vulcan export json 'from notes' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted -o exports/public.json\n  vulcan export profile delete team-book --dry-run\n  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'\n  vulcan export json 'from notes where status = done' --pretty -o exports/done.json\n  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv\n  vulcan export graph --format dot -o exports/graph.dot\n  vulcan export epub 'from notes where file.path matches \"^(Projects|People)/\"' -o exports/team.epub --title 'Team Notes' --backlinks\n  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip\n  vulcan export sqlite 'from notes where status = done' -o exports/done.db\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
         "name": "export",
         "options": [],
         "subcommands": [
@@ -3522,7 +3522,7 @@
                 "subcommands": []
               },
               {
-                "about": "Create or replace an export profile in .vulcan/config.toml",
+                "about": "Create or replace an export profile in shared .vulcan/config.toml",
                 "name": "create",
                 "options": [
                   {
@@ -3683,63 +3683,6 @@
                     ]
                   },
                   {
-                    "help": "Drop callout blocks whose type/class matches this value; repeat to exclude multiple callouts",
-                    "id": "exclude_callouts",
-                    "long": "exclude-callout",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "EXCLUDE_CALLOUTS"
-                    ]
-                  },
-                  {
-                    "help": "Drop heading sections whose title matches this value; nested subsections are removed too",
-                    "id": "exclude_headings",
-                    "long": "exclude-heading",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "EXCLUDE_HEADINGS"
-                    ]
-                  },
-                  {
-                    "help": "Drop frontmatter keys whose normalized name matches this value; repeat to exclude multiple keys",
-                    "id": "exclude_frontmatter_keys",
-                    "long": "exclude-frontmatter-key",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "EXCLUDE_FRONTMATTER_KEYS"
-                    ]
-                  },
-                  {
-                    "help": "Drop inline fields whose normalized name matches this value; repeat to exclude multiple keys",
-                    "id": "exclude_inline_fields",
-                    "long": "exclude-inline-field",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "EXCLUDE_INLINE_FIELDS"
-                    ]
-                  },
-                  {
-                    "help": "Apply an ordered replacement rule to exported content; MODE must be `literal` or `regex`",
-                    "id": "replace_rules",
-                    "long": "replace-rule",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "MODE",
-                      "PATTERN",
-                      "REPLACEMENT"
-                    ]
-                  },
-                  {
                     "help": "Replace an existing profile with the same name",
                     "id": "replace",
                     "long": "replace",
@@ -3751,6 +3694,324 @@
                     "short": null,
                     "value_names": [
                       "REPLACE"
+                    ]
+                  },
+                  {
+                    "help": "Preview the config change without writing the file",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Skip auto-commit for this config mutation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Update profile-wide export settings in shared .vulcan/config.toml",
+                "name": "set",
+                "options": [
+                  {
+                    "help": "Export profile name",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Export format to store for this profile",
+                    "id": "format",
+                    "long": "format",
+                    "possible_values": [
+                      "markdown",
+                      "json",
+                      "csv",
+                      "graph",
+                      "epub",
+                      "zip",
+                      "sqlite",
+                      "search-index"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FORMAT"
+                    ]
+                  },
+                  {
+                    "help": "Native note query DSL string; omit with --query-json",
+                    "id": "query",
+                    "long": null,
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "QUERY"
+                    ]
+                  },
+                  {
+                    "help": "JSON note query payload; mutually exclusive with the positional query",
+                    "id": "query_json",
+                    "long": "query-json",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "QUERY_JSON"
+                    ]
+                  },
+                  {
+                    "help": "Clear any stored query or query_json",
+                    "id": "clear_query",
+                    "long": "clear-query",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_QUERY"
+                    ]
+                  },
+                  {
+                    "help": "Destination file path stored in the profile",
+                    "id": "path",
+                    "long": "path",
+                    "possible_values": [],
+                    "required": false,
+                    "short": "o",
+                    "value_names": [
+                      "PATH"
+                    ]
+                  },
+                  {
+                    "help": "Clear any stored destination path",
+                    "id": "clear_path",
+                    "long": "clear-path",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_PATH"
+                    ]
+                  },
+                  {
+                    "help": "Optional heading or book title stored in the profile",
+                    "id": "title",
+                    "long": "title",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TITLE"
+                    ]
+                  },
+                  {
+                    "help": "Clear any stored title",
+                    "id": "clear_title",
+                    "long": "clear-title",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_TITLE"
+                    ]
+                  },
+                  {
+                    "help": "Optional EPUB author/creator metadata stored in the profile",
+                    "id": "author",
+                    "long": "author",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "AUTHOR"
+                    ]
+                  },
+                  {
+                    "help": "Clear any stored author",
+                    "id": "clear_author",
+                    "long": "clear-author",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_AUTHOR"
+                    ]
+                  },
+                  {
+                    "help": "EPUB table of contents style",
+                    "id": "toc",
+                    "long": "toc",
+                    "possible_values": [
+                      "tree",
+                      "flat"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TOC"
+                    ]
+                  },
+                  {
+                    "help": "Clear any stored EPUB table of contents style",
+                    "id": "clear_toc",
+                    "long": "clear-toc",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_TOC"
+                    ]
+                  },
+                  {
+                    "help": "Enable EPUB backlinks in the stored profile",
+                    "id": "backlinks",
+                    "long": "backlinks",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "BACKLINKS"
+                    ]
+                  },
+                  {
+                    "help": "Remove any stored EPUB backlinks setting",
+                    "id": "no_backlinks",
+                    "long": "no-backlinks",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_BACKLINKS"
+                    ]
+                  },
+                  {
+                    "help": "Include EPUB frontmatter panels in the stored profile",
+                    "id": "frontmatter",
+                    "long": "frontmatter",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FRONTMATTER"
+                    ]
+                  },
+                  {
+                    "help": "Remove any stored EPUB frontmatter panel setting",
+                    "id": "no_frontmatter",
+                    "long": "no-frontmatter",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_FRONTMATTER"
+                    ]
+                  },
+                  {
+                    "help": "Pretty-print JSON or search-index profile output",
+                    "id": "pretty",
+                    "long": "pretty",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PRETTY"
+                    ]
+                  },
+                  {
+                    "help": "Remove any stored pretty-print setting",
+                    "id": "no_pretty",
+                    "long": "no-pretty",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_PRETTY"
+                    ]
+                  },
+                  {
+                    "help": "Graph export format stored in the profile",
+                    "id": "graph_format",
+                    "long": "graph-format",
+                    "possible_values": [
+                      "json",
+                      "dot",
+                      "graphml"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "GRAPH_FORMAT"
+                    ]
+                  },
+                  {
+                    "help": "Clear any stored graph export format",
+                    "id": "clear_graph_format",
+                    "long": "clear-graph-format",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_GRAPH_FORMAT"
                     ]
                   },
                   {
@@ -3829,6 +4090,453 @@
                   }
                 ],
                 "subcommands": []
+              },
+              {
+                "about": "List or edit ordered content transform rules in shared .vulcan/config.toml",
+                "name": "rule",
+                "options": [],
+                "subcommands": [
+                  {
+                    "about": "List content transform rules for one export profile",
+                    "name": "list",
+                    "options": [
+                      {
+                        "help": "Export profile name",
+                        "id": "profile",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "PROFILE"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Add one content transform rule to an export profile",
+                    "name": "add",
+                    "options": [
+                      {
+                        "help": "Export profile name",
+                        "id": "profile",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "PROFILE"
+                        ]
+                      },
+                      {
+                        "help": "Insert before this 1-based rule index; omit to append at the end",
+                        "id": "before",
+                        "long": "before",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "BEFORE"
+                        ]
+                      },
+                      {
+                        "help": "Native note query DSL string for this rule; omit with --query-json",
+                        "id": "query",
+                        "long": null,
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "QUERY"
+                        ]
+                      },
+                      {
+                        "help": "JSON note query payload for this rule; mutually exclusive with the positional query",
+                        "id": "query_json",
+                        "long": "query-json",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "QUERY_JSON"
+                        ]
+                      },
+                      {
+                        "help": "Drop callout blocks whose type/class matches this value; repeat to exclude multiple callouts",
+                        "id": "exclude_callouts",
+                        "long": "exclude-callout",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "EXCLUDE_CALLOUTS"
+                        ]
+                      },
+                      {
+                        "help": "Drop heading sections whose title matches this value; nested subsections are removed too",
+                        "id": "exclude_headings",
+                        "long": "exclude-heading",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "EXCLUDE_HEADINGS"
+                        ]
+                      },
+                      {
+                        "help": "Drop frontmatter keys whose normalized name matches this value; repeat to exclude multiple keys",
+                        "id": "exclude_frontmatter_keys",
+                        "long": "exclude-frontmatter-key",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "EXCLUDE_FRONTMATTER_KEYS"
+                        ]
+                      },
+                      {
+                        "help": "Drop inline fields whose normalized name matches this value; repeat to exclude multiple keys",
+                        "id": "exclude_inline_fields",
+                        "long": "exclude-inline-field",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "EXCLUDE_INLINE_FIELDS"
+                        ]
+                      },
+                      {
+                        "help": "Apply an ordered replacement rule to exported content; MODE must be `literal` or `regex`",
+                        "id": "replace_rules",
+                        "long": "replace-rule",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "MODE",
+                          "PATTERN",
+                          "REPLACEMENT"
+                        ]
+                      },
+                      {
+                        "help": "Preview the config change without writing the file",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      },
+                      {
+                        "help": "Skip auto-commit for this config mutation",
+                        "id": "no_commit",
+                        "long": "no-commit",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "NO_COMMIT"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Replace one content transform rule in an export profile",
+                    "name": "update",
+                    "options": [
+                      {
+                        "help": "Export profile name",
+                        "id": "profile",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "PROFILE"
+                        ]
+                      },
+                      {
+                        "help": "1-based rule index to replace",
+                        "id": "index",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "INDEX"
+                        ]
+                      },
+                      {
+                        "help": "Native note query DSL string for this rule; omit with --query-json",
+                        "id": "query",
+                        "long": null,
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "QUERY"
+                        ]
+                      },
+                      {
+                        "help": "JSON note query payload for this rule; mutually exclusive with the positional query",
+                        "id": "query_json",
+                        "long": "query-json",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "QUERY_JSON"
+                        ]
+                      },
+                      {
+                        "help": "Drop callout blocks whose type/class matches this value; repeat to exclude multiple callouts",
+                        "id": "exclude_callouts",
+                        "long": "exclude-callout",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "EXCLUDE_CALLOUTS"
+                        ]
+                      },
+                      {
+                        "help": "Drop heading sections whose title matches this value; nested subsections are removed too",
+                        "id": "exclude_headings",
+                        "long": "exclude-heading",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "EXCLUDE_HEADINGS"
+                        ]
+                      },
+                      {
+                        "help": "Drop frontmatter keys whose normalized name matches this value; repeat to exclude multiple keys",
+                        "id": "exclude_frontmatter_keys",
+                        "long": "exclude-frontmatter-key",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "EXCLUDE_FRONTMATTER_KEYS"
+                        ]
+                      },
+                      {
+                        "help": "Drop inline fields whose normalized name matches this value; repeat to exclude multiple keys",
+                        "id": "exclude_inline_fields",
+                        "long": "exclude-inline-field",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "EXCLUDE_INLINE_FIELDS"
+                        ]
+                      },
+                      {
+                        "help": "Apply an ordered replacement rule to exported content; MODE must be `literal` or `regex`",
+                        "id": "replace_rules",
+                        "long": "replace-rule",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "MODE",
+                          "PATTERN",
+                          "REPLACEMENT"
+                        ]
+                      },
+                      {
+                        "help": "Preview the config change without writing the file",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      },
+                      {
+                        "help": "Skip auto-commit for this config mutation",
+                        "id": "no_commit",
+                        "long": "no-commit",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "NO_COMMIT"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Delete one content transform rule from an export profile",
+                    "name": "delete",
+                    "options": [
+                      {
+                        "help": "Export profile name",
+                        "id": "profile",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "PROFILE"
+                        ]
+                      },
+                      {
+                        "help": "1-based rule index to delete",
+                        "id": "index",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "INDEX"
+                        ]
+                      },
+                      {
+                        "help": "Preview the config change without writing the file",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      },
+                      {
+                        "help": "Skip auto-commit for this config mutation",
+                        "id": "no_commit",
+                        "long": "no-commit",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "NO_COMMIT"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Move one content transform rule to a new position",
+                    "name": "move",
+                    "options": [
+                      {
+                        "help": "Export profile name",
+                        "id": "profile",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "PROFILE"
+                        ]
+                      },
+                      {
+                        "help": "1-based rule index to move",
+                        "id": "index",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "INDEX"
+                        ]
+                      },
+                      {
+                        "help": "Move before this 1-based rule index",
+                        "id": "before",
+                        "long": "before",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "BEFORE"
+                        ]
+                      },
+                      {
+                        "help": "Move after this 1-based rule index",
+                        "id": "after",
+                        "long": "after",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "AFTER"
+                        ]
+                      },
+                      {
+                        "help": "Move the rule to the last position",
+                        "id": "last",
+                        "long": "last",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "LAST"
+                        ]
+                      },
+                      {
+                        "help": "Preview the config change without writing the file",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      },
+                      {
+                        "help": "Skip auto-commit for this config mutation",
+                        "id": "no_commit",
+                        "long": "no-commit",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "NO_COMMIT"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  }
+                ]
               }
             ]
           },

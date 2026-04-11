@@ -20,15 +20,15 @@ pub use cli::{
     ConfigCommand, ConfigImportArgs, ConfigImportCommand, ConfigImportSelection,
     ConfigImportTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, EpubTocStyle,
     ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand, ExportProfileFormatArg,
-    ExportQueryArgs, ExportTransformArgs, GitCommand, GraphCommand, GraphExportFormat,
-    IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode,
-    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PropertySortArg,
-    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RepairCommand,
-    SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand,
-    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand,
-    WebFetchExtractionMode, WebFetchMode,
+    ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs, GitCommand, GraphCommand,
+    GraphExportFormat, IndexCommand, InitArgs, KanbanCommand, NoteAppendPeriodicArg, NoteCommand,
+    NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
+    PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs,
+    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
+    SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand,
+    WebCommand, WebFetchExtractionMode, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -14130,7 +14130,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         frontmatter,
                         pretty,
                         graph_format,
-                        transforms,
                         replace,
                         dry_run,
                         no_commit,
@@ -14150,13 +14149,118 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             frontmatter: *frontmatter,
                             pretty: *pretty,
                             graph_format: *graph_format,
-                            exclude_callouts: &transforms.exclude_callouts,
-                            exclude_headings: &transforms.exclude_headings,
-                            exclude_frontmatter_keys: &transforms.exclude_frontmatter_keys,
-                            exclude_inline_fields: &transforms.exclude_inline_fields,
-                            replacement_rules: &transforms.replace_rules,
                         },
                         *replace,
+                        ConfigMutationOptions {
+                            apply_mode: if *dry_run {
+                                ApplyMode::DryRun
+                            } else {
+                                ApplyMode::Apply
+                            },
+                            commit_mode: if *no_commit {
+                                CommitMode::Skip
+                            } else {
+                                CommitMode::Auto
+                            },
+                            quiet: cli.quiet,
+                        },
+                    ),
+                    ExportProfileCommand::Set {
+                        name,
+                        format,
+                        query,
+                        query_json,
+                        clear_query,
+                        path,
+                        clear_path,
+                        title,
+                        clear_title,
+                        author,
+                        clear_author,
+                        toc,
+                        clear_toc,
+                        backlinks,
+                        no_backlinks,
+                        frontmatter,
+                        no_frontmatter,
+                        pretty,
+                        no_pretty,
+                        graph_format,
+                        clear_graph_format,
+                        dry_run,
+                        no_commit,
+                    } => run_export_profile_set(
+                        &paths,
+                        cli.output,
+                        name,
+                        ExportProfileSetRequest {
+                            format: format.map(export_profile_format_from_arg),
+                            query: query.as_deref(),
+                            query_json: query_json.as_deref(),
+                            clear_query: *clear_query,
+                            path: if *clear_path {
+                                ConfigValueUpdate::Clear
+                            } else if let Some(path) = path.as_deref() {
+                                ConfigValueUpdate::Set(path)
+                            } else {
+                                ConfigValueUpdate::Keep
+                            },
+                            title: if *clear_title {
+                                ConfigValueUpdate::Clear
+                            } else if let Some(title) = title.as_deref() {
+                                ConfigValueUpdate::Set(title)
+                            } else {
+                                ConfigValueUpdate::Keep
+                            },
+                            author: if *clear_author {
+                                ConfigValueUpdate::Clear
+                            } else if let Some(author) = author.as_deref() {
+                                ConfigValueUpdate::Set(author)
+                            } else {
+                                ConfigValueUpdate::Keep
+                            },
+                            toc: if *clear_toc {
+                                ConfigValueUpdate::Clear
+                            } else if let Some(toc) = *toc {
+                                ConfigValueUpdate::Set(
+                                    export_epub_toc_style_config_from_cli(Some(toc))
+                                        .expect("toc setting should convert"),
+                                )
+                            } else {
+                                ConfigValueUpdate::Keep
+                            },
+                            backlinks: if *backlinks {
+                                BoolConfigUpdate::SetTrue
+                            } else if *no_backlinks {
+                                BoolConfigUpdate::Clear
+                            } else {
+                                BoolConfigUpdate::Keep
+                            },
+                            frontmatter: if *frontmatter {
+                                BoolConfigUpdate::SetTrue
+                            } else if *no_frontmatter {
+                                BoolConfigUpdate::Clear
+                            } else {
+                                BoolConfigUpdate::Keep
+                            },
+                            pretty: if *pretty {
+                                BoolConfigUpdate::SetTrue
+                            } else if *no_pretty {
+                                BoolConfigUpdate::Clear
+                            } else {
+                                BoolConfigUpdate::Keep
+                            },
+                            graph_format: if *clear_graph_format {
+                                ConfigValueUpdate::Clear
+                            } else if let Some(graph_format) = *graph_format {
+                                ConfigValueUpdate::Set(
+                                    export_graph_format_config_from_cli(Some(graph_format))
+                                        .expect("graph format should convert"),
+                                )
+                            } else {
+                                ConfigValueUpdate::Keep
+                            },
+                        },
                         ConfigMutationOptions {
                             apply_mode: if *dry_run {
                                 ApplyMode::DryRun
@@ -14193,6 +14297,139 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             quiet: cli.quiet,
                         },
                     ),
+                    ExportProfileCommand::Rule { command } => match command {
+                        ExportProfileRuleCommand::List { profile } => {
+                            run_export_profile_rule_list(&paths, cli.output, profile)
+                        }
+                        ExportProfileRuleCommand::Add {
+                            profile,
+                            before,
+                            query,
+                            query_json,
+                            transforms,
+                            dry_run,
+                            no_commit,
+                        } => run_export_profile_rule_add(
+                            &paths,
+                            cli.output,
+                            profile,
+                            *before,
+                            ExportProfileRuleRequest {
+                                query: query.as_deref(),
+                                query_json: query_json.as_deref(),
+                                exclude_callouts: &transforms.exclude_callouts,
+                                exclude_headings: &transforms.exclude_headings,
+                                exclude_frontmatter_keys: &transforms.exclude_frontmatter_keys,
+                                exclude_inline_fields: &transforms.exclude_inline_fields,
+                                replacement_rules: &transforms.replace_rules,
+                            },
+                            ConfigMutationOptions {
+                                apply_mode: if *dry_run {
+                                    ApplyMode::DryRun
+                                } else {
+                                    ApplyMode::Apply
+                                },
+                                commit_mode: if *no_commit {
+                                    CommitMode::Skip
+                                } else {
+                                    CommitMode::Auto
+                                },
+                                quiet: cli.quiet,
+                            },
+                        ),
+                        ExportProfileRuleCommand::Update {
+                            profile,
+                            index,
+                            query,
+                            query_json,
+                            transforms,
+                            dry_run,
+                            no_commit,
+                        } => run_export_profile_rule_update(
+                            &paths,
+                            cli.output,
+                            profile,
+                            *index,
+                            ExportProfileRuleRequest {
+                                query: query.as_deref(),
+                                query_json: query_json.as_deref(),
+                                exclude_callouts: &transforms.exclude_callouts,
+                                exclude_headings: &transforms.exclude_headings,
+                                exclude_frontmatter_keys: &transforms.exclude_frontmatter_keys,
+                                exclude_inline_fields: &transforms.exclude_inline_fields,
+                                replacement_rules: &transforms.replace_rules,
+                            },
+                            ConfigMutationOptions {
+                                apply_mode: if *dry_run {
+                                    ApplyMode::DryRun
+                                } else {
+                                    ApplyMode::Apply
+                                },
+                                commit_mode: if *no_commit {
+                                    CommitMode::Skip
+                                } else {
+                                    CommitMode::Auto
+                                },
+                                quiet: cli.quiet,
+                            },
+                        ),
+                        ExportProfileRuleCommand::Delete {
+                            profile,
+                            index,
+                            dry_run,
+                            no_commit,
+                        } => run_export_profile_rule_delete(
+                            &paths,
+                            cli.output,
+                            profile,
+                            *index,
+                            ConfigMutationOptions {
+                                apply_mode: if *dry_run {
+                                    ApplyMode::DryRun
+                                } else {
+                                    ApplyMode::Apply
+                                },
+                                commit_mode: if *no_commit {
+                                    CommitMode::Skip
+                                } else {
+                                    CommitMode::Auto
+                                },
+                                quiet: cli.quiet,
+                            },
+                        ),
+                        ExportProfileRuleCommand::Move {
+                            profile,
+                            index,
+                            before,
+                            after,
+                            last,
+                            dry_run,
+                            no_commit,
+                        } => run_export_profile_rule_move(
+                            &paths,
+                            cli.output,
+                            profile,
+                            ExportProfileRuleMoveRequest {
+                                index: *index,
+                                before: *before,
+                                after: *after,
+                                last: *last,
+                            },
+                            ConfigMutationOptions {
+                                apply_mode: if *dry_run {
+                                    ApplyMode::DryRun
+                                } else {
+                                    ApplyMode::Apply
+                                },
+                                commit_mode: if *no_commit {
+                                    CommitMode::Skip
+                                } else {
+                                    CommitMode::Auto
+                                },
+                                quiet: cli.quiet,
+                            },
+                        ),
+                    },
                 },
                 ExportCommand::Markdown {
                     query,
@@ -17489,12 +17726,19 @@ fn parse_content_replacement_rules(
 }
 
 fn build_content_transform_rule(
+    query: Option<&str>,
+    query_json: Option<&str>,
     exclude_callouts: &[String],
     exclude_headings: &[String],
     exclude_frontmatter_keys: &[String],
     exclude_inline_fields: &[String],
     replacement_rules: &[String],
-) -> Result<Option<ContentTransformRuleConfig>, CliError> {
+) -> Result<ContentTransformRuleConfig, CliError> {
+    if query.is_some() && query_json.is_some() {
+        return Err(CliError::operation(
+            "content transform rule must set only one of `query` or `query_json`".to_string(),
+        ));
+    }
     let exclude_callouts = exclude_callouts
         .iter()
         .map(|value| value.trim())
@@ -17520,14 +17764,19 @@ fn build_content_transform_rule(
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
     let replace = parse_content_replacement_rules(replacement_rules)?;
-    Ok((!(exclude_callouts.is_empty()
+    if exclude_callouts.is_empty()
         && exclude_headings.is_empty()
         && exclude_frontmatter_keys.is_empty()
         && exclude_inline_fields.is_empty()
-        && replace.is_empty()))
-    .then_some(ContentTransformRuleConfig {
-        query: None,
-        query_json: None,
+        && replace.is_empty()
+    {
+        return Err(CliError::operation(
+            "content transform rule must include at least one transform".to_string(),
+        ));
+    }
+    Ok(ContentTransformRuleConfig {
+        query: query.map(ToOwned::to_owned),
+        query_json: query_json.map(ToOwned::to_owned),
         transforms: ContentTransformConfig {
             exclude_callouts,
             exclude_headings,
@@ -17535,7 +17784,7 @@ fn build_content_transform_rule(
             exclude_inline_fields,
             replace,
         },
-    }))
+    })
 }
 
 fn build_content_transform_rules(
@@ -17545,20 +17794,28 @@ fn build_content_transform_rules(
     exclude_inline_fields: &[String],
     replacement_rules: &[String],
 ) -> Result<Option<Vec<ContentTransformRuleConfig>>, CliError> {
+    if exclude_callouts.is_empty()
+        && exclude_headings.is_empty()
+        && exclude_frontmatter_keys.is_empty()
+        && exclude_inline_fields.is_empty()
+        && replacement_rules.is_empty()
+    {
+        return Ok(None);
+    }
     build_content_transform_rule(
+        None,
+        None,
         exclude_callouts,
         exclude_headings,
         exclude_frontmatter_keys,
         exclude_inline_fields,
         replacement_rules,
     )
-    .map(|rule| rule.map(|rule| vec![rule]))
+    .map(|rule| Some(vec![rule]))
 }
 
-fn build_export_profile_config(
-    request: ExportProfileCreateRequest<'_>,
-) -> Result<ExportProfileConfig, CliError> {
-    Ok(ExportProfileConfig {
+fn build_export_profile_config(request: ExportProfileCreateRequest<'_>) -> ExportProfileConfig {
+    ExportProfileConfig {
         format: Some(export_profile_format_from_arg(request.format)),
         query: request.query.map(ToOwned::to_owned),
         query_json: request.query_json.map(ToOwned::to_owned),
@@ -17570,14 +17827,128 @@ fn build_export_profile_config(
         frontmatter: request.frontmatter.then_some(true),
         pretty: request.pretty.then_some(true),
         graph_format: export_graph_format_config_from_cli(request.graph_format),
-        content_transform_rules: build_content_transform_rules(
-            request.exclude_callouts,
-            request.exclude_headings,
-            request.exclude_frontmatter_keys,
-            request.exclude_inline_fields,
-            request.replacement_rules,
-        )?,
-    })
+        content_transform_rules: None,
+    }
+}
+
+fn build_export_profile_rule(
+    request: ExportProfileRuleRequest<'_>,
+) -> Result<ContentTransformRuleConfig, CliError> {
+    build_content_transform_rule(
+        request.query,
+        request.query_json,
+        request.exclude_callouts,
+        request.exclude_headings,
+        request.exclude_frontmatter_keys,
+        request.exclude_inline_fields,
+        request.replacement_rules,
+    )
+}
+
+fn apply_updated_value<T: Copy + PartialEq>(
+    current: &mut Option<T>,
+    update: ConfigValueUpdate<T>,
+) -> bool {
+    let next = match update {
+        ConfigValueUpdate::Keep => return false,
+        ConfigValueUpdate::Set(value) => Some(value),
+        ConfigValueUpdate::Clear => None,
+    };
+    if *current == next {
+        false
+    } else {
+        *current = next;
+        true
+    }
+}
+
+fn apply_updated_string(current: &mut Option<String>, update: ConfigValueUpdate<&str>) -> bool {
+    let next = match update {
+        ConfigValueUpdate::Keep => return false,
+        ConfigValueUpdate::Set(value) => Some(value.to_string()),
+        ConfigValueUpdate::Clear => None,
+    };
+    if *current == next {
+        false
+    } else {
+        *current = next;
+        true
+    }
+}
+
+fn apply_updated_path(current: &mut Option<PathBuf>, update: ConfigValueUpdate<&Path>) -> bool {
+    let next = match update {
+        ConfigValueUpdate::Keep => return false,
+        ConfigValueUpdate::Set(value) => Some(value.to_path_buf()),
+        ConfigValueUpdate::Clear => None,
+    };
+    if *current == next {
+        false
+    } else {
+        *current = next;
+        true
+    }
+}
+
+fn apply_updated_flag(current: &mut Option<bool>, update: BoolConfigUpdate) -> bool {
+    let next = match update {
+        BoolConfigUpdate::Keep => return false,
+        BoolConfigUpdate::SetTrue => Some(true),
+        BoolConfigUpdate::Clear => None,
+    };
+    if *current == next {
+        false
+    } else {
+        *current = next;
+        true
+    }
+}
+
+fn apply_export_profile_settings(
+    profile: &mut ExportProfileConfig,
+    request: ExportProfileSetRequest<'_>,
+) -> bool {
+    let mut changed = false;
+
+    if let Some(format) = request.format {
+        if profile.format != Some(format) {
+            profile.format = Some(format);
+            changed = true;
+        }
+    }
+
+    if request.clear_query {
+        if profile.query.take().is_some() || profile.query_json.take().is_some() {
+            changed = true;
+        }
+    } else if let Some(query) = request.query {
+        if profile.query != Some(query.to_string()) {
+            profile.query = Some(query.to_string());
+            changed = true;
+        }
+        if profile.query_json.take().is_some() {
+            changed = true;
+        }
+    } else if let Some(query_json) = request.query_json {
+        if profile.query_json != Some(query_json.to_string()) {
+            profile.query_json = Some(query_json.to_string());
+            changed = true;
+        }
+        if profile.query.take().is_some() {
+            changed = true;
+        }
+    }
+
+    changed |= apply_updated_path(&mut profile.path, request.path);
+    changed |= apply_updated_string(&mut profile.title, request.title);
+    changed |= apply_updated_string(&mut profile.author, request.author);
+    changed |= apply_updated_value(&mut profile.toc, request.toc);
+    changed |= apply_updated_flag(&mut profile.backlinks, request.backlinks);
+    changed |= apply_updated_flag(&mut profile.frontmatter, request.frontmatter);
+    changed |= apply_updated_flag(&mut profile.pretty, request.pretty);
+    changed |= apply_updated_value(&mut profile.graph_format, request.graph_format);
+
+    changed
 }
 
 fn export_profile_requires_query(format: ExportProfileFormat) -> bool {
@@ -17767,6 +18138,11 @@ fn print_export_profile_write_report(
                             report.name,
                             report.config_path.display()
                         ),
+                        ExportProfileWriteAction::Updated => println!(
+                            "Would update export profile `{}` in {}",
+                            report.name,
+                            report.config_path.display()
+                        ),
                         ExportProfileWriteAction::Unchanged => {}
                     }
                     let rendered = toml::to_string_pretty(&render_export_profile_section_toml(
@@ -17794,6 +18170,19 @@ fn print_export_profile_write_report(
                     ExportProfileWriteAction::Replaced => {
                         println!(
                             "Replaced export profile `{}` in {}",
+                            report.name,
+                            report.config_path.display()
+                        );
+                        let rendered = toml::to_string_pretty(&render_export_profile_section_toml(
+                            &report.name,
+                            profile,
+                        )?)
+                        .map_err(CliError::operation)?;
+                        print!("{rendered}");
+                    }
+                    ExportProfileWriteAction::Updated => {
+                        println!(
+                            "Updated export profile `{}` in {}",
                             report.name,
                             report.config_path.display()
                         );
@@ -17870,6 +18259,209 @@ fn print_export_profile_delete_report(
         }
         OutputFormat::Json => print_json(report),
     }
+}
+
+fn print_export_profile_rule_list(
+    output: OutputFormat,
+    name: &str,
+    rules: &[ContentTransformRuleConfig],
+) -> Result<(), CliError> {
+    let entries = rules
+        .iter()
+        .enumerate()
+        .map(|(index, rule)| {
+            Ok(ExportProfileRuleListEntry {
+                index: index + 1,
+                rule: serde_json::to_value(rule).map_err(CliError::operation)?,
+            })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    match output {
+        OutputFormat::Json => print_json(&entries),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if rules.is_empty() {
+                println!("No content transform rules configured for export profile `{name}`");
+                return Ok(());
+            }
+            for (index, rule) in rules.iter().enumerate() {
+                let query = rule
+                    .query
+                    .as_deref()
+                    .or(rule.query_json.as_deref())
+                    .unwrap_or("<all exported notes>");
+                println!(
+                    "{}  query={}  callouts={}  headings={}  frontmatter_keys={}  inline_fields={}  replace={}",
+                    index + 1,
+                    query,
+                    rule.transforms.exclude_callouts.len(),
+                    rule.transforms.exclude_headings.len(),
+                    rule.transforms.exclude_frontmatter_keys.len(),
+                    rule.transforms.exclude_inline_fields.len(),
+                    rule.transforms.replace.len(),
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_export_profile_rule_write_report(
+    output: OutputFormat,
+    report: &ExportProfileRuleWriteReport,
+    profile: &ExportProfileConfig,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            let message = match (report.dry_run, report.action) {
+                (true, ExportProfileRuleWriteAction::Added) => "Would add",
+                (true, ExportProfileRuleWriteAction::Updated) => "Would update",
+                (true, ExportProfileRuleWriteAction::Moved) => "Would move",
+                (true, ExportProfileRuleWriteAction::Deleted) => "Would delete",
+                (true | false, ExportProfileRuleWriteAction::Unchanged) => "No changes for",
+                (false, ExportProfileRuleWriteAction::Added) => "Added",
+                (false, ExportProfileRuleWriteAction::Updated) => "Updated",
+                (false, ExportProfileRuleWriteAction::Moved) => "Moved",
+                (false, ExportProfileRuleWriteAction::Deleted) => "Deleted",
+            };
+            match report.action {
+                ExportProfileRuleWriteAction::Deleted | ExportProfileRuleWriteAction::Unchanged => {
+                    if let Some(rule_index) = report.rule_index {
+                        println!(
+                            "{message} content_transforms rule {} in export profile `{}` in {}",
+                            rule_index,
+                            report.name,
+                            report.config_path.display()
+                        );
+                    } else {
+                        println!(
+                            "{message} content_transforms for export profile `{}` in {}",
+                            report.name,
+                            report.config_path.display()
+                        );
+                    }
+                }
+                ExportProfileRuleWriteAction::Moved => {
+                    println!(
+                        "{message} content_transforms rule {} to rule {} in export profile `{}` in {}",
+                        report.previous_rule_index.unwrap_or_default(),
+                        report.rule_index.unwrap_or_default(),
+                        report.name,
+                        report.config_path.display()
+                    );
+                }
+                ExportProfileRuleWriteAction::Added | ExportProfileRuleWriteAction::Updated => {
+                    println!(
+                        "{message} content_transforms rule {} in export profile `{}` in {}",
+                        report.rule_index.unwrap_or_default(),
+                        report.name,
+                        report.config_path.display()
+                    );
+                }
+            }
+            if report.action != ExportProfileRuleWriteAction::Unchanged {
+                let rendered = toml::to_string_pretty(&render_export_profile_section_toml(
+                    &report.name,
+                    profile,
+                )?)
+                .map_err(CliError::operation)?;
+                print!("{rendered}");
+            }
+            for diagnostic in &report.diagnostics {
+                eprintln!(
+                    "warning: {}: {}",
+                    diagnostic.path.display(),
+                    diagnostic.message
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ExportProfilePersistOutcome {
+    config_path: PathBuf,
+    created_config: bool,
+    existing_profile: bool,
+    updated: bool,
+    diagnostics: Vec<ConfigDiagnostic>,
+}
+
+fn shared_export_profile_storage_path(name: &str) -> [&str; 3] {
+    ["export", "profiles", name]
+}
+
+fn load_shared_export_profile(
+    paths: &VaultPaths,
+    name: &str,
+) -> Result<Option<ExportProfileConfig>, CliError> {
+    let config_value = load_config_file_toml(paths.config_file())?;
+    let storage_path = shared_export_profile_storage_path(name);
+    if !config_toml_path_exists(&config_value, &storage_path) {
+        return Ok(None);
+    }
+
+    let mut current = &config_value;
+    for segment in storage_path {
+        current = current.get(segment).ok_or_else(|| {
+            CliError::operation(format!(
+                "failed to read export profile `{name}` from config"
+            ))
+        })?;
+    }
+    current
+        .clone()
+        .try_into()
+        .map(Some)
+        .map_err(CliError::operation)
+}
+
+fn persist_shared_export_profile(
+    paths: &VaultPaths,
+    name: &str,
+    profile: &ExportProfileConfig,
+    mutation: ConfigMutationOptions,
+    commit_scope: &str,
+) -> Result<ExportProfilePersistOutcome, CliError> {
+    let config_path = paths.config_file().to_path_buf();
+    let created_config = !config_path.exists();
+    let had_gitignore = paths.gitignore_file().exists();
+    let existing_contents = fs::read_to_string(&config_path).ok();
+    let mut config_value = load_config_file_toml(&config_path)?;
+    let storage_path = shared_export_profile_storage_path(name);
+    let existing_profile = config_toml_path_exists(&config_value, &storage_path);
+
+    let profile_toml = TomlValue::try_from(profile).map_err(CliError::operation)?;
+    set_config_toml_value(&mut config_value, &storage_path, profile_toml)?;
+    let rendered = toml::to_string_pretty(&config_value).map_err(CliError::operation)?;
+    validate_vulcan_overrides_toml(&rendered).map_err(CliError::operation)?;
+    let updated = existing_contents.as_deref() != Some(rendered.as_str());
+
+    if !mutation.apply_mode.is_dry_run() && updated {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, mutation.commit_mode.is_disabled());
+        warn_auto_commit_if_needed(&auto_commit, mutation.quiet);
+        ensure_vulcan_dir(paths).map_err(CliError::operation)?;
+        fs::write(&config_path, rendered).map_err(CliError::operation)?;
+        auto_commit
+            .commit(
+                paths,
+                commit_scope,
+                &config_set_changed_files(paths, had_gitignore),
+                None,
+                mutation.quiet,
+            )
+            .map_err(CliError::operation)?;
+    }
+
+    let diagnostics = normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics);
+    Ok(ExportProfilePersistOutcome {
+        config_path,
+        created_config,
+        existing_profile,
+        updated,
+        diagnostics,
+    })
 }
 
 fn config_set_changed_files(paths: &VaultPaths, had_gitignore: bool) -> Vec<String> {
@@ -20942,11 +21534,67 @@ struct ExportProfileCreateRequest<'a> {
     frontmatter: bool,
     pretty: bool,
     graph_format: Option<GraphExportFormat>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConfigValueUpdate<T> {
+    Keep,
+    Set(T),
+    Clear,
+}
+
+impl<T> ConfigValueUpdate<T> {
+    fn has_change(self) -> bool {
+        !matches!(self, Self::Keep)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BoolConfigUpdate {
+    Keep,
+    SetTrue,
+    Clear,
+}
+
+impl BoolConfigUpdate {
+    fn has_change(self) -> bool {
+        !matches!(self, Self::Keep)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExportProfileSetRequest<'a> {
+    format: Option<ExportProfileFormat>,
+    query: Option<&'a str>,
+    query_json: Option<&'a str>,
+    clear_query: bool,
+    path: ConfigValueUpdate<&'a Path>,
+    title: ConfigValueUpdate<&'a str>,
+    author: ConfigValueUpdate<&'a str>,
+    toc: ConfigValueUpdate<ExportEpubTocStyleConfig>,
+    backlinks: BoolConfigUpdate,
+    frontmatter: BoolConfigUpdate,
+    pretty: BoolConfigUpdate,
+    graph_format: ConfigValueUpdate<ExportGraphFormatConfig>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExportProfileRuleRequest<'a> {
+    query: Option<&'a str>,
+    query_json: Option<&'a str>,
     exclude_callouts: &'a [String],
     exclude_headings: &'a [String],
     exclude_frontmatter_keys: &'a [String],
     exclude_inline_fields: &'a [String],
     replacement_rules: &'a [String],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExportProfileRuleMoveRequest {
+    index: usize,
+    before: Option<usize>,
+    after: Option<usize>,
+    last: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -20962,6 +21610,7 @@ struct ExportContentRequest<'a> {
 enum ExportProfileWriteAction {
     Created,
     Replaced,
+    Updated,
     Unchanged,
 }
 
@@ -20988,6 +21637,35 @@ struct ExportProfileDeleteReport {
     name: String,
     config_path: PathBuf,
     deleted: bool,
+    dry_run: bool,
+    diagnostics: Vec<ConfigDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ExportProfileRuleWriteAction {
+    Added,
+    Updated,
+    Moved,
+    Deleted,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ExportProfileRuleListEntry {
+    index: usize,
+    rule: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ExportProfileRuleWriteReport {
+    name: String,
+    profile: Value,
+    config_path: PathBuf,
+    action: ExportProfileRuleWriteAction,
+    rule_index: Option<usize>,
+    previous_rule_index: Option<usize>,
+    rule: Option<Value>,
     dry_run: bool,
     diagnostics: Vec<ConfigDiagnostic>,
 }
@@ -21978,60 +22656,82 @@ fn run_export_profile_create(
     mutation: ConfigMutationOptions,
 ) -> Result<(), CliError> {
     validate_export_profile_name(name)?;
-    let profile = build_export_profile_config(request)?;
+    let profile = build_export_profile_config(request);
     validate_export_profile_config(name, &profile)?;
 
-    let config_path = paths.config_file().to_path_buf();
-    let created_config = !config_path.exists();
-    let had_gitignore = paths.gitignore_file().exists();
-    let existing_contents = fs::read_to_string(&config_path).ok();
-    let mut config_value = load_config_file_toml(&config_path)?;
-    let storage_path = ["export", "profiles", name];
-    let replaced = config_toml_path_exists(&config_value, &storage_path);
-    if replaced && !replace_existing {
+    let existing = load_shared_export_profile(paths, name)?;
+    if existing.is_some() && !replace_existing {
         return Err(CliError::operation(format!(
             "export profile `{name}` already exists; pass --replace to overwrite it"
         )));
     }
-
-    let profile_toml = TomlValue::try_from(&profile).map_err(CliError::operation)?;
-    set_config_toml_value(&mut config_value, &storage_path, profile_toml)?;
-    let rendered = toml::to_string_pretty(&config_value).map_err(CliError::operation)?;
-    validate_vulcan_overrides_toml(&rendered).map_err(CliError::operation)?;
-    let updated = existing_contents.as_deref() != Some(rendered.as_str());
-    let action = if !updated {
+    let persisted =
+        persist_shared_export_profile(paths, name, &profile, mutation, "export-profile-create")?;
+    let action = if !persisted.updated {
         ExportProfileWriteAction::Unchanged
-    } else if replaced {
+    } else if persisted.existing_profile {
         ExportProfileWriteAction::Replaced
     } else {
         ExportProfileWriteAction::Created
     };
-
-    if !mutation.apply_mode.is_dry_run() && updated {
-        let auto_commit = AutoCommitPolicy::for_mutation(paths, mutation.commit_mode.is_disabled());
-        warn_auto_commit_if_needed(&auto_commit, mutation.quiet);
-        ensure_vulcan_dir(paths).map_err(CliError::operation)?;
-        fs::write(&config_path, rendered).map_err(CliError::operation)?;
-        auto_commit
-            .commit(
-                paths,
-                "export-profile-create",
-                &config_set_changed_files(paths, had_gitignore),
-                None,
-                mutation.quiet,
-            )
-            .map_err(CliError::operation)?;
-    }
-
-    let diagnostics = normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics);
     let report = ExportProfileWriteReport {
         name: name.to_string(),
         profile: serde_json::to_value(&profile).map_err(CliError::operation)?,
-        config_path: relativize_config_import_path(paths, &config_path),
+        config_path: relativize_config_import_path(paths, &persisted.config_path),
         action,
-        created_config,
+        created_config: persisted.created_config,
         dry_run: mutation.apply_mode.is_dry_run(),
-        diagnostics,
+        diagnostics: persisted.diagnostics,
+    };
+    print_export_profile_write_report(output, &report, &profile)
+}
+
+fn export_profile_set_request_has_changes(request: ExportProfileSetRequest<'_>) -> bool {
+    request.format.is_some()
+        || request.query.is_some()
+        || request.query_json.is_some()
+        || request.clear_query
+        || request.path.has_change()
+        || request.title.has_change()
+        || request.author.has_change()
+        || request.toc.has_change()
+        || request.backlinks.has_change()
+        || request.frontmatter.has_change()
+        || request.pretty.has_change()
+        || request.graph_format.has_change()
+}
+
+fn run_export_profile_set(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+    request: ExportProfileSetRequest<'_>,
+    mutation: ConfigMutationOptions,
+) -> Result<(), CliError> {
+    validate_export_profile_name(name)?;
+    if !export_profile_set_request_has_changes(request) {
+        return Err(CliError::operation(
+            "export profile set requires at least one field to update".to_string(),
+        ));
+    }
+    let mut profile = load_shared_export_profile(paths, name)?
+        .ok_or_else(|| CliError::operation(format!("unknown export profile `{name}`")))?;
+    let changed = apply_export_profile_settings(&mut profile, request);
+    validate_export_profile_config(name, &profile)?;
+    let persisted =
+        persist_shared_export_profile(paths, name, &profile, mutation, "export-profile-set")?;
+    let report = ExportProfileWriteReport {
+        name: name.to_string(),
+        profile: serde_json::to_value(&profile).map_err(CliError::operation)?,
+        config_path: relativize_config_import_path(paths, &persisted.config_path),
+        action: if changed && persisted.updated {
+            ExportProfileWriteAction::Updated
+        } else {
+            ExportProfileWriteAction::Unchanged
+        },
+        created_config: persisted.created_config,
+        dry_run: mutation.apply_mode.is_dry_run(),
+        diagnostics: persisted.diagnostics,
     };
     print_export_profile_write_report(output, &report, &profile)
 }
@@ -22082,6 +22782,249 @@ fn run_export_profile_delete(
         diagnostics,
     };
     print_export_profile_delete_report(output, &report)
+}
+
+fn normalize_export_profile_rules(profile: &mut ExportProfileConfig) {
+    if profile
+        .content_transform_rules
+        .as_ref()
+        .is_some_and(Vec::is_empty)
+    {
+        profile.content_transform_rules = None;
+    }
+}
+
+fn require_export_profile_rule_index(
+    rules: &[ContentTransformRuleConfig],
+    index: usize,
+) -> Result<usize, CliError> {
+    if index == 0 || index > rules.len() {
+        return Err(CliError::operation(format!(
+            "content_transforms rule index {} is out of range; expected 1..={}",
+            index,
+            rules.len()
+        )));
+    }
+    Ok(index - 1)
+}
+
+fn resolve_export_profile_rule_insert_before(
+    existing_len: usize,
+    before: Option<usize>,
+) -> Result<usize, CliError> {
+    match before {
+        None => Ok(existing_len),
+        Some(index) if (1..=existing_len + 1).contains(&index) => Ok(index - 1),
+        Some(index) => Err(CliError::operation(format!(
+            "content_transforms insertion index {} is out of range; expected 1..={}",
+            index,
+            existing_len + 1
+        ))),
+    }
+}
+
+fn run_export_profile_rule_list(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+) -> Result<(), CliError> {
+    validate_export_profile_name(name)?;
+    let profile = load_shared_export_profile(paths, name)?
+        .ok_or_else(|| CliError::operation(format!("unknown export profile `{name}`")))?;
+    let rules = profile.content_transform_rules.unwrap_or_default();
+    print_export_profile_rule_list(output, name, &rules)
+}
+
+fn run_export_profile_rule_add(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+    before: Option<usize>,
+    request: ExportProfileRuleRequest<'_>,
+    mutation: ConfigMutationOptions,
+) -> Result<(), CliError> {
+    validate_export_profile_name(name)?;
+    let mut profile = load_shared_export_profile(paths, name)?
+        .ok_or_else(|| CliError::operation(format!("unknown export profile `{name}`")))?;
+    let format = require_export_profile_format(name, &profile)?;
+    if !export_profile_supports_content_transforms(format) {
+        return Err(CliError::operation(format!(
+            "export profile `{name}` only supports `content_transforms` for markdown, json, epub, and zip exports"
+        )));
+    }
+    let rule = build_export_profile_rule(request)?;
+    let rules = profile.content_transform_rules.get_or_insert_with(Vec::new);
+    let insert_at = resolve_export_profile_rule_insert_before(rules.len(), before)?;
+    rules.insert(insert_at, rule.clone());
+    validate_export_profile_config(name, &profile)?;
+    let persisted =
+        persist_shared_export_profile(paths, name, &profile, mutation, "export-profile-rule-add")?;
+    let report = ExportProfileRuleWriteReport {
+        name: name.to_string(),
+        profile: serde_json::to_value(&profile).map_err(CliError::operation)?,
+        config_path: relativize_config_import_path(paths, &persisted.config_path),
+        action: if persisted.updated {
+            ExportProfileRuleWriteAction::Added
+        } else {
+            ExportProfileRuleWriteAction::Unchanged
+        },
+        rule_index: Some(insert_at + 1),
+        previous_rule_index: None,
+        rule: Some(serde_json::to_value(&rule).map_err(CliError::operation)?),
+        dry_run: mutation.apply_mode.is_dry_run(),
+        diagnostics: persisted.diagnostics,
+    };
+    print_export_profile_rule_write_report(output, &report, &profile)
+}
+
+fn run_export_profile_rule_update(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+    index: usize,
+    request: ExportProfileRuleRequest<'_>,
+    mutation: ConfigMutationOptions,
+) -> Result<(), CliError> {
+    validate_export_profile_name(name)?;
+    let mut profile = load_shared_export_profile(paths, name)?
+        .ok_or_else(|| CliError::operation(format!("unknown export profile `{name}`")))?;
+    let format = require_export_profile_format(name, &profile)?;
+    if !export_profile_supports_content_transforms(format) {
+        return Err(CliError::operation(format!(
+            "export profile `{name}` only supports `content_transforms` for markdown, json, epub, and zip exports"
+        )));
+    }
+    let rule = build_export_profile_rule(request)?;
+    let rules = profile.content_transform_rules.get_or_insert_with(Vec::new);
+    let rule_index = require_export_profile_rule_index(rules, index)?;
+    let changed = rules.get(rule_index) != Some(&rule);
+    rules[rule_index] = rule.clone();
+    validate_export_profile_config(name, &profile)?;
+    let persisted = persist_shared_export_profile(
+        paths,
+        name,
+        &profile,
+        mutation,
+        "export-profile-rule-update",
+    )?;
+    let report = ExportProfileRuleWriteReport {
+        name: name.to_string(),
+        profile: serde_json::to_value(&profile).map_err(CliError::operation)?,
+        config_path: relativize_config_import_path(paths, &persisted.config_path),
+        action: if changed && persisted.updated {
+            ExportProfileRuleWriteAction::Updated
+        } else {
+            ExportProfileRuleWriteAction::Unchanged
+        },
+        rule_index: Some(rule_index + 1),
+        previous_rule_index: None,
+        rule: Some(serde_json::to_value(&rule).map_err(CliError::operation)?),
+        dry_run: mutation.apply_mode.is_dry_run(),
+        diagnostics: persisted.diagnostics,
+    };
+    print_export_profile_rule_write_report(output, &report, &profile)
+}
+
+fn run_export_profile_rule_delete(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+    index: usize,
+    mutation: ConfigMutationOptions,
+) -> Result<(), CliError> {
+    validate_export_profile_name(name)?;
+    let mut profile = load_shared_export_profile(paths, name)?
+        .ok_or_else(|| CliError::operation(format!("unknown export profile `{name}`")))?;
+    let rules = profile.content_transform_rules.get_or_insert_with(Vec::new);
+    let rule_index = require_export_profile_rule_index(rules, index)?;
+    let removed_rule = rules.remove(rule_index);
+    normalize_export_profile_rules(&mut profile);
+    validate_export_profile_config(name, &profile)?;
+    let persisted = persist_shared_export_profile(
+        paths,
+        name,
+        &profile,
+        mutation,
+        "export-profile-rule-delete",
+    )?;
+    let report = ExportProfileRuleWriteReport {
+        name: name.to_string(),
+        profile: serde_json::to_value(&profile).map_err(CliError::operation)?,
+        config_path: relativize_config_import_path(paths, &persisted.config_path),
+        action: ExportProfileRuleWriteAction::Deleted,
+        rule_index: Some(rule_index + 1),
+        previous_rule_index: None,
+        rule: Some(serde_json::to_value(&removed_rule).map_err(CliError::operation)?),
+        dry_run: mutation.apply_mode.is_dry_run(),
+        diagnostics: persisted.diagnostics,
+    };
+    print_export_profile_rule_write_report(output, &report, &profile)
+}
+
+fn run_export_profile_rule_move(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+    request: ExportProfileRuleMoveRequest,
+    mutation: ConfigMutationOptions,
+) -> Result<(), CliError> {
+    validate_export_profile_name(name)?;
+    if request.before.is_none() && request.after.is_none() && !request.last {
+        return Err(CliError::operation(
+            "export profile rule move requires --before, --after, or --last".to_string(),
+        ));
+    }
+    let mut profile = load_shared_export_profile(paths, name)?
+        .ok_or_else(|| CliError::operation(format!("unknown export profile `{name}`")))?;
+    let rules = profile.content_transform_rules.get_or_insert_with(Vec::new);
+    let source_index = require_export_profile_rule_index(rules, request.index)?;
+    let original_len = rules.len();
+    let mut destination = if let Some(before_index) = request.before {
+        if before_index == 0 || before_index > original_len {
+            return Err(CliError::operation(format!(
+                "content_transforms destination index {before_index} is out of range; expected 1..={original_len}"
+            )));
+        }
+        before_index - 1
+    } else if let Some(after_index) = request.after {
+        if after_index == 0 || after_index > original_len {
+            return Err(CliError::operation(format!(
+                "content_transforms destination index {after_index} is out of range; expected 1..={original_len}"
+            )));
+        }
+        after_index
+    } else {
+        original_len
+    };
+
+    let rule = rules.remove(source_index);
+    if destination > source_index {
+        destination -= 1;
+    }
+    if destination > rules.len() {
+        destination = rules.len();
+    }
+    let changed = destination != source_index;
+    rules.insert(destination, rule.clone());
+    validate_export_profile_config(name, &profile)?;
+    let persisted =
+        persist_shared_export_profile(paths, name, &profile, mutation, "export-profile-rule-move")?;
+    let report = ExportProfileRuleWriteReport {
+        name: name.to_string(),
+        profile: serde_json::to_value(&profile).map_err(CliError::operation)?,
+        config_path: relativize_config_import_path(paths, &persisted.config_path),
+        action: if changed && persisted.updated {
+            ExportProfileRuleWriteAction::Moved
+        } else {
+            ExportProfileRuleWriteAction::Unchanged
+        },
+        rule_index: Some(destination + 1),
+        previous_rule_index: Some(source_index + 1),
+        rule: Some(serde_json::to_value(&rule).map_err(CliError::operation)?),
+        dry_run: mutation.apply_mode.is_dry_run(),
+        diagnostics: persisted.diagnostics,
+    };
+    print_export_profile_rule_write_report(output, &report, &profile)
 }
 
 fn require_export_profile_config(
@@ -31044,8 +31987,40 @@ mod tests {
             "--title",
             "Team Notes",
             "--backlinks",
+        ])
+        .expect("cli should parse");
+        let export_profile_set = Cli::try_parse_from([
+            "vulcan",
+            "export",
+            "profile",
+            "set",
+            "team-book",
+            "--backlinks",
+            "--frontmatter",
+        ])
+        .expect("cli should parse");
+        let export_profile_rule_add = Cli::try_parse_from([
+            "vulcan",
+            "export",
+            "profile",
+            "rule",
+            "add",
+            "team-book",
+            "from notes where file.path starts_with \"People/\"",
             "--exclude-callout",
             "secret gm",
+        ])
+        .expect("cli should parse");
+        let export_profile_rule_move = Cli::try_parse_from([
+            "vulcan",
+            "export",
+            "profile",
+            "rule",
+            "move",
+            "team-book",
+            "2",
+            "--before",
+            "1",
         ])
         .expect("cli should parse");
         let export_profile_delete = Cli::try_parse_from([
@@ -31379,16 +32354,85 @@ mod tests {
                         frontmatter: false,
                         pretty: false,
                         graph_format: None,
-                        transforms: Box::new(ExportTransformArgs {
-                            exclude_callouts: vec!["secret gm".to_string()],
-                            exclude_headings: vec![],
-                            exclude_frontmatter_keys: vec![],
-                            exclude_inline_fields: vec![],
-                            replace_rules: vec![],
-                        }),
                         replace: false,
                         dry_run: false,
                         no_commit: false,
+                    },
+                },
+            }
+        );
+        assert_eq!(
+            export_profile_set.command,
+            Command::Export {
+                command: ExportCommand::Profile {
+                    command: ExportProfileCommand::Set {
+                        name: "team-book".to_string(),
+                        format: None,
+                        query: None,
+                        query_json: None,
+                        clear_query: false,
+                        path: None,
+                        clear_path: false,
+                        title: None,
+                        clear_title: false,
+                        author: None,
+                        clear_author: false,
+                        toc: None,
+                        clear_toc: false,
+                        backlinks: true,
+                        no_backlinks: false,
+                        frontmatter: true,
+                        no_frontmatter: false,
+                        pretty: false,
+                        no_pretty: false,
+                        graph_format: None,
+                        clear_graph_format: false,
+                        dry_run: false,
+                        no_commit: false,
+                    },
+                },
+            }
+        );
+        assert_eq!(
+            export_profile_rule_add.command,
+            Command::Export {
+                command: ExportCommand::Profile {
+                    command: ExportProfileCommand::Rule {
+                        command: ExportProfileRuleCommand::Add {
+                            profile: "team-book".to_string(),
+                            before: None,
+                            query: Some(
+                                "from notes where file.path starts_with \"People/\"".to_string()
+                            ),
+                            query_json: None,
+                            transforms: Box::new(ExportTransformArgs {
+                                exclude_callouts: vec!["secret gm".to_string()],
+                                exclude_headings: vec![],
+                                exclude_frontmatter_keys: vec![],
+                                exclude_inline_fields: vec![],
+                                replace_rules: vec![],
+                            }),
+                            dry_run: false,
+                            no_commit: false,
+                        },
+                    },
+                },
+            }
+        );
+        assert_eq!(
+            export_profile_rule_move.command,
+            Command::Export {
+                command: ExportCommand::Profile {
+                    command: ExportProfileCommand::Rule {
+                        command: ExportProfileRuleCommand::Move {
+                            profile: "team-book".to_string(),
+                            index: 2,
+                            before: Some(1),
+                            after: None,
+                            last: false,
+                            dry_run: false,
+                            no_commit: false,
+                        },
                     },
                 },
             }
