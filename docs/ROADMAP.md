@@ -4396,6 +4396,82 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
   - or a deferred platform if the operational burden is too high for the native runtime
 - [ ] Exit criterion: do not start a production Matrix implementation until the runtime-state boundary and verification story are both explicit
 
+## Phase 9.22: Crate boundary cleanup and reusable workflow extraction
+
+**Goal:** Re-establish the intended workspace boundaries from the design doc: `vulcan-core` owns reusable vault semantics and data-model logic, `vulcan-cli` becomes a thin command/TUI/output layer, and reusable workflow orchestration moves into library crates instead of accumulating inside `vulcan-cli`.
+
+**Why this phase exists:** A large amount of command-agnostic logic currently lives in `vulcan-cli` rather than in `vulcan-core` or a sibling library crate. That hurts reuse, duplicates logic across surfaces (for example CLI web tools vs JS web tools), makes `vulcan-cli/src/lib.rs` a de facto application layer, and raises the cost of Phase 10 daemon work, MCP work, and assistant integrations.
+
+**Scope rule:** This phase is primarily a code migration and boundary cleanup. It should not intentionally change user-visible behavior unless a separate roadmap item explicitly calls for it.
+
+**Builds on:** Phase 9.18 command reorganization and the current command surfaces. Recommended before substantial additional work in Phase 9.20, Phase 9.21, and Phase 10 so those surfaces can consume shared libraries instead of depending on `vulcan-cli` internals.
+
+### 9.22.1 Responsibility contract and migration inventory
+
+- [ ] Document crate responsibilities in `docs/design_document.md` and crate-level docs:
+  - `vulcan-core`: parser, indexer, query/eval, config model, cache abstractions, shared backend logic, domain request/response types, and other command-agnostic vault semantics
+  - `vulcan-app`: new workspace library crate for reusable workflow orchestration that composes `vulcan-core` with filesystem mutation, scan refresh, packaging, plugin dispatch, and other non-UI application services
+  - `vulcan-cli`: `clap` parsing, TUI state, stdin/stdout handling, editor/browser launching, shell completions, and output formatting only
+  - `vulcan-daemon`: long-lived transports, HTTP/WebSocket endpoints, async boundaries, and background scheduling only
+- [ ] Produce a migration inventory of current `vulcan-cli` modules and classify each code path as:
+  - stays in CLI because it is terminal/UI specific
+  - moves to `vulcan-core` because it is pure reusable semantics
+  - moves to `vulcan-app` because it is reusable workflow orchestration
+  - moves to `vulcan-daemon` because it is long-lived server/transport logic
+- [ ] Add a contributor rule: new reusable business logic must not land in `vulcan-cli` unless it is unambiguously CLI/TUI-only
+- [ ] Treat the current `vulcan-cli/src/lib.rs` size and responsibility spread as a migration target, not as the desired steady state
+
+### 9.22.2 Shared workflow library extraction (`vulcan-app`)
+
+- [ ] Add a new workspace crate `vulcan-app`
+- [ ] Define serializable request/response structs for note, task, export, config, template, plugin, and web workflows so CLI JSON output and future daemon APIs can share the same result types
+- [ ] Keep `vulcan-core` synchronous and semantics-focused; `vulcan-app` may orchestrate synchronous file I/O and compose multiple `vulcan-core` operations, but async boundaries still belong to the daemon layer
+- [ ] Move command-agnostic orchestration out of `vulcan-cli` into `vulcan-app` without pulling `clap`, terminal rendering, or interactive stdin concerns into the shared layer
+- [ ] Add unit tests for the new workflow services directly in the library crates rather than relying only on CLI integration tests
+
+### 9.22.3 Shared web backend consolidation
+
+- [ ] Remove duplicate web search/fetch logic between CLI `web` commands and DataviewJS `web.search()` / `web.fetch()` by extracting a single shared implementation below the CLI boundary
+- [ ] Shared code must cover backend selection (`DuckDuckGo`, `Kagi`, `Exa`, `Tavily`, `Brave`), API key lookup, request shaping, payload parsing, HTML-to-Markdown conversion, robots.txt checks, and user-agent handling
+- [ ] CLI, JS runtime, and future daemon/API surfaces must call the same shared web service rather than each maintaining their own backend adapters
+- [ ] Add regression tests that assert consistent normalized results across CLI and JS entrypoints for the same mocked backend responses
+
+### 9.22.4 Note and task workflow extraction
+
+- [ ] Move note CRUD orchestration out of `vulcan-cli`: template expansion, mutation planning, plugin hook dispatch, diagnostics/check passes, and scan refresh logic
+- [ ] Keep CLI-only concerns in `vulcan-cli`: reading stdin, mapping flags to request structs, selecting permission profiles, auto-commit policy selection, and human/JSON rendering
+- [ ] Move TaskNotes and inline-task mutation workflows out of `vulcan-cli`: task creation, NLP/default resolution, inline-to-TaskNotes conversion, reschedule/complete/archive flows, and time-tracking/pomodoro mutation helpers
+- [ ] Provide reusable dry-run planning APIs for note and task mutations so CLI, daemon, MCP, and assistant surfaces preview the same mutation plan and changed-path set
+- [ ] Add regression tests covering parity of note/task behavior before and after extraction
+
+### 9.22.5 Export, template, plugin, and config service extraction
+
+- [ ] Move export orchestration out of `vulcan-cli`: query resolution, transformed export preparation, backlink adjustment, attachment discovery, and JSON/CSV/EPUB/ZIP/SQLite packaging
+- [ ] Move raw export SQL/schema definitions out of `vulcan-cli` and colocate them with other reusable export/cache code
+- [ ] Move the template engine out of `vulcan-cli` into reusable library code so note creation, append flows, scripts, daemon endpoints, and future assistant flows share one implementation
+- [ ] Move plugin discovery/loading/dispatch out of `vulcan-cli` so plugin event hooks become reusable infrastructure rather than a CLI-local feature
+- [ ] Move config show/get/set/unset helpers and TOML mutation/validation logic out of `vulcan-cli` so the config TUI and future admin/daemon surfaces use the same implementation
+- [ ] Keep terminal-specific state machines in `vulcan-cli` such as the config TUI and browse TUI, but have them call shared services underneath
+
+### 9.22.6 CLI slimming and dependency cleanup
+
+- [ ] Break up the current monolithic `vulcan-cli/src/lib.rs` into thin dispatch and presentation modules once shared services exist
+- [ ] Remove direct `rusqlite`, `reqwest`, `serde_yaml`, `pulldown-cmark`, and similar workflow dependencies from `vulcan-cli` wherever the shared library layers can own them instead
+- [ ] Add boundary guardrails so `vulcan-cli` does not access cache tables via raw SQL or reimplement shared backend/parsing logic
+- [ ] Keep only clearly CLI-specific modules in `vulcan-cli`: command dispatch, output rendering, TUI modules, editor/URI launching, shell completion generation, and terminal markdown helpers
+- [ ] Exit criterion for this subsection: command modules should read as adapters over shared services rather than as the primary home of application logic
+
+### 9.22.7 Serve/daemon boundary and migration safety
+
+- [ ] Treat the current `serve` implementation as an interim transport and move any reusable request handling/query services below the CLI boundary so Phase 10 does not depend on `vulcan-cli` internals
+- [ ] Add parity tests or golden-output comparisons for extracted workflows during the migration, then remove the old duplicate implementations once parity is proven
+- [ ] Preserve existing CLI JSON contracts unless a deliberate breaking change is documented elsewhere in the roadmap
+- [ ] Run the full workspace verification gate before closing the phase:
+  - `cargo fmt --all`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test --workspace`
+- [ ] Final exit criterion: a new daemon or assistant entrypoint can perform note, task, export, config, template, plugin, and web workflows by calling shared library APIs directly, without importing `vulcan-cli` internals
+
 ---
 
 ## Deferred enhancements (post-Phase 9)
