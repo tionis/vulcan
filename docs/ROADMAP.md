@@ -4423,11 +4423,11 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 
 ### 9.22.2 Shared workflow library extraction (`vulcan-app`)
 
-- [ ] Add a new workspace crate `vulcan-app`
+- [x] Add a new workspace crate `vulcan-app`
 - [ ] Define serializable request/response structs for note, task, export, config, template, plugin, and web workflows so CLI JSON output and future daemon APIs can share the same result types
 - [ ] Keep `vulcan-core` synchronous and semantics-focused; `vulcan-app` may orchestrate synchronous file I/O and compose multiple `vulcan-core` operations, but async boundaries still belong to the daemon layer
 - [ ] Move command-agnostic orchestration out of `vulcan-cli` into `vulcan-app` without pulling `clap`, terminal rendering, or interactive stdin concerns into the shared layer
-- [ ] Add unit tests for the new workflow services directly in the library crates rather than relying only on CLI integration tests
+- [x] Add unit tests for the new workflow services directly in the library crates rather than relying only on CLI integration tests
 
 ### 9.22.3 Shared web backend consolidation
 
@@ -4449,7 +4449,7 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 - [ ] Move export orchestration out of `vulcan-cli`: query resolution, transformed export preparation, backlink adjustment, attachment discovery, and JSON/CSV/EPUB/ZIP/SQLite packaging
 - [ ] Move raw export SQL/schema definitions out of `vulcan-cli` and colocate them with other reusable export/cache code
 - [ ] Move the template engine out of `vulcan-cli` into reusable library code so note creation, append flows, scripts, daemon endpoints, and future assistant flows share one implementation
-- [ ] Move plugin discovery/loading/dispatch out of `vulcan-cli` so plugin event hooks become reusable infrastructure rather than a CLI-local feature
+- [x] Move plugin discovery/loading/dispatch out of `vulcan-cli` so plugin event hooks become reusable infrastructure rather than a CLI-local feature
 - [x] Move config show/get/set/unset helpers and TOML mutation/validation logic out of `vulcan-cli` so the config TUI and future admin/daemon surfaces use the same implementation
 - [ ] Keep terminal-specific state machines in `vulcan-cli` such as the config TUI and browse TUI, but have them call shared services underneath
 
