@@ -18,6 +18,8 @@ When working in this repo, prefer using Vulcan itself to inspect and edit long M
 - Use `vulcan note get ./docs/ROADMAP.md --section vulcan-implementation-roadmap/phase-9-cli-refinements/9-15-tasknotes-compatibility-primary-task-model@1866` to read one roadmap section without reopening the whole file.
 - Use `vulcan note patch ./docs/ROADMAP.md --section <section-id-from-outline> --find 'old text' --replace 'new text' --dry-run` for surgical roadmap edits, then rerun without `--dry-run` once the patch is correct.
 - Prefer `note get`/`note patch` with `--section`, `--heading`, `--block-ref`, or `--lines` for targeted work on large notes. This is good dogfooding and helps keep roadmap/design-document editing aligned with the intended agent workflow.
+- Current ergonomics note: `note outline` and targeted `note get` work well for discovery and scoped reads. `note patch` is useful for stable exact-match edits, but checklist-heavy edits and text containing backticks or leading list markers can still be awkward because shell quoting and literal matching are fragile.
+- Practical guidance: keep using `note outline` and `note get` to locate the exact section first. Use `note patch --dry-run` when the match text is simple and stable. If the edit is mostly checkbox churn or the quoting becomes brittle, it is acceptable to finish the edit with `apply_patch` after using the note commands to discover the right scope. Treat that fallback as a current UX gap to improve, not as a reason to skip dogfooding.
 
 ## Architecture
 
