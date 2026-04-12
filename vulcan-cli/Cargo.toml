@@ -34,6 +34,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 toml.workspace = true
+vulcan-app = { path = "../vulcan-app", default-features = false }
 vulcan-core = { path = "../vulcan-core", default-features = false }
 zip.workspace = true
 

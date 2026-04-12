@@ -1,3 +1,9 @@
+//! CLI and terminal-facing adapters for Vulcan.
+//!
+//! Reusable workflow orchestration should live in `vulcan-app` or
+//! `vulcan-core`; this crate owns argument parsing, TUI state, interactive I/O,
+//! terminal rendering, and other CLI-specific behavior.
+
 mod bases_tui;
 mod browse_tui;
 mod cli;
@@ -8,12 +14,72 @@ mod editor;
 mod js_repl;
 mod note_picker;
 mod output;
-mod plugins;
 mod resolve;
 mod serve;
 mod template_engine;
 mod terminal_markdown;
-mod trust;
+
+mod plugins {
+    use crate::CliError;
+    use serde_json::Value;
+    pub(crate) use vulcan_app::plugins::{list_plugins, PluginDescriptor, PluginToggleOutcome};
+    use vulcan_core::{DataviewJsResult, PluginEvent, VaultPaths};
+
+    pub(crate) fn run_plugin(
+        paths: &VaultPaths,
+        active_permission_profile: Option<&str>,
+        name: &str,
+    ) -> Result<DataviewJsResult, CliError> {
+        vulcan_app::plugins::run_plugin(paths, active_permission_profile, name)
+            .map_err(CliError::operation)
+    }
+
+    pub(crate) fn dispatch_plugin_event(
+        paths: &VaultPaths,
+        active_permission_profile: Option<&str>,
+        event: PluginEvent,
+        payload: &Value,
+        quiet: bool,
+    ) -> Result<(), CliError> {
+        vulcan_app::plugins::dispatch_plugin_event(
+            paths,
+            active_permission_profile,
+            event,
+            payload,
+            quiet,
+        )
+        .map_err(CliError::operation)
+    }
+
+    pub(crate) fn set_plugin_enabled(
+        paths: &VaultPaths,
+        name: &str,
+        enabled: bool,
+    ) -> Result<PluginToggleOutcome, CliError> {
+        vulcan_app::plugins::set_plugin_enabled(paths, name, enabled).map_err(CliError::operation)
+    }
+}
+
+mod trust {
+    use crate::CliError;
+    use std::path::{Path, PathBuf};
+
+    pub(crate) fn is_trusted(vault_root: &Path) -> bool {
+        vulcan_app::trust::is_trusted(vault_root)
+    }
+
+    pub(crate) fn add_trust(vault_root: &Path) -> Result<bool, CliError> {
+        vulcan_app::trust::add_trust(vault_root).map_err(CliError::operation)
+    }
+
+    pub(crate) fn revoke_trust(vault_root: &Path) -> Result<bool, CliError> {
+        vulcan_app::trust::revoke_trust(vault_root).map_err(CliError::operation)
+    }
+
+    pub(crate) fn list_trusted() -> Result<Vec<PathBuf>, CliError> {
+        vulcan_app::trust::list_trusted().map_err(CliError::operation)
+    }
+}
 
 pub use cli::{
     AgentCommand, AgentInstallArgs, AutomationCommand, BasesCommand, CacheCommand,
@@ -3292,50 +3358,12 @@ fn run_plugin_toggle_command(
     enabled: bool,
     quiet: bool,
 ) -> Result<(), CliError> {
-    let config_path = paths.config_file().to_path_buf();
-    let created_config = !config_path.exists();
     let had_gitignore = paths.gitignore_file().exists();
-    let existing_contents = fs::read_to_string(&config_path).ok();
-    let descriptors = plugins::list_plugins(paths);
-    let descriptor = descriptors
-        .into_iter()
-        .find(|plugin| plugin.name == name)
-        .unwrap_or_else(|| plugins::PluginDescriptor {
-            name: name.to_string(),
-            path: plugins::plugin_default_config_path(name),
-            exists: false,
-            registered: false,
-            enabled: false,
-            events: Vec::new(),
-            sandbox: None,
-            permission_profile: None,
-            description: None,
-        });
+    let outcome = plugins::set_plugin_enabled(paths, name, enabled)?;
 
-    let mut config_value = load_config_file_toml(&config_path)?;
-    set_config_toml_value(
-        &mut config_value,
-        &["plugins", name, "enabled"],
-        TomlValue::Boolean(enabled),
-    )?;
-    let default_path = plugins::plugin_default_config_path(name);
-    if !descriptor.registered && descriptor.path != default_path {
-        set_config_toml_value(
-            &mut config_value,
-            &["plugins", name, "path"],
-            TomlValue::String(descriptor.path.to_string_lossy().into_owned()),
-        )?;
-    }
-
-    let rendered = toml::to_string_pretty(&config_value).map_err(CliError::operation)?;
-    validate_vulcan_overrides_toml(&rendered).map_err(CliError::operation)?;
-    let updated = existing_contents.as_deref() != Some(rendered.as_str());
-
-    if updated {
+    if outcome.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, false);
         warn_auto_commit_if_needed(&auto_commit, quiet);
-        ensure_vulcan_dir(paths).map_err(CliError::operation)?;
-        fs::write(&config_path, rendered).map_err(CliError::operation)?;
         auto_commit
             .commit(
                 paths,
@@ -3348,12 +3376,12 @@ fn run_plugin_toggle_command(
     }
 
     let report = PluginToggleReport {
-        name: name.to_string(),
-        enabled,
-        updated,
-        registered: descriptor.registered || updated || created_config,
-        config_path: relativize_config_import_path(paths, &config_path),
-        path: descriptor.path,
+        name: outcome.name,
+        enabled: outcome.enabled,
+        updated: outcome.updated,
+        registered: outcome.registered,
+        config_path: relativize_config_import_path(paths, &outcome.config_path),
+        path: outcome.path,
     };
     print_plugin_toggle_report(output, &report)
 }

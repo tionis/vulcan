@@ -94,6 +94,24 @@ Recommended approach:
 - Long-running operations such as full reindex or batch embedding should use chunked transactions (e.g., commit every N documents) to avoid holding the write lock for minutes. This means partial progress is visible and a crash mid-reindex leaves the cache in a consistent but incomplete state, which reconciliation can repair.
 - Never assume two concurrent CLI invocations coordinate with each other. If a user runs `move` in one terminal while `scan` runs in another, both must serialize through the same write lock. Use SQLite's `busy_timeout` as a backstop, but prefer the application-level lock to give better error messages.
 
+### Workspace crate boundaries
+
+The workspace boundary contract for the current and upcoming phases is:
+
+- `vulcan-core` owns parser/indexer semantics, query and expression evaluation, cache abstractions, config models, shared backend logic, and serializable domain request/response types that are not tied to a transport.
+- `vulcan-app` owns reusable synchronous workflow orchestration that composes `vulcan-core` with filesystem mutation, plugin dispatch, scan refresh, config-file mutation, packaging, and other non-UI application services.
+- `vulcan-cli` owns `clap` parsing, terminal I/O, TUI state, editor/browser launching, shell completions, and human/JSON rendering. It should call shared services rather than becoming the primary home of business logic.
+- `vulcan-daemon` owns long-lived transports, async boundaries, background scheduling, HTTP/WebSocket endpoints, and adapter/runtime state that should not live in the CLI or rebuildable cache.
+
+Current migration inventory for the Phase 9.22 cleanup:
+
+- Stays in `vulcan-cli`: `src/commands/`, `bases_tui.rs`, `browse_tui.rs`, `config_tui.rs`, `editor.rs`, `note_picker.rs`, `terminal_markdown.rs`, and other terminal-only presentation code.
+- Stays in `vulcan-core`: parser/indexer modules, query/DQL/expression engines, cache schema/migrations, permission models, and shared backend adapters such as the normalized web backend used by multiple surfaces.
+- Moves to or lives in `vulcan-app`: reusable plugin/trust/config mutation services, template and note/task orchestration, export packaging workflows, and other synchronous multi-step operations that should be callable from CLI, daemon, MCP, or assistant entrypoints.
+- Moves to `vulcan-daemon`: the current interim `serve` transport, background watch/scheduling loops that outlive a single command, chat/platform adapters, and future async API handlers.
+
+Contributor rule: new reusable business logic must not land in `vulcan-cli` unless it is unambiguously CLI- or TUI-only. Treat the size and responsibility spread of `vulcan-cli/src/lib.rs` as a migration target, not the desired steady state.
+
 ### 4.1 Publication transform rules
 
 Export, static site generation, and the future web wiki should share one publication model that separates **selection** from **transformation**.
