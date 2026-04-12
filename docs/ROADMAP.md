@@ -4408,18 +4408,18 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 
 ### 9.22.1 Responsibility contract and migration inventory
 
-- [ ] Document crate responsibilities in `docs/design_document.md` and crate-level docs:
+- [x] Document crate responsibilities in `docs/design_document.md` and crate-level docs:
   - `vulcan-core`: parser, indexer, query/eval, config model, cache abstractions, shared backend logic, domain request/response types, and other command-agnostic vault semantics
   - `vulcan-app`: new workspace library crate for reusable workflow orchestration that composes `vulcan-core` with filesystem mutation, scan refresh, packaging, plugin dispatch, and other non-UI application services
   - `vulcan-cli`: `clap` parsing, TUI state, stdin/stdout handling, editor/browser launching, shell completions, and output formatting only
   - `vulcan-daemon`: long-lived transports, HTTP/WebSocket endpoints, async boundaries, and background scheduling only
-- [ ] Produce a migration inventory of current `vulcan-cli` modules and classify each code path as:
+- [x] Produce a migration inventory of current `vulcan-cli` modules and classify each code path as:
   - stays in CLI because it is terminal/UI specific
   - moves to `vulcan-core` because it is pure reusable semantics
   - moves to `vulcan-app` because it is reusable workflow orchestration
   - moves to `vulcan-daemon` because it is long-lived server/transport logic
-- [ ] Add a contributor rule: new reusable business logic must not land in `vulcan-cli` unless it is unambiguously CLI/TUI-only
-- [ ] Treat the current `vulcan-cli/src/lib.rs` size and responsibility spread as a migration target, not as the desired steady state
+- [x] Add a contributor rule: new reusable business logic must not land in `vulcan-cli` unless it is unambiguously CLI/TUI-only
+- [x] Treat the current `vulcan-cli/src/lib.rs` size and responsibility spread as a migration target, not as the desired steady state
 
 ### 9.22.2 Shared workflow library extraction (`vulcan-app`)
 
@@ -4431,10 +4431,10 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 
 ### 9.22.3 Shared web backend consolidation
 
-- [ ] Remove duplicate web search/fetch logic between CLI `web` commands and DataviewJS `web.search()` / `web.fetch()` by extracting a single shared implementation below the CLI boundary
-- [ ] Shared code must cover backend selection (`DuckDuckGo`, `Kagi`, `Exa`, `Tavily`, `Brave`), API key lookup, request shaping, payload parsing, HTML-to-Markdown conversion, robots.txt checks, and user-agent handling
-- [ ] CLI, JS runtime, and future daemon/API surfaces must call the same shared web service rather than each maintaining their own backend adapters
-- [ ] Add regression tests that assert consistent normalized results across CLI and JS entrypoints for the same mocked backend responses
+- [x] Remove duplicate web search/fetch logic between CLI `web` commands and DataviewJS `web.search()` / `web.fetch()` by extracting a single shared implementation below the CLI boundary
+- [x] Shared code must cover backend selection (`DuckDuckGo`, `Kagi`, `Exa`, `Tavily`, `Brave`), API key lookup, request shaping, payload parsing, HTML-to-Markdown conversion, robots.txt checks, and user-agent handling
+- [x] CLI, JS runtime, and future daemon/API surfaces must call the same shared web service rather than each maintaining their own backend adapters
+- [x] Add regression tests that assert consistent normalized results across CLI and JS entrypoints for the same mocked backend responses
 
 ### 9.22.4 Note and task workflow extraction
 

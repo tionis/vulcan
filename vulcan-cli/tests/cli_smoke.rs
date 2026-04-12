@@ -13944,6 +13944,93 @@ fn run_json_output_net_sandbox_exposes_web_helpers() {
 }
 
 #[test]
+fn web_cli_and_js_entrypoints_share_normalized_reports() {
+    let server = MockWebServer::spawn();
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            "[web.search]\nbackend = \"duckduckgo\"\nbase_url = \"{}\"\n",
+            server.url("/html/")
+        ),
+    )
+    .expect("config should be written");
+
+    let cli_search_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "web",
+            "search",
+            "Alpha",
+            "--limit",
+            "2",
+        ])
+        .assert()
+        .success();
+    let cli_search = parse_stdout_json(&cli_search_assert);
+
+    let cli_fetch_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "web",
+            "fetch",
+            &server.url("/article"),
+            "--mode",
+            "markdown",
+        ])
+        .assert()
+        .success();
+    let cli_fetch = parse_stdout_json(&cli_fetch_assert);
+
+    let js_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "run",
+            "--sandbox",
+            "net",
+            "-e",
+            &format!(
+                r#"({{
+                    search: web.search("Alpha", {{ limit: 2 }}),
+                    fetched: web.fetch("{}", {{ mode: "markdown" }})
+                }})"#,
+                server.url("/article")
+            ),
+        ])
+        .assert()
+        .success();
+    let js = parse_stdout_json(&js_assert);
+
+    server.shutdown();
+
+    assert_eq!(js["value"]["search"], cli_search);
+    assert_eq!(js["value"]["fetched"], cli_fetch);
+}
+
+#[test]
 fn describe_openai_and_mcp_formats_export_tool_definitions() {
     let openai_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")

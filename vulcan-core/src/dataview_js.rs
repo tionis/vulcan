@@ -195,8 +195,6 @@ mod runtime {
 
     use csv::ReaderBuilder;
     use regex::Regex;
-    use reqwest::blocking::Client;
-    use reqwest::header::AUTHORIZATION;
     use rquickjs::function::Func;
     use rquickjs::{
         CatchResultExt, CaughtError, Context, Ctx, Exception, Runtime, Value as JsValue,
@@ -206,8 +204,7 @@ mod runtime {
 
     use super::{DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult};
     use crate::config::{
-        load_vault_config, JsRuntimeConfig, JsRuntimeSandbox, SearchBackendKind, VaultConfig,
-        WebConfig,
+        load_vault_config, JsRuntimeConfig, JsRuntimeSandbox, VaultConfig, WebConfig,
     };
     use crate::dql::{evaluate_dql, DqlQueryResult};
     use crate::expression::eval::{compare_values, value_to_display};
@@ -232,7 +229,9 @@ mod runtime {
     };
     use crate::resolve_note_reference;
     use crate::search::{search_vault_with_filter, SearchQuery};
-    use crate::web::html_to_markdown as convert_web_html_to_markdown;
+    use crate::web::{
+        fetch_web, prepare_search_backend, search_web, WebFetchReport, WebSearchReport,
+    };
     use crate::VaultPaths;
     use crate::{
         move_note, parse_document, query_backlinks_with_filter, query_links_with_filter,
@@ -266,29 +265,6 @@ mod runtime {
         value: Option<DqlQueryResult>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
-    }
-
-    #[derive(Debug, Clone, Serialize)]
-    struct WebSearchResult {
-        title: String,
-        url: String,
-        snippet: String,
-    }
-
-    #[derive(Debug, Clone, Serialize)]
-    struct WebSearchReport {
-        backend: String,
-        query: String,
-        results: Vec<WebSearchResult>,
-    }
-
-    #[derive(Debug, Clone, Serialize)]
-    struct WebFetchReport {
-        url: String,
-        status: u16,
-        content_type: String,
-        mode: String,
-        content: String,
     }
 
     pub struct DataviewJsSession {
@@ -4321,250 +4297,21 @@ globalThis.Function = undefined;
         (year, month, day)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn run_js_web_search(
         state: &JsEvalState,
         query: &str,
         limit: usize,
     ) -> Result<WebSearchReport, DataviewJsError> {
         ensure_network_access(state, "web.search()")?;
-        let client = build_web_client(&state.web_config.user_agent)?;
-        let search_cfg = &state.web_config.search;
-        let base_url = search_cfg.effective_base_url();
+        let prepared =
+            prepare_search_backend(&state.web_config, None).map_err(DataviewJsError::Message)?;
         if let Some(permissions) = state.permissions.as_ref() {
             permissions
-                .check_network(base_url)
+                .check_network(&prepared.base_url)
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         }
-        let results = match search_cfg.backend {
-            SearchBackendKind::Duckduckgo | SearchBackendKind::Auto => {
-                let response = client
-                    .get(base_url)
-                    .query(&[("q", query)])
-                    .send()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                if !response.status().is_success() {
-                    return Err(DataviewJsError::Message(format!(
-                        "DuckDuckGo search failed with status {}",
-                        response.status()
-                    )));
-                }
-                let html = response
-                    .text()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                let results = parse_duckduckgo_search_results(&html, limit.max(1));
-                if results.is_empty() {
-                    return Err(DataviewJsError::Message(
-                        "unexpected DuckDuckGo response shape".to_string(),
-                    ));
-                }
-                results
-            }
-            SearchBackendKind::Kagi => {
-                let api_key_env = search_cfg.effective_api_key_env().ok_or_else(|| {
-                    DataviewJsError::Message(
-                        "configured web search backend requires an API key env var".to_string(),
-                    )
-                })?;
-                let api_key = std::env::var(api_key_env).map_err(|_| {
-                    DataviewJsError::Message(format!(
-                        "missing web search API key env var {api_key_env}"
-                    ))
-                })?;
-                let limit_value = limit.max(1).to_string();
-                let response = client
-                    .get(base_url)
-                    .header(AUTHORIZATION, format!("Bot {api_key}"))
-                    .query(&[("q", query), ("limit", limit_value.as_str())])
-                    .send()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                if !response.status().is_success() {
-                    return Err(DataviewJsError::Message(format!(
-                        "web search failed with status {}",
-                        response.status()
-                    )));
-                }
-                let payload = response
-                    .json::<Value>()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                parse_search_results(&payload).ok_or_else(|| {
-                    DataviewJsError::Message(
-                        "web search backend returned an unexpected payload shape".to_string(),
-                    )
-                })?
-            }
-            SearchBackendKind::Exa => {
-                let api_key_env = search_cfg.effective_api_key_env().ok_or_else(|| {
-                    DataviewJsError::Message(
-                        "configured web search backend requires an API key env var".to_string(),
-                    )
-                })?;
-                let api_key = std::env::var(api_key_env).map_err(|_| {
-                    DataviewJsError::Message(format!(
-                        "missing web search API key env var {api_key_env}"
-                    ))
-                })?;
-                let body = serde_json::json!({
-                    "query": query,
-                    "numResults": limit.max(1),
-                    "type": "neural",
-                    "useAutoprompt": true,
-                    "contents": { "text": { "maxCharacters": 500 } }
-                });
-                let response = client
-                    .post(base_url)
-                    .header("x-api-key", api_key)
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .json(&body)
-                    .send()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                if !response.status().is_success() {
-                    return Err(DataviewJsError::Message(format!(
-                        "Exa search failed with status {}",
-                        response.status()
-                    )));
-                }
-                let payload = response
-                    .json::<Value>()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                let results = payload
-                    .get("results")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| {
-                        DataviewJsError::Message("unexpected Exa response shape".to_string())
-                    })?;
-                results
-                    .iter()
-                    .filter_map(|item| {
-                        let title = item.get("title").and_then(Value::as_str).unwrap_or("");
-                        let url = item.get("url").and_then(Value::as_str)?;
-                        let snippet = item
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .or_else(|| item.get("snippet").and_then(Value::as_str))
-                            .unwrap_or_default();
-                        Some(WebSearchResult {
-                            title: title.to_string(),
-                            url: url.to_string(),
-                            snippet: snippet.to_string(),
-                        })
-                    })
-                    .collect()
-            }
-            SearchBackendKind::Tavily => {
-                let api_key_env = search_cfg.effective_api_key_env().ok_or_else(|| {
-                    DataviewJsError::Message(
-                        "configured web search backend requires an API key env var".to_string(),
-                    )
-                })?;
-                let api_key = std::env::var(api_key_env).map_err(|_| {
-                    DataviewJsError::Message(format!(
-                        "missing web search API key env var {api_key_env}"
-                    ))
-                })?;
-                let body = serde_json::json!({
-                    "api_key": api_key,
-                    "query": query,
-                    "max_results": limit.max(1),
-                    "search_depth": "basic"
-                });
-                let response = client
-                    .post(base_url)
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .json(&body)
-                    .send()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                if !response.status().is_success() {
-                    return Err(DataviewJsError::Message(format!(
-                        "Tavily search failed with status {}",
-                        response.status()
-                    )));
-                }
-                let payload = response
-                    .json::<Value>()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                let results = payload
-                    .get("results")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| {
-                        DataviewJsError::Message("unexpected Tavily response shape".to_string())
-                    })?;
-                results
-                    .iter()
-                    .filter_map(|item| {
-                        let title = item.get("title").and_then(Value::as_str).unwrap_or("");
-                        let url = item.get("url").and_then(Value::as_str)?;
-                        let snippet = item
-                            .get("content")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        Some(WebSearchResult {
-                            title: title.to_string(),
-                            url: url.to_string(),
-                            snippet: snippet.to_string(),
-                        })
-                    })
-                    .collect()
-            }
-            SearchBackendKind::Brave => {
-                let api_key_env = search_cfg.effective_api_key_env().ok_or_else(|| {
-                    DataviewJsError::Message(
-                        "configured web search backend requires an API key env var".to_string(),
-                    )
-                })?;
-                let api_key = std::env::var(api_key_env).map_err(|_| {
-                    DataviewJsError::Message(format!(
-                        "missing web search API key env var {api_key_env}"
-                    ))
-                })?;
-                let count = limit.clamp(1, 20).to_string();
-                let response = client
-                    .get(base_url)
-                    .header("Accept", "application/json")
-                    .header("Accept-Encoding", "gzip")
-                    .header("X-Subscription-Token", api_key)
-                    .query(&[("q", query), ("count", count.as_str())])
-                    .send()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                if !response.status().is_success() {
-                    return Err(DataviewJsError::Message(format!(
-                        "Brave search failed with status {}",
-                        response.status()
-                    )));
-                }
-                let payload = response
-                    .json::<Value>()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                let results = payload
-                    .get("web")
-                    .and_then(|web| web.get("results"))
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| {
-                        DataviewJsError::Message("unexpected Brave response shape".to_string())
-                    })?;
-                results
-                    .iter()
-                    .filter_map(|item| {
-                        let title = item.get("title").and_then(Value::as_str).unwrap_or("");
-                        let url = item.get("url").and_then(Value::as_str)?;
-                        let snippet = item
-                            .get("description")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        Some(WebSearchResult {
-                            title: title.to_string(),
-                            url: url.to_string(),
-                            snippet: snippet.to_string(),
-                        })
-                    })
-                    .collect()
-            }
-        };
-        Ok(WebSearchReport {
-            backend: format!("{:?}", search_cfg.backend).to_lowercase(),
-            query: query.to_string(),
-            results,
-        })
+        search_web(&state.web_config.user_agent, &prepared, query, limit)
+            .map_err(DataviewJsError::Message)
     }
 
     fn run_js_web_fetch(
@@ -4578,213 +4325,7 @@ globalThis.Function = undefined;
                 .check_network(url)
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         }
-        let client = build_web_client(&state.web_config.user_agent)?;
-        if !robots_allow_fetch(&client, url, &state.web_config.user_agent) {
-            return Err(DataviewJsError::Message(
-                "fetch blocked by robots.txt (best-effort check)".to_string(),
-            ));
-        }
-        let response = client
-            .get(url)
-            .send()
-            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        let status = response.status().as_u16();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_string();
-        let bytes = response
-            .bytes()
-            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        Ok(WebFetchReport {
-            url: url.to_string(),
-            status,
-            content_type: content_type.clone(),
-            mode: mode.to_string(),
-            content: render_fetched_content(&bytes, &content_type, url, mode)?,
-        })
-    }
-
-    fn build_web_client(user_agent: &str) -> Result<Client, DataviewJsError> {
-        Client::builder()
-            .user_agent(user_agent)
-            .build()
-            .map_err(|error| DataviewJsError::Message(error.to_string()))
-    }
-
-    fn parse_search_results(payload: &Value) -> Option<Vec<WebSearchResult>> {
-        let results = payload
-            .get("data")
-            .and_then(Value::as_array)
-            .or_else(|| payload.get("results").and_then(Value::as_array))?;
-
-        Some(
-            results
-                .iter()
-                .filter_map(|item| {
-                    let title = item
-                        .get("title")
-                        .or_else(|| item.get("t"))
-                        .and_then(Value::as_str)?;
-                    let url = item
-                        .get("url")
-                        .or_else(|| item.get("u"))
-                        .and_then(Value::as_str)?;
-                    let snippet = item
-                        .get("snippet")
-                        .or_else(|| item.get("desc"))
-                        .or_else(|| item.get("body"))
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    Some(WebSearchResult {
-                        title: title.to_string(),
-                        url: url.to_string(),
-                        snippet: snippet.to_string(),
-                    })
-                })
-                .collect(),
-        )
-    }
-
-    fn parse_duckduckgo_search_results(html: &str, limit: usize) -> Vec<WebSearchResult> {
-        let title_regex = Regex::new(
-            r#"(?is)<a[^>]*class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
-        )
-        .expect("regex should compile");
-        let snippet_regex = Regex::new(
-            r#"(?is)<(?:a|div)[^>]*class="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</(?:a|div)>"#,
-        )
-        .expect("regex should compile");
-        let snippets = snippet_regex
-            .captures_iter(html)
-            .filter_map(|captures| {
-                captures
-                    .get(1)
-                    .map(|value| strip_html_fragment(value.as_str()))
-            })
-            .collect::<Vec<_>>();
-
-        title_regex
-            .captures_iter(html)
-            .enumerate()
-            .take(limit)
-            .filter_map(|(index, captures)| {
-                let url = captures.get(1)?.as_str();
-                let title = captures.get(2)?.as_str();
-                Some(WebSearchResult {
-                    title: strip_html_fragment(title),
-                    url: normalize_duckduckgo_result_url(url),
-                    snippet: snippets.get(index).cloned().unwrap_or_default(),
-                })
-            })
-            .collect()
-    }
-
-    fn strip_html_fragment(fragment: &str) -> String {
-        let stripped = Regex::new(r"(?is)<[^>]+>")
-            .expect("regex should compile")
-            .replace_all(fragment, "")
-            .into_owned();
-        decode_html_entities(stripped.trim())
-    }
-
-    fn normalize_duckduckgo_result_url(url: &str) -> String {
-        if let Ok(parsed) = reqwest::Url::parse(url) {
-            if let Some(target) = parsed
-                .query_pairs()
-                .find_map(|(key, value)| (key == "uddg").then(|| value.into_owned()))
-            {
-                return target;
-            }
-        }
-        if let Some(url) = url.strip_prefix("//") {
-            return format!("https://{url}");
-        }
-        url.to_string()
-    }
-
-    fn render_fetched_content(
-        bytes: &[u8],
-        content_type: &str,
-        url: &str,
-        mode: &str,
-    ) -> Result<String, DataviewJsError> {
-        let rendered = String::from_utf8_lossy(bytes).to_string();
-        match mode {
-            "raw" | "html" => Ok(rendered),
-            _ => {
-                if content_type.contains("html") {
-                    convert_web_html_to_markdown(&rendered, Some(url))
-                        .map_err(DataviewJsError::Message)
-                } else {
-                    Ok(rendered)
-                }
-            }
-        }
-    }
-
-    fn decode_html_entities(input: &str) -> String {
-        [
-            ("&amp;", "&"),
-            ("&lt;", "<"),
-            ("&gt;", ">"),
-            ("&quot;", "\""),
-            ("&#39;", "'"),
-            ("&nbsp;", " "),
-        ]
-        .into_iter()
-        .fold(input.to_string(), |acc, (from, to)| acc.replace(from, to))
-    }
-
-    fn robots_allow_fetch(client: &Client, url: &str, user_agent: &str) -> bool {
-        let Ok(parsed) = reqwest::Url::parse(url) else {
-            return true;
-        };
-        let Some(host) = parsed.host_str() else {
-            return true;
-        };
-        let authority = parsed
-            .port()
-            .map_or_else(|| host.to_string(), |port| format!("{host}:{port}"));
-        let robots_url = format!("{}://{authority}/robots.txt", parsed.scheme());
-        let Ok(response) = client.get(robots_url).send() else {
-            return true;
-        };
-        if !response.status().is_success() {
-            return true;
-        }
-        let Ok(robots) = response.text() else {
-            return true;
-        };
-        robots_allows_path(&robots, parsed.path(), user_agent)
-    }
-
-    fn robots_allows_path(robots: &str, path: &str, user_agent: &str) -> bool {
-        let mut applies = false;
-        let normalized_agent = user_agent.to_ascii_lowercase();
-
-        for raw_line in robots.lines() {
-            let line = raw_line.split('#').next().unwrap_or_default().trim();
-            if line.is_empty() {
-                continue;
-            }
-            let Some((key, value)) = line.split_once(':') else {
-                continue;
-            };
-            let key = key.trim().to_ascii_lowercase();
-            let value = value.trim();
-
-            if key == "user-agent" {
-                let value = value.to_ascii_lowercase();
-                applies = value == "*" || normalized_agent.starts_with(&value);
-            } else if applies && key == "disallow" && !value.is_empty() && path.starts_with(value) {
-                return false;
-            }
-        }
-
-        true
+        fetch_web(&state.web_config, url, mode).map_err(DataviewJsError::Message)
     }
 
     fn load_pages_from_source(

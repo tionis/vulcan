@@ -117,8 +117,6 @@ use pulldown_cmark::{
     Tag as MarkdownTag,
 };
 use regex::Regex;
-use reqwest::blocking::Client;
-use reqwest::header::AUTHORIZATION;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -148,23 +146,23 @@ use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, add_kanban_card, all_importers, annotate_import_conflicts,
-    apply_content_transforms, archive_kanban_card, bulk_replace, cache_vacuum,
-    convert_web_html_to_markdown, create_checkpoint, delete_saved_report, doctor_fix, doctor_vault,
-    ensure_vulcan_dir, evaluate_base_file, evaluate_dataview_js_with_options,
-    evaluate_dql_with_filter, evaluate_note_inline_expressions, evaluate_tasks_query,
-    execute_query_report_with_filter, expected_periodic_note_path, export_daily_events_to_ics,
-    export_static_search_index, extract_tasknote, git_blame, git_diff, git_log, git_recent_log,
-    git_status, initialize_vault, inspect_base_file, inspect_cache, link_mentions,
-    list_checkpoints, list_daily_note_events, list_saved_reports, load_dataview_blocks,
-    load_events_for_periodic_note, load_kanban_board, load_permission_profiles, load_saved_report,
-    load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card, move_note, parse_document,
-    parse_dql_with_diagnostics, parse_tasknote_natural_language, parse_tasknote_reminders,
-    parse_tasknote_time_entries, parse_tasks_query, period_range_for_date, plan_base_note_create,
+    apply_content_transforms, archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint,
+    delete_saved_report, doctor_fix, doctor_vault, ensure_vulcan_dir, evaluate_base_file,
+    evaluate_dataview_js_with_options, evaluate_dql_with_filter, evaluate_note_inline_expressions,
+    evaluate_tasks_query, execute_query_report_with_filter, expected_periodic_note_path,
+    export_daily_events_to_ics, export_static_search_index, extract_tasknote, fetch_web_content,
+    git_blame, git_diff, git_log, git_recent_log, git_status, initialize_vault, inspect_base_file,
+    inspect_cache, link_mentions, list_checkpoints, list_daily_note_events, list_saved_reports,
+    load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
+    load_permission_profiles, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
+    move_kanban_card, move_note, parse_document, parse_dql_with_diagnostics,
+    parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
+    parse_tasks_query, period_range_for_date, plan_base_note_create, prepare_search_backend,
     query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
     rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
     render_markdown_html, repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note,
     resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
-    shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
+    search_web, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
     tasknotes_default_date_value, tasknotes_default_recurrence_rule,
     tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
     tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
@@ -188,12 +186,13 @@ use vulcan_core::{
     RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
     RepairFtsReport, ResolvedPermissionProfile, ResolverDocument, ResolverIndex, ResolverLink,
     SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
-    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
-    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
+    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -834,29 +833,8 @@ struct GitBlameReport {
     lines: Vec<GitBlameLine>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct WebSearchResult {
-    title: String,
-    url: String,
-    snippet: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct WebSearchReport {
-    backend: String,
-    query: String,
-    results: Vec<WebSearchResult>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct WebFetchReport {
-    url: String,
-    status: u16,
-    content_type: String,
-    mode: String,
-    content: String,
-    saved: Option<String>,
-}
+type WebSearchReport = vulcan_core::WebSearchReport;
+type WebFetchReport = vulcan_core::WebFetchReport;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RenderReport {
@@ -2396,310 +2374,25 @@ fn run_git_blame_command(paths: &VaultPaths, path: &str) -> Result<GitBlameRepor
     })
 }
 
-trait SearchBackend {
-    fn name(&self) -> &'static str;
-    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError>;
-}
-
-struct KagiSearchBackend {
-    client: Client,
-    base_url: String,
-    api_key: String,
-}
-
-impl SearchBackend for KagiSearchBackend {
-    fn name(&self) -> &'static str {
-        "kagi"
-    }
-
-    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
-        let limit_value = limit.max(1).to_string();
-        let response = self
-            .client
-            .get(&self.base_url)
-            .header(AUTHORIZATION, format!("Bot {}", self.api_key))
-            .query(&[("q", query), ("limit", limit_value.as_str())])
-            .send()
-            .map_err(CliError::operation)?;
-        if !response.status().is_success() {
-            return Err(CliError::operation(format!(
-                "web search failed with status {}",
-                response.status()
-            )));
-        }
-        let payload = response.json::<Value>().map_err(CliError::operation)?;
-        parse_search_results(&payload).ok_or_else(|| {
-            CliError::operation("web search backend returned an unexpected payload shape")
-        })
+fn search_backend_kind_from_arg(arg: SearchBackendArg) -> SearchBackendKind {
+    match arg {
+        SearchBackendArg::Auto => SearchBackendKind::Auto,
+        SearchBackendArg::Duckduckgo => SearchBackendKind::Duckduckgo,
+        SearchBackendArg::Kagi => SearchBackendKind::Kagi,
+        SearchBackendArg::Exa => SearchBackendKind::Exa,
+        SearchBackendArg::Tavily => SearchBackendKind::Tavily,
+        SearchBackendArg::Brave => SearchBackendKind::Brave,
     }
 }
 
-struct ExaSearchBackend {
-    client: Client,
-    base_url: String,
-    api_key: String,
-}
-
-impl SearchBackend for ExaSearchBackend {
-    fn name(&self) -> &'static str {
-        "exa"
-    }
-
-    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
-        let body = serde_json::json!({
-            "query": query,
-            "numResults": limit.max(1),
-            "type": "neural",
-            "useAutoprompt": true,
-            "contents": { "text": { "maxCharacters": 500 } }
-        });
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("x-api-key", &self.api_key)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&body)
-            .send()
-            .map_err(CliError::operation)?;
-        if !response.status().is_success() {
-            return Err(CliError::operation(format!(
-                "Exa search failed with status {}",
-                response.status()
-            )));
-        }
-        let payload = response.json::<Value>().map_err(CliError::operation)?;
-        // Exa returns {"results": [{title, url, text, ...}]}
-        let results = payload
-            .get("results")
-            .and_then(Value::as_array)
-            .ok_or_else(|| CliError::operation("unexpected Exa response shape"))?;
-        Ok(results
-            .iter()
-            .filter_map(|item| {
-                let title = item.get("title").and_then(Value::as_str).unwrap_or("");
-                let url = item.get("url").and_then(Value::as_str)?;
-                let snippet = item
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .or_else(|| item.get("snippet").and_then(Value::as_str))
-                    .unwrap_or_default();
-                Some(WebSearchResult {
-                    title: title.to_string(),
-                    url: url.to_string(),
-                    snippet: snippet.to_string(),
-                })
-            })
-            .collect())
+fn web_fetch_mode_name(mode: WebFetchMode) -> &'static str {
+    match mode {
+        WebFetchMode::Markdown => "markdown",
+        WebFetchMode::Html => "html",
+        WebFetchMode::Raw => "raw",
     }
 }
 
-struct TavilySearchBackend {
-    client: Client,
-    base_url: String,
-    api_key: String,
-}
-
-impl SearchBackend for TavilySearchBackend {
-    fn name(&self) -> &'static str {
-        "tavily"
-    }
-
-    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
-        let body = serde_json::json!({
-            "api_key": self.api_key,
-            "query": query,
-            "max_results": limit.max(1),
-            "search_depth": "basic"
-        });
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&body)
-            .send()
-            .map_err(CliError::operation)?;
-        if !response.status().is_success() {
-            return Err(CliError::operation(format!(
-                "Tavily search failed with status {}",
-                response.status()
-            )));
-        }
-        let payload = response.json::<Value>().map_err(CliError::operation)?;
-        // Tavily returns {"results": [{title, url, content, ...}]}
-        let results = payload
-            .get("results")
-            .and_then(Value::as_array)
-            .ok_or_else(|| CliError::operation("unexpected Tavily response shape"))?;
-        Ok(results
-            .iter()
-            .filter_map(|item| {
-                let title = item.get("title").and_then(Value::as_str).unwrap_or("");
-                let url = item.get("url").and_then(Value::as_str)?;
-                let snippet = item
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                Some(WebSearchResult {
-                    title: title.to_string(),
-                    url: url.to_string(),
-                    snippet: snippet.to_string(),
-                })
-            })
-            .collect())
-    }
-}
-
-struct BraveSearchBackend {
-    client: Client,
-    base_url: String,
-    api_key: String,
-}
-
-impl SearchBackend for BraveSearchBackend {
-    fn name(&self) -> &'static str {
-        "brave"
-    }
-
-    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
-        let count = limit.clamp(1, 20).to_string();
-        let response = self
-            .client
-            .get(&self.base_url)
-            .header("Accept", "application/json")
-            .header("Accept-Encoding", "gzip")
-            .header("X-Subscription-Token", &self.api_key)
-            .query(&[("q", query), ("count", count.as_str())])
-            .send()
-            .map_err(CliError::operation)?;
-        if !response.status().is_success() {
-            return Err(CliError::operation(format!(
-                "Brave search failed with status {}",
-                response.status()
-            )));
-        }
-        let payload = response.json::<Value>().map_err(CliError::operation)?;
-        // Brave returns {"web": {"results": [{title, url, description, ...}]}}
-        let results = payload
-            .get("web")
-            .and_then(|web| web.get("results"))
-            .and_then(Value::as_array)
-            .ok_or_else(|| CliError::operation("unexpected Brave response shape"))?;
-        Ok(results
-            .iter()
-            .filter_map(|item| {
-                let title = item.get("title").and_then(Value::as_str).unwrap_or("");
-                let url = item.get("url").and_then(Value::as_str)?;
-                let snippet = item
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                Some(WebSearchResult {
-                    title: title.to_string(),
-                    url: url.to_string(),
-                    snippet: snippet.to_string(),
-                })
-            })
-            .collect())
-    }
-}
-
-struct DuckduckgoSearchBackend {
-    client: Client,
-    base_url: String,
-}
-
-impl SearchBackend for DuckduckgoSearchBackend {
-    fn name(&self) -> &'static str {
-        "duckduckgo"
-    }
-
-    fn search(&self, query: &str, limit: usize) -> Result<Vec<WebSearchResult>, CliError> {
-        let response = self
-            .client
-            .get(&self.base_url)
-            .query(&[("q", query)])
-            .send()
-            .map_err(CliError::operation)?;
-        if !response.status().is_success() {
-            return Err(CliError::operation(format!(
-                "DuckDuckGo search failed with status {}",
-                response.status()
-            )));
-        }
-        let html = response.text().map_err(CliError::operation)?;
-        let results = parse_duckduckgo_search_results(&html, limit.max(1));
-        if results.is_empty() {
-            return Err(CliError::operation("unexpected DuckDuckGo response shape"));
-        }
-        Ok(results)
-    }
-}
-
-/// Candidates for auto-detection in priority order.
-const AUTO_DETECT_ORDER: &[(SearchBackendArg, &str, &str)] = &[
-    (
-        SearchBackendArg::Kagi,
-        "KAGI_API_KEY",
-        "https://kagi.com/api/v0/search",
-    ),
-    (
-        SearchBackendArg::Exa,
-        "EXA_API_KEY",
-        "https://api.exa.ai/search",
-    ),
-    (
-        SearchBackendArg::Tavily,
-        "TAVILY_API_KEY",
-        "https://api.tavily.com/search",
-    ),
-    (
-        SearchBackendArg::Brave,
-        "BRAVE_API_KEY",
-        "https://api.search.brave.com/res/v1/web/search",
-    ),
-];
-
-const DUCKDUCKGO_SEARCH_URL: &str = "https://html.duckduckgo.com/html/";
-
-fn build_search_backend(
-    client: Client,
-    kind: SearchBackendArg,
-    api_key_env: Option<&str>,
-    base_url: &str,
-) -> Result<Box<dyn SearchBackend>, CliError> {
-    let base_url = base_url.to_string();
-    let api_key = match api_key_env {
-        Some(api_key_env) => Some(std::env::var(api_key_env).map_err(|_| {
-            CliError::operation(format!("missing web search API key env var {api_key_env}"))
-        })?),
-        None => None,
-    };
-    Ok(match kind {
-        SearchBackendArg::Duckduckgo => Box::new(DuckduckgoSearchBackend { client, base_url }),
-        SearchBackendArg::Kagi | SearchBackendArg::Auto => Box::new(KagiSearchBackend {
-            client,
-            base_url,
-            api_key: api_key.expect("kagi backend should have an API key"),
-        }),
-        SearchBackendArg::Exa => Box::new(ExaSearchBackend {
-            client,
-            base_url,
-            api_key: api_key.expect("exa backend should have an API key"),
-        }),
-        SearchBackendArg::Tavily => Box::new(TavilySearchBackend {
-            client,
-            base_url,
-            api_key: api_key.expect("tavily backend should have an API key"),
-        }),
-        SearchBackendArg::Brave => Box::new(BraveSearchBackend {
-            client,
-            base_url,
-            api_key: api_key.expect("brave backend should have an API key"),
-        }),
-    })
-}
-
-#[allow(clippy::too_many_lines)]
 fn run_web_search_command(
     paths: &VaultPaths,
     query: &str,
@@ -2707,171 +2400,16 @@ fn run_web_search_command(
     limit: usize,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<WebSearchReport, CliError> {
-    use vulcan_core::SearchBackendKind;
-
     let config = load_vault_config(paths).config.web;
-    let client = build_web_client(&config.user_agent)?;
-
-    // Determine effective backend kind from override → config → auto-detect.
-    let effective_kind = backend_override.unwrap_or(match config.search.backend {
-        SearchBackendKind::Auto => SearchBackendArg::Auto,
-        SearchBackendKind::Duckduckgo => SearchBackendArg::Duckduckgo,
-        SearchBackendKind::Kagi => SearchBackendArg::Kagi,
-        SearchBackendKind::Exa => SearchBackendArg::Exa,
-        SearchBackendKind::Tavily => SearchBackendArg::Tavily,
-        SearchBackendKind::Brave => SearchBackendArg::Brave,
-    });
-
-    let backend: Box<dyn SearchBackend> = if effective_kind == SearchBackendArg::Auto {
-        // Auto-detect: use first configured API-key backend, then fall back to DuckDuckGo.
-        let mut found: Option<Box<dyn SearchBackend>> = None;
-        for &(kind, env_var, base_url) in AUTO_DETECT_ORDER {
-            if std::env::var(env_var).is_ok() {
-                if let Some(permissions) = permissions {
-                    permissions
-                        .check_network(base_url)
-                        .map_err(CliError::operation)?;
-                }
-                found = Some(build_search_backend(
-                    client.clone(),
-                    kind,
-                    Some(env_var),
-                    base_url,
-                )?);
-                break;
-            }
-        }
-        if let Some(found) = found {
-            found
-        } else {
-            let base_url = config
-                .search
-                .base_url
-                .as_deref()
-                .unwrap_or(DUCKDUCKGO_SEARCH_URL);
-            if let Some(permissions) = permissions {
-                permissions
-                    .check_network(base_url)
-                    .map_err(CliError::operation)?;
-            }
-            build_search_backend(client, SearchBackendArg::Duckduckgo, None, base_url)?
-        }
-    } else {
-        let api_key_env = if backend_override.is_none() {
-            config
-                .search
-                .api_key_env
-                .as_deref()
-                .or(match effective_kind {
-                    SearchBackendArg::Duckduckgo => None,
-                    SearchBackendArg::Kagi | SearchBackendArg::Auto => Some("KAGI_API_KEY"),
-                    SearchBackendArg::Exa => Some("EXA_API_KEY"),
-                    SearchBackendArg::Tavily => Some("TAVILY_API_KEY"),
-                    SearchBackendArg::Brave => Some("BRAVE_API_KEY"),
-                })
-        } else {
-            match effective_kind {
-                SearchBackendArg::Duckduckgo => None,
-                SearchBackendArg::Kagi | SearchBackendArg::Auto => Some("KAGI_API_KEY"),
-                SearchBackendArg::Exa => Some("EXA_API_KEY"),
-                SearchBackendArg::Tavily => Some("TAVILY_API_KEY"),
-                SearchBackendArg::Brave => Some("BRAVE_API_KEY"),
-            }
-        };
-        let base_url = if backend_override.is_none() {
-            config
-                .search
-                .base_url
-                .as_deref()
-                .unwrap_or(match effective_kind {
-                    SearchBackendArg::Duckduckgo => DUCKDUCKGO_SEARCH_URL,
-                    SearchBackendArg::Exa => "https://api.exa.ai/search",
-                    SearchBackendArg::Tavily => "https://api.tavily.com/search",
-                    SearchBackendArg::Brave => "https://api.search.brave.com/res/v1/web/search",
-                    SearchBackendArg::Kagi | SearchBackendArg::Auto => {
-                        "https://kagi.com/api/v0/search"
-                    }
-                })
-        } else {
-            match effective_kind {
-                SearchBackendArg::Duckduckgo => DUCKDUCKGO_SEARCH_URL,
-                SearchBackendArg::Exa => "https://api.exa.ai/search",
-                SearchBackendArg::Tavily => "https://api.tavily.com/search",
-                SearchBackendArg::Brave => "https://api.search.brave.com/res/v1/web/search",
-                SearchBackendArg::Kagi | SearchBackendArg::Auto => "https://kagi.com/api/v0/search",
-            }
-        };
-        if let Some(permissions) = permissions {
-            permissions
-                .check_network(base_url)
-                .map_err(CliError::operation)?;
-        }
-        build_search_backend(client, effective_kind, api_key_env, base_url)?
-    };
-
-    let results = backend.search(query, limit)?;
-    Ok(WebSearchReport {
-        backend: backend.name().to_string(),
-        query: query.to_string(),
-        results,
-    })
-}
-
-fn parse_duckduckgo_search_results(html: &str, limit: usize) -> Vec<WebSearchResult> {
-    let title_regex = Regex::new(
-        r#"(?is)<a[^>]*class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
-    )
-    .expect("regex should compile");
-    let snippet_regex = Regex::new(
-        r#"(?is)<(?:a|div)[^>]*class="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</(?:a|div)>"#,
-    )
-    .expect("regex should compile");
-    let snippets = snippet_regex
-        .captures_iter(html)
-        .filter_map(|captures| {
-            captures
-                .get(1)
-                .map(|value| strip_html_fragment(value.as_str()))
-        })
-        .collect::<Vec<_>>();
-
-    title_regex
-        .captures_iter(html)
-        .enumerate()
-        .take(limit)
-        .filter_map(|(index, captures)| {
-            let url = captures.get(1)?.as_str();
-            let title = captures.get(2)?.as_str();
-            Some(WebSearchResult {
-                title: strip_html_fragment(title),
-                url: normalize_duckduckgo_result_url(url),
-                snippet: snippets.get(index).cloned().unwrap_or_default(),
-            })
-        })
-        .collect()
-}
-
-fn strip_html_fragment(fragment: &str) -> String {
-    let stripped = Regex::new(r"(?is)<[^>]+>")
-        .expect("regex should compile")
-        .replace_all(fragment, "")
-        .into_owned();
-    decode_html_entities(stripped.trim())
-}
-
-fn normalize_duckduckgo_result_url(url: &str) -> String {
-    if let Ok(parsed) = reqwest::Url::parse(url) {
-        if let Some(target) = parsed
-            .query_pairs()
-            .find_map(|(key, value)| (key == "uddg").then(|| value.into_owned()))
-        {
-            return target;
-        }
+    let prepared =
+        prepare_search_backend(&config, backend_override.map(search_backend_kind_from_arg))
+            .map_err(CliError::operation)?;
+    if let Some(permissions) = permissions {
+        permissions
+            .check_network(&prepared.base_url)
+            .map_err(CliError::operation)?;
     }
-    if let Some(url) = url.strip_prefix("//") {
-        return format!("https://{url}");
-    }
-    url.to_string()
+    search_web(&config.user_agent, &prepared, query, limit).map_err(CliError::operation)
 }
 
 fn run_web_fetch_command(
@@ -2881,174 +2419,31 @@ fn run_web_fetch_command(
     save: Option<&PathBuf>,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<WebFetchReport, CliError> {
+    let config = load_vault_config(paths).config.web;
     if let Some(permissions) = permissions {
         permissions
             .check_network(url)
             .map_err(CliError::operation)?;
     }
-    let config = load_vault_config(paths).config.web;
-    let client = build_web_client(&config.user_agent)?;
-    if !robots_allow_fetch(&client, url, &config.user_agent) {
-        return Err(CliError::operation(
-            "fetch blocked by robots.txt (best-effort check)",
-        ));
-    }
-
-    let response = client.get(url).send().map_err(CliError::operation)?;
-    let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("application/octet-stream")
-        .to_string();
-    let bytes = response.bytes().map_err(CliError::operation)?;
-    let content = render_fetched_content(&bytes, &content_type, url, mode)?;
-    let saved = save.map(|path| path.to_string_lossy().to_string());
+    let mut fetched =
+        fetch_web_content(&config, url, web_fetch_mode_name(mode)).map_err(CliError::operation)?;
 
     if let Some(path) = save {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(CliError::operation)?;
         }
         match mode {
-            WebFetchMode::Raw => fs::write(path, &bytes).map_err(CliError::operation)?,
+            WebFetchMode::Raw => {
+                fs::write(path, &fetched.raw_bytes).map_err(CliError::operation)?;
+            }
             WebFetchMode::Html | WebFetchMode::Markdown => {
-                fs::write(path, content.as_bytes()).map_err(CliError::operation)?;
+                fs::write(path, fetched.report.content.as_bytes()).map_err(CliError::operation)?;
             }
         }
+        fetched.report.saved = Some(path.to_string_lossy().to_string());
     }
 
-    Ok(WebFetchReport {
-        url: url.to_string(),
-        status,
-        content_type,
-        mode: format!("{mode:?}").to_ascii_lowercase(),
-        content,
-        saved,
-    })
-}
-
-fn build_web_client(user_agent: &str) -> Result<Client, CliError> {
-    Client::builder()
-        .user_agent(user_agent)
-        .build()
-        .map_err(CliError::operation)
-}
-
-fn parse_search_results(payload: &Value) -> Option<Vec<WebSearchResult>> {
-    let results = payload
-        .get("data")
-        .and_then(Value::as_array)
-        .or_else(|| payload.get("results").and_then(Value::as_array))?;
-
-    Some(
-        results
-            .iter()
-            .filter_map(|item| {
-                let title = item
-                    .get("title")
-                    .or_else(|| item.get("t"))
-                    .and_then(Value::as_str)?;
-                let url = item
-                    .get("url")
-                    .or_else(|| item.get("u"))
-                    .and_then(Value::as_str)?;
-                let snippet = item
-                    .get("snippet")
-                    .or_else(|| item.get("desc"))
-                    .or_else(|| item.get("body"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                Some(WebSearchResult {
-                    title: title.to_string(),
-                    url: url.to_string(),
-                    snippet: snippet.to_string(),
-                })
-            })
-            .collect(),
-    )
-}
-
-fn render_fetched_content(
-    bytes: &[u8],
-    content_type: &str,
-    url: &str,
-    mode: WebFetchMode,
-) -> Result<String, CliError> {
-    let rendered = String::from_utf8_lossy(bytes).to_string();
-    match mode {
-        WebFetchMode::Raw | WebFetchMode::Html => Ok(rendered),
-        WebFetchMode::Markdown => {
-            if content_type.contains("html") {
-                convert_web_html_to_markdown(&rendered, Some(url)).map_err(CliError::operation)
-            } else {
-                Ok(rendered)
-            }
-        }
-    }
-}
-
-fn robots_allow_fetch(client: &Client, url: &str, user_agent: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return true;
-    };
-    let Some(host) = parsed.host_str() else {
-        return true;
-    };
-    let authority = parsed
-        .port()
-        .map_or_else(|| host.to_string(), |port| format!("{host}:{port}"));
-    let robots_url = format!("{}://{authority}/robots.txt", parsed.scheme());
-    let Ok(response) = client.get(robots_url).send() else {
-        return true;
-    };
-    if !response.status().is_success() {
-        return true;
-    }
-    let Ok(robots) = response.text() else {
-        return true;
-    };
-
-    robots_allows_path(&robots, parsed.path(), user_agent)
-}
-
-fn robots_allows_path(robots: &str, path: &str, user_agent: &str) -> bool {
-    let mut applies = false;
-    let normalized_agent = user_agent.to_ascii_lowercase();
-
-    for raw_line in robots.lines() {
-        let line = raw_line.split('#').next().unwrap_or_default().trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let key = key.trim().to_ascii_lowercase();
-        let value = value.trim();
-
-        if key == "user-agent" {
-            let value = value.to_ascii_lowercase();
-            applies = value == "*" || normalized_agent.starts_with(&value);
-        } else if applies && key == "disallow" && !value.is_empty() && path.starts_with(value) {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn decode_html_entities(input: &str) -> String {
-    [
-        ("&amp;", "&"),
-        ("&lt;", "<"),
-        ("&gt;", ">"),
-        ("&quot;", "\""),
-        ("&#39;", "'"),
-        ("&nbsp;", " "),
-    ]
-    .into_iter()
-    .fold(input.to_string(), |acc, (from, to)| acc.replace(from, to))
+    Ok(fetched.report)
 }
 
 fn run_dataview_inline_command(
